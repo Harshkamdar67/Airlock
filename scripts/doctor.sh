@@ -25,7 +25,7 @@ else
   fail 'Codex OAuth is missing or expired'
 fi
 
-proxy_url="${CCX_PROXY_URL:-http://127.0.0.1:18765}"
+proxy_url="${AIRLOCK_PROXY_URL:-http://127.0.0.1:18765}"
 proxy_healthy=0
 if curl --silent --fail --max-time 2 "$proxy_url/healthz" >/dev/null 2>&1; then
   pass "Proxy health: $proxy_url/healthz"
@@ -34,18 +34,34 @@ else
   fail "Proxy health: $proxy_url/healthz"
 fi
 
-if command -v ccx >/dev/null 2>&1; then
-  launcher_path="$(command -v ccx)"
+if command -v airlock >/dev/null 2>&1; then
+  launcher_path="$(command -v airlock)"
   pass "Launcher: $launcher_path"
-  if grep -qF 'CCX_CONFIG_FILE' "$launcher_path" 2>/dev/null; then
+  if grep -qF 'AIRLOCK_CONFIG_FILE' "$launcher_path" 2>/dev/null; then
     while IFS= read -r config_line; do
       info "$config_line"
-    done < <(ccx config 2>/dev/null)
+    done < <(airlock config 2>/dev/null)
+    if airlock bundle >/dev/null 2>&1; then
+      pass 'Managed bundle is current and complete'
+    else
+      fail 'Managed bundle is stale or incomplete; reinstall and start a fresh session'
+    fi
+    router_path="${AIRLOCK_ROUTER_HELPER:-$(dirname "$launcher_path")/airlock-router.py}"
+    if [[ -f "$router_path" && ! -L "$router_path" ]]; then
+      pass "Hybrid router: $router_path (session-scoped loopback)"
+    else
+      fail "Hybrid router is missing or unsafe: $router_path"
+    fi
+    if grep -qF "'usage'" "$launcher_path" 2>/dev/null; then
+      while IFS= read -r usage_line; do
+        info "$usage_line"
+      done < <(airlock usage 2>/dev/null)
+    fi
   else
-    info 'Installed launcher predates persistent Claudex configuration'
+    fail 'Installed launcher predates managed bundle checks; reinstall and start a fresh session'
   fi
 else
-  fail 'ccx is not on PATH; add ~/.local/bin to PATH'
+  fail 'airlock is not on PATH; add ~/.local/bin to PATH'
 fi
 
 if command -v brew >/dev/null 2>&1; then
@@ -63,12 +79,27 @@ if command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-agent_file="${CCX_AGENT_DIR:-$HOME/.claude/agents}/claudex-worker.md"
+plugin_dir="${AIRLOCK_PLUGIN_DIR:-${AIRLOCK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock}/plugins/airlock}"
+if [[ -d "$plugin_dir" && ! -L "$plugin_dir" \
+  && -f "$plugin_dir/.claude-plugin/plugin.json" \
+  && -f "$plugin_dir/hooks/hooks.json" \
+  && -f "$plugin_dir/scripts/agent-guard.py" \
+  && -f "$plugin_dir/scripts/secret-guard.py" \
+  && -f "$plugin_dir/scripts/file_safety.py" \
+  && -f "$plugin_dir/scripts/worktree.py" \
+  && -f "$plugin_dir/scripts/worktree-create.sh" \
+  && -f "$plugin_dir/scripts/worktree-remove.sh" ]]; then
+  pass "Session plugin: $plugin_dir"
+else
+  fail "Session plugin is missing or unsafe: $plugin_dir"
+fi
+
+agent_file="${AIRLOCK_AGENT_DIR:-$HOME/.claude/agents}/airlock-worker.md"
 if [[ -f "$agent_file" ]]; then
   agent_effort="$(awk -F': ' '$1 == "effort" {print $2; exit}' "$agent_file")"
-  pass "Custom claudex-worker effort: ${agent_effort:-unknown}"
+  pass "Custom airlock-worker effort: ${agent_effort:-unknown}"
 else
-  info 'Optional claudex-worker is not installed'
+  info 'Optional airlock-worker is not installed'
 fi
 
 if [[ "$failures" -gt 0 ]]; then
@@ -76,4 +107,4 @@ if [[ "$failures" -gt 0 ]]; then
   exit 1
 fi
 
-printf '\nClaudex is ready. No live model request was made.\n'
+printf '\nAirlock is ready. No live model request was made.\n'
