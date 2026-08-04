@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socketserver
 import ssl
 import subprocess
 import sys
@@ -21,7 +22,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-MANAGED_BUNDLE_VERSION = "2026.08.04.2"
+MANAGED_BUNDLE_VERSION = "2026.08.04.3"
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 CONNECT_TIMEOUT_SECONDS = 10
 RESPONSE_HEADER_TIMEOUT_SECONDS = 10 * 60
@@ -210,6 +211,19 @@ class RouterServer(ThreadingHTTPServer):
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
         self.diagnostics_lock = threading.Lock()
+
+    def server_bind(self) -> None:
+        # http.server's own server_bind resolves the bound address with
+        # socket.getfqdn, which is a reverse DNS lookup. On a machine whose
+        # resolver is slow or unreachable that call can block for tens of
+        # seconds, and the session then fails to start for a reason that has
+        # nothing to do with routing. The router only ever binds loopback, so
+        # the literal address is both accurate and the only value that keeps
+        # startup entirely local.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
     def record_diagnostic(self, event: dict[str, object]) -> None:
         with self.diagnostics_lock:
@@ -621,11 +635,25 @@ def write_ready(path: Path, server: RouterServer) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
+    # Publish through a rename so the waiting parent never observes a file
+    # that exists but is still empty, and never tries to delete a handle this
+    # process still holds open. Both are visible races: a partial read fails
+    # to parse, and on Windows the delete raises a sharing violation. The
+    # staging name lives in the same private directory as the final name.
+    staging = path.with_name(path.name + ".tmp")
+    descriptor = os.open(staging, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staging, path)
+    except BaseException:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def parse_routes(raw: str) -> dict[str, str]:
@@ -720,7 +748,10 @@ def start_router(args: argparse.Namespace) -> int:
     finally:
         try:
             ready.unlink()
-        except FileNotFoundError:
+        except OSError:
+            # The marker carries no secret and lives in a private directory,
+            # so a session that has already started must not fail just
+            # because something else briefly held the file.
             pass
         if not startup_complete and process.poll() is None:
             process.terminate()

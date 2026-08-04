@@ -661,6 +661,90 @@ class RouterProtocolTests(unittest.TestCase):
                 "https://example.com",
             )
 
+    def test_binding_the_router_never_waits_on_reverse_dns(self) -> None:
+        # http.server resolves the bound address with socket.getfqdn, which
+        # is a reverse DNS lookup that can stall for tens of seconds on a
+        # machine with an unreachable resolver. A loopback router must not
+        # depend on name resolution to start.
+        def unreachable_resolver(*args: object, **kwargs: object) -> str:
+            raise AssertionError("router startup performed a DNS lookup")
+
+        config = router.RouterConfig(
+            {"gpt-test": "openai"},
+            "http://127.0.0.1:18765",
+            "https://api.anthropic.com",
+        )
+        with mock.patch("socket.getfqdn", unreachable_resolver):
+            server = router.RouterServer(("127.0.0.1", 0), config)
+        try:
+            self.assertEqual(server.server_name, "127.0.0.1")
+            self.assertEqual(server.server_port, server.server_address[1])
+        finally:
+            server.server_close()
+
+    def test_ready_marker_is_published_atomically(self) -> None:
+        # The parent polls for this file and reads it as soon as it appears,
+        # so it must never be visible while it is still empty, and the
+        # writing handle must be closed before the name exists.
+        config = router.RouterConfig(
+            {"gpt-test": "openai"},
+            "http://127.0.0.1:18765",
+            "https://api.anthropic.com",
+        )
+        server = router.RouterServer(("127.0.0.1", 0), config)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                ready = Path(directory) / "ready-test.json"
+                observed: list[int] = []
+                real_replace = os.replace
+
+                def watch_replace(source: object, target: object) -> None:
+                    observed.append(ready.exists())
+                    real_replace(source, target)
+
+                with mock.patch("os.replace", watch_replace):
+                    router.write_ready(ready, server)
+
+                self.assertEqual(observed, [False])
+                payload = json.loads(ready.read_text(encoding="ascii"))
+                self.assertEqual(payload["pid"], os.getpid())
+                self.assertEqual(
+                    payload["bundle_version"], router.MANAGED_BUNDLE_VERSION
+                )
+                self.assertTrue(router.valid_router_url(payload["url"]))
+                # The staging file must not survive a successful publish, and
+                # the marker must be deletable straight away on every
+                # platform, including Windows.
+                self.assertEqual(
+                    sorted(entry.name for entry in Path(directory).iterdir()),
+                    ["ready-test.json"],
+                )
+                ready.unlink()
+        finally:
+            server.server_close()
+
+    def test_a_failed_ready_write_leaves_nothing_behind(self) -> None:
+        config = router.RouterConfig(
+            {"gpt-test": "openai"},
+            "http://127.0.0.1:18765",
+            "https://api.anthropic.com",
+        )
+        server = router.RouterServer(("127.0.0.1", 0), config)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                ready = Path(directory) / "ready-test.json"
+
+                def failing_replace(source: object, target: object) -> None:
+                    raise OSError("publish failed")
+
+                with mock.patch("os.replace", failing_replace):
+                    with self.assertRaises(OSError):
+                        router.write_ready(ready, server)
+
+                self.assertEqual(list(Path(directory).iterdir()), [])
+        finally:
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
