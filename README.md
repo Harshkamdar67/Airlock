@@ -140,7 +140,7 @@ Inside the session, ask for work normally. The main model can use:
 
 Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. Plain `airlock` accepts enabled OpenAI IDs only. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
 
-Named `airlock-*` workers have a fixed exact model and effort. A caller cannot change either one. They use Claude Code's normal subagent tools.
+Named `airlock-*` workers have a fixed exact model. Their effort follows the session by default, so `/effort` moves the main model and those workers together. You can pin one route or every worker in the config. A caller cannot override a named worker's model or effort for one call. They use Claude Code's normal subagent tools.
 
 ## How work is routed
 

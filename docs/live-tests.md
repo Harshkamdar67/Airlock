@@ -142,7 +142,7 @@ Do not print or inspect a real authorization header.
 
 Authorize several independent disposable implementation shards.
 
-Every shard must have explicit file ownership, no-touch boundaries, and acceptance checks. Verify that Luna uses max effort, shards do not touch each other's files, and one stronger model reviews, integrates, and tests the result.
+Every shard must have explicit file ownership, no-touch boundaries, and acceptance checks. Record the session effort or the configured Luna pin, verify every shard uses that level, verify shards do not touch each other's files, and have one stronger model review, integrate, and test the result.
 
 ### 10. UI and UX routing
 

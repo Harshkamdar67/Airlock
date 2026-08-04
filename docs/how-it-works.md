@@ -63,7 +63,7 @@ Each name has:
 - native Agent cards and usage
 - optional native worktree isolation
 
-Named workers cannot invoke Agent and a caller cannot override their model. This keeps the card name, model, role, and effort consistent.
+Named workers cannot invoke Agent and a caller cannot override their model. This keeps the card name, model, and role consistent. Their effort follows the session unless the config pins it.
 
 A worker runs inside Claude Code itself, not inside a shell command. A long response cannot be lost to a shell timeout.
 
@@ -91,7 +91,7 @@ The session guard checks the ID before Claude Code starts the Agent.
 - Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
 - Omitting `model` keeps normal inheritance.
 
-Effort is fixed in a named Agent definition. Claude Code does not document a per-call Agent effort field, so Airlock does not claim that one exists.
+A named Agent has no per-call effort field. It follows the session effort by default, and `/effort` can move it in the middle of a session. A configured pin stays fixed until the config changes.
 
 ## Model selection and `/model`
 

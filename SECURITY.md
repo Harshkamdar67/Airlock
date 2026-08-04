@@ -74,7 +74,7 @@ The router does not log or persist request bodies, response bodies, prompts, aut
 
 ## Native repository Agents
 
-Named `airlock-*` workers are real Claude Code Agents with exact fixed model IDs and efforts. They use Claude Code's native tool, permission, background, cancellation, usage, and worktree behavior.
+Named `airlock-*` workers are real Claude Code Agents with exact fixed model IDs. Their effort follows the session unless the config pins it. They use Claude Code's native tool, permission, background, cancellation, usage, and worktree behavior.
 
 Normal sessions allow:
 

@@ -122,7 +122,7 @@ Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
 
 Plain `airlock` uses native Claude Code Agents with enabled OpenAI model IDs. Hybrid starts one temporary loopback router so native Agents can use enabled OpenAI and Anthropic IDs in the same session.
 
-Explore, Plan, and general-purpose inherit the main model when no model is supplied. The main model may give one of those built-ins an exact full model ID for one call when the active session policy allows it. Named `airlock-*` Agents already have a fixed model and effort.
+Explore, Plan, and general-purpose inherit the main model when no model is supplied. The main model may give one of those built-ins an exact full model ID for one call when the active session policy allows it. Named `airlock-*` Agents already have a fixed model. Their effort follows the session unless the config pins it.
 
 GPT IDs may not appear in Claude Code's `/model` discovery list behind a gateway. Use the launch commands above or an exact named Agent instead of relying on discovery.
 
