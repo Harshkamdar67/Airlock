@@ -1,265 +1,250 @@
-# Claudex
+# Airlock
 
-Run the Claude Code harness with GPT models from a ChatGPT subscription.
+**Don't pick a side.** Run OpenAI and Anthropic models together in one Claude Code session, with credentials that never cross.
 
-Claudex is a small, opinionated setup layer around [Claude Code](https://code.claude.com/docs/en/overview) and [Raine's `claude-code-proxy`](https://github.com/raine/claude-code-proxy). You keep Claude Code's interface, tools, skills, hooks, permissions, and agents while requests are translated to the Codex Responses backend.
+[![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](CHANGELOG.md)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
-> [!IMPORTANT]
-> The translation layer is the work of [Raine (`@raine`)](https://github.com/raine) and the [`claude-code-proxy` contributors](https://github.com/raine/claude-code-proxy/graphs/contributors). Claudex only packages a launcher, tested defaults, and setup documentation. If this is useful, please star and support the upstream project.
+An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
 
-## What you get
-
-- `ccx`: a separate launcher, so normal `claude` and `codex` remain untouched.
-- GPT-5.6 Sol by default, with shortcuts for the other models currently recognized by the proxy.
-- Sol for Claude Code's small/background utility requests instead of silently falling back to a Haiku alias the proxy cannot route.
-- Sol at medium effort for the dedicated `ccx bg` lane.
-- An optional custom background sub-agent configured at high effort.
-- An interactive wizard that asks which models and effort levels you want.
-- Proxy health checks and automatic Homebrew service recovery.
-- No API key in the repository. Authentication is handled by the proxy's Codex OAuth flow.
-
-```mermaid
-flowchart LR
-    U[You] --> C[Claude Code UI and tools]
-    C --> X[ccx launcher]
-    X --> P[claude-code-proxy on localhost]
-    P --> O[Codex Responses backend]
-    O --> G[GPT model from your ChatGPT plan]
-```
-
-## Requirements
-
-- macOS or Linux for the automated Homebrew setup. The launcher itself is Bash.
-- [Claude Code](https://code.claude.com/docs/en/setup) installed.
-- [Homebrew](https://brew.sh/) installed.
-- A ChatGPT plan with Codex access. Model availability varies by account and can change.
-- Git for cloning this repository.
-
-The upstream proxy also publishes Windows binaries, but this repository's service installer is currently tested only with Homebrew on macOS and Linux. Follow the [upstream Windows instructions](https://github.com/raine/claude-code-proxy#quick-start) and install `bin/ccx` manually if you want to adapt it.
-
-## Five-minute setup
+Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy) and a small local router for mixed-provider sessions.
 
 ```bash
-git clone https://github.com/migueltorrezd/claudex.git
-cd claudex
+airlock hybrid opus     # Claude Opus drives, GPT workers available
+airlock hybrid sol      # GPT Sol drives, Claude workers available
+airlock                 # OpenAI only, no router
+```
+
+> [!NOTE]
+> This project is in beta. It does not replace Claude Code, Codex, or `claude-code-proxy`. The mixed-provider gateway works, but Anthropic does not officially support non-Claude models behind a Claude Code gateway. Read [Known limits](#known-limits) before relying on it for important work.
+
+## Why use it
+
+- Keep normal `claude` and `codex` unchanged.
+- Start with an OpenAI or Anthropic model, and reach both from the same session.
+- Use real Claude Code Agents for both providers, each with an exact model and fixed effort.
+- Keep native Agent cards, tools, background work, cancellation, and worktrees.
+- Let Explore, Plan, and general-purpose inherit the main model or use an allowed exact model for one call.
+- Set a budget mode and a smaller worker cap when you want one.
+- See OpenAI plan usage without making a model request.
+- Keep ignored files, env values, and known credentials out of isolated worker copies.
+
+## How it works
+
+```text
+Plain airlock
+
+Claude Code
+    |
+    `-- 127.0.0.1 OpenAI proxy
+            `-- OpenAI subscription models
+
+airlock hybrid
+
+Claude Code
+    |
+    `-- 127.0.0.1 session router
+          |-- exact gpt-* model ID --> local OpenAI proxy
+          `-- exact claude-* ID   --> Anthropic
+```
+
+Plain `airlock` is OpenAI-only and connects directly to the local OpenAI proxy.
+
+`airlock hybrid` starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
+
+The router never sends Claude authorization headers to the OpenAI proxy. It forwards saved Claude login authorization opaquely only to Anthropic. It does not read credential files or log prompts, responses, or headers. Its local diagnostics endpoint keeps only a bounded in-memory list of model, provider, status, byte-count, duration, outcome, and token-count metadata.
+
+[Read the full explanation](docs/how-it-works.md).
+
+## Install
+
+### macOS and Linux
+
+You need:
+
+- [Claude Code](https://code.claude.com/docs/en/setup)
+- Homebrew
+- Git
+- Python 3
+- curl
+- A ChatGPT plan with Codex access
+
+Clone this repository and run:
+
+```bash
 ./scripts/setup.sh
 ```
 
-The wizard asks you to choose:
+The setup asks which models and limits you want. It shows a summary before changing anything.
 
-1. The main model and its reasoning effort.
-2. The model and effort for the `ccx bg` lane.
-3. The utility model used for titles, token counting, and small background requests.
-4. The optional custom sub-agent's effort.
-5. Whether to install that agent, complete OAuth, and start the background service.
-
-Every question shows the recommended/current value. Before writing anything, the wizard displays a complete summary and asks for confirmation. Preferences are saved to `~/.config/claudex/config`; an existing config is backed up before it changes. OAuth credentials are never stored there.
-
-The tested defaults are:
-
-- Main session: GPT-5.6 Sol at `xhigh` effort.
-- Background lane: GPT-5.6 Sol at `medium` effort.
-- Utility requests: GPT-5.6 Sol.
-- Custom sub-agent: `high` effort.
-
-If Codex OAuth is not configured yet and you decline browser login in the wizard, run:
-
-```bash
-claude-code-proxy codex auth login
-./scripts/setup.sh
-```
-
-The first command opens the official browser OAuth flow. On a headless machine, use:
-
-```bash
-claude-code-proxy codex auth device
-```
-
-Then make sure `~/.local/bin` is on your `PATH`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add that line to `~/.zshrc` or `~/.bashrc` if necessary.
-
-For non-default locations, set `CCX_INSTALL_DIR`, `CCX_AGENT_DIR`, or `CCX_CONFIG_DIR`.
-
-For automation or an AI agent, keep the deterministic installer:
+For the tested defaults without the wizard:
 
 ```bash
 ./scripts/install.sh --with-agent
 ```
 
-The wizard also accepts explicit non-interactive flags. Run `./scripts/setup.sh --help` for the full list.
+### Windows
 
-Verify the complete installation:
+You need:
+
+- [Claude Code](https://code.claude.com/docs/en/setup)
+- [Git for Windows](https://git-scm.com/download/win), including Git Bash
+- Python 3
+- The Windows build of [`claude-code-proxy`](https://github.com/raine/claude-code-proxy)
+- A ChatGPT plan with Codex access
+
+Complete the official proxy login in an interactive terminal:
+
+```powershell
+claude-code-proxy codex auth login
+```
+
+Then install and check it:
+
+```powershell
+powershell -NoProfile -File .\scripts\install.ps1
+powershell -NoProfile -File .\scripts\doctor.ps1
+```
+
+The installer does not change PATH, native Claude settings, native Codex settings, global hooks, registered plugins, or MCP settings. Add `%USERPROFILE%\.local\bin` to your user PATH if `airlock` is not found.
+
+[Read the Windows guide](docs/windows.md).
+
+## First run
+
+OpenAI only:
 
 ```bash
-./scripts/doctor.sh
-ccx models
-ccx config
-ccx
+airlock
+airlock terra
+airlock luna
 ```
 
-## Give this repository to an agent
-
-Claude Code reads `CLAUDE.md`; Codex reads `AGENTS.md`. Both contain the same safe installation protocol.
-
-You can tell either agent:
-
-```text
-Clone https://github.com/migueltorrezd/claudex, read its AGENTS.md or CLAUDE.md,
-and install it. Do not read, print, copy, or commit OAuth credentials. If Codex
-OAuth needs browser approval, stop and ask me to complete it. Run the doctor
-script afterward and report the final model, effort, auth, service, and health state.
-```
-
-## Usage
+Choose a main model while keeping both providers available:
 
 ```bash
-ccx                         # GPT-5.6 Sol, xhigh root-session effort
-ccx bg                      # GPT-5.6 Sol, medium root-session effort
-ccx bg --bg "Refactor it"  # launch that lane as a real Claude background agent
-ccx terra                   # GPT-5.6 Terra
-ccx luna                    # GPT-5.6 Luna
-ccx 5.5                     # GPT-5.5
-ccx 5.4                     # GPT-5.4
-ccx mini                    # GPT-5.4 Mini
-ccx spark                   # GPT-5.3 Codex Spark
-ccx models                  # show all launcher aliases
+airlock hybrid
+airlock hybrid sol
+airlock hybrid opus
+airlock hybrid sonnet
 ```
 
-All remaining arguments pass through to Claude Code:
+Inside the session, ask for work normally. The main model can use:
+
+- built-in Explore for read-only repository discovery
+- built-in Plan for read-only technical design
+- built-in general-purpose for multi-step work
+- exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`
+
+Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. Plain `airlock` accepts enabled OpenAI IDs only. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
+
+Named `airlock-*` workers have a fixed exact model and effort. A caller cannot change either one. They use Claude Code's normal subagent tools.
+
+## How work is routed
+
+The main model starts with the smallest useful approach:
+
+1. Work directly for small, connected, or already understood work.
+2. Use Explore for bounded read-only discovery.
+3. Use Plan after the relevant code is known.
+4. Use general-purpose for multi-step work that should stay with one model.
+5. Use one exact named worker when another model is a better fit.
+6. Use several Luna Agents only for independent high-volume work.
+7. Keep integration and final synthesis with a stronger main model, Sol, or Opus.
+
+Automatic armies are Luna-only. Each Luna or eligible Luna Fast shard uses fixed max effort. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
+
+For UI and UX work in a hybrid session, an exact user choice wins. Otherwise visual direction, product flows, new design systems, broad redesigns, and final visual critique prefer Opus. Sonnet fits bounded components and work that follows an existing design system.
+
+[Read the detailed routing guide](docs/how-it-works.md).
+
+## Common commands
 
 ```bash
-ccx -p "Explain this repository"
-ccx --effort high -p "Review this diff"
-ccx bg --bg "Run the test suite and fix failures"
+airlock                         # OpenAI main model
+airlock hybrid                  # choose an OpenAI or Anthropic main model
+airlock terra                   # start with GPT-5.6 Terra
+airlock luna                    # start with GPT-5.6 Luna
+airlock mode                    # show routing and worker limits
+airlock mode budget             # prefer lower use and block extra usage
+airlock mode max-agents off     # use Claude Code's native worker limit
+airlock mode max-agents 3       # save a smaller worker cap
+airlock mode swarm-fast auto    # gate Luna Fast by plan and proxy support
+airlock usage                   # refresh stale OpenAI usage and show it
+airlock bundle                  # verify managed files
+airlock models                  # list model shortcuts
 ```
 
-`ccx bg` selects the Sol/medium lane. It does not detach by itself. Add Claude Code's own `--bg` flag when you want a managed background agent, as shown above.
+Use native Claude Code's `/usage` screen for Anthropic subscription bars. Anthropic does not document a personal subscription API that Airlock can safely read.
 
-### Configuration
+[Read the models and usage guide](docs/models-and-usage.md).
 
-The launcher supports these environment overrides:
+## Security and file access
 
-| Variable | Default | Purpose |
-|---|---:|---|
-| `CCX_CONFIG_FILE` | `~/.config/claudex/config` | Persistent wizard configuration |
-| `CCX_MODEL` | `sol` | Default main model alias or supported model ID |
-| `CCX_MAIN_EFFORT` | `xhigh` | Normal root-session effort |
-| `CCX_BG_MODEL` | `sol` | Model used by `ccx bg` |
-| `CCX_BG_EFFORT` | `medium` | Root-session effort for `ccx bg` |
-| `CCX_SMALL_FAST_MODEL` | `gpt-5.6-sol[1m]` | Claude utility/background-request model |
-| `CCX_CONTEXT_WINDOW` | `272000` | Auto-compaction boundary |
-| `CCX_PROXY_URL` | `http://127.0.0.1:18765` | Local proxy URL |
-| `CCX_REAL_CLAUDE` | first `claude` on `PATH` | Claude Code executable |
+When the main model requests `isolation: "worktree"`, the session-scoped WorktreeCreate hook builds a clean synthetic snapshot from:
 
-Example:
+- current tracked files and tracked changes
+- eligible non-ignored untracked regular files
+- key names only from tracked or eligible env files
 
-```bash
-CCX_MODEL=terra CCX_MAIN_EFFORT=high ccx
-```
+It leaves out:
 
-Environment variables and explicit command-line arguments override the saved configuration. Run `ccx config` to see the resolved defaults.
+- known credential paths
+- JSON files with known credential fields
+- complete private-key blocks
+- ignored files
+- unsafe links and Windows reparse points
+- special files and outside-repository paths
+- content above the documented safety limits
 
-## Effort and sub-agents
+The snapshot does not stage, reset, clean, commit to, or change the user's branch, index, or working files. Claude Code owns the Agent and worktree lifecycle. A changed worktree is preserved rather than deleted by the custom cleanup hook.
 
-These are three separate controls:
+The same session plugin blocks direct Read, Grep, Glob, and obvious Bash access to sensitive env and credential files. These checks are not a full operating-system sandbox. Do not commit real credentials or run untrusted repository code without stronger isolation.
 
-1. The root Claudex session uses `xhigh` by default.
-2. The `ccx bg` root session uses `medium` by default.
-3. Custom sub-agent definitions can set `effort: high` in their YAML frontmatter.
+Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 
-Install the included example with `./scripts/install.sh --with-agent`, or copy [`examples/agents/claudex-worker.md`](examples/agents/claudex-worker.md) into `~/.claude/agents/`.
+## Known limits
 
-The setup wizard can select a different effort for this custom agent and safely renders that value during installation.
+- Anthropic supports Claude Code gateways and saved-login forwarding, but it does not officially support non-Claude models behind a gateway.
+- GPT model IDs may not appear in Claude Code's `/model` discovery list. Start the exact root with `airlock` or `airlock hybrid`, and use exact Agent model IDs through the guarded Agent call.
+- Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
+- Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
+- File hooks and prompts do not replace an operating-system sandbox.
+- Subscription access, provider terms, model availability, and usage limits can change.
 
-The launcher intentionally uses Claude Code's `--effort` session option instead of `CLAUDE_CODE_EFFORT_LEVEL`. The environment variable has higher precedence and would prevent a custom agent's `effort: high` frontmatter from overriding its parent session.
+## Documentation
 
-There is no `CLAUDE_CODE_SUBAGENT_EFFORT` variable. Built-in agents inherit the parent session's effort; editable custom agents can declare their own effort. The repository also does not force `CLAUDE_CODE_SUBAGENT_MODEL`, because that would override every agent's own model selection.
+- [Getting started](docs/getting-started.md)
+- [How it works](docs/how-it-works.md)
+- [Models, limits, and usage](docs/models-and-usage.md)
+- [Windows](docs/windows.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Testing](docs/testing.md)
+- [Live tests that use plan quota](docs/live-tests.md)
+- [Threat model](docs/threat-model.md)
+- [Contributing](CONTRIBUTING.md)
+- [Release process](docs/releasing.md)
+- [Changelog](CHANGELOG.md)
 
-## Why this is more than an alias
+## What this project does not do
 
-An alias that only runs `claude --model gpt-5.6-sol` does not create the connection. Claude Code still needs:
-
-- a running Anthropic-compatible proxy;
-- Codex OAuth stored by that proxy;
-- `ANTHROPIC_BASE_URL` and a local dummy auth value;
-- a concrete model for Claude Code's small/background requests;
-- a correct compaction boundary;
-- protection from non-streaming retries that can duplicate tool calls.
-
-The launcher handles those pieces while leaving native Claude Code untouched.
-
-It deliberately does **not** set:
-
-- `ENABLE_TOOL_SEARCH=false`, because loading every MCP tool definition up front can waste context;
-- `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3`, because that is a throttle, not a quality improvement;
-- `CLAUDE_CODE_SUBAGENT_MODEL`, because it overrides per-agent model choices.
-
-## Models
-
-At the time of writing, the upstream proxy recognizes these Codex model IDs:
-
-- `gpt-5.6-sol`
-- `gpt-5.6-terra`
-- `gpt-5.6-luna`
-- `gpt-5.5`
-- `gpt-5.4`
-- `gpt-5.4-mini`
-- `gpt-5.3-codex`
-- `gpt-5.3-codex-spark`
-- `gpt-5.2`
-
-Recognition by the proxy does not guarantee access on your ChatGPT account. Unsupported account/model combinations are returned by the upstream service as an error. Treat the [upstream model list](https://github.com/raine/claude-code-proxy#4-point-claude-code-at-it) as canonical because this list will age.
-
-The `[1m]` suffix used by the launcher is a local Claude Code compaction hint. The proxy strips it before the upstream request. It does not magically increase your account's real context limit.
-
-## Updating and uninstalling
-
-Update the proxy:
-
-```bash
-brew update
-brew upgrade claude-code-proxy
-brew services restart claude-code-proxy
-./scripts/doctor.sh
-```
-
-Update Claudex:
-
-```bash
-git pull --ff-only
-./scripts/setup.sh
-```
-
-Uninstall only the Claudex launcher and optional example agent:
-
-```bash
-rm "$HOME/.local/bin/ccx"
-rm "$HOME/.claude/agents/claudex-worker.md"
-```
-
-Those commands are intentionally not automated. Review each path before deleting it. Removing Claudex does not remove Claude Code, Codex, the proxy, or OAuth credentials.
-
-## Security and limitations
-
-Read [`SECURITY.md`](SECURITY.md) before changing the bind address.
-
-- The proxy is third-party software and is not affiliated with Anthropic or OpenAI.
-- It uses a compatibility bridge to the Codex backend. Upstream behavior, account eligibility, terms, quotas, and model names can change.
-- The local proxy has no incoming client authentication. Keep it bound to `127.0.0.1` unless you add your own firewall and authenticated reverse proxy.
-- ChatGPT subscription usage is still subject to plan limits. This is not unlimited or guaranteed access.
-- Features that depend on Anthropic-hosted services may not work through a custom base URL. See the upstream project's limitations for the current list.
+- It does not modify native Claude Code or native Codex.
+- It does not read, copy, or decode login token files.
+- It does not make subscription limits unlimited.
+- It does not silently switch an exact model to another provider.
 
 ## Credits
 
-Claudex would not exist without [`raine/claude-code-proxy`](https://github.com/raine/claude-code-proxy), created and maintained by [Raine](https://github.com/raine) with help from [its contributors](https://github.com/raine/claude-code-proxy/graphs/contributors). The proxy performs the hard protocol translation, OAuth handling, streaming conversion, tool-call mapping, and service integration.
+The OpenAI connection is powered by [`raine/claude-code-proxy`](https://github.com/raine/claude-code-proxy). That project handles OpenAI OAuth, request translation, streaming, and tool calls.
 
-Please direct proxy bugs and compatibility questions to the upstream repository after checking that the issue reproduces without this launcher. See [`CREDITS.md`](CREDITS.md) for the full attribution.
+Airlock grew from the MIT-licensed Claudex project by Miguel Torrez. The original license and credit are preserved.
+
+See [CREDITS.md](CREDITS.md) for the full list.
 
 ## License
 
-The original files in this repository are released under the [MIT License](LICENSE). `claude-code-proxy` is a separate MIT-licensed project owned by its respective contributors.
+This repository is released under the [MIT License](LICENSE). `claude-code-proxy` is a separate project with its own maintainers and license.
+
+Claude Code is a product of Anthropic. Codex, GPT, ChatGPT, and OpenAI are products and marks of OpenAI. Airlock is an independent community project and is not affiliated with either company.
