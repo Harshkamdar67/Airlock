@@ -153,7 +153,7 @@ function Write-Stub([string]$Name, [string]$Body = '@exit /b 0') {
 Write-Stub 'git.cmd'
 Write-Stub 'bash.cmd'
 Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@exit /b 0"
-Write-Stub 'claude-code-proxy.cmd' "@if `"%1`"==`"--version`" echo Proxy test`r`n@exit /b 0"
+Write-Stub 'claude-code-proxy.cmd' "@if not `"%AIRLOCK_TEST_PROXY_LOG%`"==`"`" echo %CCP_CONFIG_DIR%^|%XDG_STATE_HOME%^|%*>>`"%AIRLOCK_TEST_PROXY_LOG%`"`r`n@if `"%1`"==`"--version`" echo Proxy test`r`n@exit /b 0"
 Write-Stub 'python.cmd'
 
 $OldPath = $env:PATH
@@ -319,6 +319,21 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     throw "PowerShell --config alias did not show the saved profile: $($ConfigAlias.Output)"
   }
 
+  $ProxyCommandLog = Join-Path $TempRoot 'proxy-command.log'
+  $ProxyConfigDir = Join-Path $ConfigDir 'proxy-private'
+  $ProxyStateHome = Join-Path $ConfigDir 'proxy-state'
+  $ProxyConfig = "$HybridConfig`nAIRLOCK_PROXY_CONFIG_DIR=$ProxyConfigDir`nAIRLOCK_PROXY_STATE_HOME=$ProxyStateHome`n"
+  [IO.File]::WriteAllText($InstalledConfig, $ProxyConfig, (New-Object Text.UTF8Encoding($false)))
+  $env:AIRLOCK_TEST_PROXY_LOG = $ProxyCommandLog
+  $ProxyStatus = Invoke-LauncherProcess $InstalledLauncher @('proxy', 'auth', 'status')
+  if ($ProxyStatus.ExitCode -ne 0) { throw "PowerShell proxy status wrapper failed: $($ProxyStatus.Error)" }
+  $ProxyLogText = [IO.File]::ReadAllText($ProxyCommandLog).Replace("`r", '')
+  $ExpectedProxyLine = "$ProxyConfigDir|$ProxyStateHome|codex auth status"
+  if ($ProxyLogText.Trim() -ne $ExpectedProxyLine) {
+    throw "PowerShell proxy wrapper did not preserve its configured directories: $ProxyLogText"
+  }
+  Remove-Item Env:AIRLOCK_TEST_PROXY_LOG -ErrorAction SilentlyContinue
+
   $HybridGptConfig = $HybridConfig.Replace('AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=terra')
   [IO.File]::WriteAllText($InstalledConfig, $HybridGptConfig, (New-Object Text.UTF8Encoding($false)))
   $HybridGptLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
@@ -357,6 +372,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $env:AIRLOCK_CONFIG_DIR = $OldConfig
   $env:AIRLOCK_AGENT_DIR = $OldAgent
   Remove-Item -LiteralPath 'Env:AIRLOCK_PROXY_URL' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_PROXY_LOG' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 

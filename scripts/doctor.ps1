@@ -46,12 +46,16 @@ if ($Proxy) {
 if ($Bash) { Pass "Git Bash: $Bash" } else { Fail 'Git for Windows Bash is not on PATH' }
 
 if ($Proxy) {
-  & $Proxy codex auth status *> $null
+  if ($Launcher) {
+    & $Launcher proxy auth status *> $null
+  } else {
+    & $Proxy codex auth status *> $null
+  }
   if ($LASTEXITCODE -eq 0) {
     Pass 'Codex OAuth is configured'
   } else {
     Fail 'Codex OAuth is missing or expired'
-    Info 'Run: claude-code-proxy codex auth login'
+    if ($Launcher) { Info 'Run: airlock proxy auth login' } else { Info 'Run: claude-code-proxy codex auth login' }
   }
 }
 

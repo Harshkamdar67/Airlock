@@ -34,11 +34,11 @@ CREDENTIAL_BASENAMES = {
 }
 CREDENTIAL_SUFFIXES = {".key", ".p12", ".pfx"}
 CREDENTIAL_PATH_SUFFIXES = {
-    ".codex/auth.json",
-    ".claude/.credentials.json",
-    ".aws/credentials",
-    ".docker/config.json",
-    ".kube/config",
+    "codex/auth.json",
+    "claude/.credentials.json",
+    "aws/credentials",
+    "docker/config.json",
+    "kube/config",
 }
 CREDENTIAL_JSON_KEYS = {
     "access_token",

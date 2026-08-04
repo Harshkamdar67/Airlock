@@ -12,6 +12,8 @@ if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
   }
 }
 $ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_URL')) { $ConfigValues['AIRLOCK_PROXY_URL'] } else { 'http://127.0.0.1:18765' }
+$ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:AIRLOCK_PROXY_CONFIG_DIR) { $env:AIRLOCK_PROXY_CONFIG_DIR } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_CONFIG_DIR')) { $ConfigValues['AIRLOCK_PROXY_CONFIG_DIR'] } else { '' }
+$ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
 $SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol[1m]' }
@@ -86,7 +88,12 @@ function Show-Models {
   Write-Host ''
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku'
-  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models'
+  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models, proxy auth'
+  Write-Host ''
+  Write-Host 'Proxy login commands:'
+  Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
+  Write-Host '  airlock proxy auth login           Start the upstream browser login'
+  Write-Host '  airlock proxy auth device          Start the upstream device-code login'
   Write-Host ''
   Write-Host 'Policy commands:'
   Write-Host '  airlock mode                     Show the saved routing and usage policy'
@@ -238,6 +245,27 @@ function Test-ManagedBundle {
   return 0
 }
 
+function Invoke-ProxyCommand {
+  param([string[]]$ProxyArguments)
+  $proxy = Get-Command claude-code-proxy -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $proxy) { $proxy = Get-Command claude-code-proxy.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+  if (-not $proxy) {
+    [Console]::Error.WriteLine('airlock: claude-code-proxy is not on PATH.')
+    return 1
+  }
+  $oldConfigDir = [Environment]::GetEnvironmentVariable('CCP_CONFIG_DIR', 'Process')
+  $oldStateHome = [Environment]::GetEnvironmentVariable('XDG_STATE_HOME', 'Process')
+  try {
+    if ($ProxyConfigDir) { $env:CCP_CONFIG_DIR = $ProxyConfigDir }
+    if ($ProxyStateHome) { $env:XDG_STATE_HOME = $ProxyStateHome }
+    & $proxy.Source @ProxyArguments
+    return $LASTEXITCODE
+  } finally {
+    if ($null -eq $oldConfigDir) { Remove-Item Env:CCP_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:CCP_CONFIG_DIR = $oldConfigDir }
+    if ($null -eq $oldStateHome) { Remove-Item Env:XDG_STATE_HOME -ErrorAction SilentlyContinue } else { $env:XDG_STATE_HOME = $oldStateHome }
+  }
+}
+
 function Test-ProxyHealth {
   try {
     Invoke-WebRequest -Uri "$ProxyUrl/healthz" -TimeoutSec 1 -UseBasicParsing | Out-Null
@@ -253,9 +281,18 @@ function Start-ProxyIfNeeded {
   if (Test-Path -LiteralPath $proxyExe -PathType Leaf) {
     $logDir = Join-Path $HOME '.local\state\claude-code-proxy'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    Start-Process -FilePath $proxyExe -ArgumentList 'serve','--no-monitor' -WindowStyle Hidden `
-      -RedirectStandardOutput (Join-Path $logDir 'service.out.log') `
-      -RedirectStandardError  (Join-Path $logDir 'service.err.log')
+    $oldConfigDir = [Environment]::GetEnvironmentVariable('CCP_CONFIG_DIR', 'Process')
+    $oldStateHome = [Environment]::GetEnvironmentVariable('XDG_STATE_HOME', 'Process')
+    try {
+      if ($ProxyConfigDir) { $env:CCP_CONFIG_DIR = $ProxyConfigDir }
+      if ($ProxyStateHome) { $env:XDG_STATE_HOME = $ProxyStateHome }
+      Start-Process -FilePath $proxyExe -ArgumentList 'serve','--no-monitor' -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $logDir 'service.out.log') `
+        -RedirectStandardError  (Join-Path $logDir 'service.err.log')
+    } finally {
+      if ($null -eq $oldConfigDir) { Remove-Item Env:CCP_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:CCP_CONFIG_DIR = $oldConfigDir }
+      if ($null -eq $oldStateHome) { Remove-Item Env:XDG_STATE_HOME -ErrorAction SilentlyContinue } else { $env:XDG_STATE_HOME = $oldStateHome }
+    }
   }
   for ($i = 0; $i -lt 50; $i++) {
     if (Test-ProxyHealth) { return }
@@ -476,7 +513,7 @@ $DefaultBgModel = $DefaultBgAlias
 if ($DefaultProfile -eq 'hybrid') {
   $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
   $explicitCommands = @(
-    'mode', 'usage', 'bundle', 'access', 'models', '--models', 'config', '--config',
+    'mode', 'usage', 'bundle', 'access', 'proxy', 'models', '--models', 'config', '--config',
     'hybrid', 'openai', 'bg', 'background', 'sol', 'sol-fast', 'terra',
     'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
   )
@@ -527,6 +564,19 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'access') {
     exit 2
   }
   exit (Invoke-AccessPolicy -PolicyArguments @($accessCommand))
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'proxy') {
+  if ($Arguments.Count -lt 2 -or $Arguments[1] -ne 'auth' -or $Arguments.Count -gt 3) {
+    [Console]::Error.WriteLine('airlock: usage: airlock proxy auth [status|login|device]')
+    exit 2
+  }
+  $proxyAuthAction = if ($Arguments.Count -eq 3) { $Arguments[2] } else { 'status' }
+  if ($proxyAuthAction -notin @('status', 'login', 'device')) {
+    [Console]::Error.WriteLine("airlock: unsupported proxy auth action: $proxyAuthAction")
+    exit 2
+  }
+  exit (Invoke-ProxyCommand -ProxyArguments @('codex', 'auth', $proxyAuthAction))
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
@@ -610,6 +660,8 @@ if ($Arguments.Count -gt 0) {
       Write-Host "Utility model: $SmallFast"
       Write-Host "Context window: $ContextWin"
       Write-Host "Proxy URL: $ProxyUrl"
+      $proxyStorageDisplay = if ($ProxyConfigDir -or $ProxyStateHome) { 'configured proxy directories' } else { 'upstream defaults' }
+      Write-Host "Proxy storage: $proxyStorageDisplay"
       Write-Host "OpenAI direct agents: $OpenAIDirectAgentsFile"
       Write-Host "Anthropic direct agents: $AnthropicDirectAgentsFile"
       Write-Host "OpenAI bridge agents: $OpenAIWrapperAgentsFile"

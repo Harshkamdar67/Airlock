@@ -31,6 +31,9 @@ class SecretGuardTests(unittest.TestCase):
             '{"client_secret":"structured-private"}\n', encoding="utf-8"
         )
         (self.root / "settings.json").write_text('{"mode":"test"}\n', encoding="utf-8")
+        proxy_auth = self.root / ".airlock" / "claude-code-proxy" / "codex" / "auth.json"
+        proxy_auth.parent.mkdir(parents=True)
+        proxy_auth.write_text('{"mode":"synthetic"}\n', encoding="utf-8")
         (self.root / "app.py").write_text("print('safe')\n", encoding="utf-8")
 
     def tearDown(self) -> None:
@@ -118,6 +121,18 @@ class SecretGuardTests(unittest.TestCase):
         })
         self.assertIn("credential-bearing", self.reason(structured))
         self.assertNotIn("structured-private", self.reason(structured))
+
+        proxy_auth = self.invoke({
+            "tool_name": "Read",
+            "tool_input": {
+                "file_path": str(
+                    self.root / ".airlock" / "claude-code-proxy" / "codex" / "auth.json"
+                )
+            },
+            "cwd": str(self.root),
+        })
+        self.assertIn("credential-bearing", self.reason(proxy_auth))
+        self.assertNotIn("auth.json", self.reason(proxy_auth))
 
         safe = self.invoke({
             "tool_name": "Read",

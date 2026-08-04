@@ -73,12 +73,21 @@ jobs:
           python tests/test-release.py
           python tests/test-docs.py
 
-      - name: Run Bash launcher and setup tests
+      - name: Run Bash launcher tests
         shell: bash
-        run: |
-          bash tests/test-airlock.sh
-          bash tests/test-setup.sh
-          python tests/test-setup-pty.py
+        timeout-minutes: 5
+        run: bash tests/test-airlock.sh
+
+      - name: Run setup shell tests
+        shell: bash
+        timeout-minutes: 5
+        run: bash tests/test-setup.sh
+
+      - name: Run setup PTY tests
+        if: runner.os != 'Windows'
+        shell: bash
+        timeout-minutes: 8
+        run: python -u tests/test-setup-pty.py
 
       - name: Run the POSIX installer test
         if: runner.os != 'Windows'

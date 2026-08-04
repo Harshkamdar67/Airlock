@@ -28,6 +28,23 @@ resolve_airlock_config_root() {
   fi
 }
 
+directory_is_writable_or_creatable() {
+  local directory="$1"
+  local parent
+  if [[ -d "$directory" ]]; then
+    [[ -w "$directory" ]]
+    return
+  fi
+  [[ ! -e "$directory" ]] || return 1
+  parent="$(dirname "$directory")"
+  while [[ ! -e "$parent" ]]; do
+    directory="$parent"
+    parent="$(dirname "$directory")"
+    [[ "$parent" != "$directory" ]] || break
+  done
+  [[ -d "$parent" && -w "$parent" ]]
+}
+
 config_root="$(resolve_airlock_config_root)"
 config_file="${AIRLOCK_CONFIG_FILE:-$config_root/config}"
 openai_direct_agents_file="${AIRLOCK_OPENAI_DIRECT_AGENTS_FILE:-$config_root/openai-direct-agents.json}"
@@ -68,6 +85,8 @@ config_bg_effort=''
 config_small_fast_model=''
 config_context_window=''
 config_proxy_url=''
+config_proxy_config_dir=''
+config_proxy_state_home=''
 config_max_agents=''
 config_gpt_effort_capabilities=''
 
@@ -84,6 +103,8 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_SMALL_FAST_MODEL) config_small_fast_model="$config_value" ;;
       AIRLOCK_CONTEXT_WINDOW) config_context_window="$config_value" ;;
       AIRLOCK_PROXY_URL) config_proxy_url="$config_value" ;;
+      AIRLOCK_PROXY_CONFIG_DIR) config_proxy_config_dir="$config_value" ;;
+      AIRLOCK_PROXY_STATE_HOME) config_proxy_state_home="$config_value" ;;
       AIRLOCK_MAX_CONCURRENT_SUBAGENTS) config_max_agents="$config_value" ;;
       AIRLOCK_GPT_EFFORT_CAPABILITIES) config_gpt_effort_capabilities="$config_value" ;;
     esac
@@ -91,6 +112,19 @@ if [[ -f "$config_file" ]]; then
 fi
 
 proxy_url="${AIRLOCK_PROXY_URL:-${config_proxy_url:-http://127.0.0.1:18765}}"
+proxy_config_dir="${CCP_CONFIG_DIR:-${AIRLOCK_PROXY_CONFIG_DIR:-$config_proxy_config_dir}}"
+proxy_state_home="${XDG_STATE_HOME:-${AIRLOCK_PROXY_STATE_HOME:-$config_proxy_state_home}}"
+case "$(uname -s)" in
+  Darwin) default_proxy_config_dir="$HOME/.config/claude-code-proxy" ;;
+  *) default_proxy_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-proxy" ;;
+esac
+default_proxy_state_home="$HOME/.local/state"
+if [[ -z "$proxy_config_dir" ]] && ! directory_is_writable_or_creatable "$default_proxy_config_dir"; then
+  proxy_config_dir="$config_root/claude-code-proxy"
+fi
+if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_proxy_state_home"; then
+  proxy_state_home="$config_root/proxy-state"
+fi
 background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol[1m]}}}"
 default_context_window="${AIRLOCK_CONTEXT_WINDOW:-${config_context_window:-272000}}"
 gpt_effort_capabilities="${AIRLOCK_GPT_EFFORT_CAPABILITIES:-${config_gpt_effort_capabilities:-effort,xhigh_effort,max_effort}}"
@@ -117,7 +151,12 @@ Profiles:
 
 OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku
-Other commands: bg, mode, usage, access, bundle, config, models
+Other commands: bg, mode, usage, access, bundle, config, models, proxy auth
+
+Proxy login commands:
+  airlock proxy auth status          Check Codex OAuth in Airlock's selected proxy directory
+  airlock proxy auth login           Start the upstream browser login
+  airlock proxy auth device          Start the upstream device-code login
 
 Policy commands:
   airlock mode                     Show the saved routing and usage policy
@@ -201,12 +240,14 @@ validate_managed_bundle() {
 }
 
 print_config() {
-  local configured_openai configured_hybrid openai_display hybrid_display
+  local configured_openai configured_hybrid openai_display hybrid_display proxy_storage_display
   validate_default_profile "$default_profile" || return 1
   configured_openai="$default_openai_model"
   configured_hybrid="$default_hybrid_model"
   openai_display="$(openai_model_display "$configured_openai")" || return 1
   hybrid_display="$(hybrid_model_display "$configured_hybrid")" || return 1
+  proxy_storage_display='upstream defaults'
+  [[ -z "$proxy_config_dir" && -z "$proxy_state_home" ]] || proxy_storage_display='configured proxy directories'
   cat <<EOF
 Config file: $config_file
 Default profile: $default_profile
@@ -218,6 +259,7 @@ Background command: airlock bg -> $(openai_model_display "$default_bg_model") / 
 Utility model: $background_model
 Context window: $default_context_window
 Proxy URL: $proxy_url
+Proxy storage: $proxy_storage_display
 OpenAI direct agents: $openai_direct_agents_file
 Anthropic direct agents: $anthropic_direct_agents_file
 OpenAI bridge agents: $openai_wrapper_agents_file
@@ -310,14 +352,77 @@ health_check() {
   curl --silent --fail --max-time 1 "$proxy_url/healthz" >/dev/null 2>&1
 }
 
+prepare_private_proxy_directory() {
+  local directory="$1"
+  [[ -n "$directory" ]] || return 0
+  if [[ -L "$directory" || ( -e "$directory" && ! -d "$directory" ) ]]; then
+    printf 'airlock: refusing unsafe proxy data directory.\n' >&2
+    return 1
+  fi
+  if [[ ! -d "$directory" ]]; then
+    (umask 077 && mkdir -p "$directory") 2>/dev/null || {
+      printf 'airlock: could not create a private writable directory for the proxy.\n' >&2
+      return 1
+    }
+  fi
+  [[ -w "$directory" ]] || {
+    printf 'airlock: the selected proxy data directory is not writable.\n' >&2
+    return 1
+  }
+}
+
+run_proxy_command() {
+  if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  elif [[ -n "$proxy_config_dir" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" claude-code-proxy "$@"
+  elif [[ -n "$proxy_state_home" ]]; then
+    env XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  else
+    claude-code-proxy "$@"
+  fi
+}
+
+start_proxy_background() {
+  local proxy_executable state_home log_dir
+  proxy_executable="$(command -v claude-code-proxy || true)"
+  [[ -n "$proxy_executable" ]] || return 1
+  state_home="${proxy_state_home:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+  log_dir="$state_home/claude-code-proxy"
+  prepare_private_proxy_directory "$proxy_config_dir" || return 1
+  prepare_private_proxy_directory "$state_home" || return 1
+  prepare_private_proxy_directory "$log_dir" || return 1
+  if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
+    nohup env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  elif [[ -n "$proxy_config_dir" ]]; then
+    nohup env CCP_CONFIG_DIR="$proxy_config_dir" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  elif [[ -n "$proxy_state_home" ]]; then
+    nohup env XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  else
+    nohup "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  fi
+}
+
 start_proxy() {
-  if command -v brew >/dev/null 2>&1; then
+  local service_file=''
+  if [[ -n "$proxy_config_dir" || -n "$proxy_state_home" ]]; then
+    case "$(uname -s)" in
+      Darwin) service_file="$config_root/claude-code-proxy.plist" ;;
+      Linux) service_file="$config_root/claude-code-proxy.service" ;;
+    esac
+    if command -v brew >/dev/null 2>&1 && [[ -f "$service_file" ]] &&
+       grep -qF 'Managed by https://github.com/Harshkamdar67/Airlock' "$service_file"; then
+      brew services start claude-code-proxy --file="$service_file" >/dev/null 2>&1 || \
+        brew services start raine/claude-code-proxy/claude-code-proxy --file="$service_file" >/dev/null 2>&1 || \
+        start_proxy_background
+    else
+      start_proxy_background
+    fi
+  elif command -v brew >/dev/null 2>&1; then
     brew services start claude-code-proxy >/dev/null 2>&1 || \
       brew services start raine/claude-code-proxy/claude-code-proxy >/dev/null 2>&1 || true
-  elif command -v claude-code-proxy >/dev/null 2>&1; then
-    local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-code-proxy"
-    mkdir -p "$log_dir"
-    nohup claude-code-proxy serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  else
+    start_proxy_background
   fi
   local attempt
   for attempt in $(seq 1 50); do
@@ -611,7 +716,7 @@ if ! resolve_model "$default_bg_model" >/dev/null 2>&1; then
 fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    mode|usage|bundle|access|models|--models|config|--config|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    mode|usage|bundle|access|proxy|models|--models|config|--config|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*) set -- hybrid "$@" ;;
     *) set -- hybrid "$default_hybrid_model" "$@" ;;
   esac
@@ -723,6 +828,36 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   unset AIRLOCK_GPT_HYBRID
   export AIRLOCK_HYBRID='1'
   launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
+fi
+
+if [[ "${1:-}" == 'proxy' ]]; then
+  shift
+  if [[ "${1:-}" != 'auth' ]]; then
+    printf 'airlock: usage: airlock proxy auth [status|login|device]\n' >&2
+    exit 2
+  fi
+  shift
+  proxy_auth_action="${1:-status}"
+  if (( $# > 0 )); then shift; fi
+  if (( $# != 0 )); then
+    printf 'airlock: usage: airlock proxy auth [status|login|device]\n' >&2
+    exit 2
+  fi
+  case "$proxy_auth_action" in
+    status|login|device) ;;
+    *)
+      printf 'airlock: unsupported proxy auth action: %s\n' "$proxy_auth_action" >&2
+      exit 2
+      ;;
+  esac
+  if ! command -v claude-code-proxy >/dev/null 2>&1; then
+    printf 'airlock: claude-code-proxy is not on PATH.\n' >&2
+    exit 1
+  fi
+  prepare_private_proxy_directory "$proxy_config_dir" || exit $?
+  prepare_private_proxy_directory "$proxy_state_home" || exit $?
+  run_proxy_command codex auth "$proxy_auth_action"
+  exit $?
 fi
 
 requested_model="$default_openai_model"

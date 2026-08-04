@@ -28,6 +28,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - A branded, width-aware setup interface with clear progress, decision cards, and a grouped confirmation screen.
 - Keyboard option selection with Up and Down arrows plus Enter, while number and name entry remain available.
 - CODEOWNERS, safe issue forms, a pull request security checklist, and Dependabot updates for GitHub Actions.
+- `airlock proxy auth` commands that preserve the proxy directory selected during setup.
 
 ### Changed
 
@@ -64,6 +65,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Public web routing now avoids assigning Web Search to `xhigh` or `max` workers when the internal search model supports only `high` or below.
 - Setup automatically uses `~/.airlock` when the normal macOS or Linux config parent is not writable, and every installed component resolves the same fallback without `sudo`.
 - Long unbreakable config paths use a stacked review layout instead of overflowing the label column.
+- Codex OAuth and proxy startup now use a private writable config or state fallback when the upstream default parent is blocked, without moving an existing healthy login.
+- POSIX PTY timeouts now terminate the full child process group and report the exact run instead of leaving macOS CI waiting for the job timeout.
 
 ### Security
 
