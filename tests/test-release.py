@@ -34,6 +34,38 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("attest-build-provenance", workflow)
         self.assertNotRegex(workflow, re.compile(r"\b(npm publish|twine upload|brew tap-new)\b"))
 
+    def test_github_contribution_security_baseline(self) -> None:
+        github = ROOT / ".github"
+        required = (
+            github / "CODEOWNERS",
+            github / "pull_request_template.md",
+            github / "dependabot.yml",
+            github / "ISSUE_TEMPLATE" / "bug_report.yml",
+            github / "ISSUE_TEMPLATE" / "feature_request.yml",
+            github / "ISSUE_TEMPLATE" / "config.yml",
+        )
+        for path in required:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertTrue(path.is_file())
+
+        self.assertIn("* @Harshkamdar67", required[0].read_text(encoding="utf-8"))
+        pull_request = required[1].read_text(encoding="utf-8")
+        self.assertIn("Security and compatibility", pull_request)
+        self.assertIn("Developer Certificate of Origin sign-off", pull_request)
+        dependabot = required[2].read_text(encoding="utf-8")
+        self.assertIn("package-ecosystem: github-actions", dependabot)
+        issue_config = required[-1].read_text(encoding="utf-8")
+        self.assertIn("blank_issues_enabled: false", issue_config)
+        self.assertIn("security/policy", issue_config)
+
+        for path in (github / "workflows").glob("*.yml"):
+            workflow = path.read_text(encoding="utf-8")
+            actions = re.findall(r"^\s*(?:-\s+)?uses:\s+([^\s#]+)", workflow, re.MULTILINE)
+            self.assertTrue(actions, f"workflow has no Actions: {path.name}")
+            for action in actions:
+                with self.subTest(workflow=path.name, action=action):
+                    self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
+
 
 if __name__ == "__main__":
     unittest.main()

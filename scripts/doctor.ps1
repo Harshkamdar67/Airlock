@@ -4,6 +4,7 @@ param()
 
 $ErrorActionPreference = 'Continue'
 $Failures = 0
+$ClaudeSignedIn = $false
 
 function Pass([string]$Message) { Write-Host "PASS  $Message" }
 function Fail([string]$Message) { Write-Host "FAIL  $Message"; $script:Failures++ }
@@ -27,6 +28,14 @@ $Launcher = Resolve-Application @('airlock.cmd', 'airlock.exe', 'airlock')
 if ($Claude) {
   $version = (& $Claude --version 2>$null | Select-Object -First 1)
   Pass "Claude Code: $version"
+  & $Claude auth status *> $null
+  if ($LASTEXITCODE -eq 0) {
+    Pass 'Claude login is configured'
+    $ClaudeSignedIn = $true
+  } else {
+    Info 'Claude login was not detected; run: claude auth login'
+    Info 'OpenAI-only sessions can still work, but hybrid and Claude routes need this login.'
+  }
 } else { Fail 'Claude Code is not on PATH' }
 
 if ($Proxy) {
@@ -119,4 +128,8 @@ if ($Failures -gt 0) {
 }
 
 Write-Host ''
-Write-Host 'Airlock is ready. No live model request was made.'
+if ($ClaudeSignedIn) {
+  Write-Host 'Airlock is ready. No live model request was made.'
+} else {
+  Write-Host 'Airlock OpenAI-only sessions are ready. Sign in to Claude before using hybrid or Claude routes. No live model request was made.'
+}

@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a focused improvement to Airlock
+title: "Feature: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues and pull requests before proposing a change. Do not include credentials, private prompts, account details, or private repository content.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the user problem without prescribing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what should become possible and how a user would know it works.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List workarounds or smaller options you considered.
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Project boundaries
+      options:
+        - label: This proposal keeps local services bound to `127.0.0.1`.
+          required: true
+        - label: This proposal does not require Airlock to read or copy provider credential files.
+          required: true
+        - label: I have not included private or sensitive information.
+          required: true

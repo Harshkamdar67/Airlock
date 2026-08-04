@@ -1,0 +1,10 @@
+# Review every change with the repository owner.
+* @Harshkamdar67
+
+# Security-sensitive surfaces stay explicitly owned.
+/.github/ @Harshkamdar67
+/bin/ @Harshkamdar67
+/config/ @Harshkamdar67
+/plugins/ @Harshkamdar67
+/scripts/ @Harshkamdar67
+/SECURITY.md @Harshkamdar67

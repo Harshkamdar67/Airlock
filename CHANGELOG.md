@@ -25,6 +25,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Saved default profiles and orchestrators, including explicit `airlock openai`, saved `airlock hybrid`, and the `airlock hybrid choose` picker.
 - A guided terminal setup with full model names and IDs, worker presets, honest effort controls, a review screen, and optional Advanced settings.
 - POSIX terminal coverage for the interactive setup flow and native Windows parity coverage for saved launch profiles.
+- A branded, width-aware setup interface with clear progress, decision cards, and a grouped confirmation screen.
+- CODEOWNERS, safe issue forms, a pull request security checklist, and Dependabot updates for GitHub Actions.
 
 ### Changed
 
@@ -42,6 +44,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Top-level Agent spawn depth remains one and named Agents cannot recurse.
 - Hybrid mode preserves saved Claude subscription login and rejects explicit Anthropic credential overrides.
 - OpenAI usage refresh and Anthropic `/usage` guidance remain separate.
+- Substantial visual and interaction redesigns now require the eligible Opus worker in hybrid sessions instead of being treated as generic coupled implementation.
+- Doctor reports Claude login and Codex OAuth separately, while keeping signed-out OpenAI-only behavior clear.
+- GitHub workflows pin third-party Actions to full commit hashes and avoid persisting checkout credentials.
 
 ### Fixed
 
@@ -54,6 +59,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Changed or committed managed worktrees are preserved instead of removed.
 - Broad file searches no longer return raw sensitive env or credential data.
 - Unavailable GPT model discovery is now documented instead of being presented as a routing failure.
+- Public web routing now avoids assigning Web Search to `xhigh` or `max` workers when the internal search model supports only `high` or below.
 
 ### Security
 
@@ -64,6 +70,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Native worktree snapshots filter known credentials from tracked and eligible untracked files.
 - Direct tool guards block known credential paths and high-confidence credential content.
 - Installer and startup bundle checks include every native router and worktree safety component.
+- Pull request workflows use read-only permissions, immutable Action commits, non-persistent checkout credentials, and bounded job timeouts.
 
 ### Removed
 

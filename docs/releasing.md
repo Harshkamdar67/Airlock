@@ -119,6 +119,23 @@ Before merge:
 - confirm CI passes on Linux, macOS, and Windows
 - confirm no live quota test ran without permission
 
+## Protect public contributions
+
+Before announcing the repository, configure these GitHub settings. Some controls may appear only after the repository becomes public.
+
+- Enable private vulnerability reporting.
+- Enable the dependency graph, dependency vulnerability alerts, Dependabot security updates, secret scanning, and push protection.
+- Keep the default workflow token permission read-only and do not allow workflows to approve pull requests.
+- Allow squash merges, disable merge commits and rebase merges, and delete merged branches automatically.
+- Add a `main` branch ruleset that requires a pull request, one CODEOWNER approval, dismissal of stale approvals, approval after the latest push, resolved review conversations, and every `test` workflow job.
+- Block force pushes and branch deletion. Do not allow bypass except for an emergency repository owner path.
+- Add a tag ruleset for `v*` that limits tag creation and deletion to maintainers.
+- Keep third-party Actions pinned to full commit hashes. Dependabot may open reviewed updates for those pins.
+
+The repository includes CODEOWNERS, pull request and issue templates, a restricted workflow token declaration, and Dependabot configuration. These files guide contributions, but the GitHub ruleset is what enforces review and passing checks.
+
+Recheck the rules from a non-owner test account before accepting the first outside contribution.
+
 ## Tag and publish
 
 After the release commit is on the final remote:

@@ -5,6 +5,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config_dir="${AIRLOCK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock}"
 config_target="$config_dir/config"
 
+# Kept so the review screen can offer a clean start over without rebuilding
+# the parsed state by hand.
+setup_args=("$@")
+
 default_profile=''
 hybrid_model=''
 main_model=''
@@ -43,7 +47,7 @@ Usage: ./scripts/setup.sh [options]
 Without options, setup.sh opens an interactive questionnaire.
 
 Options:
-  --default-profile PROFILE  Bare airlock: hybrid or openai
+  --default-profile PROFILE   Bare airlock: hybrid or openai
   --main-model MODEL          Backward-compatible root choice; Claude implies hybrid
   --hybrid-model MODEL        Saved hybrid orchestrator alias
   --main-effort EFFORT        Starting session effort: low, medium, high, xhigh, or max
@@ -53,24 +57,26 @@ Options:
   --bg-effort EFFORT          Advanced effort for the separate airlock bg command
   --utility-model MODEL       Advanced model for lightweight Claude Code requests
   --subagent-effort EFFORT    Effort for the optional generic airlock-worker
-  --extra-usage POLICY       Extra-usage workers: ask, never, or allow
-  --routing-policy POLICY    Routing objective: balanced, quality, or economy
-  --max-agents VALUE         Concurrent top-level workers: off or 1..20
-  --swarm-fast POLICY       Luna swarm Fast processing: auto, on, or off
-  --failover-policy POLICY   Worker failover: ask, never, or allow
-  --claude-plan PLAN         Claude tier: unknown, pro, max5x, or max20x
-  --openai-capacity VALUE    Codex capacity override: auto, 1x, 5x, or 20x
-  --anthropic-workers LIST   Enabled Claude workers; empty clears the list
-  --openai-workers LIST      Enabled GPT workers; empty clears the list
-  --with-agent               Install the optional generic airlock-worker
-  --without-agent            Do not install the custom worker
-  --login                    Run browser OAuth if authentication is missing
-  --no-login                 Do not start browser OAuth
-  --start-service            Start the Homebrew background service
-  --no-service               Do not start the Homebrew background service
-  --config-only              Write configuration without installing anything
-  -y, --yes                  Accept the summary without a final prompt
-  -h, --help                 Show this help
+  --extra-usage POLICY        Extra-usage workers: ask, never, or allow
+  --routing-policy POLICY     Routing objective: balanced, quality, or economy
+  --max-agents VALUE          Concurrent top-level workers: off or 1..20
+  --swarm-fast POLICY         Luna swarm Fast processing: auto, on, or off
+  --failover-policy POLICY    Worker failover: ask, never, or allow
+  --claude-plan PLAN          Claude tier: unknown, pro, max5x, or max20x
+  --openai-capacity VALUE     Codex capacity override: auto, 1x, 5x, or 20x
+  --anthropic-workers LIST    Enabled Claude workers; empty clears the list
+  --openai-workers LIST       Enabled GPT workers; empty clears the list
+  --with-agent                Install the optional generic airlock-worker
+  --without-agent             Do not install the custom worker
+  --login                     Run Codex OAuth for the local proxy if it is signed out
+  --no-login                  Do not start Codex OAuth
+  --start-service             Start the Homebrew background service
+  --no-service                Do not start the Homebrew background service
+  --config-only               Write configuration without installing anything
+  -y, --yes                   Accept the summary without a final prompt
+  -h, --help                  Show this help
+
+Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
   Hybrid: sonnet, sol, terra, luna, opus, fable, haiku
@@ -236,21 +242,21 @@ utility_alias_from_wire() {
 
 set_model_info() {
   case "$1" in
-    sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5'; MODEL_DETAIL='balanced engineering and repository work - standard usage' ;;
-    opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5'; MODEL_DETAIL='architecture, security, and visual direction - premium usage' ;;
-    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5'; MODEL_DETAIL='efficient frontier work - may require extra usage' ;;
-    haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='fast bounded utility work - economical usage' ;;
-    sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol[1m]'; MODEL_DETAIL='difficult implementation and integration - premium usage' ;;
-    sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast[1m]'; MODEL_DETAIL='priority-processed Sol - eligible plans only' ;;
-    terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra[1m]'; MODEL_DETAIL='review and alternative reasoning - standard usage' ;;
-    luna) MODEL_TITLE='GPT-5.6 Luna'; MODEL_ID='gpt-5.6-luna[1m]'; MODEL_DETAIL='discovery, triage, and bounded work - economical usage' ;;
-    5.5) MODEL_TITLE='GPT-5.5'; MODEL_ID='gpt-5.5[1m]'; MODEL_DETAIL='supported OpenAI root' ;;
-    5.4) MODEL_TITLE='GPT-5.4'; MODEL_ID='gpt-5.4[1m]'; MODEL_DETAIL='supported OpenAI root' ;;
-    mini) MODEL_TITLE='GPT-5.4 Mini'; MODEL_ID='gpt-5.4-mini[1m]'; MODEL_DETAIL='small OpenAI root' ;;
-    5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex[1m]'; MODEL_DETAIL='supported Codex root' ;;
-    spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='fast supported Codex root' ;;
-    5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2[1m]'; MODEL_DETAIL='supported OpenAI root' ;;
-    *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='custom model' ;;
+    sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
+    opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
+    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
+    haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
+    sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol[1m]'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
+    sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast[1m]'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
+    terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra[1m]'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
+    luna) MODEL_TITLE='GPT-5.6 Luna'; MODEL_ID='gpt-5.6-luna[1m]'; MODEL_DETAIL='Discovery, triage, and bounded work. Economical usage.' ;;
+    5.5) MODEL_TITLE='GPT-5.5'; MODEL_ID='gpt-5.5[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    5.4) MODEL_TITLE='GPT-5.4'; MODEL_ID='gpt-5.4[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    mini) MODEL_TITLE='GPT-5.4 Mini'; MODEL_ID='gpt-5.4-mini[1m]'; MODEL_DETAIL='Small OpenAI root.' ;;
+    5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex[1m]'; MODEL_DETAIL='Supported Codex root.' ;;
+    spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
+    5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
   esac
 }
 
@@ -413,46 +419,12 @@ validate_csv_subset() {
   done
 }
 
-choose_option() {
-  local label="$1"
-  local recommended="$2"
-  shift 2
-  local options=("$@")
-  local answer option index
-
-  while true; do
-    printf '\n%s\n' "$label"
-    index=1
-    for option in ${options[@]+"${options[@]}"}; do
-      if [[ "$option" == "$recommended" ]]; then
-        printf '  %d) %s (current/default)\n' "$index" "$option"
-      else
-        printf '  %d) %s\n' "$index" "$option"
-      fi
-      index=$((index + 1))
-    done
-    printf 'Choose [%s]: ' "$recommended"
-    IFS= read -r answer
-    if [[ -z "$answer" ]]; then
-      CHOICE="$recommended"
-      return
-    fi
-    if [[ "$answer" =~ ^[0-9]+$ ]]; then
-      index=$((10#$answer))
-      if (( index >= 1 && index <= ${#options[@]} )); then
-        CHOICE="${options[$((index - 1))]}"
-        return
-      fi
-    fi
-    for option in ${options[@]+"${options[@]}"}; do
-      if [[ "$answer" == "$option" ]]; then
-        CHOICE="$option"
-        return
-      fi
-    done
-    printf 'Please enter a listed number or value.\n' >&2
-  done
-}
+# ---------------------------------------------------------------------------
+# Presentation layer
+#
+# Color is an enhancement only. Every state is also carried by text, so the
+# wizard reads the same with NO_COLOR, TERM=dumb, or a redirected stream.
+# ---------------------------------------------------------------------------
 
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != 'dumb' ]]; then
   STYLE_BOLD=$'\033[1m'
@@ -468,48 +440,275 @@ else
   STYLE_RESET=''
 fi
 
+stty_columns() {
+  local size=''
+  command -v stty >/dev/null 2>&1 || return 0
+  size="$(stty size 2>/dev/null)" || size=''
+  if [[ "$size" =~ ^[0-9]+[[:space:]]+([0-9]+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+  return 0
+}
+
+tput_columns() {
+  command -v tput >/dev/null 2>&1 || return 0
+  tput cols 2>/dev/null || true
+  return 0
+}
+
+detect_terminal_columns() {
+  local candidate
+  terminal_columns=80
+  for candidate in "$(stty_columns)" "$(tput_columns)" "${COLUMNS:-}"; do
+    if [[ "$candidate" =~ ^[0-9]+$ ]] && (( candidate >= 20 )); then
+      terminal_columns="$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
+detect_terminal_columns
+# Long measured lines are hard to read, and very narrow ones need a stacked
+# layout instead of aligned columns.
+ui_width="$terminal_columns"
+(( ui_width > 72 )) && ui_width=72
+(( ui_width < 36 )) && ui_width=36
+ui_wrap_fields=0
+
+repeat_char() {
+  local char="$1"
+  local count="$2"
+  local out=''
+  while (( count > 0 )); do
+    out="$out$char"
+    count=$((count - 1))
+  done
+  REPEAT_RESULT="$out"
+}
+
+print_rule() {
+  local char="${1:--}"
+  repeat_char "$char" "$ui_width"
+  printf '%s%s%s\n' "$STYLE_DIM" "$REPEAT_RESULT" "$STYLE_RESET"
+}
+
+# Line-oriented wrapper. Model IDs contain bracket characters, so globbing is
+# disabled while the text is split into words.
+wrap_lines() {
+  local first_prefix="$1"
+  local cont_prefix="$2"
+  local style="$3"
+  local text="$4"
+  local reset='' prefix line word limit glob_was_off=0
+  [[ -n "$style" ]] && reset="$STYLE_RESET"
+  case "$-" in
+    *f*) glob_was_off=1 ;;
+    *) set -f ;;
+  esac
+  prefix="$first_prefix"
+  limit=$((ui_width - ${#prefix}))
+  (( limit < 16 )) && limit=16
+  line=''
+  for word in $text; do
+    if [[ -z "$line" ]]; then
+      line="$word"
+    elif (( ${#line} + 1 + ${#word} <= limit )); then
+      line="$line $word"
+    else
+      printf '%s%s%s%s\n' "$prefix" "$style" "$line" "$reset"
+      prefix="$cont_prefix"
+      limit=$((ui_width - ${#prefix}))
+      (( limit < 16 )) && limit=16
+      line="$word"
+    fi
+  done
+  if [[ -n "$line" ]]; then
+    printf '%s%s%s%s\n' "$prefix" "$style" "$line" "$reset"
+  fi
+  (( glob_was_off == 1 )) || set +f
+  return 0
+}
+
+wrap_text() {
+  wrap_lines "$1" "$1" "$2" "$3"
+}
+
+print_notice() {
+  printf '  %s!%s %s\n' "$STYLE_ACCENT" "$STYLE_RESET" "$1" >&2
+}
+
+BRAND_ROWS=(
+' ###   ###  ####  #      ###   #### #   #'
+'#   #   #   #   # #     #   # #     #  #'
+'#####   #   ####  #     #   # #     ###'
+'#   #   #   #  #  #     #   # #     #  #'
+'#   #  ###  #   # #####  ###   #### #   #'
+)
+
+print_brand() {
+  local row
+  printf '\n'
+  if (( ui_width >= 44 )); then
+    for row in "${BRAND_ROWS[@]}"; do
+      printf '%s%s%s\n' "$STYLE_ACCENT$STYLE_BOLD" "$row" "$STYLE_RESET"
+    done
+  else
+    printf '%s%s%s\n' "$STYLE_ACCENT$STYLE_BOLD" 'AIRLOCK' "$STYLE_RESET"
+  fi
+  printf '\n'
+}
+
 print_header() {
-  printf '\n%sAIRLOCK SETUP%s\n' "$STYLE_BOLD$STYLE_ACCENT" "$STYLE_RESET"
-  printf '%s\n' '------------------------------------------------------------'
-  printf 'Configure one safe default command and the workers behind it.\n'
-  printf '%sNo credentials or token values are stored.%s\n' "$STYLE_DIM" "$STYLE_RESET"
+  local heading='Airlock setup wizard'
+  local version=''
+  if [[ -f "$repo_root/VERSION" ]]; then
+    IFS= read -r version < "$repo_root/VERSION" || version=''
+  fi
+  print_brand
+  if [[ -n "$version" ]] && (( ${#heading} + 9 + ${#version} <= ui_width )); then
+    heading="$heading   version $version"
+  fi
+  printf '%s%s%s\n' "$STYLE_BOLD" "$heading" "$STYLE_RESET"
+  print_rule '='
+  wrap_text '' '' 'Airlock runs OpenAI and Anthropic models in one Claude Code session, with credentials that never cross.'
+  printf '\n'
+  wrap_text '' '' 'This wizard asks six short sets of questions and ends with a review screen. Nothing on your machine changes until you accept that screen.'
+  printf '\n'
+  wrap_text '' '' 'It does not change native Claude Code, native Codex, global settings, global hooks, registered plugins, or MCP configuration, and it never reads, copies, or stores a login token.'
+  printf '\n'
+  wrap_text '' "$STYLE_DIM" 'At every question, press Enter to accept the choice marked with >. Type ? to see the choices again. Press Ctrl+C to stop without changes.'
 }
 
 print_section() {
   local step="$1"
   local title="$2"
   local description="$3"
-  printf '\n%s[%s/6] %s%s\n' "$STYLE_BOLD" "$step" "$title" "$STYLE_RESET"
-  printf '%s\n' "$description"
+  local track left pad
+  repeat_char '#' "$step"
+  track="$REPEAT_RESULT"
+  repeat_char '-' $((6 - step))
+  track="[$track$REPEAT_RESULT]"
+  left="STEP $step OF 6   $title"
+  printf '\n'
+  print_rule '='
+  if (( ui_width >= ${#left} + ${#track} + 2 )); then
+    pad=$((ui_width - ${#left} - ${#track}))
+    printf '%s%s%s%*s%s%s%s\n' "$STYLE_BOLD" "$left" "$STYLE_RESET" "$pad" '' "$STYLE_ACCENT" "$track" "$STYLE_RESET"
+  else
+    printf '%sSTEP %s OF 6%s  %s%s%s\n' "$STYLE_BOLD" "$step" "$STYLE_RESET" "$STYLE_ACCENT" "$track" "$STYLE_RESET"
+    printf '%s%s%s\n' "$STYLE_BOLD" "$title" "$STYLE_RESET"
+  fi
+  wrap_text '' '' "$description"
 }
 
+print_question() {
+  local title="$1"
+  local detail="${2:-}"
+  printf '\n'
+  wrap_text '' "$STYLE_BOLD" "$title"
+  if [[ -n "$detail" ]]; then
+    wrap_text '' "$STYLE_DIM" "$detail"
+  fi
+}
+
+print_group_heading() {
+  printf '\n%s%s%s\n' "$STYLE_BOLD" "$1" "$STYLE_RESET"
+}
+
+# Option specs are value|title|identifier|detail. The identifier is the exact
+# model ID where one exists, and stays visible next to the readable name.
 choose_rich_option() {
   local current="$1"
   local recommended="$2"
   shift 2
   local options=("$@")
-  local answer default_value index spec value remainder title description badge
+  local answer default_value default_index default_title
+  local index spec value remainder title identifier detail
+  local badge badge_style row row_prefix row_text row_style extra pad
   default_value="${current:-$recommended}"
+  default_index=0
+  default_title=''
+  index=1
+  for spec in ${options[@]+"${options[@]}"}; do
+    value="${spec%%|*}"
+    if [[ "$value" == "$default_value" && "$default_index" -eq 0 ]]; then
+      default_index="$index"
+      remainder="${spec#*|}"
+      default_title="${remainder%%|*}"
+    fi
+    index=$((index + 1))
+  done
   while true; do
+    printf '\n'
     index=1
     for spec in ${options[@]+"${options[@]}"}; do
       value="${spec%%|*}"
       remainder="${spec#*|}"
       title="${remainder%%|*}"
-      description="${remainder#*|}"
+      remainder="${remainder#*|}"
+      identifier="${remainder%%|*}"
+      detail="${remainder#*|}"
       badge=''
-      if [[ "$value" == "$current" ]]; then
-        badge=" ${STYLE_GREEN}[current]${STYLE_RESET}"
+      badge_style=''
+      if [[ "$had_existing_config" -eq 1 && "$value" == "$current" ]]; then
+        badge='[current]'
+        badge_style="$STYLE_GREEN"
       elif [[ "$value" == "$recommended" ]]; then
-        badge=" ${STYLE_ACCENT}[recommended]${STYLE_RESET}"
+        badge='[recommended]'
+        badge_style="$STYLE_ACCENT"
       fi
-      printf '  %d) %s%s\n' "$index" "$title" "$badge"
-      printf '     %s%s%s\n' "$STYLE_DIM" "$description" "$STYLE_RESET"
+      row_style=''
+      if [[ "$value" == "$default_value" ]]; then
+        printf -v row_prefix '  %s %2d) ' '>' "$index"
+        row_style="$STYLE_BOLD"
+      else
+        printf -v row_prefix '  %s %2d) ' ' ' "$index"
+      fi
+      row_text="$title"
+      extra=''
+      if [[ -n "$identifier" ]]; then
+        if (( ${#row_prefix} + ${#row_text} + 4 + ${#identifier} <= ui_width )); then
+          row_text="$row_text  ($identifier)"
+        else
+          extra="$identifier"
+        fi
+      fi
+      row="$row_prefix$row_text"
+      if (( ${#row} > ui_width )); then
+        wrap_lines "$row_prefix" '        ' "$row_style" "$row_text"
+        if [[ -n "$badge" ]]; then
+          printf '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
+        fi
+      elif [[ -n "$badge" ]] && (( ui_width - ${#row} - ${#badge} >= 2 )); then
+        pad=$((ui_width - ${#row} - ${#badge}))
+        printf '%s%s%s%*s%s%s%s\n' "$row_style" "$row" "$STYLE_RESET" "$pad" '' "$badge_style" "$badge" "$STYLE_RESET"
+      else
+        printf '%s%s%s\n' "$row_style" "$row" "$STYLE_RESET"
+        if [[ -n "$badge" ]]; then
+          printf '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
+        fi
+      fi
+      if [[ -n "$extra" ]]; then
+        printf '        %s%s%s\n' "$STYLE_DIM" "$extra" "$STYLE_RESET"
+      fi
+      if [[ -n "$detail" ]]; then
+        wrap_text '        ' "$STYLE_DIM" "$detail"
+      fi
       index=$((index + 1))
     done
-    printf 'Choice [%s]: ' "$default_value"
+    printf '\n'
+    if (( default_index > 0 )); then
+      wrap_text '  ' '' "Press Enter to accept $default_index) $default_title"
+    else
+      wrap_text '  ' '' "Press Enter to accept $default_value"
+    fi
+    printf '  Choice [1-%d, name, or ?]: ' "${#options[@]}"
     IFS= read -r answer
     answer="${answer:-$default_value}"
+    if [[ "$answer" == '?' || "$answer" == 'help' ]]; then
+      continue
+    fi
     if [[ "$answer" =~ ^[0-9]+$ ]]; then
       index=$((10#$answer))
       if (( index >= 1 && index <= ${#options[@]} )); then
@@ -522,8 +721,63 @@ choose_rich_option() {
       value="${spec%%|*}"
       if [[ "$answer" == "$value" ]]; then CHOICE="$value"; return; fi
     done
-    printf 'Enter a listed number or value.\n' >&2
+    print_notice "That is not one of the listed choices. Enter a number from 1 to ${#options[@]}, a listed name, or ? to see the list again."
   done
+}
+
+ask_yes_no() {
+  local label="$1"
+  local recommended="$2"
+  local answer hint
+  if [[ "$recommended" == 'yes' ]]; then hint='[Y/n, Enter = yes]'; else hint='[y/N, Enter = no]'; fi
+  while true; do
+    printf '\n'
+    wrap_text '  ' "$STYLE_BOLD" "$label"
+    printf '  Answer %s: ' "$hint"
+    IFS= read -r answer
+    answer="${answer:-$recommended}"
+    case "$answer" in
+      y|Y|yes|YES|Yes) ANSWER='yes'; return ;;
+      n|N|no|NO|No) ANSWER='no'; return ;;
+      *) print_notice 'Please answer y or n.' ;;
+    esac
+  done
+}
+
+ask_apply_decision() {
+  local answer
+  while true; do
+    printf '\n'
+    wrap_text '  ' '' 'Press Enter to apply. Type n to quit without changes, or s to start over.'
+    printf '  Apply this configuration? [Y/n/s]: '
+    IFS= read -r answer
+    answer="${answer:-y}"
+    case "$answer" in
+      y|Y|yes|YES|Yes) APPLY_DECISION='apply'; return ;;
+      n|N|no|NO|No) APPLY_DECISION='quit'; return ;;
+      s|S|start|start-over|restart) APPLY_DECISION='restart'; return ;;
+      *) print_notice 'Please answer y to apply, n to quit, or s to start over.' ;;
+    esac
+  done
+}
+
+print_field() {
+  local label="$1"
+  local value="$2"
+  local line first
+  printf -v line '  %-20s%s' "$label" "$value"
+  if [[ "$ui_wrap_fields" -ne 1 ]] || (( ${#line} <= ui_width )); then
+    printf '%s\n' "$line"
+    return 0
+  fi
+  if (( ui_width >= 52 )); then
+    printf -v first '  %-20s' "$label"
+    wrap_lines "$first" '                      ' '' "$value"
+  else
+    printf '  %s\n' "$label"
+    wrap_lines '      ' '      ' '' "$value"
+  fi
+  return 0
 }
 
 csv_contains() {
@@ -588,33 +842,6 @@ render_worker_pin_lines() {
   done
 }
 
-choose_csv_value() {
-  local label="$1"
-  local current="$2"
-  local answer
-  printf '\n%s\n' "$label"
-  printf 'Comma-separated routes [%s]: ' "$current"
-  IFS= read -r answer
-  CSV_CHOICE="${answer:-$current}"
-}
-
-ask_yes_no() {
-  local label="$1"
-  local recommended="$2"
-  local answer prompt
-  if [[ "$recommended" == 'yes' ]]; then prompt='Y/n'; else prompt='y/N'; fi
-  while true; do
-    printf '%s [%s]: ' "$label" "$prompt"
-    IFS= read -r answer
-    answer="${answer:-$recommended}"
-    case "$answer" in
-      y|Y|yes|YES|Yes) ANSWER='yes'; return ;;
-      n|N|no|NO|No) ANSWER='no'; return ;;
-      *) printf 'Please answer yes or no.\n' >&2 ;;
-    esac
-  done
-}
-
 utility_alias_from_wire "$default_utility_wire"
 default_utility_model="$UTILITY_ALIAS"
 
@@ -652,67 +879,75 @@ fi
 
 if [[ "$assume_yes" -eq 0 ]]; then
   print_header
-  print_section 1 'SESSION AND ORCHESTRATOR' 'Choose what bare `airlock` starts. Explicit commands always override this.'
+
+  print_section 1 'SESSION AND ORCHESTRATOR' 'Choose what the bare `airlock` command starts. An explicit command such as `airlock openai` always overrides this.'
+  print_question 'Which session profile should bare `airlock` start?' 'Hybrid keeps both providers reachable from one session. OpenAI only stays on the local proxy.'
   choose_rich_option "$default_profile" hybrid \
-    'hybrid|Hybrid: Claude and GPT together|Choose any enabled Claude or GPT orchestrator and keep both worker providers available.' \
-    'openai|OpenAI only|Use the local OpenAI proxy without starting the mixed-provider router.'
+    'hybrid|Hybrid: Claude and GPT together||Choose any enabled Claude or GPT orchestrator and keep both worker providers available.' \
+    'openai|OpenAI only||Use the local OpenAI proxy without starting the mixed-provider router.'
   default_profile="$CHOICE"
 
   if [[ "$default_profile" == 'hybrid' ]]; then
-    printf '\n%sDefault orchestrator%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-    printf 'This model leads the session and decides when to use workers.\n'
+    print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
     choose_rich_option "$hybrid_model" sonnet \
-      'sonnet|Claude Sonnet 5|claude-sonnet-5 - balanced engineering and repository work - standard usage' \
-      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m] - difficult implementation and integration - premium usage' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m] - review and alternative reasoning - standard usage' \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m] - discovery, triage, and bounded work - economical usage' \
-      'opus|Claude Opus 5|claude-opus-5 - architecture, security, and visual direction - premium usage' \
-      'fable|Claude Fable 5|claude-fable-5 - efficient frontier work - may require extra usage' \
-      'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001 - fast bounded utility work - economical usage'
+      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.' \
+      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.' \
+      'opus|Claude Opus 5|claude-opus-5|Architecture, security, and visual direction. Premium usage.' \
+      'fable|Claude Fable 5|claude-fable-5|Efficient frontier work. May require extra usage.' \
+      'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
     hybrid_model="$CHOICE"
     main_model="$default_main_model"
   else
-    printf '\n%sDefault orchestrator%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-    printf 'OpenAI-only sessions can still use exact GPT workers.\n'
+    print_question 'Default orchestrator' 'OpenAI-only sessions can still use exact GPT workers.'
     choose_rich_option "${main_model:-$default_main_model}" sol \
-      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m] - difficult implementation and integration - premium usage' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m] - review and alternative reasoning - standard usage' \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m] - discovery, triage, and bounded work - economical usage' \
-      'sol-fast|GPT-5.6 Sol Fast|gpt-5.6-sol-fast[1m] - priority processing on eligible plans' \
-      '5.5|GPT-5.5|gpt-5.5[1m] - supported OpenAI root' \
-      '5.4|GPT-5.4|gpt-5.4[1m] - supported OpenAI root' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m] - small OpenAI root' \
-      '5.3|GPT-5.3 Codex|gpt-5.3-codex[1m] - supported Codex root' \
-      'spark|GPT-5.3 Codex Spark|gpt-5.3-codex-spark - fast supported Codex root' \
-      '5.2|GPT-5.2|gpt-5.2[1m] - supported OpenAI root'
+      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.' \
+      'sol-fast|GPT-5.6 Sol Fast|gpt-5.6-sol-fast[1m]|Priority processing on eligible plans only.' \
+      '5.5|GPT-5.5|gpt-5.5[1m]|Supported OpenAI root.' \
+      '5.4|GPT-5.4|gpt-5.4[1m]|Supported OpenAI root.' \
+      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.' \
+      '5.3|GPT-5.3 Codex|gpt-5.3-codex[1m]|Supported Codex root.' \
+      'spark|GPT-5.3 Codex Spark|gpt-5.3-codex-spark|Fast supported Codex root.' \
+      '5.2|GPT-5.2|gpt-5.2[1m]|Supported OpenAI root.'
     main_model="$CHOICE"
   fi
 
   print_section 2 'WORKER POOL' 'Choose which exact-model Agents the orchestrator may use. More is not always better.'
-  printf '%sModel catalog%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-  printf '%sAccess depends on the connected plans and is checked again when a session starts.%s\n' "$STYLE_DIM" "$STYLE_RESET"
+  print_question 'Model catalog' 'Access depends on the connected plans and is checked again when a session starts.'
   for route in sonnet opus fable haiku luna terra sol; do
     set_model_info "$route"
-    printf '  %s (%s)\n' "$MODEL_TITLE" "$MODEL_ID"
-    printf '    %s%s%s\n' "$STYLE_DIM" "$MODEL_DETAIL" "$STYLE_RESET"
+    if (( ${#MODEL_TITLE} + ${#MODEL_ID} + 6 <= ui_width )); then
+      printf '  %s  (%s)\n' "$MODEL_TITLE" "$MODEL_ID"
+    else
+      printf '  %s\n' "$MODEL_TITLE"
+      printf '    %s%s%s\n' "$STYLE_DIM" "$MODEL_ID" "$STYLE_RESET"
+    fi
+    wrap_text '    ' "$STYLE_DIM" "$MODEL_DETAIL"
   done
-  printf '\n'
   current_preset='custom'
   if [[ "$default_anthropic_models" == 'opus,sonnet' && "$default_openai_models" == 'sol,terra,luna' ]]; then current_preset='balanced'; fi
+  if [[ "$default_anthropic_models" == 'opus,sonnet,fable' && "$default_openai_models" == 'sol,terra,luna' ]]; then current_preset='frontier'; fi
   if [[ "$default_anthropic_models" == 'sonnet' && "$default_openai_models" == 'luna' ]]; then current_preset='economy'; fi
+  print_question 'Which workers should the orchestrator be allowed to use?'
   choose_rich_option "$current_preset" balanced \
-    'balanced|Balanced pool|Claude Opus and Sonnet plus GPT Sol, Terra, and Luna. The router chooses only when useful.' \
-    'economy|Economical pool|Claude Sonnet and GPT Luna. Lower relative usage with broad basic coverage.' \
-    'custom|Choose models individually|Enable only the exact workers you want and see every model before saving.'
+    'balanced|Balanced pool||Claude Opus 5 and Claude Sonnet 5 plus GPT Sol, Terra, and Luna. The router picks one only when it helps.' \
+    'economy|Economical pool||Claude Sonnet 5 and GPT Luna. Lower relative usage with broad basic coverage.' \
+    'frontier|Balanced pool plus Claude Fable 5||Everything in the balanced pool and Claude Fable 5 (claude-fable-5). Fable can use extra usage, so it is not on by default.' \
+    'custom|Choose models individually||Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.'
   worker_preset="$CHOICE"
   anthropic_models_was_decided=1
   openai_models_was_decided=1
   case "$worker_preset" in
     balanced) anthropic_models='opus,sonnet'; openai_models='sol,terra,luna' ;;
+    frontier) anthropic_models='opus,sonnet,fable'; openai_models='sol,terra,luna' ;;
     economy) anthropic_models='sonnet'; openai_models='luna' ;;
     custom)
       anthropic_models=''
       openai_models=''
+      print_question 'Choose each worker' 'Answer once per model. A disabled model can still be enabled later with `airlock config`.'
       for route in sonnet opus fable haiku; do
         set_model_info "$route"
         current_answer='no'; csv_contains "$default_anthropic_models" "$route" && current_answer='yes'
@@ -729,33 +964,34 @@ if [[ "$assume_yes" -eq 0 ]]; then
   esac
 
   print_section 3 'EFFORT' 'Set the starting session level and decide whether workers move with `/effort`.'
+  print_question 'Starting session effort' 'You can change this at any time inside a session with `/effort`.'
   choose_rich_option "${main_effort:-$default_main_effort}" high \
-    'low|Low|Fastest and least deliberate.' \
-    'medium|Medium|A lighter setting for routine work.' \
-    'high|High|Recommended default for normal engineering work.' \
-    'xhigh|Extra high|More deliberate and more expensive.' \
-    'max|Maximum|Use only when the selected model and task justify it.'
+    'low|Low||Fastest and least deliberate.' \
+    'medium|Medium||A lighter setting for routine work.' \
+    'high|High||Recommended default for normal engineering work.' \
+    'xhigh|Extra high||More deliberate and more expensive.' \
+    'max|Maximum||Use only when the selected model and task justify it.'
   main_effort="$CHOICE"
-  printf '\nClaude Code does not expose per-call Agent effort. The orchestrator chooses a worker,\n'
-  printf 'but workers either follow the session level or keep a setup-time pin.\n\n'
   existing_worker_pins="${worker_pins:-$default_worker_pins}"
   current_effort_mode='inherit'
   [[ "${worker_effort:-$default_worker_effort}" != 'inherit' ]] && current_effort_mode='pin-all'
   [[ -n "$existing_worker_pins" ]] && current_effort_mode='custom'
+  print_question 'Worker effort' 'Claude Code does not expose per-call Agent effort. The orchestrator chooses a worker, but workers either follow the session level or keep a setup-time pin.'
   choose_rich_option "$current_effort_mode" inherit \
-    'inherit|Follow session effort|Recommended. `/effort` moves the root and every unpinned worker, including mid-session.' \
-    'pin-all|Pin every worker|All named workers keep one level even when the session changes.' \
-    'custom|Pin selected models|Choose a level for individual enabled workers and let the rest follow the session.'
+    'inherit|Follow session effort||Recommended. `/effort` moves the root and every unpinned worker, including mid-session.' \
+    'pin-all|Pin every worker||All named workers keep one level even when the session changes.' \
+    'custom|Pin selected models||Choose a level for individual enabled workers and let the rest follow the session.'
   effort_mode="$CHOICE"
   worker_pins=''
   worker_pins_were_decided=1
   case "$effort_mode" in
     inherit) worker_effort='inherit' ;;
     pin-all)
+      print_question 'Level for every named worker'
       choose_rich_option "${worker_effort:-$default_worker_effort}" high \
-        'low|Low|Pin every named worker to low.' 'medium|Medium|Pin every named worker to medium.' \
-        'high|High|Pin every named worker to high.' 'xhigh|Extra high|Pin every named worker to xhigh.' \
-        'max|Maximum|Pin every named worker to max.'
+        'low|Low||Pin every named worker to low.' 'medium|Medium||Pin every named worker to medium.' \
+        'high|High||Pin every named worker to high.' 'xhigh|Extra high||Pin every named worker to xhigh.' \
+        'max|Maximum||Pin every named worker to max.'
       worker_effort="$CHOICE"
       ;;
     custom)
@@ -764,11 +1000,11 @@ if [[ "$assume_yes" -eq 0 ]]; then
         if csv_contains "$anthropic_models,$openai_models" "$route"; then
           set_model_info "$route"
           pin_for_route "$existing_worker_pins" "$route"
-          printf '\n%s worker effort\n' "$MODEL_TITLE"
+          print_question "$MODEL_TITLE worker effort" "$MODEL_ID"
           choose_rich_option "$PIN_VALUE" inherit \
-            'inherit|Follow session|Move with `/effort`.' 'low|Low|Keep this worker at low.' \
-            'medium|Medium|Keep this worker at medium.' 'high|High|Keep this worker at high.' \
-            'xhigh|Extra high|Keep this worker at xhigh.' 'max|Maximum|Keep this worker at max.'
+            'inherit|Follow session||Move with `/effort`.' 'low|Low||Keep this worker at low.' \
+            'medium|Medium||Keep this worker at medium.' 'high|High||Keep this worker at high.' \
+            'xhigh|Extra high||Keep this worker at xhigh.' 'max|Maximum||Keep this worker at max.'
           add_worker_pin "$route" "$CHOICE"
         fi
       done
@@ -776,72 +1012,86 @@ if [[ "$assume_yes" -eq 0 ]]; then
   esac
 
   print_section 4 'SAFETY AND BUDGET' 'Choose conservative usage rules and a parallel-worker ceiling.'
+  print_question 'Extra usage' 'Some routes can bill beyond the included plan capacity.'
   choose_rich_option "${extra_usage_policy:-$default_extra_usage_policy}" ask \
-    'ask|Ask before extra usage|Recommended. Extra-usage routes need explicit confirmation.' \
-    'never|Block extra usage|Fail closed instead of using paid extra capacity.' \
-    'allow|Allow extra usage|Permit configured extra routes without another confirmation.'
+    'ask|Ask before extra usage||Recommended. Extra-usage routes need explicit confirmation.' \
+    'never|Block extra usage||Fail closed instead of using paid extra capacity.' \
+    'allow|Allow extra usage||Permit configured extra routes without another confirmation.'
   extra_usage_policy="$CHOICE"
-  printf '\n%sRouting preference%s\n' "$STYLE_BOLD" "$STYLE_RESET"
+  print_question 'Routing preference' 'How the orchestrator should trade quality against relative usage.'
   choose_rich_option "${routing_policy:-$default_routing_policy}" balanced \
-    'balanced|Balanced|Use the smallest effective route while balancing quality and relative usage.' \
-    'quality|Quality first|Prefer stronger eligible routes when the expected benefit justifies them.' \
-    'economy|Economy first|Prefer economical eligible routes and smaller initial fan-out.'
+    'balanced|Balanced||Use the smallest effective route while balancing quality and relative usage.' \
+    'quality|Quality first||Prefer stronger eligible routes when the expected benefit justifies them.' \
+    'economy|Economy first||Prefer economical eligible routes and smaller initial fan-out.'
   routing_policy="$CHOICE"
-  printf '\n%sParallel workers%s\n' "$STYLE_BOLD" "$STYLE_RESET"
+  print_question 'Parallel workers' 'An optional ceiling on top-level workers running at the same time.'
   choose_rich_option "${max_agents:-$default_max_agents}" off \
-    'off|Claude Code default|Recommended. Do not impose an Airlock-specific ceiling.' \
-    '1|One worker|Run one top-level worker at a time.' '2|Two workers|Allow two top-level workers.' \
-    '3|Three workers|Allow three top-level workers.' '4|Four workers|Allow four top-level workers.' \
-    '5|Five workers|Allow five top-level workers.' '10|Ten workers|Expert setting for wide independent work.'
+    'off|Claude Code default||Recommended. Do not impose an Airlock-specific ceiling.' \
+    '1|One worker||Run one top-level worker at a time.' '2|Two workers||Allow two top-level workers.' \
+    '3|Three workers||Allow three top-level workers.' '4|Four workers||Allow four top-level workers.' \
+    '5|Five workers||Allow five top-level workers.' '10|Ten workers||Expert setting for wide independent work.'
   max_agents="$CHOICE"
 
-  printf '\n%sAdvanced settings%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-  printf '%sOptional compatibility, performance, and capacity controls. Most users should keep the defaults.%s\n' "$STYLE_DIM" "$STYLE_RESET"
+  print_question 'Advanced settings' 'Optional compatibility, performance, and capacity controls. Most people should keep the defaults and skip this.'
   ask_yes_no 'Open Advanced settings?' no
   open_advanced="$ANSWER"
   if [[ "$open_advanced" == 'yes' ]]; then
-    printf '\n%sADVANCED SETTINGS%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-    printf '%s`airlock bg` is a separate convenience command. It does not power normal Agents.%s\n' "$STYLE_DIM" "$STYLE_RESET"
+    printf '\n'
+    print_rule '-'
+    printf '%sADVANCED SETTINGS%s\n' "$STYLE_BOLD" "$STYLE_RESET"
+    wrap_text '' "$STYLE_DIM" 'Press Enter at each question to keep the value you already have.'
+    print_rule '-'
+    print_question 'Model for the separate `airlock bg` command' '`airlock bg` is a separate convenience command. It does not power normal Agents.'
     choose_rich_option "${bg_model:-$default_bg_model}" sol \
-      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m] - background command default' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]' 'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]'
+      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Background command default.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Economical background work.' \
+      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.'
     bg_model="$CHOICE"
+    print_question 'Effort for the separate `airlock bg` command'
     choose_rich_option "${bg_effort:-$default_bg_effort}" medium \
-      'low|Low|Low effort for airlock bg.' 'medium|Medium|Recommended for airlock bg.' \
-      'high|High|High effort for airlock bg.' 'xhigh|Extra high|Extra-high effort for airlock bg.' \
-      'max|Maximum|Maximum effort for airlock bg.'
+      'low|Low||Low effort for airlock bg.' 'medium|Medium||Recommended for airlock bg.' \
+      'high|High||High effort for airlock bg.' 'xhigh|Extra high||Extra-high effort for airlock bg.' \
+      'max|Maximum||Maximum effort for airlock bg.'
     bg_effort="$CHOICE"
-    printf '\n%sThe utility model handles lightweight Claude Code requests such as titles.%s\n' "$STYLE_DIM" "$STYLE_RESET"
+    print_question 'Utility model' 'The utility model handles lightweight Claude Code requests such as titles.'
     choose_rich_option "${utility_model:-$default_utility_model}" luna \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m] - recommended economical utility route' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]' 'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]'
+      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Recommended economical utility route.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Standard usage.' \
+      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Premium usage.' \
+      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.'
     utility_model="$CHOICE"
+    print_question 'Luna swarm Fast processing'
     choose_rich_option "${swarm_fast:-$default_swarm_fast}" auto \
-      'auto|Automatic|Use Luna Fast only when sanitized plan and proxy checks prove eligibility.' \
-      'off|Off|Never use Luna Fast for automatic swarms.' \
-      'on|On|Require Luna Fast and fail if the route is ineligible.'
+      'auto|Automatic||Use Luna Fast only when sanitized plan and proxy checks prove eligibility.' \
+      'off|Off||Never use Luna Fast for automatic swarms.' \
+      'on|On||Require Luna Fast and fail if the route is ineligible.'
     swarm_fast="$CHOICE"
+    print_question 'Worker failover'
     choose_rich_option "${failover_policy:-$default_failover_policy}" ask \
-      'ask|Ask before failover|Recommended. Never change model or provider silently.' \
-      'never|Never fail over|Stop when the exact route fails.' \
-      'allow|Allow failover|Permit policy-approved failover without asking again.'
+      'ask|Ask before failover||Recommended. Never change model or provider silently.' \
+      'never|Never fail over||Stop when the exact route fails.' \
+      'allow|Allow failover||Permit policy-approved failover without asking again.'
     failover_policy="$CHOICE"
     if [[ -z "$claude_plan" ]]; then
-      if [[ "$claude_plan_was_detected" -eq 1 ]]; then claude_plan="$default_claude_plan"
+      if [[ "$claude_plan_was_detected" -eq 1 ]]; then
+        claude_plan="$default_claude_plan"
+        printf '\n'
+        wrap_text '  ' "$STYLE_DIM" "Claude plan tier read from saved access data: $claude_plan"
       else
+        print_question 'Claude plan tier' 'Only a capacity hint. Airlock never reads a subscription credential.'
         choose_rich_option "$default_claude_plan" unknown \
-          'unknown|Automatic / unknown|Do not guess a Claude subscription tier.' \
-          'pro|Claude Pro|Manual capacity hint.' 'max5x|Claude Max 5x|Manual capacity hint.' \
-          'max20x|Claude Max 20x|Manual capacity hint.'
+          'unknown|Automatic / unknown||Do not guess a Claude subscription tier.' \
+          'pro|Claude Pro||Manual capacity hint.' 'max5x|Claude Max 5x||Manual capacity hint.' \
+          'max20x|Claude Max 20x||Manual capacity hint.'
         claude_plan="$CHOICE"
       fi
     fi
     if [[ -z "$openai_capacity" ]]; then
+      print_question 'Codex capacity' 'Only a capacity hint for planning fan-out.'
       choose_rich_option "$default_openai_capacity" auto \
-        'auto|Automatic|Use sanitized observations and clearly labeled inferences.' \
-        '1x|1x|Manual capacity hint.' '5x|5x|Manual capacity hint.' '20x|20x|Manual capacity hint.'
+        'auto|Automatic||Use sanitized observations and clearly labeled inferences.' \
+        '1x|1x||Manual capacity hint.' '5x|5x||Manual capacity hint.' '20x|20x||Manual capacity hint.'
       openai_capacity="$CHOICE"
     fi
     if [[ -z "$install_agent" ]]; then
@@ -849,13 +1099,16 @@ if [[ "$assume_yes" -eq 0 ]]; then
       install_agent="$ANSWER"
     fi
     if [[ "$install_agent" == 'yes' && -z "$subagent_effort" ]]; then
+      print_question 'Effort for the optional generic worker'
       choose_rich_option "$default_subagent_effort" inherit \
-        'inherit|Follow session effort|Recommended for the optional generic worker.' \
-        'low|Low|Pin the optional worker to low.' 'medium|Medium|Pin the optional worker to medium.' \
-        'high|High|Pin the optional worker to high.' 'xhigh|Extra high|Pin the optional worker to xhigh.' \
-        'max|Maximum|Pin the optional worker to max.'
+        'inherit|Follow session effort||Recommended for the optional generic worker.' \
+        'low|Low||Pin the optional worker to low.' 'medium|Medium||Pin the optional worker to medium.' \
+        'high|High||Pin the optional worker to high.' 'xhigh|Extra high||Pin the optional worker to xhigh.' \
+        'max|Maximum||Pin the optional worker to max.'
       subagent_effort="$CHOICE"
     fi
+    print_rule '-'
+    wrap_text '' "$STYLE_DIM" 'End of Advanced settings.'
   fi
 fi
 
@@ -887,10 +1140,16 @@ if [[ "$default_profile" == 'hybrid' ]]; then
   esac
 fi
 
+if [[ "$assume_yes" -eq 0 ]] && { [[ -z "$run_login" ]] || [[ -z "$start_service" ]]; }; then
+  print_section 5 'INSTALLATION' 'Choose what setup may start after it saves the configuration file. The saved file holds no credentials.'
+  print_question 'Two separate sign-ins are involved, and Airlock changes neither one'
+  wrap_lines '  - ' '    ' '' 'Claude Code is a prerequisite. Install it and sign in with the normal `claude` command yourself. Airlock never changes or reads that sign-in.'
+  wrap_lines '  - ' '    ' '' 'Codex OAuth belongs to the local `claude-code-proxy`. It is what gives Airlock access to the OpenAI models, through `claude-code-proxy codex auth login`.'
+fi
+
 if [[ -z "$run_login" ]]; then
   if [[ "$assume_yes" -eq 1 ]]; then run_login='yes'; else
-    print_section 5 'INSTALLATION' 'Choose what setup may start after saving the noncredential config.'
-    ask_yes_no 'Open browser OAuth only if the proxy reports that login is missing?' yes
+    ask_yes_no 'Start Codex OAuth for the local proxy, only if the proxy reports that Codex login is missing?' yes
     run_login="$ANSWER"
   fi
 fi
@@ -949,37 +1208,103 @@ else
   worker_effort_display="all pinned to $worker_effort"
 fi
 
+print_session_fields() {
+  print_field 'Default command:' "airlock -> $default_command_model"
+  print_field 'Session profile:' "$default_command_profile"
+  print_field 'Starting effort:' "$main_effort"
+}
+
+print_worker_fields() {
+  print_field 'Claude workers:' "$claude_worker_display"
+  print_field 'GPT workers:' "$gpt_worker_display"
+  print_field 'Worker effort:' "$worker_effort_display"
+}
+
+print_policy_fields() {
+  print_field 'Extra usage:' "$extra_usage_policy"
+  print_field 'Routing preference:' "$routing_policy"
+  print_field 'Parallel workers:' "$max_agents"
+}
+
+print_install_fields() {
+  local codex_oauth_display="$run_login"
+  [[ "$run_login" == 'yes' ]] && codex_oauth_display='yes, only if Codex login is missing'
+  print_field 'Codex OAuth:' "$codex_oauth_display"
+  print_field 'Proxy service:' "$start_service"
+  print_field 'Config path:' "$config_target"
+}
+
+print_advanced_fields() {
+  print_field 'Advanced:' "airlock bg -> $(model_summary "$bg_model") / $bg_effort; utility -> $(model_summary "$utility_model")"
+  print_field 'Fast / failover:' "$swarm_fast / $failover_policy"
+  print_field 'Generic worker:' "$install_agent (effort: $subagent_effort)"
+}
+
+print_apply_plan() {
+  local step=1
+  printf '\n%sWhen you accept, Airlock will:%s\n' "$STYLE_BOLD" "$STYLE_RESET"
+  wrap_lines "  $step. " '     ' '' 'Write the configuration file shown above. An existing file that differs is backed up first.'
+  step=$((step + 1))
+  if [[ "$config_only" -eq 1 ]]; then
+    wrap_lines "  $step. " '     ' '' 'Stop there, because --config-only was requested. Nothing is installed.'
+  else
+    wrap_lines "  $step. " '     ' '' 'Install the airlock launcher, helper files, and session plugin under your own user directories.'
+    step=$((step + 1))
+    if [[ "$run_login" == 'yes' ]]; then
+      wrap_lines "  $step. " '     ' '' 'Start Codex OAuth for the local proxy, only if `claude-code-proxy codex auth status` reports that Codex login is missing.'
+      step=$((step + 1))
+    fi
+    if [[ "$start_service" == 'yes' ]]; then
+      wrap_lines "  $step. " '     ' '' 'Start the local proxy service on 127.0.0.1.'
+      step=$((step + 1))
+    fi
+    wrap_lines "  $step. " '     ' '' 'Run the doctor check, which makes no model request.'
+  fi
+  printf '\n%sAirlock will not:%s\n' "$STYLE_BOLD" "$STYLE_RESET"
+  wrap_lines '  - ' '    ' '' 'touch your Claude Code sign-in, native Claude Code, or native Codex'
+  wrap_lines '  - ' '    ' '' 'change global settings, global hooks, registered plugins, or MCP configuration'
+  wrap_lines '  - ' '    ' '' 'read, copy, or store any login token'
+  return 0
+}
+
 if [[ "$assume_yes" -eq 0 ]]; then
-  print_section 6 'REVIEW' 'Nothing is changed until you confirm this screen.'
+  print_section 6 'REVIEW' 'Nothing on your machine has changed yet. Check these settings, then accept them or start over.'
+  ui_wrap_fields=1
+  print_group_heading 'Session'
+  print_session_fields
+  print_group_heading 'Workers'
+  print_worker_fields
+  print_group_heading 'Safety and budget'
+  print_policy_fields
+  print_group_heading 'Install actions'
+  print_install_fields
+  if [[ "$open_advanced" == 'yes' ]]; then
+    print_group_heading 'Advanced'
+    print_advanced_fields
+  fi
+  ui_wrap_fields=0
+  print_apply_plan
+  ask_apply_decision
+  case "$APPLY_DECISION" in
+    quit)
+      printf '\nNo changes made.\n'
+      exit 0
+      ;;
+    restart)
+      printf '\nStarting over. Nothing was written.\n'
+      exec "${BASH:-bash}" "$0" ${setup_args[@]+"${setup_args[@]}"}
+      ;;
+  esac
 else
   printf '\n%sCONFIGURATION SUMMARY%s\n' "$STYLE_BOLD" "$STYLE_RESET"
-fi
-printf '  Default command:    airlock -> %s\n' "$default_command_model"
-printf '  Session profile:    %s\n' "$default_command_profile"
-printf '  Starting effort:    %s\n' "$main_effort"
-printf '  Claude workers:     %s\n' "$claude_worker_display"
-printf '  GPT workers:        %s\n' "$gpt_worker_display"
-printf '  Worker effort:      %s\n' "$worker_effort_display"
-printf '  Extra usage:        %s\n' "$extra_usage_policy"
-printf '  Routing preference: %s\n' "$routing_policy"
-printf '  Parallel workers:   %s\n' "$max_agents"
-printf '  Browser login:      %s, only if needed\n' "$run_login"
-printf '  Proxy service:      %s\n' "$start_service"
-printf '  Config path:        %s\n' "$config_target"
-if [[ "$open_advanced" == 'yes' || "$assume_yes" -eq 1 ]]; then
-  printf '  Advanced:           airlock bg -> %s / %s; utility -> %s\n' "$(model_summary "$bg_model")" "$bg_effort" "$(model_summary "$utility_model")"
-  printf '  Fast / failover:    %s / %s\n' "$swarm_fast" "$failover_policy"
-  printf '  Generic worker:     %s (effort: %s)\n' "$install_agent" "$subagent_effort"
+  print_session_fields
+  print_worker_fields
+  print_policy_fields
+  print_install_fields
+  print_advanced_fields
 fi
 
-if [[ "$assume_yes" -eq 0 ]]; then
-  ask_yes_no 'Apply this configuration?' yes
-  if [[ "$ANSWER" != 'yes' ]]; then
-    printf 'No changes made.\n'
-    exit 0
-  fi
-fi
-
+printf '\n'
 mkdir -p "$config_dir"
 rendered_config="$(mktemp "$config_dir/.config.XXXXXX")"
 trap 'rm -f "$rendered_config"' EXIT
@@ -1016,11 +1341,11 @@ chmod 0644 "$rendered_config"
 if [[ -f "$config_target" ]] && ! cmp -s "$rendered_config" "$config_target"; then
   backup_path="$config_target.backup-$(date +%Y%m%d%H%M%S)-$$"
   cp -p "$config_target" "$backup_path"
-  printf 'Backed up existing config to %s\n' "$backup_path"
+  wrap_text '' '' "Backed up existing config to $backup_path"
 fi
 mv "$rendered_config" "$config_target"
 trap - EXIT
-printf 'Saved configuration to %s\n' "$config_target"
+wrap_text '' '' "Saved configuration to $config_target"
 
 if [[ "$config_only" -eq 1 ]]; then
   printf 'Configuration-only mode complete.\n'

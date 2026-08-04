@@ -392,10 +392,14 @@ for line in sys.stdin:
         hybrid = ACCESS.profile_guidance(policy, "hybrid-openai-root")
         self.assertIn("GPT workers read the action word literally", hybrid)
         self.assertIn("Claude workers plan first", hybrid)
-        self.assertIn("visual and interaction design is Anthropic-first and Opus-led", hybrid)
-        self.assertIn("Prefer airlock-opus", hybrid)
+        self.assertIn("substantial visual and interaction design is Anthropic-first and Opus-led", hybrid)
+        self.assertIn("Start airlock-opus", hybrid)
+        self.assertIn("routing requirement when Opus is enabled and eligible", hybrid)
+        self.assertIn("generic work-directly rule does not override it", hybrid)
         self.assertIn("Use airlock-sonnet", hybrid)
-        self.assertIn("Start with Opus for design judgment", hybrid)
+        self.assertIn("Start with Opus for new design judgment", hybrid)
+        self.assertIn("Before assigning WebSearch, check effort compatibility", hybrid)
+        self.assertIn("high or below", hybrid)
         self.assertIn("Extra usage authorized: yes", hybrid)
 
     def test_ui_ux_guidance_respects_access_and_confirmation(self) -> None:

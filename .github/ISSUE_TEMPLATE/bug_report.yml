@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a reproducible Airlock problem using safe test data
+title: "Bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Airlock. For security vulnerabilities, do not continue here. Follow [SECURITY.md](../../SECURITY.md) and use a private GitHub Security Advisory.
+
+        Never include tokens, account details, credential paths, raw environment values, private prompts, or private repository content.
+  - type: input
+    id: version
+    attributes:
+      label: Airlock version
+      description: Copy the value from the VERSION file or release tag.
+      placeholder: 0.1.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - WSL2
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      placeholder: Bash 3.2, Bash 5, PowerShell 5.1
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: State the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Safe reproduction steps
+      description: Use fake credentials and a small public or synthetic repository.
+      placeholder: |
+        1. Run ...
+        2. Choose ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: dropdown
+    id: provider-request
+    attributes:
+      label: Did this send a provider request?
+      options:
+        - "No"
+        - "Yes"
+        - Unknown
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, account details, private prompts, private repository content, and raw environment values.
+          required: true
+        - label: This is not a private security vulnerability report.
+          required: true

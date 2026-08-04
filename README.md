@@ -78,7 +78,7 @@ Clone this repository and run:
 ./scripts/setup.sh
 ```
 
-The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and final review.
+The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen.
 
 Background-command, utility, Fast, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 

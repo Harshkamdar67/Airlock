@@ -30,6 +30,16 @@ Then run the installer and doctor again.
 
 Never paste a token into Airlock, an issue, or a support message.
 
+## Claude login is missing
+
+Run the official Claude Code login:
+
+```bash
+claude auth login
+```
+
+Airlock does not read Claude credential files. OpenAI-only sessions can still work without this login, but hybrid sessions and Claude routes need it. The doctor reports these states separately.
+
 ## The OpenAI proxy is not healthy
 
 Check:
@@ -96,6 +106,18 @@ airlock bundle
 ```
 
 If it fails, reinstall and restart. Do not add a caller `model` override to a named `airlock-*` Agent. The guard rejects it because the Agent name and model must remain consistent.
+
+## Web Search rejects `xhigh` or `max` effort
+
+Web Search can use a smaller internal search model with thinking disabled. That helper may accept only `high` effort or below even when the main model or a named worker supports `xhigh` or `max`.
+
+Do not retry the same failing search. Use one of these paths:
+
+- change the session to `/effort high` before searching
+- give search discovery to an eligible worker pinned at `high` or below
+- give the design worker an exact public URL and use WebFetch instead
+
+The error does not mean that Opus, the public website, or provider login failed. It is an effort mismatch at the Web Search helper boundary.
 
 ## A GPT model is missing from `/model`
 

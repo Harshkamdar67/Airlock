@@ -2,6 +2,7 @@
 set -u
 
 failures=0
+claude_signed_in=0
 
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; failures=$((failures + 1)); }
@@ -9,6 +10,13 @@ info() { printf 'INFO  %s\n' "$1"; }
 
 if command -v claude >/dev/null 2>&1; then
   pass "Claude Code: $(claude --version 2>/dev/null | head -1)"
+  if claude auth status >/dev/null 2>&1; then
+    pass 'Claude login is configured'
+    claude_signed_in=1
+  else
+    info 'Claude login was not detected; run: claude auth login'
+    info 'OpenAI-only sessions can still work, but hybrid and Claude routes need this login.'
+  fi
 else
   fail 'Claude Code is not on PATH'
 fi
@@ -107,4 +115,8 @@ if [[ "$failures" -gt 0 ]]; then
   exit 1
 fi
 
-printf '\nAirlock is ready. No live model request was made.\n'
+if [[ "$claude_signed_in" -eq 1 ]]; then
+  printf '\nAirlock is ready. No live model request was made.\n'
+else
+  printf '\nAirlock OpenAI-only sessions are ready. Sign in to Claude before using hybrid or Claude routes. No live model request was made.\n'
+fi
