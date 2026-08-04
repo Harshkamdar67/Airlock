@@ -21,10 +21,16 @@ The active profile, enabled routes, Fast eligibility, and extra-usage policy sti
 
 ## Main model shortcuts
 
-OpenAI-only sessions:
+Start the profile and orchestrator saved by setup:
 
 ```bash
 airlock
+```
+
+OpenAI-only sessions:
+
+```bash
+airlock openai
 airlock terra
 airlock luna
 airlock 5.5
@@ -36,6 +42,8 @@ airlock spark
 Mixed-provider sessions:
 
 ```bash
+airlock hybrid
+airlock hybrid choose
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
@@ -45,7 +53,18 @@ airlock hybrid fable
 airlock hybrid haiku
 ```
 
+`airlock hybrid` uses the saved hybrid root. `airlock hybrid choose` opens the full picker. An explicit OpenAI alias such as `airlock terra` stays OpenAI-only even when bare `airlock` is saved as hybrid.
+
 Model access depends on your account and can change. A model supported by the proxy may still be unavailable on your plan.
+
+## Advanced: background command and utility model
+
+These settings are not part of normal Agent routing.
+
+- `airlock bg` is a separate convenience command with its own saved OpenAI model and starting effort. Normal named Agents do not run through it.
+- The utility model handles lightweight Claude Code requests such as titles. The setup wizard chooses an economical default, and most users do not need to change it.
+
+Both controls stay under Advanced in the setup wizard because they are optional implementation details, not choices required for a first session.
 
 ## Built-in Agent model choice
 
@@ -53,9 +72,9 @@ Explore, Plan, and general-purpose inherit the orchestrator model by default.
 
 A main model can give one of those built-ins an exact full model ID for one call. The guard allows it only when the route is enabled for the current session.
 
-Plain `airlock` allows enabled OpenAI IDs only. Hybrid allows enabled OpenAI and Anthropic IDs.
+The OpenAI-only profile allows enabled OpenAI IDs. Hybrid allows enabled OpenAI and Anthropic IDs.
 
-Named `airlock-*` Agents already have an exact model and effort. Callers cannot override them.
+Named `airlock-*` Agents already have an exact model. They follow the session effort unless setup pins a level. Callers cannot override either value for one Agent call.
 
 Claude Code may omit GPT IDs from `/model` discovery behind a gateway. Starting the exact root with `airlock` or `airlock hybrid`, using a named Agent, or passing an exact allowed Agent model ID is more reliable than depending on discovery.
 
@@ -163,7 +182,13 @@ The session starts at `AIRLOCK_MAIN_EFFORT`, which defaults to `high`. Change it
 
 Named `airlock-*` workers inherit the session level by default. That means `/effort` moves the main model and its workers together, including in the middle of a session. Nothing needs to be restarted.
 
-To make workers hold a level of their own instead, pin them:
+The setup wizard presents three worker choices:
+
+- **Follow session effort:** recommended; every unpinned worker moves with `/effort`.
+- **Pin every worker:** all named workers keep one setup-time level.
+- **Pin selected models:** chosen routes keep a level while the rest follow the session.
+
+To change those values directly in the config, use:
 
 ```text
 # every worker

@@ -12,9 +12,10 @@ An airlock is a chamber where two environments meet without mixing. That is the 
 Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy) and a small local router for mixed-provider sessions.
 
 ```bash
+airlock                 # Saved default, new setups recommend Claude Sonnet 5 hybrid
+airlock openai          # Saved OpenAI-only root, no mixed-provider router
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
-airlock                 # OpenAI only, no router
 ```
 
 > [!NOTE]
@@ -34,14 +35,14 @@ airlock                 # OpenAI only, no router
 ## How it works
 
 ```text
-Plain airlock
+OpenAI-only profile
 
 Claude Code
     |
     `-- 127.0.0.1 OpenAI proxy
             `-- OpenAI subscription models
 
-airlock hybrid
+Hybrid profile
 
 Claude Code
     |
@@ -50,9 +51,9 @@ Claude Code
           `-- exact claude-* ID   --> Anthropic
 ```
 
-Plain `airlock` is OpenAI-only and connects directly to the local OpenAI proxy.
+The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with Claude Sonnet 5. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. Existing configs without a saved profile keep the original OpenAI-only bare command.
 
-`airlock hybrid` starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
+The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
 
 The router never sends Claude authorization headers to the OpenAI proxy. It forwards saved Claude login authorization opaquely only to Anthropic. It does not read credential files or log prompts, responses, or headers. Its local diagnostics endpoint keeps only a bounded in-memory list of model, provider, status, byte-count, duration, outcome, and token-count metadata.
 
@@ -77,7 +78,9 @@ Clone this repository and run:
 ./scripts/setup.sh
 ```
 
-The setup asks which models and limits you want. It shows a summary before changing anything.
+The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and final review.
+
+Background-command, utility, Fast, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 
 For the tested defaults without the wizard:
 
@@ -114,21 +117,13 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
-OpenAI only:
-
 ```bash
-airlock
-airlock terra
-airlock luna
-```
-
-Choose a main model while keeping both providers available:
-
-```bash
-airlock hybrid
-airlock hybrid sol
-airlock hybrid opus
-airlock hybrid sonnet
+airlock                 # saved profile and orchestrator
+airlock openai          # saved OpenAI-only root
+airlock terra           # explicit OpenAI-only root
+airlock hybrid          # saved hybrid root
+airlock hybrid choose   # full hybrid picker
+airlock hybrid opus     # explicit hybrid root
 ```
 
 Inside the session, ask for work normally. The main model can use:
@@ -138,7 +133,7 @@ Inside the session, ask for work normally. The main model can use:
 - built-in general-purpose for multi-step work
 - exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`
 
-Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. Plain `airlock` accepts enabled OpenAI IDs only. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
+Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. The OpenAI-only profile accepts enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
 
 Named `airlock-*` workers have a fixed exact model. Their effort follows the session by default, so `/effort` moves the main model and those workers together. You can pin one route or every worker in the config. A caller cannot override a named worker's model or effort for one call. They use Claude Code's normal subagent tools.
 
@@ -163,16 +158,19 @@ For UI and UX work in a hybrid session, an exact user choice wins. Otherwise vis
 ## Common commands
 
 ```bash
-airlock                         # OpenAI main model
-airlock hybrid                  # choose an OpenAI or Anthropic main model
-airlock terra                   # start with GPT-5.6 Terra
-airlock luna                    # start with GPT-5.6 Luna
+airlock                         # saved default profile and orchestrator
+airlock openai                  # saved OpenAI-only orchestrator
+airlock terra                   # explicit OpenAI-only GPT-5.6 Terra root
+airlock hybrid                  # saved hybrid orchestrator
+airlock hybrid choose           # full interactive hybrid picker
+airlock hybrid opus             # explicit hybrid Claude Opus 5 root
 airlock mode                    # show routing and worker limits
 airlock mode budget             # prefer lower use and block extra usage
 airlock mode max-agents off     # use Claude Code's native worker limit
 airlock mode max-agents 3       # save a smaller worker cap
 airlock mode swarm-fast auto    # gate Luna Fast by plan and proxy support
 airlock usage                   # refresh stale OpenAI usage and show it
+airlock config                  # show saved roots and advanced values
 airlock bundle                  # verify managed files
 airlock models                  # list model shortcuts
 ```
@@ -224,7 +222,7 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - [Testing](docs/testing.md)
 - [Live tests that use plan quota](docs/live-tests.md)
 - [Threat model](docs/threat-model.md)
-- [Contributing](CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md) | [Support](SUPPORT.md)
 - [Release process](docs/releasing.md)
 - [Changelog](CHANGELOG.md)
 

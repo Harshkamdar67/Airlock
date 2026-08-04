@@ -81,7 +81,7 @@ Normal sessions allow:
 - exact enabled named `airlock-*` Agents
 - exact built-in Explore, Plan, and general-purpose Agents
 
-Built-in Agents inherit the main model when no model field is supplied. They may receive one exact full model ID only when that ID is enabled for the active profile. Plain `airlock` accepts only enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs.
+Built-in Agents inherit the main model when no model field is supplied. They may receive one exact full model ID only when that ID is enabled for the active profile. The OpenAI-only profile accepts only enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Bare `airlock` starts whichever profile setup saved.
 
 The guard rejects unknown Agent names, aliases, malformed or disabled model IDs, cross-profile IDs, blocked extra-usage routes, ineligible Fast routes, and model overrides on named Agents.
 

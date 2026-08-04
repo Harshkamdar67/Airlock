@@ -94,14 +94,16 @@ The doctor does not make a model request. It checks versions, OAuth, local proxy
 ## Start a session
 
 ```powershell
-airlock
-airlock hybrid
-airlock hybrid opus
+airlock                 # saved default, new installs use hybrid Claude Sonnet 5
+airlock openai          # saved OpenAI-only root
+airlock hybrid          # saved hybrid root
+airlock hybrid choose   # interactive hybrid picker
+airlock hybrid opus     # explicit hybrid root
 ```
 
 The PowerShell launcher starts the local OpenAI proxy in the background when it is installed but not healthy. A hybrid session also starts a temporary loopback router owned by its launcher process.
 
-Plain `airlock` connects directly to the OpenAI proxy. Hybrid uses the router for exact OpenAI and Anthropic Agent model IDs.
+The installed config saves both an OpenAI-only root and a hybrid root. Bare `airlock` starts the saved default profile. `airlock openai` and explicit OpenAI aliases connect directly to the OpenAI proxy. Hybrid uses the router for exact OpenAI and Anthropic Agent model IDs.
 
 ## Why Git Bash is required
 

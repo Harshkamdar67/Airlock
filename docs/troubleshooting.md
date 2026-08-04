@@ -79,7 +79,7 @@ Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpos
 
 Without a model field, each one inherits the orchestrator model.
 
-With a model field, the value must be one exact full model ID enabled for the active session. Plain `airlock` allows OpenAI IDs only. Hybrid can allow both providers.
+With a model field, the value must be one exact full model ID enabled for the active session. The OpenAI-only profile allows OpenAI IDs only. Hybrid can allow both providers. Bare `airlock` starts the profile saved by setup.
 
 Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage models, and ineligible Fast models fail closed.
 

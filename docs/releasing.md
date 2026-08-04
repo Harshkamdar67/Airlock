@@ -60,6 +60,7 @@ python tests/test-release.py
 python tests/test-docs.py
 bash tests/test-airlock.sh
 bash tests/test-setup.sh
+python tests/test-setup-pty.py
 git diff --check
 git status --short
 ```

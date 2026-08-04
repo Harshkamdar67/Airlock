@@ -22,11 +22,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Managed bundle coverage for the router and native worktree safety files.
 - Plain-language documentation for native routing, exact Agent models, gateway limits, worktrees, security, and live parity.
 - Declared effort levels for pinned GPT models so Claude Code's `/effort` command works on a GPT root, adjustable with `AIRLOCK_GPT_EFFORT_CAPABILITIES`.
+- Saved default profiles and orchestrators, including explicit `airlock openai`, saved `airlock hybrid`, and the `airlock hybrid choose` picker.
+- A guided terminal setup with full model names and IDs, worker presets, honest effort controls, a review screen, and optional Advanced settings.
+- POSIX terminal coverage for the interactive setup flow and native Windows parity coverage for saved launch profiles.
 
 ### Changed
 
-- Plain `airlock` now uses native OpenAI Agents directly through the local OpenAI proxy.
-- `airlock hybrid` now keeps both providers inside one Claude Code process through the temporary router.
+- New setup configurations make bare `airlock` start the saved hybrid root, while `airlock openai` and explicit OpenAI aliases remain direct OpenAI-only launches. Existing configs without the new profile key keep their original OpenAI-only bare command.
+- `airlock hybrid` now starts the saved hybrid root, while `airlock hybrid choose` opens the full seven-model picker.
+- Hybrid profiles keep both providers inside one Claude Code process through the temporary router.
 - Named `airlock-*` Agents now bind exact full model IDs.
 - Named Agents inherit Claude Code's normal subagent tool pool instead of using transport-only Write and Bash tools.
 - Named `airlock-*` workers now follow the session effort by default, so `/effort` changes the main model and its workers together in the middle of a session. Pin one worker with `AIRLOCK_EFFORT_<ROUTE>` or all of them with `AIRLOCK_WORKER_EFFORT`.

@@ -21,7 +21,7 @@ python -m py_compile \
   plugins/airlock/scripts/secret-guard.py \
   plugins/airlock/scripts/file_safety.py \
   plugins/airlock/scripts/worktree.py \
-  scripts/update-bundle.py
+  scripts/update-bundle.py tests/test-setup-pty.py
 ```
 
 ## Python tests
@@ -67,9 +67,12 @@ The native tests cover:
 ```bash
 bash tests/test-airlock.sh
 bash tests/test-setup.sh
+python tests/test-setup-pty.py
 ```
 
-These tests replace Claude Code and provider commands with stubs. They verify plain and hybrid environment construction, exact Agent catalogs, allowed tools, model allowlists, and saved settings without using OAuth or model quota.
+These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
+
+`test-setup-pty.py` runs the normal guided flow through a real POSIX terminal. It checks the six sections, full Claude and GPT names and IDs, honest effort wording, hidden Advanced details, and the saved hybrid defaults. It prints a skip on Windows, where the Python PTY module is unavailable.
 
 ## macOS and Linux installer test
 
@@ -87,7 +90,7 @@ From PowerShell:
 powershell -NoProfile -File .\tests\test-windows.ps1
 ```
 
-The test installs into a temporary folder with fake commands. It checks PowerShell parsing, managed-file conflicts, router and worktree-hook installation, and doctor failure for an unhealthy proxy.
+The test installs into a temporary folder with fake commands. It checks PowerShell parsing, managed-file conflicts, router and worktree-hook installation, saved Claude and GPT hybrid roots, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
 
 ## JSON files
 

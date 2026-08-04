@@ -2,17 +2,21 @@
 
 Airlock is a launch and policy layer around Claude Code. Claude Code still owns the conversation, terminal, permissions, tools, Agent cards, background tasks, cancellation, and worktree lifecycle.
 
-## Plain `airlock`
+## Saved launch profiles
 
 ```bash
-airlock
+airlock                 # saved default profile
+airlock openai          # saved OpenAI-only root
+airlock hybrid          # saved hybrid root
 ```
 
-Plain `airlock` points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models.
+The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with Claude Sonnet 5. Existing configs without the profile key retain the original OpenAI-only bare command.
 
-No mixed-provider router is needed in this mode.
+The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
-## `airlock hybrid`
+An explicit OpenAI alias such as `airlock terra` always starts this profile. `airlock hybrid MODEL` always starts the mixed-provider profile.
+
+## Hybrid routing
 
 ```bash
 airlock hybrid sol
@@ -86,7 +90,7 @@ Agent(subagent_type="Plan", model="claude-opus-5", ...)
 
 The session guard checks the ID before Claude Code starts the Agent.
 
-- Plain `airlock` allows only enabled OpenAI IDs.
+- The OpenAI-only profile allows only enabled OpenAI IDs.
 - Hybrid allows enabled OpenAI and Anthropic IDs.
 - Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
 - Omitting `model` keeps normal inheritance.
@@ -99,7 +103,7 @@ The hybrid router can route both providers because every model uses the same loc
 
 Use these reliable paths:
 
-- start an exact main model with `airlock`, `airlock terra`, or `airlock hybrid MODEL`
+- start the saved root with `airlock`, the OpenAI-only root with `airlock openai`, or an exact root with `airlock terra` or `airlock hybrid MODEL`
 - use an exact named `airlock-*` Agent
 - pass an allowed exact model ID to Explore, Plan, or general-purpose
 
@@ -146,7 +150,7 @@ Luna can also implement code when each shard has:
 
 A stronger Sol, Opus, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, and Haiku are not multiplied automatically.
 
-## Concurrency and descendants
+## Concurrency
 
 ```bash
 airlock mode max-agents off
