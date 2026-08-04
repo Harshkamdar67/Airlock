@@ -178,13 +178,28 @@ class WorktreeHookTests(unittest.TestCase):
         if os.name != "nt":
             outside = Path(self.temp.name) / "outside.txt"
             outside.write_text("outside\n", encoding="utf-8")
+
+            # An absolute target is rejected before the escape check, so both
+            # link guards need their own case.
             os.symlink(outside, self.repo / "escape-link")
+            self.git("add", "escape-link")
+            absolute = self.invoke("create", {
+                "session_id": "session-test",
+                "cwd": str(self.repo.resolve()),
+                "hook_event_name": "WorktreeCreate",
+                "name": "symlink-absolute",
+            }, check=False)
+            self.assertNotEqual(absolute.returncode, 0)
+            self.assertIn("absolute target", absolute.stderr)
+            self.git("rm", "-f", "--quiet", "escape-link")
+
+            os.symlink("../outside.txt", self.repo / "escape-link")
             self.git("add", "escape-link")
             escaping = self.invoke("create", {
                 "session_id": "session-test",
                 "cwd": str(self.repo.resolve()),
                 "hook_event_name": "WorktreeCreate",
-                "name": "symlink-test",
+                "name": "symlink-relative",
             }, check=False)
             self.assertNotEqual(escaping.returncode, 0)
             self.assertIn("escapes the repository", escaping.stderr)

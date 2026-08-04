@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "bundle_version": "2026.08.04.1",
+  "bundle_version": "2026.08.04.2",
   "protocol_version": 3,
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
-    "bin/airlock-access.py": "1c5a4c27b1d748cb302ee32f0f7bf24ad3396298306c2584125ba2a46bda4859",
-    "bin/airlock-router.py": "80de2fa67506dc55df37cd9c201bead00e238be0b6322dded47f3dfacf46d995",
+    "bin/airlock-access.py": "1b559b514581e11acaa0e81af17f03f99242d2fd749eb2e0738cbde23ba71dc2",
+    "bin/airlock-router.py": "529ad022a3f1ad8ee3306633ce86ee9257d6c4726693252c62e24c9d9e3a2530",
     "bin/airlock-hybrid.py": "6152bd31336301ef8abf9b3439b30c314a74d90b571c95a5614a5e9ccbc2b9c2",
     "config/openai-direct-agents.json": "69b3e8dd8b2d8943b421e4d7382b9aa29e9888f74acb2152b5e82d59d9ba3fe5",
     "config/anthropic-direct-agents.json": "abbe7fdbe220780ea308a35e201e6a5e723c340affba6d292931d6637ab45bda",
@@ -15,7 +15,7 @@
     "plugins/airlock/hooks/hooks.json": "27ac7faa8c198bee1340856da295cd84fa2bc29527553d4ab99835c290d9047f",
     "plugins/airlock/skills/usage/SKILL.md": "39b3fac9f8def5e39ee7d33d406148d9d49a62a13563d4ba495dd394c5d39551",
     "plugins/airlock/scripts/agent-guard.sh": "f7c7dcea6d3a64df2d7cbeb377b1bec16fa82929a2a1216e548a061f765ebabd",
-    "plugins/airlock/scripts/agent-guard.py": "1b7c96279b3e2ea4618a7edc2e92e8683ef61a7bcdbfdc13b0be57d55f6295d0",
+    "plugins/airlock/scripts/agent-guard.py": "0a3cb9379242675026bb86142a62f5a8733ae49aa22ab433cc592db8e2d3c801",
     "plugins/airlock/scripts/secret-guard.sh": "06b0f15edd1ad9363d625c4c5b53f3500a4f2ac6dfd6c789492d10befe5b6efd",
     "plugins/airlock/scripts/secret-guard.py": "897c6bded93fc8c9a91024444e0995fabf94f492939c3ba20d8873bf49e9b403",
     "plugins/airlock/scripts/file_safety.py": "6f20e06cd0e1e2438dfdfc42972369e3870b58204653cdd482fcb69e9aaf3b3f",

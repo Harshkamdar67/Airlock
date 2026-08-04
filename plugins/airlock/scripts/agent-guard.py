@@ -9,7 +9,7 @@ import os
 import sys
 
 MAX_EVENT_BYTES = 1024 * 1024
-MANAGED_BUNDLE_VERSION = "2026.08.04.1"
+MANAGED_BUNDLE_VERSION = "2026.08.04.2"
 MANAGED_PROTOCOL_VERSION = 3
 EXTRA_USAGE_MARKER = "Extra usage authorized: yes"
 BUILTIN_AGENT_TYPES = {"Explore", "Plan", "general-purpose"}

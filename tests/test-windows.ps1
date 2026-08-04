@@ -107,3 +107,7 @@ try {
 }
 
 Write-Host 'All native Windows tests passed.'
+# The last check above runs doctor.ps1 and expects it to fail, which leaves
+# $LASTEXITCODE at 1. Exit explicitly so a caller that reads $LASTEXITCODE
+# instead of the -File exit code still sees a pass.
+exit 0
