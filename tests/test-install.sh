@@ -12,7 +12,10 @@ case "$(uname -s)" in
 esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-install-test.XXXXXX")"
+# Resolve the temporary path so that the launcher path the doctor prints matches
+# the one this test greps for. macOS hands out a symlinked TMPDIR with a
+# trailing slash, which would otherwise produce two spellings of one path.
+tmp_dir="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/airlock-install-test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 stub_dir="$tmp_dir/stubs"
@@ -102,6 +105,9 @@ fi
 grep -q 'refusing to overwrite existing unmanaged file' "$tmp_dir/refuse.err"
 cmp "$install_dir/airlock" "$tmp_dir/unmanaged-before"
 
+# An edited launcher that still carries the managed marker is the installer's
+# own file, so this one is replaced rather than refused.
+{ cat "$repo_root/bin/airlock"; printf '# local edit\n'; } > "$install_dir/airlock"
 "$repo_root/scripts/install.sh" --no-service > /dev/null
 cmp "$install_dir/airlock" "$repo_root/bin/airlock"
 
