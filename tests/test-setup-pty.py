@@ -114,7 +114,7 @@ def run_wizard(
     pipe_stdout: bool = False,
     timeout: float = 30.0,
     keystrokes: list[bytes] | None = None,
-    echo_input: bool = True,
+    echo_input: bool = False,
 ) -> tuple[int, str]:
     """Run the wizard with a real terminal on stdin and return exit code and output.
 
@@ -122,10 +122,10 @@ def run_wizard(
     always sees the intended width, and stdout can be sent to a pipe instead to
     cover the redirected-stream case.
 
-    With no `keystrokes`, one Enter per question is written up front. With a
-    `keystrokes` list, each entry is written only once the wizard has stopped
-    producing output, which is what makes single keystrokes such as an arrow key
-    land on the question they are meant for.
+    With no `keystrokes`, one Enter is sent for each question. Every key waits
+    for visible output from the wizard and then for the output to become quiet.
+    This matches normal typing and avoids racing the child's controlling-terminal
+    setup on macOS.
     """
     run_label = config_dir.name
     print(f"Setup PTY: starting {run_label}", flush=True)
@@ -185,11 +185,11 @@ def run_wizard(
     output_parts: list[bytes] = []
     status: int | None = None
     try:
-        pending: list[bytes] = []
         if keystrokes is None:
-            os.write(master_fd, b"\n" * ENTER_PRESSES)
+            pending = [KEY_ENTER] * ENTER_PRESSES
         else:
             pending = list(keystrokes)
+        output_since_key = False
         quiet_since = time.monotonic()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -215,8 +215,13 @@ def run_wizard(
                 break
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
-                if pending and time.monotonic() - quiet_since >= IDLE_GAP:
+                if (
+                    pending
+                    and output_since_key
+                    and time.monotonic() - quiet_since >= IDLE_GAP
+                ):
                     os.write(master_fd, pending.pop(0))
+                    output_since_key = False
                     quiet_since = time.monotonic()
                 continue
             try:
@@ -228,6 +233,7 @@ def run_wizard(
                     raise
             if chunk:
                 output_parts.append(chunk)
+                output_since_key = True
                 quiet_since = time.monotonic()
             else:
                 status = wait_for_child(child_pid, 1.0)
