@@ -1,0 +1,637 @@
+#!/usr/bin/env bash
+# Managed by https://github.com/Harshkamdar67/Airlock
+set -euo pipefail
+
+config_file="${AIRLOCK_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock/config}"
+config_root="${XDG_CONFIG_HOME:-$HOME/.config}/airlock"
+openai_direct_agents_file="${AIRLOCK_OPENAI_DIRECT_AGENTS_FILE:-$config_root/openai-direct-agents.json}"
+anthropic_direct_agents_file="${AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE:-$config_root/anthropic-direct-agents.json}"
+openai_wrapper_agents_file="${AIRLOCK_HYBRID_AGENTS_FILE:-$config_root/hybrid-agents.json}"
+anthropic_wrapper_agents_file="${AIRLOCK_CLAUDE_AGENTS_FILE:-$config_root/claude-agents.json}"
+access_helper="${AIRLOCK_ACCESS_HELPER:-$(dirname "$0")/airlock-access.py}"
+router_helper="${AIRLOCK_ROUTER_HELPER:-$(dirname "$access_helper")/airlock-router.py}"
+managed_bin_dir="${AIRLOCK_MANAGED_BIN_DIR:-$(dirname "$access_helper")}"
+bundle_file="${AIRLOCK_MANAGED_BUNDLE_FILE:-$config_root/managed-bundle.json}"
+plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_root/plugins/airlock}"
+python_bin="${AIRLOCK_PYTHON:-}"
+python_is_usable() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' >/dev/null 2>&1
+}
+if [[ -n "$python_bin" ]]; then
+  if ! python_is_usable "$python_bin"; then
+    printf 'airlock: AIRLOCK_PYTHON is not a usable Python 3 interpreter: %s\n' "$python_bin" >&2
+    exit 1
+  fi
+else
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_is_usable "$candidate"; then
+      python_bin="$(command -v "$candidate")"
+      break
+    fi
+  done
+fi
+if [[ -n "$python_bin" ]]; then
+  export AIRLOCK_PYTHON="$python_bin"
+fi
+config_model=''
+config_main_effort=''
+config_bg_model=''
+config_bg_effort=''
+config_small_fast_model=''
+config_context_window=''
+config_proxy_url=''
+config_max_agents=''
+
+if [[ -f "$config_file" ]]; then
+  while IFS='=' read -r config_key config_value; do
+    config_value="${config_value%$'\r'}"
+    case "$config_key" in
+      AIRLOCK_MODEL) config_model="$config_value" ;;
+      AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
+      AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
+      AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
+      AIRLOCK_SMALL_FAST_MODEL) config_small_fast_model="$config_value" ;;
+      AIRLOCK_CONTEXT_WINDOW) config_context_window="$config_value" ;;
+      AIRLOCK_PROXY_URL) config_proxy_url="$config_value" ;;
+      AIRLOCK_MAX_CONCURRENT_SUBAGENTS) config_max_agents="$config_value" ;;
+    esac
+  done < "$config_file"
+fi
+
+proxy_url="${AIRLOCK_PROXY_URL:-${config_proxy_url:-http://127.0.0.1:18765}}"
+background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol[1m]}}}"
+default_context_window="${AIRLOCK_CONTEXT_WINDOW:-${config_context_window:-272000}}"
+
+print_models() {
+  cat <<'EOF'
+Usage: airlock [model|bg] [claude arguments]
+       airlock hybrid [sol|terra|luna|opus|sonnet|fable] [claude arguments]
+
+Products:
+  airlock          OpenAI root with OpenAI Sol/Terra/Luna workers only
+  claude       Native Anthropic CLI, untouched by this launcher
+  airlock hybrid   Choose an OpenAI or Anthropic root with all five mixed workers
+
+OpenAI root aliases: sol (default), sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+Hybrid root aliases/menu: sol, terra, luna, opus, sonnet, fable
+Additional explicit Claude root: haiku
+Other modes: bg, mode, usage, access, bundle, config, models
+
+Mode and usage policy:
+  airlock mode                     Show current/default mode
+  airlock mode balanced|economy|quality
+  airlock mode budget              Set economy routing and deny extra usage
+  airlock mode defaults            Restore tested policy defaults
+  airlock mode extra-usage ask|never|allow
+  airlock mode failover ask|never|allow
+  airlock mode max-agents off|1..20
+  airlock mode swarm-fast auto|on|off
+  airlock mode nesting bounded|off
+  airlock mode max-descendants 2
+  airlock mode max-total-descendants 3
+  airlock mode repair-rounds 2
+  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto --descendants bounded --max-descendants 2 --max-total-descendants 3 --repair-rounds 2
+  airlock usage                    Show cached sanitized subscription usage
+  airlock usage refresh            Refresh Codex quota windows without a model call
+  airlock usage set --claude-plan pro|max5x|max20x|unknown
+  airlock usage set --openai-capacity auto|1x|5x|20x
+  airlock usage defaults           Clear capacity overrides
+
+Examples:
+  airlock
+  airlock terra
+  airlock hybrid                 # interactive six-model root menu
+  airlock hybrid opus
+  airlock hybrid sol --effort high
+  airlock access refresh
+
+Inside a session:
+  /effort changes root effort.
+  /model switches only within the provider selected at launch.
+  Exit and relaunch airlock hybrid to switch the root provider.
+  The orchestrator may choose only from the user-enabled worker pool.
+  /airlock:usage refreshes sanitized usage (one small root-model turn).
+  Top-level workers use Claude Code's native concurrency by default. Automatic high-volume swarms use Luna only. Real workers may use bounded same-model descendants; descendants cannot spawn again.
+EOF
+}
+
+run_access() {
+  if [[ ! -f "$access_helper" || -L "$access_helper" ]]; then
+    printf 'airlock: managed access helper is missing or unsafe: %s\n' "$access_helper" >&2
+    return 1
+  fi
+  if [[ -z "$python_bin" ]]; then
+    printf 'airlock: Python 3 is required for access-policy handling.\n' >&2
+    return 1
+  fi
+  "$python_bin" "$access_helper" "$@"
+}
+
+validate_managed_bundle() {
+  if [[ -z "$python_bin" ]]; then
+    printf 'airlock: Python 3 is required to validate the managed installation.\n' >&2
+    return 1
+  fi
+  local -a bundle_args=(
+    bundle-check --quiet --platform posix --bundle "$bundle_file"
+    --component "bin/airlock=$0"
+    --component "bin/airlock-access.py=$access_helper"
+    --component "bin/airlock-router.py=$router_helper"
+    --component "bin/airlock-hybrid.py=$managed_bin_dir/airlock-hybrid.py"
+    --component "config/openai-direct-agents.json=$openai_direct_agents_file"
+    --component "config/anthropic-direct-agents.json=$anthropic_direct_agents_file"
+    --component "config/hybrid-agents.json=$openai_wrapper_agents_file"
+    --component "config/claude-agents.json=$anthropic_wrapper_agents_file"
+    --component "plugins/airlock/.claude-plugin/plugin.json=$plugin_dir/.claude-plugin/plugin.json"
+    --component "plugins/airlock/hooks/hooks.json=$plugin_dir/hooks/hooks.json"
+    --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
+    --component "plugins/airlock/scripts/agent-guard.sh=$plugin_dir/scripts/agent-guard.sh"
+    --component "plugins/airlock/scripts/agent-guard.py=$plugin_dir/scripts/agent-guard.py"
+    --component "plugins/airlock/scripts/secret-guard.sh=$plugin_dir/scripts/secret-guard.sh"
+    --component "plugins/airlock/scripts/secret-guard.py=$plugin_dir/scripts/secret-guard.py"
+    --component "plugins/airlock/scripts/file_safety.py=$plugin_dir/scripts/file_safety.py"
+    --component "plugins/airlock/scripts/worktree.py=$plugin_dir/scripts/worktree.py"
+    --component "plugins/airlock/scripts/worktree-create.sh=$plugin_dir/scripts/worktree-create.sh"
+    --component "plugins/airlock/scripts/worktree-remove.sh=$plugin_dir/scripts/worktree-remove.sh"
+  )
+  if ! "$python_bin" "$access_helper" "${bundle_args[@]}"; then
+    printf 'airlock: managed files are stale or incomplete. Reinstall Airlock, then start a fresh session.\n' >&2
+    return 1
+  fi
+}
+
+print_config() {
+  cat <<EOF
+Config file: $config_file
+Main model: ${AIRLOCK_MODEL:-${config_model:-sol}}
+Main effort: ${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}
+Background model: ${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}
+Background effort: ${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}}
+Utility model: $background_model
+Context window: $default_context_window
+Proxy URL: $proxy_url
+OpenAI direct agents: $openai_direct_agents_file
+Anthropic direct agents: $anthropic_direct_agents_file
+OpenAI bridge agents: $openai_wrapper_agents_file
+Anthropic bridge agents: $anthropic_wrapper_agents_file
+Managed plugin: $plugin_dir
+Max concurrent top-level subagents: ${AIRLOCK_MAX_CONCURRENT_SUBAGENTS:-${config_max_agents:-off}}
+EOF
+  run_access show
+}
+
+validate_effort() {
+  case "$1" in
+    low|medium|high|xhigh|max) ;;
+    *)
+      printf "airlock: unsupported effort '%s' (expected low, medium, high, xhigh, or max)\n" "$1" >&2
+      return 1
+      ;;
+  esac
+}
+
+resolve_model() {
+  case "$1" in
+    sol|gpt-5.6-sol|'gpt-5.6-sol[1m]') selected_model='gpt-5.6-sol[1m]'; model_name='GPT-5.6 Sol' ;;
+    sol-fast|gpt-5.6-sol-fast|'gpt-5.6-sol-fast[1m]') selected_model='gpt-5.6-sol-fast[1m]'; model_name='GPT-5.6 Sol Fast' ;;
+    terra|gpt-5.6-terra|'gpt-5.6-terra[1m]') selected_model='gpt-5.6-terra[1m]'; model_name='GPT-5.6 Terra' ;;
+    luna|gpt-5.6-luna|'gpt-5.6-luna[1m]') selected_model='gpt-5.6-luna[1m]'; model_name='GPT-5.6 Luna' ;;
+    5.5|gpt-5.5|'gpt-5.5[1m]') selected_model='gpt-5.5[1m]'; model_name='GPT-5.5' ;;
+    5.4|gpt-5.4|'gpt-5.4[1m]') selected_model='gpt-5.4[1m]'; model_name='GPT-5.4' ;;
+    mini|5.4-mini|gpt-5.4-mini|'gpt-5.4-mini[1m]') selected_model='gpt-5.4-mini[1m]'; model_name='GPT-5.4 Mini' ;;
+    5.3|gpt-5.3-codex|'gpt-5.3-codex[1m]') selected_model='gpt-5.3-codex[1m]'; model_name='GPT-5.3 Codex' ;;
+    spark|5.3-spark|gpt-5.3-codex-spark) selected_model='gpt-5.3-codex-spark'; model_name='GPT-5.3 Codex Spark' ;;
+    5.2|gpt-5.2|'gpt-5.2[1m]') selected_model='gpt-5.2[1m]'; model_name='GPT-5.2' ;;
+    *)
+      printf "airlock: unsupported model '%s'\n" "$1" >&2
+      print_models >&2
+      return 1
+      ;;
+  esac
+}
+
+validate_fast_root_model() {
+  case "$1" in
+    gpt-5.6-sol-fast|'gpt-5.6-sol-fast[1m]') run_access fast-check --route sol-fast >/dev/null ;;
+    gpt-5.6-luna-fast|'gpt-5.6-luna-fast[1m]') run_access fast-check --route luna-fast >/dev/null ;;
+  esac
+}
+
+model_provider() {
+  case "$1" in
+    gpt-*) printf 'openai' ;;
+    claude-*) printf 'anthropic' ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_hybrid_alias() {
+  case "$1" in
+    sol) root_model='gpt-5.6-sol[1m]'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
+    terra) root_model='gpt-5.6-terra[1m]'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
+    luna) root_model='gpt-5.6-luna[1m]'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
+    opus) root_model='claude-opus-5'; root_name='Claude Opus 5'; root_provider='anthropic' ;;
+    sonnet) root_model='claude-sonnet-5'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
+    fable) root_model='claude-fable-5'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
+    haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
+    *) return 1 ;;
+  esac
+}
+
+health_check() {
+  curl --silent --fail --max-time 1 "$proxy_url/healthz" >/dev/null 2>&1
+}
+
+start_proxy() {
+  if command -v brew >/dev/null 2>&1; then
+    brew services start claude-code-proxy >/dev/null 2>&1 || \
+      brew services start raine/claude-code-proxy/claude-code-proxy >/dev/null 2>&1 || true
+  elif command -v claude-code-proxy >/dev/null 2>&1; then
+    local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-code-proxy"
+    mkdir -p "$log_dir"
+    nohup claude-code-proxy serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  fi
+  local attempt
+  for attempt in $(seq 1 50); do
+    health_check && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+ensure_openai_proxy() {
+  if [[ "${AIRLOCK_SKIP_HEALTH_CHECK:-0}" != '1' ]] && ! health_check && ! start_proxy; then
+    printf 'airlock: proxy did not become healthy at %s/healthz\n' "$proxy_url" >&2
+    return 1
+  fi
+}
+
+set_openai_environment() {
+  ensure_openai_proxy || exit $?
+  export ANTHROPIC_BASE_URL="$proxy_url"
+  export ANTHROPIC_AUTH_TOKEN='unused'
+  export ANTHROPIC_MODEL="$1"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$1"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$1"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$background_model"
+  export ANTHROPIC_SMALL_FAST_MODEL="$background_model"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION="$1"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$2 (OpenAI subscription)"
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+  export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
+  export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
+}
+
+clear_proxy_environment() {
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL
+  unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL
+  unset ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL
+  unset ANTHROPIC_CUSTOM_MODEL_OPTION ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
+  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
+  unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
+  unset CLAUDE_CODE_SUBAGENT_MODEL
+}
+
+native_owner_pid() {
+  local owner_pid="$$"
+  local listed_pid listed_ppid listed_pgid listed_winpid remainder
+  if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+    owner_pid=''
+    while read -r listed_pid listed_ppid listed_pgid listed_winpid remainder; do
+      if [[ "$listed_pid" == "$$" && "$listed_winpid" =~ ^[1-9][0-9]*$ ]]; then
+        owner_pid="$listed_winpid"
+        break
+      fi
+    done < <(ps -p "$$" -l)
+  fi
+  if [[ ! "$owner_pid" =~ ^[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "$owner_pid"
+}
+
+set_hybrid_environment() {
+  local root_model="$1"
+  local root_name="$2"
+  local routes_json="$3"
+  local router_url router_owner_pid
+  if [[ -n "${ANTHROPIC_API_KEY:-}" || ( -n "${ANTHROPIC_AUTH_TOKEN:-}" && "${ANTHROPIC_AUTH_TOKEN}" != 'unused' ) ]]; then
+    printf 'airlock: hybrid native routing requires saved Claude subscription login without ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.\n' >&2
+    return 1
+  fi
+  if [[ ! -f "$router_helper" || -L "$router_helper" ]]; then
+    printf 'airlock: managed router helper is missing or unsafe: %s\n' "$router_helper" >&2
+    return 1
+  fi
+  ensure_openai_proxy || return $?
+  clear_proxy_environment
+  router_owner_pid="$(native_owner_pid)" || {
+    printf 'airlock: could not determine the native launcher process ID.\n' >&2
+    return 1
+  }
+  router_url="$("$python_bin" "$router_helper" start \
+    --parent-pid "$router_owner_pid" \
+    --routes-json "$routes_json" \
+    --openai-url "$proxy_url")" || return $?
+  if [[ ! "$router_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
+    printf 'airlock: native hybrid router returned an invalid loopback address.\n' >&2
+    return 1
+  fi
+  export ANTHROPIC_BASE_URL="$router_url"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+  export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
+  export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
+}
+
+compose_append_system_prompt() {
+  local guidance="$1"
+  shift
+  local custom='' value combined
+  local have_custom=0
+  AIRLOCK_COMPOSED_CLAUDE_ARGS=()
+  while (( $# )); do
+    case "$1" in
+      --append-system-prompt)
+        if (( $# < 2 )); then
+          printf 'airlock: --append-system-prompt requires a value.\n' >&2
+          return 2
+        fi
+        value="$2"
+        shift 2
+        ;;
+      --append-system-prompt=*)
+        value="${1#--append-system-prompt=}"
+        shift
+        ;;
+      *)
+        AIRLOCK_COMPOSED_CLAUDE_ARGS+=("$1")
+        shift
+        continue
+        ;;
+    esac
+    if (( have_custom )); then
+      custom+=$'\n\n'"$value"
+    else
+      custom="$value"
+      have_custom=1
+    fi
+  done
+  combined="$guidance"
+  if (( have_custom )) && [[ -n "$custom" ]]; then
+    combined="$custom"$'\n\n'"$guidance"
+  fi
+  AIRLOCK_COMPOSED_CLAUDE_ARGS+=(--append-system-prompt "$combined")
+}
+
+launch_session() {
+  local profile="$1"
+  local session_model="$2"
+  local session_name="$3"
+  shift 3
+  local argument max_agents
+  for argument in "$@"; do
+    case "$argument" in
+      --safe-mode|--bare|--agent|--agents|--plugin-dir|--plugin-url|--settings|--safe-mode=*|--bare=*|--agent=*|--agents=*|--plugin-dir=*|--plugin-url=*|--settings=*)
+        printf 'airlock: %s is managed or incompatible with the Airlock worker guard and cannot be forwarded.\n' "$argument" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [[ "${CLAUDE_CODE_SAFE_MODE:-0}" == '1' || "${CLAUDE_CODE_SIMPLE:-0}" == '1' ]]; then
+    printf 'airlock: CLAUDE_CODE_SAFE_MODE/CLAUDE_CODE_SIMPLE would disable managed session protection; unset it before launching.\n' >&2
+    exit 2
+  fi
+  validate_managed_bundle || exit $?
+  if [[ ! -d "$plugin_dir" || -L "$plugin_dir" || ! -f "$plugin_dir/.claude-plugin/plugin.json" ]]; then
+    printf 'airlock: managed session plugin is missing or unsafe: %s\n' "$plugin_dir" >&2
+    exit 1
+  fi
+  max_agents="${AIRLOCK_MAX_CONCURRENT_SUBAGENTS:-${config_max_agents:-off}}"
+  if [[ "$max_agents" == 'off' ]]; then
+    unset CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
+  elif [[ "$max_agents" =~ ^[1-9][0-9]?$ ]] && (( max_agents <= 20 )); then
+    export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="$max_agents"
+  else
+    printf "airlock: invalid max-agent setting '%s' (expected off or 1..20)\n" "$max_agents" >&2
+    exit 2
+  fi
+  unset CLAUDE_CODE_SUBAGENT_MODEL
+  export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH='1'
+  export AIRLOCK_ACTIVE_PROFILE="$profile"
+  local agents_json guidance claude_bin managed_agent_output agent_name session_settings
+  local route_agent_names allowed_model_ids extra_agent_names extra_model_ids routes_json
+  local -a skill_guard=() allowed_tools=('Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)') enabled_agents=()
+  if [[ "${AIRLOCK_ALLOW_CLAUDE_API_SKILL:-0}" != '1' ]]; then
+    skill_guard=(--disallowedTools 'Skill(claude-api)' 'Skill(claude-api *)')
+  fi
+  agents_json="$(run_access render-profile --profile "$profile" \
+    --openai-direct-file "$openai_direct_agents_file" \
+    --anthropic-direct-file "$anthropic_direct_agents_file" \
+    --openai-wrappers-file "$openai_wrapper_agents_file" \
+    --anthropic-wrappers-file "$anthropic_wrapper_agents_file")"
+  managed_agent_output="$(run_access managed-agent-names --agents-json "$agents_json")" || exit $?
+  if [[ -z "$managed_agent_output" ]]; then
+    printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
+    exit 1
+  fi
+  while IFS= read -r agent_name; do
+    agent_name="${agent_name%$'\r'}"
+    [[ -n "$agent_name" ]] || continue
+    enabled_agents+=("$agent_name")
+    allowed_tools+=("Agent($agent_name)")
+  done <<<"$managed_agent_output"
+  if (( ${#enabled_agents[@]} == 0 )); then
+    printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
+    exit 1
+  fi
+  AIRLOCK_ALLOWED_AGENT_NAMES="$(IFS=,; printf '%s' "${enabled_agents[*]}")"
+  route_agent_names="$(run_access session-routes --profile "$profile" --field agent-names)" || exit $?
+  if [[ "$route_agent_names" != "$AIRLOCK_ALLOWED_AGENT_NAMES" ]]; then
+    printf 'airlock: rendered native Agents do not match the session route policy.\n' >&2
+    exit 1
+  fi
+  allowed_model_ids="$(run_access session-routes --profile "$profile" --field model-ids)" || exit $?
+  extra_agent_names="$(run_access session-routes --profile "$profile" --field extra-agent-names)" || exit $?
+  extra_model_ids="$(run_access session-routes --profile "$profile" --field extra-model-ids)" || exit $?
+  routes_json="$(run_access session-routes --profile "$profile" --field routes)" || exit $?
+  if [[ -z "$allowed_model_ids" || -z "$routes_json" ]]; then
+    printf 'airlock: native session model route policy is empty.\n' >&2
+    exit 1
+  fi
+  export AIRLOCK_ALLOWED_AGENT_NAMES
+  export AIRLOCK_ALLOWED_AGENT_MODELS="$allowed_model_ids"
+  export AIRLOCK_EXTRA_USAGE_AGENT_NAMES="$extra_agent_names"
+  export AIRLOCK_EXTRA_USAGE_AGENT_MODELS="$extra_model_ids"
+  if [[ "$profile" == hybrid-* ]]; then
+    case ",$allowed_model_ids," in
+      *",$session_model,"*) ;;
+      *)
+        printf "airlock: hybrid root model '%s' is not enabled by the active session policy.\n" "$session_model" >&2
+        exit 2
+        ;;
+    esac
+    set_hybrid_environment "$session_model" "$session_name" "$routes_json" || exit $?
+  fi
+  session_settings="$(run_access managed-session-settings --agents-json "$agents_json")" || exit $?
+  guidance="$(run_access profile-guidance --profile "$profile")"
+  claude_bin="${AIRLOCK_REAL_CLAUDE:-}"
+  [[ -n "$claude_bin" ]] || claude_bin="$(command -v claude || true)"
+  if [[ -z "$claude_bin" ]]; then
+    printf 'airlock: Claude Code is missing. Set AIRLOCK_REAL_CLAUDE or install Claude Code.\n' >&2
+    exit 1
+  fi
+  compose_append_system_prompt "$guidance" "$@" || exit $?
+  exec "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir" --agents "$agents_json" --allowedTools "${allowed_tools[@]}" "${skill_guard[@]}" "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
+}
+
+select_hybrid_root() {
+  if [[ ! -t 0 ]]; then
+    printf 'airlock: hybrid root is required in noninteractive use: airlock hybrid sol|terra|luna|opus|sonnet|fable\n' >&2
+    exit 2
+  fi
+  printf '%s\n' 'Choose the airlock hybrid orchestrator:' '  1) GPT-5.6 Sol' '  2) GPT-5.6 Terra' '  3) GPT-5.6 Luna' '  4) Claude Opus 5' '  5) Claude Sonnet 5' '  6) Claude Fable 5 (may use Anthropic extra usage)'
+  read -r -p 'Selection [1-6]: ' selection
+  case "$selection" in
+    1) root_alias='sol' ;; 2) root_alias='terra' ;; 3) root_alias='luna' ;; 4) root_alias='opus' ;; 5) root_alias='sonnet' ;; 6) root_alias='fable' ;;
+    *) printf 'airlock: invalid hybrid root selection.\n' >&2; exit 2 ;;
+  esac
+}
+
+if [[ "${1:-}" == 'mode' ]]; then
+  shift
+  run_access mode "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'usage' ]]; then
+  shift
+  run_access usage "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'bundle' ]]; then
+  shift
+  if (( $# != 0 )); then
+    printf 'airlock: usage: airlock bundle\n' >&2
+    exit 2
+  fi
+  validate_managed_bundle || exit $?
+  printf 'Managed bundle is current and complete.\n'
+  exit 0
+fi
+
+if [[ "${1:-}" == 'hybrid' ]]; then
+  shift
+  root_alias=''
+  if resolve_hybrid_alias "${1:-}" 2>/dev/null; then
+    root_alias="$1"
+    shift
+  fi
+
+  explicit_model=''
+  hybrid_args=("$@")
+  for ((index=0; index<${#hybrid_args[@]}; index++)); do
+    argument="${hybrid_args[$index]}"
+    if [[ "$argument" == '--model' ]]; then
+      if (( index + 1 >= ${#hybrid_args[@]} )); then
+        printf 'airlock: --model requires a value.\n' >&2
+        exit 2
+      fi
+      explicit_model="${hybrid_args[$((index + 1))]}"
+      break
+    elif [[ "$argument" == --model=* ]]; then
+      explicit_model="${argument#--model=}"
+      break
+    fi
+  done
+
+  if [[ -z "$root_alias" && -z "$explicit_model" ]]; then
+    select_hybrid_root
+    resolve_hybrid_alias "$root_alias"
+  elif [[ -n "$root_alias" ]]; then
+    resolve_hybrid_alias "$root_alias"
+  else
+    root_model="$explicit_model"
+    root_name="$explicit_model"
+    root_provider="$(model_provider "$explicit_model" || true)"
+    if [[ -z "$root_provider" ]]; then
+      printf 'airlock: cannot determine the hybrid root provider from --model; use a gpt-* or claude-* model ID.\n' >&2
+      exit 2
+    fi
+  fi
+
+  if [[ -n "$explicit_model" && -n "$root_alias" ]]; then
+    explicit_provider="$(model_provider "$explicit_model" || true)"
+    if [[ -z "$explicit_provider" || "$explicit_provider" != "$root_provider" ]]; then
+      printf 'airlock: hybrid root alias and --model must select the same provider.\n' >&2
+      exit 2
+    fi
+    root_model="$explicit_model"
+    root_name="$explicit_model"
+  elif [[ -z "$explicit_model" ]]; then
+    hybrid_args=(--model "$root_model" "${hybrid_args[@]}")
+  fi
+
+  has_effort=0
+  for argument in "${hybrid_args[@]}"; do
+    [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
+  done
+  if [[ "$has_effort" -eq 0 ]]; then
+    root_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}"
+    validate_effort "$root_effort"
+    hybrid_args=(--effort "$root_effort" "${hybrid_args[@]}")
+  fi
+
+  if [[ "$root_provider" == 'openai' ]]; then
+    validate_fast_root_model "$root_model"
+    unset AIRLOCK_HYBRID
+    export AIRLOCK_GPT_HYBRID='1'
+    launch_session hybrid-openai-root "$root_model" "$root_name" "${hybrid_args[@]}"
+  fi
+  unset AIRLOCK_GPT_HYBRID
+  export AIRLOCK_HYBRID='1'
+  launch_session hybrid-anthropic-root "$root_model" "$root_name" "${hybrid_args[@]}"
+fi
+
+requested_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
+selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}"
+case "${1:-}" in
+  models|--models) print_models; exit 0 ;;
+  config|--config) print_config; exit 0 ;;
+  access)
+    shift
+    case "${1:-show}" in
+      show) run_access show ;; refresh) run_access refresh ;;
+      *) printf 'airlock: usage: airlock access [show|refresh]\n' >&2; exit 2 ;;
+    esac
+    exit $?
+    ;;
+  --model|-m)
+    [[ $# -ge 2 ]] || { printf 'airlock: %s requires a model\n' "$1" >&2; exit 2; }
+    requested_model="$2"; shift 2
+    ;;
+  bg|background)
+    requested_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
+    selected_effort="${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}}"
+    shift
+    ;;
+  sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
+esac
+validate_effort "$selected_effort"
+resolve_model "$requested_model"
+validate_fast_root_model "$selected_model"
+set_openai_environment "$selected_model" "$model_name"
+unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID
+
+has_effort=0
+for argument in "$@"; do
+  [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
+done
+session_args=(--model "$selected_model")
+[[ "$has_effort" -eq 1 ]] || session_args+=(--effort "$selected_effort")
+session_args+=("$@")
+launch_session openai-pure "$selected_model" "$model_name" "${session_args[@]}"
