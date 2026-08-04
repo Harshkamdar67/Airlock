@@ -97,7 +97,7 @@ fi
 agent_file="${AIRLOCK_AGENT_DIR:-$HOME/.claude/agents}/airlock-worker.md"
 if [[ -f "$agent_file" ]]; then
   agent_effort="$(awk -F': ' '$1 == "effort" {print $2; exit}' "$agent_file")"
-  pass "Custom airlock-worker effort: ${agent_effort:-unknown}"
+  pass "Custom airlock-worker effort: ${agent_effort:-inherits the session level}"
 else
   info 'Optional airlock-worker is not installed'
 fi

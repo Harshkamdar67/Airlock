@@ -106,7 +106,7 @@ $AgentFile = Join-Path $AgentDir 'airlock-worker.md'
 if (Test-Path -LiteralPath $AgentFile -PathType Leaf) {
   $effort = Select-String -LiteralPath $AgentFile -Pattern '^effort: (.+)$' |
     Select-Object -First 1
-  $label = if ($effort) { $effort.Matches[0].Groups[1].Value } else { 'unknown' }
+  $label = if ($effort) { $effort.Matches[0].Groups[1].Value } else { 'inherits the session level' }
   Pass "Optional worker effort: $label"
 } else {
   Info 'Optional airlock-worker is not installed'

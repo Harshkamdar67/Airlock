@@ -5,7 +5,7 @@ $Arguments = @($args)
 $ErrorActionPreference = 'Stop'
 
 $ProxyUrl   = if ($env:AIRLOCK_PROXY_URL)   { $env:AIRLOCK_PROXY_URL }   else { 'http://127.0.0.1:18765' }
-$MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } else { 'xhigh' }
+$MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } else { 'high' }
 $BgEffort   = if ($env:AIRLOCK_BG_EFFORT)   { $env:AIRLOCK_BG_EFFORT }   else { 'medium' }
 $SmallFast  = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } else { 'gpt-5.6-sol[1m]' }
 $ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW)   { $env:AIRLOCK_CONTEXT_WINDOW }   else { '272000' }
@@ -17,6 +17,10 @@ if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
   }
 }
 $MaxAgents = if ($env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS) { $env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAX_CONCURRENT_SUBAGENTS')) { $ConfigValues['AIRLOCK_MAX_CONCURRENT_SUBAGENTS'] } else { 'off' }
+$GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOCK_GPT_EFFORT_CAPABILITIES } elseif ($ConfigValues.ContainsKey('AIRLOCK_GPT_EFFORT_CAPABILITIES')) { $ConfigValues['AIRLOCK_GPT_EFFORT_CAPABILITIES'] } else { 'effort,xhigh_effort,max_effort' }
+# The hybrid launcher rebuilds these declarations itself, so hand it the
+# resolved value rather than letting it fall back to the built-in default.
+$env:AIRLOCK_GPT_EFFORT_CAPABILITIES = $GptEffortCapabilities
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $HOME '.config\airlock\plugins\airlock' }
 $OpenAIDirectAgentsFile = if ($env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE) { $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\openai-direct-agents.json' }
 $AnthropicDirectAgentsFile = if ($env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE) { $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\anthropic-direct-agents.json' }
@@ -55,6 +59,10 @@ $ProxyVariables = @(
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   'CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK', 'CLAUDE_CODE_SUBAGENT_MODEL'
@@ -250,6 +258,17 @@ function Start-ProxyIfNeeded {
   exit 1
 }
 
+# Claude Code decides whether a model supports effort by matching the model ID
+# against known Anthropic patterns. A pinned GPT ID matches nothing, which would
+# leave /effort unavailable, so declare the levels explicitly. Only do this for
+# GPT IDs: declaring capabilities for a real Claude ID would disable every
+# capability left off the list, and built-in detection already gets those right.
+function Set-GptEffortCapabilities {
+  param([string]$Variable, [string]$Model)
+  if (-not $Model -or $Model.StartsWith('claude-')) { return }
+  Set-Item -LiteralPath "Env:${Variable}_SUPPORTED_CAPABILITIES" -Value $GptEffortCapabilities
+}
+
 function Set-OpenAIEnvironment {
   param([string]$Model, [string]$ModelName)
   Start-ProxyIfNeeded
@@ -262,6 +281,10 @@ function Set-OpenAIEnvironment {
   $env:ANTHROPIC_SMALL_FAST_MODEL = $SmallFast
   $env:ANTHROPIC_CUSTOM_MODEL_OPTION = $Model
   $env:ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = "$ModelName (OpenAI subscription)"
+  Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_OPUS_MODEL' $Model
+  Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
+  Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
+  Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
   $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   if (-not $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT) { $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1' }
   $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'

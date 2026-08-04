@@ -71,6 +71,65 @@ class HybridLauncherTests(unittest.TestCase):
             "airlock-luna,airlock-opus,airlock-sol",
         )
 
+    def test_effort_capabilities_are_declared_for_gpt_roots_only(self) -> None:
+        with patch.dict(os.environ, {
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
+            "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+        }, clear=True):
+            direct = HYBRID.build_child_environment(
+                "openai-pure",
+                "off",
+                proxy_url="http://127.0.0.1:18765",
+                root_model="gpt-5.6-sol[1m]",
+                root_name="GPT-5.6 Sol",
+                context_window="272000",
+                route_policy=ROUTE_POLICY,
+                router_url=None,
+            )
+        self.assertEqual(
+            direct["ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"],
+            "effort,xhigh_effort,max_effort",
+        )
+        self.assertEqual(
+            direct["ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],
+            "effort,xhigh_effort,max_effort",
+        )
+
+        with patch.dict(os.environ, {
+            "AIRLOCK_GPT_EFFORT_CAPABILITIES": "effort,max_effort",
+        }, clear=True):
+            gpt_root = HYBRID.build_child_environment(
+                "hybrid-openai-root",
+                "off",
+                proxy_url="http://127.0.0.1:18765",
+                root_model="gpt-5.6-sol[1m]",
+                root_name="GPT-5.6 Sol",
+                context_window="272000",
+                route_policy=ROUTE_POLICY,
+                router_url="http://127.0.0.1:28471",
+            )
+        self.assertEqual(
+            gpt_root["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"],
+            "effort,max_effort",
+        )
+
+        with patch.dict(os.environ, {
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES": "effort",
+        }, clear=True):
+            claude_root = HYBRID.build_child_environment(
+                "hybrid-anthropic-root",
+                "off",
+                proxy_url="http://127.0.0.1:18765",
+                root_model="claude-opus-5",
+                root_name="Claude Opus 5",
+                context_window="272000",
+                route_policy=ROUTE_POLICY,
+                router_url="http://127.0.0.1:28471",
+            )
+        self.assertNotIn(
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES", claude_root
+        )
+
     def test_hybrid_environment_rejects_explicit_api_credentials(self) -> None:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "synthetic"}, clear=True):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

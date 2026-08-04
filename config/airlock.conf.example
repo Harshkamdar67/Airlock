@@ -1,11 +1,20 @@
 # Managed by https://github.com/Harshkamdar67/Airlock
 # Plain key=value configuration. Do not put credentials in this file.
 AIRLOCK_MODEL=sol
-AIRLOCK_MAIN_EFFORT=xhigh
+# Starting effort for the root session. Change it live with /effort.
+AIRLOCK_MAIN_EFFORT=high
 AIRLOCK_BG_MODEL=sol
 AIRLOCK_BG_EFFORT=medium
 AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-sol[1m]
-AIRLOCK_SUBAGENT_EFFORT=high
+# Effort for every airlock-* worker. "inherit" means a worker follows the
+# session level, so /effort moves the root and its workers together, including
+# mid-session. Any named level pins workers and /effort no longer reaches them.
+AIRLOCK_WORKER_EFFORT=inherit
+# Pin one worker without pinning the rest. AIRLOCK_EFFORT_<ROUTE> wins over
+# AIRLOCK_WORKER_EFFORT, and accepts inherit to hand that worker back to /effort.
+# AIRLOCK_EFFORT_LUNA=max
+# AIRLOCK_EFFORT_OPUS=xhigh
+AIRLOCK_SUBAGENT_EFFORT=inherit
 AIRLOCK_EXTRA_USAGE_POLICY=ask
 AIRLOCK_ROUTING_POLICY=balanced
 AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off
@@ -18,4 +27,8 @@ AIRLOCK_OPENAI_MODELS=sol,terra,luna
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable
 AIRLOCK_OPENAI_EXTRA_MODELS=
 AIRLOCK_CONTEXT_WINDOW=272000
+# Effort levels Claude Code should offer when the root is a GPT model. Claude
+# Code recognizes Anthropic model IDs on its own, so this only applies to GPT
+# roots. Anything left off this list is turned off for them.
+AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
 AIRLOCK_PROXY_URL=http://127.0.0.1:18765

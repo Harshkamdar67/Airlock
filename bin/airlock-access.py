@@ -22,7 +22,7 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.04.4"
+MANAGED_BUNDLE_VERSION = "2026.08.04.5"
 MANAGED_PROTOCOL_VERSION = 3
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -32,6 +32,10 @@ MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
 APP_SERVER_TIMEOUT_SECONDS = 15
 VALID_ACCESS = {"included", "extra", "unavailable", "unknown"}
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# A worker with no effort of its own inherits the session level, so /effort moves
+# the root and every worker together. A named level pins that worker instead.
+INHERIT_EFFORT = "inherit"
+VALID_WORKER_EFFORTS = (INHERIT_EFFORT,) + VALID_EFFORTS
 VALID_EXTRA_POLICIES = {"ask", "never", "allow"}
 VALID_FAILOVER_POLICIES = {"ask", "never", "allow"}
 VALID_DESCENDANT_POLICIES = {"bounded", "off"}
@@ -210,6 +214,11 @@ def default_policy() -> dict[str, Any]:
             "allowed_efforts": {
                 "anthropic": list(VALID_EFFORTS),
                 "openai": list(VALID_EFFORTS),
+            },
+            "worker_effort": {
+                route: INHERIT_EFFORT
+                for routes in PROVIDER_ROUTES.values()
+                for route in routes
             },
         },
         "providers": {
@@ -802,6 +811,19 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
     if _valid_repair_rounds(repair_rounds):
         policy["policies"]["repair_rounds"] = int(repair_rounds)
 
+    # AIRLOCK_WORKER_EFFORT sets every worker at once; AIRLOCK_EFFORT_<ROUTE>
+    # pins one worker and wins over it. Both accept "inherit" to follow /effort.
+    shared_effort = config.get("AIRLOCK_WORKER_EFFORT")
+    if isinstance(shared_effort, str) and shared_effort.strip().lower() in VALID_WORKER_EFFORTS:
+        for route in policy["policies"]["worker_effort"]:
+            policy["policies"]["worker_effort"][route] = shared_effort.strip().lower()
+    for routes in PROVIDER_ROUTES.values():
+        for route in routes:
+            key = f"AIRLOCK_EFFORT_{route.replace('-', '_').upper()}"
+            value = config.get(key)
+            if isinstance(value, str) and value.strip().lower() in VALID_WORKER_EFFORTS:
+                policy["policies"]["worker_effort"][route] = value.strip().lower()
+
     for provider, prefix in (("anthropic", "ANTHROPIC"), ("openai", "OPENAI")):
         routes = PROVIDER_ROUTES[provider]
         enabled = _csv(config.get(f"AIRLOCK_{prefix}_MODELS"), routes)
@@ -834,6 +856,9 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
         "max_descendants", "max_concurrent_descendants", "repair_rounds",
     ):
         policy["policies"][name] = defaults[name]
+    # Worker effort is a live preference rather than cached account state, so it
+    # is rebuilt from the defaults on every load and never read back from disk.
+    policy["policies"]["worker_effort"] = dict(defaults["worker_effort"])
     apply_config_overrides(policy, read_flat_config())
     apply_config_overrides(policy, dict(os.environ))
     return policy
@@ -1674,7 +1699,7 @@ def enabled_profile_workers(policy: dict[str, Any], profile: str) -> list[dict[s
                 "route": route,
                 "agent": model_profile["agent"],
                 "model": model_profile["model"],
-                "effort": model_profile["effort"],
+                "effort": policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT),
                 "access": access,
                 "capability": model_profile["capability"],
                 "cost": model_profile["cost"],
@@ -1781,13 +1806,13 @@ def root_orchestration_guidance(policy: dict[str, Any]) -> str:
         "or synthesis work. Use exact Explore for bounded read-only repository discovery; without a model field it "
         "inherits the orchestrator model. Use exact Plan for read-only technical design after context and do not duplicate "
         "the same discovery in Explore and Plan. Use exact general-purpose for multi-step work in the native runtime. Start one native "
-        "airlock-* Agent for a separable task that benefits from its exact fixed model and effort. For a Luna army, launch "
+        "airlock-* Agent for a separable task that benefits from its exact model. For a Luna army, launch "
         "multiple exact airlock-luna or eligible airlock-luna-fast Agent calls with `run_in_background: true`. Start the "
         "useful non-overlapping batch before waiting so its cards overlap in Claude Code's native Agent UI, then collect "
         "every complete response before synthesis. Use Claude Code Workflow only when the user explicitly requests "
         "multi-agent orchestration. Do not overlap direct Agent fan-out with Workflow; any explicit top-level limit is an "
         "aggregate ceiling. Automatic high-volume swarms remain Luna-only for independent, non-overlapping work with low "
-        "cross-shard reasoning. Luna and eligible Luna Fast Agents already use fixed max effort. Difficult implementation "
+        "cross-shard reasoning. Luna and eligible Luna Fast Agents run at the session effort unless they are pinned. Difficult implementation "
         "shards must have explicit file ownership, no-touch boundaries, and acceptance checks. One stronger Sol, Opus, or "
         "capable root reviews, integrates, tests, and synthesizes the full results. Start with the fewest useful shards and "
         "expand only when coverage requires it. Never automatically swarm Sol, Terra, Opus, Sonnet, Fable, or Haiku. Do "
@@ -1903,7 +1928,7 @@ def portfolio_guidance(policy: dict[str, Any], profile: str) -> str:
         f"Enabled role map: {role_map}. Provider headroom: {', '.join(headroom_parts) or 'none'}. {fast_detail} "
         "Unknown or stale headroom is conservative, never unlimited; avoid automatic fan-out on a provider with low or critical headroom. "
         + ("Role guidance: " + "; ".join(role_rules) + ". " if role_rules else "")
-        + "Automatic armies start the full background native Agent batch of exact Luna workers at fixed max effort before waiting. Shards must be independent, non-overlapping, high-volume work with low cross-shard reasoning. Never automatically multiply premium or Anthropic models. One stronger root or native Sol or Opus Agent performs final synthesis. "
+        + "Automatic armies start the full background native Agent batch of exact Luna workers before waiting. Shards must be independent, non-overlapping, high-volume work with low cross-shard reasoning. Never automatically multiply premium or Anthropic models. One stronger root or native Sol or Opus Agent performs final synthesis. "
         + "These are soft routing preferences, not provider stereotypes; an explicit user choice wins. Route by task evidence and the exact harness. Compare rendered results and accessibility for frontend work, require a reproducer and causal explanation for backend bugs, require before-and-after measurements for performance work, and require independent tools plus manual verification for security work. Separate planning, implementation, and review for architecture or large refactors. Use cross-provider review only when it adds an independent error mode and usage permits it. No model is a source of record: verify citations, APIs, tests, migrations, and production assumptions. "
         + "Choose roles before models and diversify providers only for distinct work or independent error modes, not to consume every enabled model."
     )
@@ -1924,14 +1949,16 @@ def routing_guidance(policy: dict[str, Any], mode: str) -> str:
             continue
         profile = MODEL_PROFILES[provider][route]
         visible.append(f"{route}={access}/{profile['capability']}/{profile['cost']}")
-        efforts.append(f"{route}={profile['effort']}")
+        efforts.append(f"{route}={policy['policies']['worker_effort'].get(route, INHERIT_EFFORT)}")
     return (
         f"Airlock user-selected native worker pool for {provider}: {', '.join(visible) or 'none enabled'}. "
         f"Routing preference: {routing}. {objective} This preference is advisory and never enables a disabled worker "
         f"or bypasses extra-usage policy. Login plan signal: {plan}; extra-usage policy: {extra_policy}. These labels "
         "are descriptive options, not vendor guarantees. The orchestrator may choose by task fit only among the enabled "
-        "workers shown above. Named airlock-* Agents use exact models and fixed native efforts: "
-        f"{', '.join(efforts) or 'none'}. The /effort command changes only the root-session effort. Built-in Explore, "
+        "workers shown above. Named airlock-* Agents use exact models. Their effort settings are: "
+        f"{', '.join(efforts) or 'none'}. A worker set to inherit follows the session level, so /effort changes the root "
+        "and every inheriting worker together, including mid-session. A worker pinned to a named level keeps that level "
+        "regardless of /effort. Built-in Explore, "
         "Plan, and general-purpose inherit the orchestrator model unless the Agent call supplies an exact model allowed "
         "by the active session. For an enabled extra worker under ask policy, include exact `Extra usage authorized: yes` "
         "only after confirmation; an explicit matching Agent request counts as confirmation. Send a natural, self-contained "
@@ -1988,13 +2015,13 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
             f"Provider boundary: this hybrid root starts on {root_provider}, while one session-scoped loopback router "
             "keeps both providers inside the same Claude Code process. Exact enabled Claude model IDs route only to "
             "Anthropic and exact enabled GPT model IDs route only to the loopback OpenAI proxy. Named airlock-* Agents "
-            "use their fixed model and effort. Built-in Explore, Plan, and general-purpose inherit the orchestrator model "
+            "use their exact model. Built-in Explore, Plan, and general-purpose inherit the orchestrator model "
             "unless their Agent call supplies an exact model allowed by this profile. The endpoint remains fixed, so "
             "native model changes do not require a broker or a new Claude Code process."
         )
     metadata = (
         "Native Agent handoff: send the selected worker one natural, self-contained query. Do not add task kind, risk, "
-        "or selection markers, and do not request transport JSON. Named airlock-* Agents already bind their exact model and fixed effort; "
+        "or selection markers, and do not request transport JSON. Named airlock-* Agents already bind their exact model; "
         "do not pass a caller model override. After required confirmation, include exact `Extra usage authorized: yes`. "
         "Repository tasks may reference tracked and eligible non-ignored untracked regular files. Never include credentials, "
         "token material, raw sensitive values, ignored or unsafe paths, or files outside the repository."
@@ -2054,6 +2081,16 @@ def render_provider_agents(
             or disallowed != ["Agent"]
         ):
             raise AccessError(f"agent catalog entry is not an exact-model native Agent: {name}")
+        # The catalog records the pinned default so the shipped file stays exact
+        # and hash-checkable. Dropping the key here is what lets a worker inherit
+        # the session level, which is how /effort reaches workers mid-session.
+        worker_effort = policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT)
+        if worker_effort == INHERIT_EFFORT:
+            copy.pop("effort", None)
+            effort_note = "native effort: inherits the session level, so /effort moves it"
+        else:
+            copy["effort"] = worker_effort
+            effort_note = f"pinned native effort: {worker_effort}"
         description = copy.get("description")
         prompt = copy.get("prompt")
         if not isinstance(description, str) or not description.strip():
@@ -2089,7 +2126,7 @@ def render_provider_agents(
             )
         copy["description"] = (
             f"{description} Access: {access}; exact model: {profile['model']}; exact route: {route}; "
-            f"fixed native effort: {profile['effort']}; capability class: {profile['capability']}; "
+            f"{effort_note}; capability class: {profile['capability']}; "
             f"relative usage class: {profile['cost']}; transport: native.{confirmation}{invocation}"
         ).strip()
         rendered[name] = copy

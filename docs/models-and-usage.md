@@ -6,16 +6,16 @@ Airlock does not force one model for every task. You choose which routes are ena
 
 These descriptions guide selection. They are not vendor rankings.
 
-| Worker | Best fit | Fixed native effort | Relative plan use |
-|---|---|---:|---|
-| Sol | Difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, and difficult debugging | xhigh | High |
-| Terra | Adversarial review, independent second opinions, competing designs, and alternative debugging hypotheses | high | Medium |
-| Luna | High-volume discovery, extraction, lookup, summarization, test or log triage, small mechanical work, and clearly bounded implementation | max | Low |
-| Luna Fast | The same independent work with priority processing on eligible plans | max | Low, but faster consumption |
-| Opus | Difficult architecture, UI and UX direction, product flows, new design systems, security reasoning, high-impact review, and final synthesis | xhigh | High |
-| Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | high | Medium |
-| Fable | An explicit focused Anthropic choice when enabled and authorized | high | Plan dependent |
-| Haiku | An explicit bounded Anthropic utility choice when enabled | medium | Low |
+| Worker | Best fit | Relative plan use |
+|---|---|---|
+| Sol | Difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, and difficult debugging | High |
+| Terra | Adversarial review, independent second opinions, competing designs, and alternative debugging hypotheses | Medium |
+| Luna | High-volume discovery, extraction, lookup, summarization, test or log triage, small mechanical work, and clearly bounded implementation | Low |
+| Luna Fast | The same independent work with priority processing on eligible plans | Low, but faster consumption |
+| Opus | Difficult architecture, UI and UX direction, product flows, new design systems, security reasoning, high-impact review, and final synthesis | High |
+| Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | Medium |
+| Fable | An explicit focused Anthropic choice when enabled and authorized | Plan dependent |
+| Haiku | An explicit bounded Anthropic utility choice when enabled | Low |
 
 The active profile, enabled routes, Fast eligibility, and extra-usage policy still apply.
 
@@ -109,7 +109,7 @@ A number saves a smaller cap for new sessions. Top-level spawn depth remains one
 
 Automatic armies use Claude Code's native Agent fan-out. The main model starts a useful non-overlapping batch, lets the Agents run in the background, and collects every result before synthesis.
 
-Automatic fan-out may use only Luna or eligible Luna Fast. Both use fixed max effort.
+Automatic fan-out may use only Luna or eligible Luna Fast. They run at the session effort. If you want armies to think harder than the rest of the session, pin them with `AIRLOCK_EFFORT_LUNA=max`.
 
 Good army work includes:
 
@@ -159,11 +159,48 @@ Provider billing settings are final. If paid credits are enabled on the account,
 
 ## Effort
 
-The main model effort is selected by the launcher. Named Agents use the fixed effort shown in the model table.
+The session starts at `AIRLOCK_MAIN_EFFORT`, which defaults to `high`. Change it for one session with `airlock --effort <level>`, or change it live at any point with Claude Code's `/effort` command.
 
-Claude Code documents Agent-definition effort, but it does not document a per-call Agent effort field. Airlock therefore does not claim that a root can change a named Agent's effort for one call.
+Named `airlock-*` workers inherit the session level by default. That means `/effort` moves the main model and its workers together, including in the middle of a session. Nothing needs to be restarted.
 
-Luna and Luna Fast are fixed at max because automatic armies and bounded implementation depend on that reasoning level.
+To make workers hold a level of their own instead, pin them:
+
+```text
+# every worker
+AIRLOCK_WORKER_EFFORT=xhigh
+
+# one worker, which wins over the setting above
+AIRLOCK_EFFORT_LUNA=max
+AIRLOCK_EFFORT_OPUS=xhigh
+```
+
+Use `inherit` to hand a worker back to `/effort`:
+
+```text
+AIRLOCK_WORKER_EFFORT=xhigh
+AIRLOCK_EFFORT_LUNA=inherit
+```
+
+A pinned worker keeps its level no matter what `/effort` is set to. An inheriting worker follows the session.
+
+Two limits are worth knowing:
+
+- Claude Code has no per-call effort field on the Agent tool. The main model can choose which worker to use, but it cannot ask for a different effort for one task. Only you can change effort, with `/effort` or by pinning.
+- If you ask for a level the active model does not support, Claude Code falls back to the highest supported level at or below it.
+
+Airlock never sets `CLAUDE_CODE_EFFORT_LEVEL`. That variable overrides everything else, including `/effort`, so leaving it alone is what keeps the knob working.
+
+### Effort on GPT roots
+
+Claude Code decides whether a model supports effort by looking at the model ID. A pinned GPT ID matches none of its Anthropic patterns, so `/effort` would be missing on a GPT root. Airlock declares the supported levels for pinned GPT models to keep the knob available. Anthropic model IDs are left to Claude Code's own detection.
+
+Change the declared levels with `AIRLOCK_GPT_EFFORT_CAPABILITIES` if you need to. The default is:
+
+```text
+AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
+```
+
+Anything left off that list is turned off for GPT roots, so remove entries only on purpose.
 
 ## OpenAI usage
 

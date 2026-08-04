@@ -171,14 +171,28 @@ if (-not (Test-Path -LiteralPath $ConfigTarget)) {
 }
 
 if ($WithAgent) {
-  $effort = if ($env:AIRLOCK_SUBAGENT_EFFORT) { $env:AIRLOCK_SUBAGENT_EFFORT } else { 'high' }
-  if ($effort -notin @('low', 'medium', 'high', 'xhigh', 'max')) {
+  $effort = $env:AIRLOCK_SUBAGENT_EFFORT
+  if (-not $effort -and (Test-Path -LiteralPath $ConfigTarget)) {
+    foreach ($line in [IO.File]::ReadAllLines($ConfigTarget)) {
+      if ($line -match '^AIRLOCK_SUBAGENT_EFFORT=(.*)$') { $effort = $Matches[1].Trim() }
+    }
+  }
+  if (-not $effort) { $effort = 'inherit' }
+  if ($effort -notin @('inherit', 'low', 'medium', 'high', 'xhigh', 'max')) {
     throw "install: unsupported sub-agent effort: $effort"
   }
   $template = [IO.File]::ReadAllText((Join-Path $RepoRoot 'examples\agents\airlock-worker.md'))
-  $rendered = [Text.RegularExpressions.Regex]::Replace(
-    $template, '(?m)^effort: .*$', "effort: $effort"
-  )
+  # An agent with no effort of its own follows the session level, so /effort
+  # moves it mid-session. A named level pins it instead.
+  if ($effort -eq 'inherit') {
+    $rendered = [Text.RegularExpressions.Regex]::Replace(
+      $template, '(?m)^effort: .*\r?\n', ''
+    )
+  } else {
+    $rendered = [Text.RegularExpressions.Regex]::Replace(
+      $template, '(?m)^effort: .*$', "effort: $effort"
+    )
+  }
   Assert-PlainDirectory $AgentDir
   $temporary = Join-Path ([IO.Path]::GetTempPath()) ("airlock-agent-{0}.md" -f [Guid]::NewGuid().ToString('N'))
   try {

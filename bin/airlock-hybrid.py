@@ -38,6 +38,10 @@ PROXY_VARIABLES = {
     "ANTHROPIC_SMALL_FAST_MODEL",
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -46,9 +50,32 @@ PROXY_VARIABLES = {
 }
 
 
+DEFAULT_GPT_EFFORT_CAPABILITIES = "effort,xhigh_effort,max_effort"
+
+
 def fail(message: str, exit_code: int = 1) -> NoReturn:
     print(f"airlock: {message}", file=sys.stderr)
     raise SystemExit(exit_code)
+
+
+def declare_gpt_effort_capabilities(
+    environment: dict[str, str], variable: str, model: str
+) -> None:
+    """Tell Claude Code which effort levels a pinned GPT model supports.
+
+    Claude Code decides whether a model supports effort by matching the model ID
+    against known Anthropic patterns. A pinned GPT ID matches nothing, which
+    would leave /effort unavailable. Only declare for GPT IDs: a declaration
+    disables every capability left off the list, and built-in detection already
+    gets real Claude IDs right.
+    """
+    if not model or model.startswith("claude-"):
+        return
+    capabilities = (
+        environment.get("AIRLOCK_GPT_EFFORT_CAPABILITIES")
+        or DEFAULT_GPT_EFFORT_CAPABILITIES
+    )
+    environment[f"{variable}_SUPPORTED_CAPABILITIES"] = capabilities
 
 
 def local_app_data() -> Path:
@@ -292,6 +319,12 @@ def build_child_environment(
         require_proxy_environment(environment, proxy_url, root_model)
         environment["ANTHROPIC_DEFAULT_OPUS_MODEL"] = root_model
         environment["ANTHROPIC_DEFAULT_SONNET_MODEL"] = root_model
+        declare_gpt_effort_capabilities(
+            environment, "ANTHROPIC_DEFAULT_OPUS_MODEL", root_model
+        )
+        declare_gpt_effort_capabilities(
+            environment, "ANTHROPIC_DEFAULT_SONNET_MODEL", root_model
+        )
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         return environment
@@ -309,6 +342,9 @@ def build_child_environment(
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
         f"{root_name} (native hybrid route)"
+    )
+    declare_gpt_effort_capabilities(
+        environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
     environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")

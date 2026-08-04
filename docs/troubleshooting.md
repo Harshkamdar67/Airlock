@@ -87,7 +87,7 @@ If a built-in is still blocked after a valid call, reinstall the managed files, 
 
 ## A named Agent uses the wrong model
 
-A current named Agent definition contains an exact model ID and fixed effort. The native Agent card should show that model.
+A current named Agent definition contains an exact model ID. The native Agent card should show that model.
 
 Run:
 

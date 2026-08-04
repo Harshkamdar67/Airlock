@@ -227,7 +227,11 @@ normal_output="$(CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001 AIRLOCK_RE
 grep -q '^MODEL=gpt-5.6-sol\[1m\]$' <<<"$normal_output"
 grep -q '^SMALL_FAST=gpt-5.6-sol\[1m\]$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
-grep -q '^ARG=xhigh$' <<<"$normal_output"
+grep -q '^ARG=high$' <<<"$normal_output"
+grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
+grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
+grep -q '^HAIKU_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
+grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 
 background_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
 grep -q '^MODEL=gpt-5.6-sol\[1m\]$' <<<"$background_output"
@@ -276,11 +280,10 @@ assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna"}
 assert agents["airlock-sol"]["model"] == "gpt-5.6-sol[1m]"
-assert agents["airlock-sol"]["effort"] == "xhigh"
 assert agents["airlock-terra"]["model"] == "gpt-5.6-terra[1m]"
-assert agents["airlock-terra"]["effort"] == "high"
 assert agents["airlock-luna"]["model"] == "gpt-5.6-luna[1m]"
-assert agents["airlock-luna"]["effort"] == "max"
+assert all("effort" not in agent for agent in agents.values())
+assert all("inherits the session level" in agent["description"] for agent in agents.values())
 assert all(agent["disallowedTools"] == ["Agent"] for agent in agents.values())
 assert all("tools" not in agent and "permissionMode" not in agent for agent in agents.values())
 assert all("native Claude Code tools" in agent["prompt"] for agent in agents.values())
@@ -313,7 +316,7 @@ assert "Work directly" in guidance and "Use exact Explore" in guidance and "Use 
 assert "Use exact general-purpose" in guidance and "For a Luna army, launch multiple exact airlock-luna" in guidance
 assert "Agent calls with `run_in_background: true`" in guidance
 assert "useful non-overlapping batch before waiting" in guidance
-assert "Luna and eligible Luna Fast Agents already use fixed max effort" in guidance
+assert "Luna and eligible Luna Fast Agents run at the session effort unless they are pinned" in guidance
 assert "Use Claude Code Workflow only when the user explicitly requests" in guidance
 assert "Claude Code's Agent card, model identity, usage" in guidance
 assert "Native Agent results:" in guidance and "Preserve the full technical result" in guidance
@@ -412,7 +415,7 @@ assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}
 assert agents["airlock-opus"]["model"] == "claude-opus-5"
-assert agents["airlock-opus"]["effort"] == "xhigh"
+assert all("effort" not in agent for agent in agents.values())
 assert "tools" not in agents["airlock-opus"] and "permissionMode" not in agents["airlock-opus"]
 assert "airlock-delegate" not in agents["airlock-opus"]["prompt"]
 assert "native Claude Code tools" in agents["airlock-opus"]["prompt"]
@@ -420,7 +423,6 @@ assert "exact model: claude-opus-5" in agents["airlock-opus"]["description"]
 assert "UI/UX design" in agents["airlock-opus"]["description"]
 assert "design-system-aligned UI implementation" in agents["airlock-sonnet"]["description"]
 assert agents["airlock-sol"]["model"] == "gpt-5.6-sol[1m]"
-assert agents["airlock-sol"]["effort"] == "xhigh"
 assert "tools" not in agents["airlock-sol"] and "permissionMode" not in agents["airlock-sol"]
 assert "airlock-delegate" not in agents["airlock-sol"]["prompt"]
 assert all(agent["disallowedTools"] == ["Agent"] for agent in agents.values())
@@ -442,7 +444,7 @@ assert "Named airlock-* Agents cannot invoke Agent" in guidance
 assert "Keep every fan-out decision at the root" in guidance
 assert "never silently retry on a different provider or model" in guidance
 assert "Automatic high-volume swarms remain Luna-only" in guidance
-assert "Luna and eligible Luna Fast Agents already use fixed max effort" in guidance
+assert "Luna and eligible Luna Fast Agents run at the session effort unless they are pinned" in guidance
 assert "Difficult implementation shards must have explicit file ownership" in guidance
 assert "Luna Fast" in guidance and "Never automatically swarm Sol" in guidance
 assert "visual and interaction design is Anthropic-first and Opus-led" in guidance
@@ -512,11 +514,10 @@ assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}
 assert agents["airlock-sol"]["model"] == "gpt-5.6-sol[1m]"
-assert agents["airlock-sol"]["effort"] == "xhigh"
 assert "tools" not in agents["airlock-sol"] and "permissionMode" not in agents["airlock-sol"]
 assert "airlock-delegate" not in agents["airlock-sol"]["prompt"]
 assert agents["airlock-sonnet"]["model"] == "claude-sonnet-5"
-assert agents["airlock-sonnet"]["effort"] == "high"
+assert all("effort" not in agent for agent in agents.values())
 assert "tools" not in agents["airlock-sonnet"] and "permissionMode" not in agents["airlock-sonnet"]
 assert "airlock-delegate" not in agents["airlock-sonnet"]["prompt"]
 assert all(agent["disallowedTools"] == ["Agent"] for agent in agents.values())
@@ -589,10 +590,16 @@ done
 # The bash that macOS ships as /bin/bash rejects a bare expansion of an empty
 # array under set -u, so both entry points need a no-argument run here.
 bare_hybrid_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus)"
-grep -Fq '"--effort", "xhigh", "--model", "claude-opus-5", "--append-system-prompt"' <<<"$bare_hybrid_output"
+grep -Fq '"--effort", "high", "--model", "claude-opus-5", "--append-system-prompt"' <<<"$bare_hybrid_output"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$bare_hybrid_output"
+# Claude Code detects effort support for real Claude IDs on its own. Declaring
+# capabilities here would disable everything left off the list.
+grep -q '^CUSTOM_CAPS=unset$' <<<"$bare_hybrid_output"
+
+hybrid_gpt_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
+grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$hybrid_gpt_output"
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
-grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "xhigh", "--append-system-prompt"' <<<"$bare_openai_output"
+grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
 
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid fable -p test >/dev/null 2>&1; then

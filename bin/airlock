@@ -41,6 +41,7 @@ config_small_fast_model=''
 config_context_window=''
 config_proxy_url=''
 config_max_agents=''
+config_gpt_effort_capabilities=''
 
 if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
@@ -54,6 +55,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_CONTEXT_WINDOW) config_context_window="$config_value" ;;
       AIRLOCK_PROXY_URL) config_proxy_url="$config_value" ;;
       AIRLOCK_MAX_CONCURRENT_SUBAGENTS) config_max_agents="$config_value" ;;
+      AIRLOCK_GPT_EFFORT_CAPABILITIES) config_gpt_effort_capabilities="$config_value" ;;
     esac
   done < "$config_file"
 fi
@@ -61,6 +63,10 @@ fi
 proxy_url="${AIRLOCK_PROXY_URL:-${config_proxy_url:-http://127.0.0.1:18765}}"
 background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol[1m]}}}"
 default_context_window="${AIRLOCK_CONTEXT_WINDOW:-${config_context_window:-272000}}"
+gpt_effort_capabilities="${AIRLOCK_GPT_EFFORT_CAPABILITIES:-${config_gpt_effort_capabilities:-effort,xhigh_effort,max_effort}}"
+# The hybrid launcher rebuilds these declarations itself, so hand it the
+# resolved value rather than letting it fall back to the built-in default.
+export AIRLOCK_GPT_EFFORT_CAPABILITIES="$gpt_effort_capabilities"
 
 print_models() {
   cat <<'EOF'
@@ -164,7 +170,7 @@ print_config() {
   cat <<EOF
 Config file: $config_file
 Main model: ${AIRLOCK_MODEL:-${config_model:-sol}}
-Main effort: ${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}
+Main effort: ${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}
 Background model: ${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}
 Background effort: ${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}}
 Utility model: $background_model
@@ -266,6 +272,20 @@ ensure_openai_proxy() {
   fi
 }
 
+# Claude Code decides whether a model supports effort by matching the model ID
+# against known Anthropic patterns. A pinned GPT ID matches nothing, which would
+# leave /effort unavailable, so declare the levels explicitly. Only do this for
+# GPT IDs: declaring capabilities for a real Claude ID would disable every
+# capability left off the list, and built-in detection already gets those right.
+declare_gpt_effort_capabilities() {
+  local variable="$1"
+  local model="$2"
+  case "$model" in
+    claude-*|'') return 0 ;;
+  esac
+  export "${variable}_SUPPORTED_CAPABILITIES=$gpt_effort_capabilities"
+}
+
 set_openai_environment() {
   ensure_openai_proxy || exit $?
   export ANTHROPIC_BASE_URL="$proxy_url"
@@ -277,6 +297,10 @@ set_openai_environment() {
   export ANTHROPIC_SMALL_FAST_MODEL="$background_model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$1"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$2 (OpenAI subscription)"
+  declare_gpt_effort_capabilities ANTHROPIC_DEFAULT_OPUS_MODEL "$1"
+  declare_gpt_effort_capabilities ANTHROPIC_DEFAULT_SONNET_MODEL "$1"
+  declare_gpt_effort_capabilities ANTHROPIC_DEFAULT_HAIKU_MODEL "$background_model"
+  declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$1"
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
@@ -288,6 +312,10 @@ clear_proxy_environment() {
   unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL
   unset ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL
   unset ANTHROPIC_CUSTOM_MODEL_OPTION ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
+  unset ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES
+  unset ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES
+  unset ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES
+  unset ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES
   unset CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
   unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
   unset CLAUDE_CODE_SUBAGENT_MODEL
@@ -341,6 +369,7 @@ set_hybrid_environment() {
   export ANTHROPIC_BASE_URL="$router_url"
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
+  declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
@@ -585,7 +614,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
   done
   if [[ "$has_effort" -eq 0 ]]; then
-    root_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}"
+    root_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
     validate_effort "$root_effort"
     hybrid_args=(--effort "$root_effort" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
@@ -602,7 +631,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
 fi
 
 requested_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
-selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}"
+selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
 case "${1:-}" in
   models|--models) print_models; exit 0 ;;
   config|--config) print_config; exit 0 ;;

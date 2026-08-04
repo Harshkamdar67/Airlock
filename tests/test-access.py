@@ -333,7 +333,7 @@ for line in sys.stdin:
         self.assertIn("prefer airlock-opus for difficult architecture, UI/UX design", guidance)
         self.assertIn("prefer airlock-sol for difficult implementation", guidance)
         self.assertIn("use airlock-luna for high-volume discovery", guidance)
-        self.assertIn("Automatic armies start the full background native Agent batch of exact Luna workers at fixed max effort", guidance)
+        self.assertIn("Automatic armies start the full background native Agent batch of exact Luna workers", guidance)
         self.assertIn("One stronger root or native Sol or Opus Agent performs final synthesis", guidance)
         self.assertIn("use airlock-terra for adversarial review", guidance)
         self.assertIn("soft routing preferences, not provider stereotypes", guidance)
@@ -363,13 +363,13 @@ for line in sys.stdin:
                 self.assertIn("For a Luna army, launch multiple exact airlock-luna", guidance)
                 self.assertIn("Agent calls with `run_in_background: true`", guidance)
                 self.assertIn("useful non-overlapping batch before waiting", guidance)
-                self.assertIn("Luna and eligible Luna Fast Agents already use fixed max effort", guidance)
+                self.assertIn("Luna and eligible Luna Fast Agents run at the session effort unless they are pinned", guidance)
                 self.assertIn("Use Claude Code Workflow only when the user explicitly requests", guidance)
                 self.assertIn("Do not overlap direct Agent fan-out with Workflow", guidance)
                 self.assertIn("Automatic high-volume swarms remain Luna-only", guidance)
                 self.assertIn("Claude Code's Agent card, model identity, usage", guidance)
                 self.assertIn("Difficult implementation shards must have explicit file ownership", guidance)
-                self.assertIn("Named airlock-* Agents already bind their exact model and fixed effort", guidance)
+                self.assertIn("Named airlock-* Agents already bind their exact model", guidance)
                 self.assertIn("Native Agent results: use background execution only when work is independent", guidance)
                 self.assertIn("Preserve the full technical result", guidance)
                 self.assertIn("does not prove the task is semantically complete", guidance)
@@ -575,6 +575,60 @@ for line in sys.stdin:
             with self.subTest(key=key), self.assertRaises(ACCESS.AccessError):
                 ACCESS.render_provider_agents(policy, "openai", catalog)
 
+    def test_worker_effort_inherits_the_session_level_unless_it_is_pinned(self) -> None:
+        source = json.loads(
+            (ROOT / "config" / "openai-direct-agents.json").read_text(encoding="utf-8")
+        )
+
+        # With no configuration a worker carries no effort of its own, which is
+        # what lets /effort move the root and every worker together.
+        rendered = ACCESS.render_provider_agents(ACCESS.load_policy(), "openai", source)
+        for name, agent in rendered.items():
+            with self.subTest(agent=name):
+                self.assertNotIn("effort", agent)
+                self.assertIn("native effort: inherits the session level", agent["description"])
+
+        self.config.write_text("AIRLOCK_WORKER_EFFORT=high\n", encoding="utf-8")
+        shared = ACCESS.render_provider_agents(ACCESS.load_policy(), "openai", source)
+        for name, agent in shared.items():
+            with self.subTest(agent=name):
+                self.assertEqual(agent["effort"], "high")
+                self.assertIn("pinned native effort: high", agent["description"])
+
+        # A route key pins one worker and wins over the shared setting.
+        self.config.write_text(
+            "AIRLOCK_WORKER_EFFORT=high\nAIRLOCK_EFFORT_LUNA=max\n", encoding="utf-8"
+        )
+        mixed = ACCESS.render_provider_agents(ACCESS.load_policy(), "openai", source)
+        self.assertEqual(mixed["airlock-luna"]["effort"], "max")
+        self.assertEqual(mixed["airlock-sol"]["effort"], "high")
+
+        self.config.write_text(
+            "AIRLOCK_WORKER_EFFORT=high\nAIRLOCK_EFFORT_LUNA=inherit\n", encoding="utf-8"
+        )
+        released = ACCESS.render_provider_agents(ACCESS.load_policy(), "openai", source)
+        self.assertNotIn("effort", released["airlock-luna"])
+        self.assertEqual(released["airlock-sol"]["effort"], "high")
+
+        # An unusable value leaves the default alone rather than failing the session.
+        self.config.write_text("AIRLOCK_WORKER_EFFORT=turbo\n", encoding="utf-8")
+        ignored = ACCESS.render_provider_agents(ACCESS.load_policy(), "openai", source)
+        self.assertNotIn("effort", ignored["airlock-luna"])
+
+    def test_routing_guidance_reports_worker_effort_and_the_effort_knob(self) -> None:
+        guidance = ACCESS.routing_guidance(ACCESS.load_policy(), "native")
+        self.assertIn("luna=inherit", guidance)
+        self.assertIn(
+            "A worker set to inherit follows the session level, so /effort changes the root "
+            "and every inheriting worker together, including mid-session",
+            guidance,
+        )
+        self.assertIn("pinned to a named level keeps that level regardless of /effort", guidance)
+
+        self.config.write_text("AIRLOCK_EFFORT_LUNA=max\n", encoding="utf-8")
+        pinned = ACCESS.routing_guidance(ACCESS.load_policy(), "native")
+        self.assertIn("luna=max", pinned)
+
     def test_full_hybrid_agent_profile_stays_within_windows_command_limit(self) -> None:
         policy = ACCESS.default_policy()
         policy["policies"]["extra_usage"] = "allow"
@@ -598,7 +652,7 @@ for line in sys.stdin:
                     self.assertEqual(len(rendered), 8)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
-                    self.assertIn("fixed native effort: max", luna_description)
+                    self.assertIn("native effort: inherits the session level", luna_description)
                     self.assertIn("use run_in_background=true", luna_description)
                     self.assertIn("useful non-overlapping batch before waiting", luna_description)
                     self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])

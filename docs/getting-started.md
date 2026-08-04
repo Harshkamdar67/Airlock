@@ -146,7 +146,7 @@ Return to the tested settings:
 airlock mode defaults
 ```
 
-These changes apply to new sessions. The default top-level worker setting is `off`, which uses Claude Code's native concurrency. Automatic armies start a native Luna or eligible Luna Fast batch before the main model waits, then collect every result. Luna Agent definitions use fixed max effort. Restart `airlock` after changing settings.
+These changes apply to new sessions. The default top-level worker setting is `off`, which uses Claude Code's native concurrency. Automatic armies start a native Luna or eligible Luna Fast batch before the main model waits, then collect every result. Workers follow the session effort, so `/effort` moves the main model and its workers together. Restart `airlock` after changing settings.
 
 ## Check plan usage
 

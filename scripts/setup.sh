@@ -118,7 +118,7 @@ read_config_value() {
 
 read_config_value AIRLOCK_MODEL sol
 default_main_model="$CONFIG_VALUE"
-read_config_value AIRLOCK_MAIN_EFFORT xhigh
+read_config_value AIRLOCK_MAIN_EFFORT high
 default_main_effort="$CONFIG_VALUE"
 read_config_value AIRLOCK_BG_MODEL sol
 default_bg_model="$CONFIG_VALUE"
@@ -126,7 +126,7 @@ read_config_value AIRLOCK_BG_EFFORT medium
 default_bg_effort="$CONFIG_VALUE"
 read_config_value AIRLOCK_SMALL_FAST_MODEL 'gpt-5.6-sol[1m]'
 default_utility_wire="$CONFIG_VALUE"
-read_config_value AIRLOCK_SUBAGENT_EFFORT high
+read_config_value AIRLOCK_SUBAGENT_EFFORT inherit
 default_subagent_effort="$CONFIG_VALUE"
 read_config_value AIRLOCK_EXTRA_USAGE_POLICY ask
 default_extra_usage_policy="$CONFIG_VALUE"
@@ -215,6 +215,16 @@ validate_effort() {
       printf 'setup: unsupported effort: %s\n' "$1" >&2
       exit 2
       ;;
+  esac
+}
+
+# The optional sub-agent may also inherit, which leaves it following the session
+# level so /effort moves it mid-session. Root and background efforts are passed
+# straight to Claude Code, which has no inherit value.
+validate_subagent_effort() {
+  case "$1" in
+    inherit) ;;
+    *) validate_effort "$1" ;;
   esac
 }
 
@@ -403,7 +413,7 @@ fi
 
 if [[ -z "$subagent_effort" ]]; then
   if [[ "$assume_yes" -eq 1 ]]; then subagent_effort="$default_subagent_effort"; else
-    choose_option '6. Effort for the optional custom sub-agent' "$default_subagent_effort" low medium high xhigh max
+    choose_option '6. Effort for the optional custom sub-agent' "$default_subagent_effort" inherit low medium high xhigh max
     subagent_effort="$CHOICE"
   fi
 fi
@@ -496,7 +506,7 @@ validate_model "$bg_model"
 validate_model "$utility_model"
 validate_effort "$main_effort"
 validate_effort "$bg_effort"
-validate_effort "$subagent_effort"
+validate_subagent_effort "$subagent_effort"
 validate_extra_usage_policy "$extra_usage_policy"
 validate_routing_policy "$routing_policy"
 validate_max_agents "$max_agents"

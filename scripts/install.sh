@@ -163,9 +163,9 @@ if [[ "$with_agent" -eq 1 ]]; then
       fi
     done < "$config_target"
   fi
-  subagent_effort="${subagent_effort:-high}"
+  subagent_effort="${subagent_effort:-inherit}"
   case "$subagent_effort" in
-    low|medium|high|xhigh|max) ;;
+    inherit|low|medium|high|xhigh|max) ;;
     *)
       printf 'install: unsupported sub-agent effort: %s\n' "$subagent_effort" >&2
       exit 1
@@ -175,7 +175,13 @@ if [[ "$with_agent" -eq 1 ]]; then
   mkdir -p "$(dirname "$agent_target")"
   rendered_agent="$(mktemp "${TMPDIR:-/tmp}/airlock-agent.XXXXXX")"
   trap 'rm -f "$rendered_agent"' EXIT
-  sed "s/^effort: .*/effort: $subagent_effort/" "$repo_root/examples/agents/airlock-worker.md" > "$rendered_agent"
+  # An agent with no effort of its own follows the session level, so /effort
+  # moves it mid-session. A named level pins it instead.
+  if [[ "$subagent_effort" == 'inherit' ]]; then
+    sed '/^effort: /d' "$repo_root/examples/agents/airlock-worker.md" > "$rendered_agent"
+  else
+    sed "s/^effort: .*/effort: $subagent_effort/" "$repo_root/examples/agents/airlock-worker.md" > "$rendered_agent"
+  fi
 
   if [[ -e "$agent_target" ]] && ! cmp -s "$rendered_agent" "$agent_target"; then
     if ! grep -qF '<!-- Managed by https://github.com/Harshkamdar67/Airlock -->' "$agent_target" &&

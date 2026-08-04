@@ -56,7 +56,7 @@ airlock-haiku
 Each name has:
 
 - one exact full model ID
-- one fixed native effort
+- the session effort level, unless you pin one
 - a direct technical prompt
 - Claude Code's normal subagent tool pool
 - native background execution and cancellation
@@ -133,7 +133,7 @@ Automatic armies may use only:
 - `airlock-luna`
 - `airlock-luna-fast` when plan and proxy checks allow it
 
-Both have fixed max effort.
+Both run at the session effort. Pin them with `AIRLOCK_EFFORT_LUNA=max` if you want armies to think harder than the rest of the session.
 
 Good army tasks are independent search shards, webpage reading, extraction, lookup, summarization, broad discovery, and test or log triage.
 

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "bundle_version": "2026.08.04.4",
+  "bundle_version": "2026.08.04.5",
   "protocol_version": 3,
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
-    "bin/airlock-access.py": "2a5c1efa4930f25c99bbe491a5abda98e894e20459eab337f3c2542616b8c2fe",
-    "bin/airlock-router.py": "547e058a735c76d6765c03942f4a281bf27754d98fc04e7143e65aa835f2a2b0",
-    "bin/airlock-hybrid.py": "6152bd31336301ef8abf9b3439b30c314a74d90b571c95a5614a5e9ccbc2b9c2",
+    "bin/airlock-access.py": "b7fe137693b258cf3e396b9a4f8db83781e98fef7001609a578e777a2da0fb1a",
+    "bin/airlock-router.py": "741f60c0bc2df56fa89531ffc582025673fb172e55bbf8a6704f0f963fad50a1",
+    "bin/airlock-hybrid.py": "eb7a7bd4ceb1dc92a97f42c68891a478592841a8049df9a0ff913f8f171bfd0d",
     "config/openai-direct-agents.json": "69b3e8dd8b2d8943b421e4d7382b9aa29e9888f74acb2152b5e82d59d9ba3fe5",
     "config/anthropic-direct-agents.json": "abbe7fdbe220780ea308a35e201e6a5e723c340affba6d292931d6637ab45bda",
     "config/hybrid-agents.json": "69b3e8dd8b2d8943b421e4d7382b9aa29e9888f74acb2152b5e82d59d9ba3fe5",
@@ -15,16 +15,16 @@
     "plugins/airlock/hooks/hooks.json": "27ac7faa8c198bee1340856da295cd84fa2bc29527553d4ab99835c290d9047f",
     "plugins/airlock/skills/usage/SKILL.md": "39b3fac9f8def5e39ee7d33d406148d9d49a62a13563d4ba495dd394c5d39551",
     "plugins/airlock/scripts/agent-guard.sh": "f7c7dcea6d3a64df2d7cbeb377b1bec16fa82929a2a1216e548a061f765ebabd",
-    "plugins/airlock/scripts/agent-guard.py": "bd4ea5e51d134b4738d8e9520870fb7f17ac9d65e6bbb6bbc6687fd03e135257",
+    "plugins/airlock/scripts/agent-guard.py": "3ffb8ac15041807e41a6d19d9a99a1f708440df6340d3c51adc491a964b0fa32",
     "plugins/airlock/scripts/secret-guard.sh": "06b0f15edd1ad9363d625c4c5b53f3500a4f2ac6dfd6c789492d10befe5b6efd",
     "plugins/airlock/scripts/secret-guard.py": "897c6bded93fc8c9a91024444e0995fabf94f492939c3ba20d8873bf49e9b403",
     "plugins/airlock/scripts/file_safety.py": "6f20e06cd0e1e2438dfdfc42972369e3870b58204653cdd482fcb69e9aaf3b3f",
     "plugins/airlock/scripts/worktree.py": "427716db598064cc098b742392f09d5972cc7860b931ef86c9efe7f7c4cb2b1c",
     "plugins/airlock/scripts/worktree-create.sh": "930fb58b28d8fbd064319055d2b87c0781cf12b37c809148b73f501f36dc7fe9",
     "plugins/airlock/scripts/worktree-remove.sh": "897d0e97da7449d683a34ad9d7e4708000abf956bd3f79b356ba836201d60bae",
-    "bin/airlock": "32855d7419fa467bcc1ce9a23f9fe75fd028c9a3c6ece1e90daae25ff0da8f71",
+    "bin/airlock": "4ae41e9476b41c21e37d994fbb0694a2a560c557d06323a113e1e61ca3b85478",
     "bin/airlock.cmd": "55037fa96606b4de9f7c79d3592d1dcbac04f9d271e502a4d9b71e76c2671356",
-    "bin/airlock.ps1": "6d3fc11b5786170ab4dca2d9e8934ee4193df94a90eb64d09561685d8232aa1f"
+    "bin/airlock.ps1": "4d690261e7e7fd6bdacd9110e3344d696e73b9ee756abe3309ad80f26b215226"
   },
   "platforms": {
     "common": [

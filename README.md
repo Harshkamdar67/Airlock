@@ -24,7 +24,7 @@ airlock                 # OpenAI only, no router
 
 - Keep normal `claude` and `codex` unchanged.
 - Start with an OpenAI or Anthropic model, and reach both from the same session.
-- Use real Claude Code Agents for both providers, each with an exact model and fixed effort.
+- Use real Claude Code Agents for both providers, each with an exact model, and move them all with `/effort`.
 - Keep native Agent cards, tools, background work, cancellation, and worktrees.
 - Let Explore, Plan, and general-purpose inherit the main model or use an allowed exact model for one call.
 - Set a budget mode and a smaller worker cap when you want one.
@@ -154,7 +154,7 @@ The main model starts with the smallest useful approach:
 6. Use several Luna Agents only for independent high-volume work.
 7. Keep integration and final synthesis with a stronger main model, Sol, or Opus.
 
-Automatic armies are Luna-only. Each Luna or eligible Luna Fast shard uses fixed max effort. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
+Automatic armies are Luna-only. Each Luna or eligible Luna Fast shard runs at the session effort unless you pin one. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
 
 For UI and UX work in a hybrid session, an exact user choice wins. Otherwise visual direction, product flows, new design systems, broad redesigns, and final visual critique prefer Opus. Sonnet fits bounded components and work that follows an existing design system.
 

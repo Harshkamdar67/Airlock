@@ -21,14 +21,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Native Windows router and worktree-hook installation coverage.
 - Managed bundle coverage for the router and native worktree safety files.
 - Plain-language documentation for native routing, exact Agent models, gateway limits, worktrees, security, and live parity.
+- Declared effort levels for pinned GPT models so Claude Code's `/effort` command works on a GPT root, adjustable with `AIRLOCK_GPT_EFFORT_CAPABILITIES`.
 
 ### Changed
 
 - Plain `airlock` now uses native OpenAI Agents directly through the local OpenAI proxy.
 - `airlock hybrid` now keeps both providers inside one Claude Code process through the temporary router.
-- Named `airlock-*` Agents now bind exact full model IDs and fixed native efforts.
+- Named `airlock-*` Agents now bind exact full model IDs.
 - Named Agents inherit Claude Code's normal subagent tool pool instead of using transport-only Write and Bash tools.
-- Luna and Luna Fast use fixed max effort for automatic armies and bounded implementation.
+- Named `airlock-*` workers now follow the session effort by default, so `/effort` changes the main model and its workers together in the middle of a session. Pin one worker with `AIRLOCK_EFFORT_<ROUTE>` or all of them with `AIRLOCK_WORKER_EFFORT`.
+- The default session effort is now `high` instead of `xhigh`.
+- The optional `airlock-worker` agent also follows the session effort unless `AIRLOCK_SUBAGENT_EFFORT` names a level.
 - Built-in Explore inherits the orchestrator by default and can receive one exact allowed model ID for a call.
 - Native Agent cards, background execution, cancellation, worktrees, and usage replace broker-rendered lifecycle state in normal sessions.
 - Automatic fan-out remains Luna-only and final synthesis stays with a stronger model.

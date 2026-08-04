@@ -16,6 +16,24 @@ foreach ($path in $PowerShellFiles) {
   }
 }
 
+# The launcher must offer effort levels for pinned GPT models and leave real
+# Claude model IDs to Claude Code's own detection.
+$LauncherText = [IO.File]::ReadAllText((Join-Path $Root 'bin\airlock.ps1'))
+foreach ($variable in @(
+  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION'
+)) {
+  if ($LauncherText -notmatch [regex]::Escape("'${variable}_SUPPORTED_CAPABILITIES'")) {
+    throw "bin\airlock.ps1 does not clear ${variable}_SUPPORTED_CAPABILITIES between sessions"
+  }
+  if ($LauncherText -notmatch [regex]::Escape("Set-GptEffortCapabilities '$variable'")) {
+    throw "bin\airlock.ps1 does not declare effort capabilities for $variable"
+  }
+}
+if ($LauncherText -notmatch [regex]::Escape("StartsWith('claude-')")) {
+  throw 'bin\airlock.ps1 must skip capability declarations for Claude model IDs'
+}
+
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("airlock-windows-test-{0}" -f [Guid]::NewGuid().ToString('N'))
 $StubDir = Join-Path $TempRoot 'stubs'
 $InstallDir = Join-Path $TempRoot 'bin'

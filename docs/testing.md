@@ -40,7 +40,7 @@ python tests/test-docs.py
 
 The native tests cover:
 
-- exact Agent models and fixed efforts
+- exact Agent models, effort inheritance, and pinned efforts
 - built-in Explore, Plan, and general-purpose inheritance
 - allowed exact per-call model IDs for built-ins
 - profile, Fast, and extra-usage model guards
