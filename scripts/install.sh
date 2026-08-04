@@ -1,12 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+resolve_airlock_config_dir() {
+  local standard_dir fallback_dir standard_parent
+  if [[ -n "${AIRLOCK_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$AIRLOCK_CONFIG_DIR"
+    return 0
+  fi
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s' "$XDG_CONFIG_HOME/airlock"
+    return 0
+  fi
+  standard_dir="$HOME/.config/airlock"
+  fallback_dir="$HOME/.airlock"
+  standard_parent="$HOME/.config"
+  if [[ -f "$fallback_dir/config" || -d "$fallback_dir" ]]; then
+    printf '%s' "$fallback_dir"
+  elif [[ -d "$standard_dir" && -w "$standard_dir" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_dir" && -d "$standard_parent" && -w "$standard_parent" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_parent" && -w "$HOME" ]]; then
+    printf '%s' "$standard_dir"
+  else
+    printf '%s' "$fallback_dir"
+  fi
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_dir="${AIRLOCK_INSTALL_DIR:-$HOME/.local/bin}"
 launcher_target="$install_dir/airlock"
 agent_dir="${AIRLOCK_AGENT_DIR:-$HOME/.claude/agents}"
 agent_target="$agent_dir/airlock-worker.md"
-config_dir="${AIRLOCK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock}"
+config_dir="$(resolve_airlock_config_dir)"
 config_target="$config_dir/config"
 bundle_target="$config_dir/managed-bundle.json"
 plugin_target="$config_dir/plugins/airlock"

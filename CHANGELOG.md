@@ -26,11 +26,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - A guided terminal setup with full model names and IDs, worker presets, honest effort controls, a review screen, and optional Advanced settings.
 - POSIX terminal coverage for the interactive setup flow and native Windows parity coverage for saved launch profiles.
 - A branded, width-aware setup interface with clear progress, decision cards, and a grouped confirmation screen.
+- Keyboard option selection with Up and Down arrows plus Enter, while number and name entry remain available.
 - CODEOWNERS, safe issue forms, a pull request security checklist, and Dependabot updates for GitHub Actions.
 
 ### Changed
 
-- New setup configurations make bare `airlock` start the saved hybrid root, while `airlock openai` and explicit OpenAI aliases remain direct OpenAI-only launches. Existing configs without the new profile key keep their original OpenAI-only bare command.
+- New setup configurations make bare `airlock` start the saved hybrid root, with GPT-5.6 Sol as the recommended orchestrator. `airlock openai` and explicit OpenAI aliases remain direct OpenAI-only launches. Existing configs without the new profile key keep their original OpenAI-only bare command.
 - `airlock hybrid` now starts the saved hybrid root, while `airlock hybrid choose` opens the full seven-model picker.
 - Hybrid profiles keep both providers inside one Claude Code process through the temporary router.
 - Named `airlock-*` Agents now bind exact full model IDs.
@@ -45,6 +46,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Hybrid mode preserves saved Claude subscription login and rejects explicit Anthropic credential overrides.
 - OpenAI usage refresh and Anthropic `/usage` guidance remain separate.
 - Substantial visual and interaction redesigns now require the eligible Opus worker in hybrid sessions instead of being treated as generic coupled implementation.
+- Mixed requests are split by skill automatically, so UI/UX judgment and separable systems work go to their strongest eligible routes before root integration.
 - Doctor reports Claude login and Codex OAuth separately, while keeping signed-out OpenAI-only behavior clear.
 - GitHub workflows pin third-party Actions to full commit hashes and avoid persisting checkout credentials.
 
@@ -60,6 +62,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Broad file searches no longer return raw sensitive env or credential data.
 - Unavailable GPT model discovery is now documented instead of being presented as a routing failure.
 - Public web routing now avoids assigning Web Search to `xhigh` or `max` workers when the internal search model supports only `high` or below.
+- Setup automatically uses `~/.airlock` when the normal macOS or Linux config parent is not writable, and every installed component resolves the same fallback without `sudo`.
+- Long unbreakable config paths use a stacked review layout instead of overflowing the label column.
 
 ### Security
 

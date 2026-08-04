@@ -31,7 +31,7 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
 
 config_file="$config_dir/config"
 grep -q '^AIRLOCK_DEFAULT_PROFILE=openai$' "$config_file"
-grep -q '^AIRLOCK_HYBRID_MODEL=sonnet$' "$config_file"
+grep -q '^AIRLOCK_HYBRID_MODEL=sol$' "$config_file"
 grep -q '^AIRLOCK_MODEL=terra$' "$config_file"
 grep -q '^AIRLOCK_MAIN_EFFORT=high$' "$config_file"
 grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$config_file"
@@ -167,7 +167,7 @@ AIRLOCK_CONFIG_DIR="$new_default_dir" "$repo_root/scripts/setup.sh" \
   --no-login --no-service --config-only --yes >"$tmp_dir/new-default-summary.out"
 grep -q '^  Generic worker:     no (effort: inherit)$' "$tmp_dir/new-default-summary.out"
 grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$new_default_dir/config"
-grep -q '^AIRLOCK_HYBRID_MODEL=sonnet$' "$new_default_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=sol$' "$new_default_dir/config"
 grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$new_default_dir/config"
 
 legacy_dir="$tmp_dir/legacy-config"
@@ -239,5 +239,14 @@ PATH="$config_only_stub_dir:$PATH" \
 AIRLOCK_CONFIG_DIR="$tmp_dir/config-only-no-tools" \
   "$repo_root/scripts/setup.sh" --config-only --no-login --no-service --yes >/dev/null
 test ! -e "$config_only_log"
+
+fallback_home="$tmp_dir/fallback-home"
+mkdir -p "$fallback_home"
+printf 'blocked default config parent\n' > "$fallback_home/.config"
+HOME="$fallback_home" AIRLOCK_CONFIG_DIR='' XDG_CONFIG_HOME='' \
+  "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes >/dev/null
+test -f "$fallback_home/.airlock/config"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$fallback_home/.airlock/config"
 
 printf 'All setup wizard tests passed.\n'

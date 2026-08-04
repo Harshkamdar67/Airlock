@@ -12,7 +12,7 @@ An airlock is a chamber where two environments meet without mixing. That is the 
 Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy) and a small local router for mixed-provider sessions.
 
 ```bash
-airlock                 # Saved default, new setups recommend Claude Sonnet 5 hybrid
+airlock                 # Saved default, new setups recommend GPT-5.6 Sol hybrid
 airlock openai          # Saved OpenAI-only root, no mixed-provider router
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
@@ -51,7 +51,7 @@ Claude Code
           `-- exact claude-* ID   --> Anthropic
 ```
 
-The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with Claude Sonnet 5. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. Existing configs without a saved profile keep the original OpenAI-only bare command.
+The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with GPT-5.6 Sol. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. Existing configs without a saved profile keep the original OpenAI-only bare command.
 
 The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
 
@@ -78,7 +78,7 @@ Clone this repository and run:
 ./scripts/setup.sh
 ```
 
-The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen.
+The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`.
 
 Background-command, utility, Fast, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 

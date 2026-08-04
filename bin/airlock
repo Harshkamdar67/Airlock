@@ -2,8 +2,34 @@
 # Managed by https://github.com/Harshkamdar67/Airlock
 set -euo pipefail
 
-config_file="${AIRLOCK_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock/config}"
-config_root="${XDG_CONFIG_HOME:-$HOME/.config}/airlock"
+resolve_airlock_config_root() {
+  local standard_root fallback_root standard_parent
+  if [[ -n "${AIRLOCK_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$AIRLOCK_CONFIG_DIR"
+    return 0
+  fi
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s' "$XDG_CONFIG_HOME/airlock"
+    return 0
+  fi
+  standard_root="$HOME/.config/airlock"
+  fallback_root="$HOME/.airlock"
+  standard_parent="$HOME/.config"
+  if [[ -f "$fallback_root/config" || -d "$fallback_root" ]]; then
+    printf '%s' "$fallback_root"
+  elif [[ -d "$standard_root" && -w "$standard_root" ]]; then
+    printf '%s' "$standard_root"
+  elif [[ ! -e "$standard_root" && -d "$standard_parent" && -w "$standard_parent" ]]; then
+    printf '%s' "$standard_root"
+  elif [[ ! -e "$standard_parent" && -w "$HOME" ]]; then
+    printf '%s' "$standard_root"
+  else
+    printf '%s' "$fallback_root"
+  fi
+}
+
+config_root="$(resolve_airlock_config_root)"
+config_file="${AIRLOCK_CONFIG_FILE:-$config_root/config}"
 openai_direct_agents_file="${AIRLOCK_OPENAI_DIRECT_AGENTS_FILE:-$config_root/openai-direct-agents.json}"
 anthropic_direct_agents_file="${AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE:-$config_root/anthropic-direct-agents.json}"
 openai_wrapper_agents_file="${AIRLOCK_HYBRID_AGENTS_FILE:-$config_root/hybrid-agents.json}"

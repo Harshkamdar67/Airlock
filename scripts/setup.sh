@@ -1,8 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+resolve_airlock_config_dir() {
+  local standard_dir fallback_dir standard_parent
+  if [[ -n "${AIRLOCK_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$AIRLOCK_CONFIG_DIR"
+    return 0
+  fi
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s' "$XDG_CONFIG_HOME/airlock"
+    return 0
+  fi
+  standard_dir="$HOME/.config/airlock"
+  fallback_dir="$HOME/.airlock"
+  standard_parent="$HOME/.config"
+  if [[ -f "$fallback_dir/config" || -d "$fallback_dir" ]]; then
+    printf '%s' "$fallback_dir"
+  elif [[ -d "$standard_dir" && -w "$standard_dir" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_dir" && -d "$standard_parent" && -w "$standard_parent" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_parent" && -w "$HOME" ]]; then
+    printf '%s' "$standard_dir"
+  else
+    printf '%s' "$fallback_dir"
+  fi
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-config_dir="${AIRLOCK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock}"
+config_dir="$(resolve_airlock_config_dir)"
 config_target="$config_dir/config"
 
 # Kept so the review screen can offer a clean start over without rebuilding
@@ -156,7 +182,7 @@ else
   read_config_value AIRLOCK_DEFAULT_PROFILE hybrid
 fi
 default_default_profile="$CONFIG_VALUE"
-read_config_value AIRLOCK_HYBRID_MODEL sonnet
+read_config_value AIRLOCK_HYBRID_MODEL sol
 default_hybrid_model="$CONFIG_VALUE"
 read_config_value AIRLOCK_MODEL sol
 default_main_model="$CONFIG_VALUE"
@@ -427,12 +453,14 @@ validate_csv_subset() {
 # ---------------------------------------------------------------------------
 
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != 'dumb' ]]; then
+  ui_styled=1
   STYLE_BOLD=$'\033[1m'
   STYLE_DIM=$'\033[2m'
   STYLE_ACCENT=$'\033[36m'
   STYLE_GREEN=$'\033[32m'
   STYLE_RESET=$'\033[0m'
 else
+  ui_styled=0
   STYLE_BOLD=''
   STYLE_DIM=''
   STYLE_ACCENT=''
@@ -450,9 +478,25 @@ stty_columns() {
   return 0
 }
 
+stty_rows() {
+  local size=''
+  command -v stty >/dev/null 2>&1 || return 0
+  size="$(stty size 2>/dev/null)" || size=''
+  if [[ "$size" =~ ^([0-9]+)[[:space:]]+[0-9]+$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+  return 0
+}
+
 tput_columns() {
   command -v tput >/dev/null 2>&1 || return 0
   tput cols 2>/dev/null || true
+  return 0
+}
+
+tput_lines() {
+  command -v tput >/dev/null 2>&1 || return 0
+  tput lines 2>/dev/null || true
   return 0
 }
 
@@ -468,13 +512,73 @@ detect_terminal_columns() {
   return 0
 }
 
+# The height is only used to decide whether one option block can be repainted
+# in place without pushing earlier output off the screen.
+detect_terminal_rows() {
+  local candidate
+  terminal_rows=24
+  for candidate in "$(stty_rows)" "$(tput_lines)" "${LINES:-}"; do
+    if [[ "$candidate" =~ ^[0-9]+$ ]] && (( candidate >= 8 )); then
+      terminal_rows="$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
 detect_terminal_columns
+detect_terminal_rows
 # Long measured lines are hard to read, and very narrow ones need a stacked
 # layout instead of aligned columns.
 ui_width="$terminal_columns"
 (( ui_width > 72 )) && ui_width=72
 (( ui_width < 36 )) && ui_width=36
 ui_wrap_fields=0
+# Number of whole lines written since the last reset. Only the option block
+# uses it, to learn its own height before repainting itself.
+ui_lines=0
+
+# Two separate capabilities, because they have different requirements.
+#
+# choice_keys reads one keystroke at a time so the arrow keys can move the >
+# marker. It needs a real terminal on both stdin and stdout and a TERM that is
+# not 'dumb'. It writes nothing that a plain terminal cannot show.
+#
+# choice_repaint additionally moves the cursor to redraw the active option
+# block in place. It is held to the same bar as color, so NO_COLOR, TERM=dumb,
+# a redirected stream, or a noninteractive run gets no escape sequence at all.
+# Without it the arrow keys still work and the block is simply reprinted below,
+# which keeps every earlier line of the wizard intact.
+choice_keys=0
+choice_repaint=0
+if [[ -t 0 && -t 1 && "${TERM:-dumb}" != 'dumb' ]]; then
+  choice_keys=1
+  if [[ "$ui_styled" -eq 1 ]]; then
+    choice_repaint=1
+  fi
+fi
+
+# Reading single keystrokes turns echo off for the length of one read. Keep a
+# copy of the original terminal settings so Ctrl+C hands back a normal terminal.
+# Nothing has been written to disk at this point, so the exit is always clean.
+choice_tty_state=''
+if [[ "$choice_keys" -eq 1 ]] && command -v stty >/dev/null 2>&1; then
+  choice_tty_state="$(stty -g 2>/dev/null)" || choice_tty_state=''
+fi
+
+restore_choice_tty() {
+  [[ -n "$choice_tty_state" ]] || return 0
+  stty "$choice_tty_state" 2>/dev/null || true
+  return 0
+}
+
+on_interrupt() {
+  restore_choice_tty
+  printf '\nSetup stopped. Nothing was changed.\n' >&2
+  exit 130
+}
+
+trap on_interrupt INT
 
 repeat_char() {
   local char="$1"
@@ -517,6 +621,7 @@ wrap_lines() {
       line="$line $word"
     else
       printf '%s%s%s%s\n' "$prefix" "$style" "$line" "$reset"
+      ui_lines=$((ui_lines + 1))
       prefix="$cont_prefix"
       limit=$((ui_width - ${#prefix}))
       (( limit < 16 )) && limit=16
@@ -525,9 +630,22 @@ wrap_lines() {
   done
   if [[ -n "$line" ]]; then
     printf '%s%s%s%s\n' "$prefix" "$style" "$line" "$reset"
+    ui_lines=$((ui_lines + 1))
   fi
   (( glob_was_off == 1 )) || set +f
   return 0
+}
+
+# Counted output. Every whole line the option block writes goes through one of
+# these so the block always knows exactly how tall it is.
+ui_line() {
+  printf "$@"
+  ui_lines=$((ui_lines + 1))
+}
+
+ui_blank() {
+  printf '\n'
+  ui_lines=$((ui_lines + 1))
 }
 
 wrap_text() {
@@ -577,7 +695,7 @@ print_header() {
   printf '\n'
   wrap_text '' '' 'It does not change native Claude Code, native Codex, global settings, global hooks, registered plugins, or MCP configuration, and it never reads, copies, or stores a login token.'
   printf '\n'
-  wrap_text '' "$STYLE_DIM" 'At every question, press Enter to accept the choice marked with >. Type ? to see the choices again. Press Ctrl+C to stop without changes.'
+  wrap_text '' "$STYLE_DIM" 'At every question, press Enter to accept the choice marked with >. In a normal terminal the Up and Down arrow keys move that marker. You can always type a number or a name instead. Type ? to see the choices again. Press Ctrl+C to stop without changes.'
 }
 
 print_section() {
@@ -618,6 +736,62 @@ print_group_heading() {
 
 # Option specs are value|title|identifier|detail. The identifier is the exact
 # model ID where one exists, and stays visible next to the readable name.
+# Reads one answer from a terminal that supports single keystrokes.
+#
+# Sets CHOICE_KEY to up, down, enter, other, or text. For text it also sets
+# CHOICE_INPUT to the whole typed line. Ctrl+C is untouched: the read runs with
+# signals enabled, so it still interrupts the wizard before anything is written.
+# Returns non-zero at end of input so the caller fails the same way the plain
+# line reader does.
+#
+# CHOICE_PROMPT_OPEN reports whether the cursor is still sitting on the prompt
+# line, which the caller needs to repaint the block by the right number of rows.
+read_choice_key() {
+  local key='' next='' char='' final='' rest=''
+  CHOICE_KEY='other'
+  CHOICE_INPUT=''
+  CHOICE_PROMPT_OPEN=1
+  IFS= read -rsn1 key || return 1
+  if [[ -z "$key" ]]; then
+    # A silent read swallows the newline the user pressed, so end the line here.
+    printf '\n'
+    CHOICE_KEY='enter'
+    CHOICE_PROMPT_OPEN=0
+    return 0
+  fi
+  if [[ "$key" == $'\033' ]]; then
+    # Arrow keys arrive as ESC [ A or ESC O A. Read the introducer and then
+    # drain to the final byte so a longer sequence, a function key, or a bare
+    # Escape can never leak digits into the answer. The timeout keeps a lone
+    # Escape from blocking.
+    IFS= read -rsn1 -t 1 next || next=''
+    if [[ "$next" == '[' || "$next" == 'O' ]]; then
+      final="$next"
+      while IFS= read -rsn1 -t 1 char; do
+        [[ -n "$char" ]] || break
+        final="$char"
+        case "$char" in
+          [A-Za-z~]) break ;;
+        esac
+      done
+      case "$final" in
+        A) CHOICE_KEY='up' ;;
+        B) CHOICE_KEY='down' ;;
+      esac
+    fi
+    return 0
+  fi
+  # Anything else starts a typed answer. Echo the first character by hand,
+  # because it was read silently, then let the terminal's own line editing
+  # collect the rest.
+  printf '%s' "$key"
+  IFS= read -r rest || rest=''
+  CHOICE_KEY='text'
+  CHOICE_INPUT="$key$rest"
+  CHOICE_PROMPT_OPEN=0
+  return 0
+}
+
 choose_rich_option() {
   local current="$1"
   local recommended="$2"
@@ -626,6 +800,9 @@ choose_rich_option() {
   local answer default_value default_index default_title
   local index spec value remainder title identifier detail
   local badge badge_style row row_prefix row_text row_style extra pad
+  # The > marker and the Enter default are the same thing, so moving the marker
+  # is simply moving default_index.
+  local repaint=0 block_lines=0 prompt_open=0 rows_up=0
   default_value="${current:-$recommended}"
   default_index=0
   default_title=''
@@ -640,7 +817,26 @@ choose_rich_option() {
     index=$((index + 1))
   done
   while true; do
-    printf '\n'
+    # Repaint in place only when the whole block plus its prompt line is known
+    # to be on screen. Anything taller has scrolled, so the block is reprinted
+    # below instead. Either way nothing above the block is touched.
+    if (( repaint == 1 && choice_repaint == 1 && block_lines + 1 <= terminal_rows )); then
+      rows_up="$block_lines"
+      (( prompt_open == 1 )) || rows_up=$((rows_up + 1))
+      if (( rows_up > 0 )); then
+        printf '\r\033[%dA\033[J' "$rows_up"
+      else
+        printf '\r\033[J'
+      fi
+    else
+      # End the prompt line first when the keystroke that got us here was not
+      # echoed, then leave the usual blank line above the block.
+      (( repaint == 1 && prompt_open == 1 )) && printf '\n'
+      printf '\n'
+    fi
+    repaint=0
+    prompt_open=0
+    ui_lines=0
     index=1
     for spec in ${options[@]+"${options[@]}"}; do
       value="${spec%%|*}"
@@ -678,35 +874,73 @@ choose_rich_option() {
       if (( ${#row} > ui_width )); then
         wrap_lines "$row_prefix" '        ' "$row_style" "$row_text"
         if [[ -n "$badge" ]]; then
-          printf '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
+          ui_line '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
         fi
       elif [[ -n "$badge" ]] && (( ui_width - ${#row} - ${#badge} >= 2 )); then
         pad=$((ui_width - ${#row} - ${#badge}))
-        printf '%s%s%s%*s%s%s%s\n' "$row_style" "$row" "$STYLE_RESET" "$pad" '' "$badge_style" "$badge" "$STYLE_RESET"
+        ui_line '%s%s%s%*s%s%s%s\n' "$row_style" "$row" "$STYLE_RESET" "$pad" '' "$badge_style" "$badge" "$STYLE_RESET"
       else
-        printf '%s%s%s\n' "$row_style" "$row" "$STYLE_RESET"
+        ui_line '%s%s%s\n' "$row_style" "$row" "$STYLE_RESET"
         if [[ -n "$badge" ]]; then
-          printf '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
+          ui_line '        %s%s%s\n' "$badge_style" "$badge" "$STYLE_RESET"
         fi
       fi
       if [[ -n "$extra" ]]; then
-        printf '        %s%s%s\n' "$STYLE_DIM" "$extra" "$STYLE_RESET"
+        ui_line '        %s%s%s\n' "$STYLE_DIM" "$extra" "$STYLE_RESET"
       fi
       if [[ -n "$detail" ]]; then
         wrap_text '        ' "$STYLE_DIM" "$detail"
       fi
       index=$((index + 1))
     done
-    printf '\n'
+    ui_blank
     if (( default_index > 0 )); then
       wrap_text '  ' '' "Press Enter to accept $default_index) $default_title"
     else
       wrap_text '  ' '' "Press Enter to accept $default_value"
     fi
+    if [[ "$choice_keys" -eq 1 ]]; then
+      wrap_text '  ' "$STYLE_DIM" 'The Up and Down arrow keys move the > marker.'
+    fi
+    # The prompt itself is identical in every mode, so a redirected or plain
+    # run reads exactly the same as a rich one.
     printf '  Choice [1-%d, name, or ?]: ' "${#options[@]}"
-    IFS= read -r answer
+    block_lines="$ui_lines"
+    prompt_open=1
+    if [[ "$choice_keys" -eq 1 ]]; then
+      read_choice_key
+      prompt_open="$CHOICE_PROMPT_OPEN"
+      case "$CHOICE_KEY" in
+        up|down)
+          if [[ "$CHOICE_KEY" == 'up' ]]; then
+            default_index=$((default_index - 1))
+            (( default_index >= 1 )) || default_index=${#options[@]}
+          else
+            default_index=$((default_index + 1))
+            (( default_index <= ${#options[@]} )) || default_index=1
+          fi
+          spec="${options[$((default_index - 1))]}"
+          default_value="${spec%%|*}"
+          remainder="${spec#*|}"
+          default_title="${remainder%%|*}"
+          repaint=1
+          continue
+          ;;
+        other)
+          # An unrecognized key just shows the list again.
+          repaint=1
+          continue
+          ;;
+        enter) answer='' ;;
+        *) answer="$CHOICE_INPUT" ;;
+      esac
+    else
+      IFS= read -r answer
+      prompt_open=0
+    fi
     answer="${answer:-$default_value}"
     if [[ "$answer" == '?' || "$answer" == 'help' ]]; then
+      repaint=1
       continue
     fi
     if [[ "$answer" =~ ^[0-9]+$ ]]; then
@@ -770,7 +1004,10 @@ print_field() {
     printf '%s\n' "$line"
     return 0
   fi
-  if (( ui_width >= 52 )); then
+  if [[ "$value" != *[[:space:]]* ]] && (( ${#value} > ui_width - 22 )); then
+    printf '  %s\n' "$label"
+    printf '      %s\n' "$value"
+  elif (( ui_width >= 52 )); then
     printf -v first '  %-20s' "$label"
     wrap_lines "$first" '                      ' '' "$value"
   else
@@ -889,9 +1126,9 @@ if [[ "$assume_yes" -eq 0 ]]; then
 
   if [[ "$default_profile" == 'hybrid' ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
-    choose_rich_option "$hybrid_model" sonnet \
-      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.' \
+    choose_rich_option "$hybrid_model" sol \
       'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.' \
+      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.' \
       'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.' \
       'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.' \
       'opus|Claude Opus 5|claude-opus-5|Architecture, security, and visual direction. Premium usage.' \
@@ -1305,8 +1542,19 @@ else
 fi
 
 printf '\n'
-mkdir -p "$config_dir"
-rendered_config="$(mktemp "$config_dir/.config.XXXXXX")"
+if ! mkdir -p "$config_dir" 2>/dev/null || [[ ! -d "$config_dir" || ! -w "$config_dir" ]]; then
+  printf 'setup: no writable Airlock configuration directory is available:\n' >&2
+  printf '  %s\n' "$config_dir" >&2
+  printf 'No files were changed. Airlock does not use sudo or change directory ownership.\n' >&2
+  exit 2
+fi
+rendered_config=''
+if ! rendered_config="$(mktemp "$config_dir/.config.XXXXXX" 2>/dev/null)"; then
+  printf 'setup: Airlock could not create a configuration file under:\n' >&2
+  printf '  %s\n' "$config_dir" >&2
+  printf 'No files were changed. Airlock does not use sudo or change directory ownership.\n' >&2
+  exit 2
+fi
 trap 'rm -f "$rendered_config"' EXIT
 cat > "$rendered_config" <<EOF
 # Managed by https://github.com/Harshkamdar67/Airlock
@@ -1362,4 +1610,4 @@ AIRLOCK_SUBAGENT_EFFORT="$subagent_effort" \
   "$repo_root/scripts/install.sh" ${install_args[@]+"${install_args[@]}"}
 
 printf '\nFinal verification:\n'
-"$repo_root/scripts/doctor.sh"
+AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/doctor.sh"

@@ -21,9 +21,9 @@ Install Claude Code, Homebrew, Git, Python 3, and curl. Then run:
 ./scripts/setup.sh
 ```
 
-The guided terminal setup has six short sections:
+The guided terminal setup supports Up and Down arrow selection with Enter. Number and name entry still work. It has six short sections:
 
-1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with Claude Sonnet 5.
+1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-5.6 Sol.
 2. **Worker pool:** choose the Balanced pool, the Economical pool, the Balanced pool plus Claude Fable 5, or individual exact-model workers.
 3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
 4. **Safety and budget:** choose extra-usage behavior, routing preference, and a parallel-worker ceiling.
@@ -47,6 +47,8 @@ Airlock treats the Claude and OpenAI paths separately:
 The native `codex` command is not an Airlock installation dependency. Codex OAuth here means the login managed by `claude-code-proxy`.
 
 `--config-only` is different by design. It writes only the noncredential Airlock configuration and does not install tools, check login, or start a service.
+
+On macOS and Linux, Airlock normally uses `~/.config/airlock`. If that default location cannot be written and neither `AIRLOCK_CONFIG_DIR` nor `XDG_CONFIG_HOME` selected a location, setup automatically uses `~/.airlock` instead. The launcher, installer, and Doctor all resolve the same existing fallback. Airlock does not ask for `sudo` or change ownership of another application directory.
 
 For the tested defaults, run:
 
@@ -115,7 +117,7 @@ Start the profile and orchestrator saved by setup:
 airlock
 ```
 
-New setup runs recommend the hybrid profile with Claude Sonnet 5. Existing configs created before saved profiles were added keep their OpenAI-only bare command.
+New setup runs recommend the hybrid profile with GPT-5.6 Sol. Existing configs created before saved profiles were added keep their OpenAI-only bare command.
 
 Start the saved OpenAI-only root:
 
@@ -197,6 +199,8 @@ Default macOS and Linux paths:
 ~/.config/airlock/config
 ~/.config/airlock/plugins/airlock
 ```
+
+If the normal config parent is not writable, the last two paths move together to `~/.airlock/config` and `~/.airlock/plugins/airlock`.
 
 Default Windows paths:
 

@@ -3,7 +3,7 @@
 # Bare airlock starts the saved hybrid root. Use `airlock openai` for the
 # OpenAI-only profile. Older configs without this key keep their old behavior.
 AIRLOCK_DEFAULT_PROFILE=hybrid
-AIRLOCK_HYBRID_MODEL=sonnet
+AIRLOCK_HYBRID_MODEL=sol
 # Saved OpenAI-only root, also used by `airlock openai`.
 AIRLOCK_MODEL=sol
 # Starting effort for the root session. Change it live with /effort.

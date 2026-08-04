@@ -8,6 +8,34 @@ pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 info() { printf 'INFO  %s\n' "$1"; }
 
+resolve_airlock_config_dir() {
+  local standard_dir fallback_dir standard_parent
+  if [[ -n "${AIRLOCK_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$AIRLOCK_CONFIG_DIR"
+    return 0
+  fi
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s' "$XDG_CONFIG_HOME/airlock"
+    return 0
+  fi
+  standard_dir="$HOME/.config/airlock"
+  fallback_dir="$HOME/.airlock"
+  standard_parent="$HOME/.config"
+  if [[ -f "$fallback_dir/config" || -d "$fallback_dir" ]]; then
+    printf '%s' "$fallback_dir"
+  elif [[ -d "$standard_dir" && -w "$standard_dir" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_dir" && -d "$standard_parent" && -w "$standard_parent" ]]; then
+    printf '%s' "$standard_dir"
+  elif [[ ! -e "$standard_parent" && -w "$HOME" ]]; then
+    printf '%s' "$standard_dir"
+  else
+    printf '%s' "$fallback_dir"
+  fi
+}
+
+config_dir="$(resolve_airlock_config_dir)"
+
 if command -v claude >/dev/null 2>&1; then
   pass "Claude Code: $(claude --version 2>/dev/null | head -1)"
   if claude auth status >/dev/null 2>&1; then
@@ -87,7 +115,7 @@ if command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-plugin_dir="${AIRLOCK_PLUGIN_DIR:-${AIRLOCK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/airlock}/plugins/airlock}"
+plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_dir/plugins/airlock}"
 if [[ -d "$plugin_dir" && ! -L "$plugin_dir" \
   && -f "$plugin_dir/.claude-plugin/plugin.json" \
   && -f "$plugin_dir/hooks/hooks.json" \
