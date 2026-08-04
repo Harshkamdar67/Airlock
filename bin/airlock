@@ -34,6 +34,8 @@ if [[ -n "$python_bin" ]]; then
   export AIRLOCK_PYTHON="$python_bin"
 fi
 config_model=''
+config_default_profile=''
+config_hybrid_model=''
 config_main_effort=''
 config_bg_model=''
 config_bg_effort=''
@@ -48,6 +50,8 @@ if [[ -f "$config_file" ]]; then
     config_value="${config_value%$'\r'}"
     case "$config_key" in
       AIRLOCK_MODEL) config_model="$config_value" ;;
+      AIRLOCK_DEFAULT_PROFILE) config_default_profile="$config_value" ;;
+      AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
       AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
       AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
       AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
@@ -67,57 +71,61 @@ gpt_effort_capabilities="${AIRLOCK_GPT_EFFORT_CAPABILITIES:-${config_gpt_effort_
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
 export AIRLOCK_GPT_EFFORT_CAPABILITIES="$gpt_effort_capabilities"
+default_profile="${AIRLOCK_DEFAULT_PROFILE:-${config_default_profile:-openai}}"
+default_hybrid_model="${AIRLOCK_HYBRID_MODEL:-${config_hybrid_model:-sonnet}}"
+default_openai_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
+default_bg_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
 
 print_models() {
   cat <<'EOF'
-Usage: airlock [model|bg] [claude arguments]
-       airlock hybrid [sol|terra|luna|opus|sonnet|fable] [claude arguments]
+Usage: airlock [claude arguments]
+       airlock openai [model] [claude arguments]
+       airlock hybrid [model|choose] [claude arguments]
+       airlock [sol|terra|luna|...] [claude arguments]
 
-Products:
-  airlock          OpenAI root with OpenAI Sol/Terra/Luna workers only
-  claude       Native Anthropic CLI, untouched by this launcher
-  airlock hybrid   Choose an OpenAI or Anthropic root with all five mixed workers
+Profiles:
+  airlock          Start the saved default profile and orchestrator
+  airlock openai   Start the saved OpenAI-only orchestrator
+  airlock hybrid   Start the saved hybrid orchestrator
+  claude           Start the native Anthropic CLI without Airlock
 
-OpenAI root aliases: sol (default), sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
-Hybrid root aliases/menu: sol, terra, luna, opus, sonnet, fable
-Additional explicit Claude root: haiku
-Other modes: bg, mode, usage, access, bundle, config, models
+OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku
+Other commands: bg, mode, usage, access, bundle, config, models
 
-Mode and usage policy:
-  airlock mode                     Show current/default mode
+Policy commands:
+  airlock mode                     Show the saved routing and usage policy
   airlock mode balanced|economy|quality
-  airlock mode budget              Set economy routing and deny extra usage
+  airlock mode budget              Prefer economy routes and block extra usage
   airlock mode defaults            Restore tested policy defaults
   airlock mode extra-usage ask|never|allow
   airlock mode failover ask|never|allow
   airlock mode max-agents off|1..20
   airlock mode swarm-fast auto|on|off
-  airlock mode nesting bounded|off
-  airlock mode max-descendants 2
-  airlock mode max-total-descendants 3
-  airlock mode repair-rounds 2
-  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto --descendants bounded --max-descendants 2 --max-total-descendants 3 --repair-rounds 2
+  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto
   airlock usage                    Show cached sanitized subscription usage
-  airlock usage refresh            Refresh Codex quota windows without a model call
+  airlock usage refresh            Refresh OpenAI quota windows without a model call
   airlock usage set --claude-plan pro|max5x|max20x|unknown
   airlock usage set --openai-capacity auto|1x|5x|20x
   airlock usage defaults           Clear capacity overrides
 
 Examples:
-  airlock
-  airlock terra
-  airlock hybrid                 # interactive six-model root menu
-  airlock hybrid opus
-  airlock hybrid sol --effort high
+  airlock                          # saved default profile and orchestrator
+  airlock openai                   # saved OpenAI-only orchestrator
+  airlock terra                    # explicit OpenAI-only root
+  airlock hybrid                   # saved hybrid orchestrator
+  airlock hybrid choose            # interactive seven-model picker
+  airlock hybrid opus              # explicit hybrid root
   airlock access refresh
 
 Inside a session:
-  /effort changes root effort.
-  /model switches only within the provider selected at launch.
-  Exit and relaunch airlock hybrid to switch the root provider.
+  /effort changes the root and workers that are configured to follow it.
+  Named airlock-* workers use fixed exact models and cannot start more workers.
+  /model accepts only exact model IDs enabled for the active profile. Some GPT IDs may not appear in its menu.
+  Exit and relaunch with another explicit root when switching through /model is unavailable.
   The orchestrator may choose only from the user-enabled worker pool.
-  /airlock:usage refreshes sanitized usage (one small root-model turn).
-  Top-level workers use Claude Code's native concurrency by default. Automatic high-volume swarms use Luna only. Real workers may use bounded same-model descendants; descendants cannot spawn again.
+  /airlock:usage refreshes sanitized usage with one small root-model turn.
+  Top-level workers use Claude Code's native concurrency unless an Airlock ceiling is saved.
 EOF
 }
 
@@ -167,12 +175,20 @@ validate_managed_bundle() {
 }
 
 print_config() {
+  local configured_openai configured_hybrid openai_display hybrid_display
+  validate_default_profile "$default_profile" || return 1
+  configured_openai="$default_openai_model"
+  configured_hybrid="$default_hybrid_model"
+  openai_display="$(openai_model_display "$configured_openai")" || return 1
+  hybrid_display="$(hybrid_model_display "$configured_hybrid")" || return 1
   cat <<EOF
 Config file: $config_file
-Main model: ${AIRLOCK_MODEL:-${config_model:-sol}}
+Default profile: $default_profile
+Default command: airlock -> $([[ "$default_profile" == 'hybrid' ]] && printf '%s' "$hybrid_display" || printf '%s' "$openai_display")
+Hybrid root: $hybrid_display
+OpenAI root: $openai_display
 Main effort: ${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}
-Background model: ${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}
-Background effort: ${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}}
+Background command: airlock bg -> $(openai_model_display "$default_bg_model") / ${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}} effort
 Utility model: $background_model
 Context window: $default_context_window
 Proxy URL: $proxy_url
@@ -184,6 +200,16 @@ Managed plugin: $plugin_dir
 Max concurrent top-level subagents: ${AIRLOCK_MAX_CONCURRENT_SUBAGENTS:-${config_max_agents:-off}}
 EOF
   run_access show
+}
+
+validate_default_profile() {
+  case "$1" in
+    openai|hybrid) ;;
+    *)
+      printf "airlock: unsupported default profile '%s' (expected openai or hybrid)\n" "$1" >&2
+      return 1
+      ;;
+  esac
 }
 
 validate_effort() {
@@ -242,6 +268,16 @@ resolve_hybrid_alias() {
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
     *) return 1 ;;
   esac
+}
+
+openai_model_display() {
+  resolve_model "$1" >/dev/null || return 1
+  printf '%s (%s)' "$model_name" "$selected_model"
+}
+
+hybrid_model_display() {
+  resolve_hybrid_alias "$1" || return 1
+  printf '%s (%s)' "$root_name" "$root_model"
 }
 
 health_check() {
@@ -523,16 +559,37 @@ launch_session() {
 
 select_hybrid_root() {
   if [[ ! -t 0 ]]; then
-    printf 'airlock: hybrid root is required in noninteractive use: airlock hybrid sol|terra|luna|opus|sonnet|fable\n' >&2
+    printf 'airlock: hybrid choose needs an interactive terminal; otherwise use airlock hybrid MODEL\n' >&2
     exit 2
   fi
-  printf '%s\n' 'Choose the airlock hybrid orchestrator:' '  1) GPT-5.6 Sol' '  2) GPT-5.6 Terra' '  3) GPT-5.6 Luna' '  4) Claude Opus 5' '  5) Claude Sonnet 5' '  6) Claude Fable 5 (may use Anthropic extra usage)'
-  read -r -p 'Selection [1-6]: ' selection
+  printf '%s\n' 'Choose the Airlock hybrid orchestrator:' '  1) Claude Sonnet 5 (claude-sonnet-5)' '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])' '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' '  5) Claude Opus 5 (claude-opus-5)' '  6) Claude Fable 5 (claude-fable-5; may use extra usage)' '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
+  read -r -p 'Selection [1-7]: ' selection
   case "$selection" in
-    1) root_alias='sol' ;; 2) root_alias='terra' ;; 3) root_alias='luna' ;; 4) root_alias='opus' ;; 5) root_alias='sonnet' ;; 6) root_alias='fable' ;;
-    *) printf 'airlock: invalid hybrid root selection.\n' >&2; exit 2 ;;
+    1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;; 5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 7.\n' >&2; exit 2 ;;
   esac
 }
+
+validate_default_profile "$default_profile" || exit $?
+if ! resolve_hybrid_alias "$default_hybrid_model"; then
+  printf "airlock: unsupported saved hybrid model '%s'\n" "$default_hybrid_model" >&2
+  exit 2
+fi
+if ! resolve_model "$default_openai_model" >/dev/null 2>&1; then
+  printf "airlock: unsupported saved OpenAI model '%s'\n" "$default_openai_model" >&2
+  exit 2
+fi
+if ! resolve_model "$default_bg_model" >/dev/null 2>&1; then
+  printf "airlock: unsupported saved background model '%s'\n" "$default_bg_model" >&2
+  exit 2
+fi
+if [[ "$default_profile" == 'hybrid' ]]; then
+  case "${1:-}" in
+    mode|usage|bundle|access|models|--models|config|--config|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    --model|-m|--model=*) set -- hybrid "$@" ;;
+    *) set -- hybrid "$default_hybrid_model" "$@" ;;
+  esac
+fi
 
 if [[ "${1:-}" == 'mode' ]]; then
   shift
@@ -559,6 +616,11 @@ fi
 
 if [[ "${1:-}" == 'hybrid' ]]; then
   shift
+  choose_root=0
+  if [[ "${1:-}" == 'choose' ]]; then
+    choose_root=1
+    shift
+  fi
   root_alias=''
   if resolve_hybrid_alias "${1:-}" 2>/dev/null; then
     root_alias="$1"
@@ -583,8 +645,15 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   done
 
   if [[ -z "$root_alias" && -z "$explicit_model" ]]; then
-    select_hybrid_root
-    resolve_hybrid_alias "$root_alias"
+    if [[ "$choose_root" -eq 1 ]]; then
+      select_hybrid_root
+    else
+      root_alias="$default_hybrid_model"
+    fi
+    resolve_hybrid_alias "$root_alias" || {
+      printf "airlock: unsupported saved hybrid model '%s'\n" "$root_alias" >&2
+      exit 2
+    }
   elif [[ -n "$root_alias" ]]; then
     resolve_hybrid_alias "$root_alias"
   else
@@ -630,7 +699,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
 fi
 
-requested_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
+requested_model="$default_openai_model"
 selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
 case "${1:-}" in
   models|--models) print_models; exit 0 ;;
@@ -647,8 +716,34 @@ case "${1:-}" in
     [[ $# -ge 2 ]] || { printf 'airlock: %s requires a model\n' "$1" >&2; exit 2; }
     requested_model="$2"; shift 2
     ;;
+  --model=*)
+    requested_model="${1#--model=}"
+    [[ -n "$requested_model" ]] || { printf 'airlock: --model requires a model\n' >&2; exit 2; }
+    shift
+    ;;
+  openai)
+    shift
+    case "${1:-}" in
+      --model|-m)
+        [[ $# -ge 2 ]] || { printf 'airlock: %s requires a model\n' "$1" >&2; exit 2; }
+        requested_model="$2"
+        shift 2
+        ;;
+      --model=*)
+        requested_model="${1#--model=}"
+        [[ -n "$requested_model" ]] || { printf 'airlock: --model requires a model\n' >&2; exit 2; }
+        shift
+        ;;
+      *)
+        if [[ $# -gt 0 ]] && resolve_model "$1" >/dev/null 2>&1; then
+          requested_model="$1"
+          shift
+        fi
+        ;;
+    esac
+    ;;
   bg|background)
-    requested_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
+    requested_model="$default_bg_model"
     selected_effort="${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}}"
     shift
     ;;

@@ -49,7 +49,7 @@ jobs:
             tests/test-access.py tests/test-agent-guard.py \
             tests/test-router.py tests/test-hybrid.py tests/test-worktree.py \
             tests/test-secret-guard.py tests/test-platform.py tests/test-release.py \
-            tests/test-docs.py
+            tests/test-docs.py tests/test-setup-pty.py
           for catalog in config/*-agents.json; do
             python -m json.tool "$catalog" >/dev/null
           done
@@ -76,6 +76,7 @@ jobs:
         run: |
           bash tests/test-airlock.sh
           bash tests/test-setup.sh
+          python tests/test-setup-pty.py
 
       - name: Run the POSIX installer test
         if: runner.os != 'Windows'

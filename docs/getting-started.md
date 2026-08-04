@@ -21,18 +21,16 @@ Install Claude Code, Homebrew, Git, Python 3, and curl. Then run:
 ./scripts/setup.sh
 ```
 
-The wizard asks about:
+The guided terminal setup has six short sections:
 
-- the main model and effort
-- the background model and effort
-- the models that workers may use
-- budget or quality preference
-- extra usage
-- parallel worker limits and Luna Fast swarm policy
-- optional worker installation
-- OAuth and service startup
+1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with Claude Sonnet 5.
+2. **Worker pool:** choose Balanced, Economical, or individual exact-model workers.
+3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
+4. **Safety and budget:** choose extra-usage behavior, routing preference, and a parallel-worker ceiling.
+5. **Installation:** decide whether setup may open login when needed and start the local proxy service.
+6. **Review:** check the saved command, full worker names, effort behavior, actions, and config path before anything changes.
 
-It prints a full summary before writing files.
+Advanced settings are optional. They contain the separate `airlock bg` convenience command, the utility model used for lightweight Claude Code requests, Fast, failover, capacity hints, the optional generic worker, and per-model controls. None of those concepts are required to complete the normal setup path.
 
 For the tested defaults, run:
 
@@ -95,32 +93,43 @@ It does not make a model request.
 
 ## Start a session
 
-OpenAI only:
+Start the profile and orchestrator saved by setup:
 
 ```bash
 airlock
 ```
 
-Choose a main model while keeping workers from both providers:
+New setup runs recommend the hybrid profile with Claude Sonnet 5. Existing configs created before saved profiles were added keep their OpenAI-only bare command.
+
+Start the saved OpenAI-only root:
+
+```bash
+airlock openai
+```
+
+Start the saved hybrid root or open the full picker:
 
 ```bash
 airlock hybrid
+airlock hybrid choose
 ```
 
 Direct choices:
 
 ```bash
+airlock terra
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
 airlock hybrid opus
 airlock hybrid sonnet
 airlock hybrid fable
+airlock hybrid haiku
 ```
 
-Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
+An OpenAI alias such as `airlock terra` always means an explicit OpenAI-only launch. Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
 
-Plain `airlock` uses native Claude Code Agents with enabled OpenAI model IDs. Hybrid starts one temporary loopback router so native Agents can use enabled OpenAI and Anthropic IDs in the same session.
+The OpenAI-only profile uses native Claude Code Agents with enabled OpenAI model IDs. Hybrid starts one temporary loopback router so native Agents can use enabled OpenAI and Anthropic IDs in the same session.
 
 Explore, Plan, and general-purpose inherit the main model when no model is supplied. The main model may give one of those built-ins an exact full model ID for one call when the active session policy allows it. Named `airlock-*` Agents already have a fixed model. Their effort follows the session unless the config pins it.
 

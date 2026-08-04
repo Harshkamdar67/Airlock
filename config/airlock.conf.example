@@ -1,11 +1,18 @@
 # Managed by https://github.com/Harshkamdar67/Airlock
 # Plain key=value configuration. Do not put credentials in this file.
+# Bare airlock starts the saved hybrid root. Use `airlock openai` for the
+# OpenAI-only profile. Older configs without this key keep their old behavior.
+AIRLOCK_DEFAULT_PROFILE=hybrid
+AIRLOCK_HYBRID_MODEL=sonnet
+# Saved OpenAI-only root, also used by `airlock openai`.
 AIRLOCK_MODEL=sol
 # Starting effort for the root session. Change it live with /effort.
 AIRLOCK_MAIN_EFFORT=high
+# Advanced: separate convenience command. Normal Agents do not use this lane.
 AIRLOCK_BG_MODEL=sol
 AIRLOCK_BG_EFFORT=medium
-AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-sol[1m]
+# Advanced: model for lightweight Claude Code requests such as titles.
+AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna[1m]
 # Effort for every airlock-* worker. "inherit" means a worker follows the
 # session level, so /effort moves the root and its workers together, including
 # mid-session. Any named level pins workers and /effort no longer reaches them.
@@ -14,6 +21,7 @@ AIRLOCK_WORKER_EFFORT=inherit
 # AIRLOCK_WORKER_EFFORT, and accepts inherit to hand that worker back to /effort.
 # AIRLOCK_EFFORT_LUNA=max
 # AIRLOCK_EFFORT_OPUS=xhigh
+# Advanced: optional generic airlock-worker, separate from exact named workers.
 AIRLOCK_SUBAGENT_EFFORT=inherit
 AIRLOCK_EXTRA_USAGE_POLICY=ask
 AIRLOCK_ROUTING_POLICY=balanced

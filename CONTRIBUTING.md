@@ -23,6 +23,7 @@ Run:
 python tests/test-platform.py
 bash tests/test-airlock.sh
 bash tests/test-setup.sh
+python tests/test-setup-pty.py
 ```
 
 The tests use stubs and do not make model requests.

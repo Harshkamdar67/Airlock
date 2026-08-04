@@ -6,7 +6,14 @@ launcher="$repo_root/bin/airlock"
 stub="$repo_root/tests/stub-claude.sh"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-launcher-test.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
-cp "$repo_root/config/airlock.conf.example" "$tmp_dir/config"
+# Build a legacy config without the saved-profile keys to verify that existing
+# installations keep their original OpenAI-only bare command.
+while IFS= read -r line; do
+  case "$line" in
+    AIRLOCK_DEFAULT_PROFILE=*|AIRLOCK_HYBRID_MODEL=*) continue ;;
+  esac
+  printf '%s\n' "$line"
+done < "$repo_root/config/airlock.conf.example" > "$tmp_dir/config"
 cat > "$tmp_dir/access.json" <<'EOF'
 {
   "schema_version": 1,
@@ -225,7 +232,7 @@ fi
 
 normal_output="$(CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^MODEL=gpt-5.6-sol\[1m\]$' <<<"$normal_output"
-grep -q '^SMALL_FAST=gpt-5.6-sol\[1m\]$' <<<"$normal_output"
+grep -q '^SMALL_FAST=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
 grep -q '^ARG=high$' <<<"$normal_output"
 grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
@@ -258,8 +265,13 @@ grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$configured_bg_output"
 grep -q '^ARG=low$' <<<"$configured_bg_output"
 
 config_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" config)"
-grep -q '^Main model: terra$' <<<"$config_output"
-grep -q '^Background effort: low$' <<<"$config_output"
+grep -q '^Default profile: openai$' <<<"$config_output"
+grep -q '^Default command: airlock -> GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
+grep -q '^Hybrid root: Claude Sonnet 5 (claude-sonnet-5)$' <<<"$config_output"
+grep -q '^OpenAI root: GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
+grep -q '^Background command: airlock bg -> GPT-5.6 Luna (gpt-5.6-luna\[1m\]) / low effort$' <<<"$config_output"
+config_alias_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" --config)"
+grep -q '^Default profile: openai$' <<<"$config_alias_output"
 if grep -q '^Worker descendants:' <<<"$config_output"; then
   printf 'test: config output retained broker-era descendant status\n' >&2
   exit 1
@@ -602,6 +614,60 @@ bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$
 grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
 
+# Configs without AIRLOCK_DEFAULT_PROFILE preserve the original OpenAI-only
+# bare command. New configs can save a hybrid root without changing explicit
+# OpenAI aliases or the explicit `airlock openai` command.
+saved_hybrid_config="$tmp_dir/saved-hybrid.conf"
+cp "$custom_config" "$saved_hybrid_config"
+printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=hybrid' 'AIRLOCK_HYBRID_MODEL=sonnet' >> "$saved_hybrid_config"
+saved_hybrid_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+grep -q '^OPENAI_BRIDGE=1$' <<<"$saved_hybrid_output"
+grep -Fq 'ARG=claude-sonnet-5' <<<"$saved_hybrid_output"
+saved_hybrid_command_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid -p test)"
+grep -q '^OPENAI_BRIDGE=1$' <<<"$saved_hybrid_command_output"
+grep -Fq 'ARG=claude-sonnet-5' <<<"$saved_hybrid_command_output"
+saved_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai -p test)"
+grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$saved_openai_output"
+grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$saved_openai_output"
+saved_exact_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai 'gpt-5.6-luna[1m]' -p test)"
+grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_exact_openai_output"
+saved_equals_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai '--model=gpt-5.6-sol[1m]' -p test)"
+grep -q '^MODEL=gpt-5.6-sol\[1m\]$' <<<"$saved_equals_openai_output"
+saved_background_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" background -p test)"
+grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_background_output"
+grep -q '^ARG=low$' <<<"$saved_background_output"
+saved_alias_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" luna -p test)"
+grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_alias_output"
+grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$saved_alias_output"
+
+saved_gpt_config="$tmp_dir/saved-hybrid-gpt.conf"
+cp "$custom_config" "$saved_gpt_config"
+printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=hybrid' 'AIRLOCK_HYBRID_MODEL=terra' >> "$saved_gpt_config"
+saved_gpt_output="$(AIRLOCK_CONFIG_FILE="$saved_gpt_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$saved_gpt_output"
+grep -Fq 'ARG=gpt-5.6-terra[1m]' <<<"$saved_gpt_output"
+
+invalid_profile_config="$tmp_dir/invalid-profile.conf"
+printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=invalid' > "$invalid_profile_config"
+if AIRLOCK_CONFIG_FILE="$invalid_profile_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test >/dev/null 2>&1; then
+  printf 'test: invalid saved default profile unexpectedly launched\n' >&2
+  exit 1
+fi
+invalid_hybrid_config="$tmp_dir/invalid-hybrid.conf"
+printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=hybrid' 'AIRLOCK_HYBRID_MODEL=invalid' > "$invalid_hybrid_config"
+if AIRLOCK_CONFIG_FILE="$invalid_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test >/dev/null 2>&1; then
+  printf 'test: invalid saved hybrid model unexpectedly launched\n' >&2
+  exit 1
+fi
+for invalid_saved_model in 'AIRLOCK_MODEL=invalid' 'AIRLOCK_BG_MODEL=invalid'; do
+  invalid_model_config="$tmp_dir/invalid-model-${invalid_saved_model%%=*}.conf"
+  printf '%s\n' "$invalid_saved_model" > "$invalid_model_config"
+  if AIRLOCK_CONFIG_FILE="$invalid_model_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test >/dev/null 2>&1; then
+    printf 'test: invalid saved model unexpectedly launched: %s\n' "$invalid_saved_model" >&2
+    exit 1
+  fi
+done
+
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid fable -p test >/dev/null 2>&1; then
   printf 'test: unavailable Fable hybrid root unexpectedly launched\n' >&2
   exit 1
@@ -628,8 +694,8 @@ if grep -Fq 'ARG=Skill(claude-api)' <<<"$skill_opt_in_output"; then
   exit 1
 fi
 
-if AIRLOCK_REAL_CLAUDE="$stub" "$launcher" hybrid </dev/null >/dev/null 2>&1; then
-  printf 'test: noninteractive hybrid unexpectedly selected a root\n' >&2
+if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid choose </dev/null >/dev/null 2>&1; then
+  printf 'test: noninteractive hybrid picker unexpectedly selected a root\n' >&2
   exit 1
 fi
 

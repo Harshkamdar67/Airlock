@@ -40,9 +40,9 @@ Review `claude-code-proxy` separately. It owns the OpenAI OAuth flow and protoco
 
 ## Main boundaries
 
-### Plain OpenAI mode
+### OpenAI-only profile
 
-Plain `airlock` points Claude Code directly at the OpenAI proxy on `127.0.0.1:18765`. Only enabled OpenAI model IDs and Agents are allowed.
+`airlock openai` and explicit OpenAI aliases point Claude Code directly at the OpenAI proxy on `127.0.0.1:18765`. Bare `airlock` also uses this path when setup saved the OpenAI-only profile. Only enabled OpenAI model IDs and Agents are allowed.
 
 The proxy has no incoming client password. Do not expose it to a LAN, VPN, container bridge, tunnel, or public address.
 

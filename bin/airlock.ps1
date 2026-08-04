@@ -4,11 +4,6 @@ $Arguments = @($args)
 
 $ErrorActionPreference = 'Stop'
 
-$ProxyUrl   = if ($env:AIRLOCK_PROXY_URL)   { $env:AIRLOCK_PROXY_URL }   else { 'http://127.0.0.1:18765' }
-$MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } else { 'high' }
-$BgEffort   = if ($env:AIRLOCK_BG_EFFORT)   { $env:AIRLOCK_BG_EFFORT }   else { 'medium' }
-$SmallFast  = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } else { 'gpt-5.6-sol[1m]' }
-$ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW)   { $env:AIRLOCK_CONTEXT_WINDOW }   else { '272000' }
 $ConfigFile = if ($env:AIRLOCK_CONFIG_FILE) { $env:AIRLOCK_CONFIG_FILE } else { Join-Path $HOME '.config\airlock\config' }
 $ConfigValues = @{}
 if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
@@ -16,6 +11,15 @@ if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
     if ($line -match '^(AIRLOCK_[A-Z0-9_]+)=(.*)$') { $ConfigValues[$Matches[1]] = $Matches[2].TrimEnd("`r") }
   }
 }
+$ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_URL')) { $ConfigValues['AIRLOCK_PROXY_URL'] } else { 'http://127.0.0.1:18765' }
+$MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
+$BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
+$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol[1m]' }
+$ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW) { $env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
+$DefaultProfile = if ($env:AIRLOCK_DEFAULT_PROFILE) { $env:AIRLOCK_DEFAULT_PROFILE } elseif ($ConfigValues.ContainsKey('AIRLOCK_DEFAULT_PROFILE')) { $ConfigValues['AIRLOCK_DEFAULT_PROFILE'] } else { 'openai' }
+$DefaultHybridModel = if ($env:AIRLOCK_HYBRID_MODEL) { $env:AIRLOCK_HYBRID_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_HYBRID_MODEL')) { $ConfigValues['AIRLOCK_HYBRID_MODEL'] } else { 'sonnet' }
+$DefaultOpenAIModel = if ($env:AIRLOCK_MODEL) { $env:AIRLOCK_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_MODEL')) { $ConfigValues['AIRLOCK_MODEL'] } else { 'sol' }
+$DefaultBgModel = if ($env:AIRLOCK_BG_MODEL) { $env:AIRLOCK_BG_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_MODEL')) { $ConfigValues['AIRLOCK_BG_MODEL'] } else { 'sol' }
 $MaxAgents = if ($env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS) { $env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAX_CONCURRENT_SUBAGENTS')) { $ConfigValues['AIRLOCK_MAX_CONCURRENT_SUBAGENTS'] } else { 'off' }
 $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOCK_GPT_EFFORT_CAPABILITIES } elseif ($ConfigValues.ContainsKey('AIRLOCK_GPT_EFFORT_CAPABILITIES')) { $ConfigValues['AIRLOCK_GPT_EFFORT_CAPABILITIES'] } else { 'effort,xhigh_effort,max_effort' }
 # The hybrid launcher rebuilds these declarations itself, so hand it the
@@ -69,52 +73,54 @@ $ProxyVariables = @(
 )
 
 function Show-Models {
-  Write-Host 'Usage: airlock [model|bg] [claude arguments]'
-  Write-Host '       airlock hybrid [sol|terra|luna|opus|sonnet|fable] [claude arguments]'
+  Write-Host 'Usage: airlock [claude arguments]'
+  Write-Host '       airlock openai [model] [claude arguments]'
+  Write-Host '       airlock hybrid [model|choose] [claude arguments]'
+  Write-Host '       airlock [sol|terra|luna|...] [claude arguments]'
   Write-Host ''
-  Write-Host 'Products:'
-  Write-Host '  airlock          OpenAI root with OpenAI Sol/Terra/Luna workers only'
-  Write-Host '  claude       Native Anthropic CLI, untouched by this launcher'
-  Write-Host '  airlock hybrid   Choose an OpenAI or Anthropic root with all five mixed workers'
+  Write-Host 'Profiles:'
+  Write-Host '  airlock          Start the saved default profile and orchestrator'
+  Write-Host '  airlock openai   Start the saved OpenAI-only orchestrator'
+  Write-Host '  airlock hybrid   Start the saved hybrid orchestrator'
+  Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
-  Write-Host 'OpenAI root aliases: sol (default), sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
-  Write-Host 'Hybrid root aliases/menu: sol, terra, luna, opus, sonnet, fable'
-  Write-Host 'Additional explicit Claude root: haiku'
-  Write-Host 'Other modes: bg, mode, usage, access, bundle, config, models'
+  Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
+  Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku'
+  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models'
   Write-Host ''
-  Write-Host 'Mode and usage policy:'
-  Write-Host '  airlock mode                     Show current/default mode'
+  Write-Host 'Policy commands:'
+  Write-Host '  airlock mode                     Show the saved routing and usage policy'
   Write-Host '  airlock mode balanced|economy|quality'
-  Write-Host '  airlock mode budget              Set economy routing and deny extra usage'
+  Write-Host '  airlock mode budget              Prefer economy routes and block extra usage'
   Write-Host '  airlock mode defaults            Restore tested policy defaults'
   Write-Host '  airlock mode extra-usage ask|never|allow'
   Write-Host '  airlock mode failover ask|never|allow'
   Write-Host '  airlock mode max-agents off|1..20'
   Write-Host '  airlock mode swarm-fast auto|on|off'
-  Write-Host '  airlock mode nesting bounded|off'
-  Write-Host '  airlock mode max-descendants 2'
-  Write-Host '  airlock mode max-total-descendants 3'
-  Write-Host '  airlock mode repair-rounds 2'
-  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto --descendants bounded --max-descendants 2 --max-total-descendants 3 --repair-rounds 2'
-  Write-Host '  airlock usage [refresh]'
+  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto'
+  Write-Host '  airlock usage                    Show cached sanitized subscription usage'
+  Write-Host '  airlock usage refresh            Refresh OpenAI quota windows without a model call'
   Write-Host '  airlock usage set --claude-plan pro|max5x|max20x|unknown'
   Write-Host '  airlock usage set --openai-capacity auto|1x|5x|20x'
+  Write-Host '  airlock usage defaults           Clear capacity overrides'
   Write-Host ''
   Write-Host 'Examples:'
-  Write-Host '  airlock'
-  Write-Host '  airlock terra'
-  Write-Host '  airlock hybrid                 # interactive six-model root menu'
-  Write-Host '  airlock hybrid opus'
-  Write-Host '  airlock hybrid sol --effort high'
+  Write-Host '  airlock                          # saved default profile and orchestrator'
+  Write-Host '  airlock openai                   # saved OpenAI-only orchestrator'
+  Write-Host '  airlock terra                    # explicit OpenAI-only root'
+  Write-Host '  airlock hybrid                   # saved hybrid orchestrator'
+  Write-Host '  airlock hybrid choose            # interactive seven-model picker'
+  Write-Host '  airlock hybrid opus              # explicit hybrid root'
   Write-Host '  airlock access refresh'
   Write-Host ''
   Write-Host 'Inside a session:'
-  Write-Host '  /effort changes root effort.'
-  Write-Host '  /model switches only within the provider selected at launch.'
-  Write-Host '  Exit and relaunch airlock hybrid to switch the root provider.'
+  Write-Host '  /effort changes the root and workers that are configured to follow it.'
+  Write-Host '  Named airlock-* workers use fixed exact models and cannot start more workers.'
+  Write-Host '  /model accepts only exact model IDs enabled for the active profile. Some GPT IDs may not appear in its menu.'
+  Write-Host '  Exit and relaunch with another explicit root when switching through /model is unavailable.'
   Write-Host '  The orchestrator may choose only from the user-enabled worker pool.'
-  Write-Host '  /airlock:usage refreshes sanitized usage (one small root-model turn).'
-  Write-Host '  Top-level workers use Claude Code''s native concurrency by default. Automatic high-volume swarms use Luna only. Real workers may use bounded same-model descendants; descendants cannot spawn again.'
+  Write-Host '  /airlock:usage refreshes sanitized usage with one small root-model turn.'
+  Write-Host '  Top-level workers use Claude Code''s native concurrency unless an Airlock ceiling is saved.'
 }
 
 $script:PythonResolutionAttempted = $false
@@ -240,6 +246,7 @@ function Test-ProxyHealth {
 }
 
 function Start-ProxyIfNeeded {
+  if ($env:AIRLOCK_SKIP_HEALTH_CHECK -eq '1') { return }
   if (Test-ProxyHealth) { return }
   $proxyExe = (Get-Command claude-code-proxy.exe -ErrorAction SilentlyContinue).Source
   if (-not $proxyExe) { $proxyExe = Join-Path $HOME '.local\bin\claude-code-proxy.exe' }
@@ -318,6 +325,16 @@ function Get-ModelProvider {
   param([string]$Model)
   if ($Model -like 'gpt-*') { return 'openai' }
   if ($Model -like 'claude-*') { return 'anthropic' }
+  return $null
+}
+
+function Resolve-OpenAIAlias {
+  param([string]$Model)
+  if ($Models.ContainsKey($Model)) { return $Model }
+  foreach ($alias in $Models.Keys) {
+    $exact = [string]$Models[$alias][0]
+    if ($Model -eq $exact -or $Model -eq $exact.Replace('[1m]', '')) { return $alias }
+  }
   return $null
 }
 
@@ -416,23 +433,65 @@ function Select-HybridRoot {
   $interactive = [Environment]::UserInteractive
   try { $interactive = $interactive -and -not [Console]::IsInputRedirected } catch { }
   if (-not $interactive) {
-    [Console]::Error.WriteLine('airlock: hybrid root is required in noninteractive use: airlock hybrid sol|terra|luna|opus|sonnet|fable')
+    [Console]::Error.WriteLine('airlock: hybrid choose needs an interactive terminal; otherwise use airlock hybrid MODEL')
     exit 2
   }
-  Write-Host 'Choose the airlock hybrid orchestrator:'
-  Write-Host '  1) GPT-5.6 Sol'
-  Write-Host '  2) GPT-5.6 Terra'
-  Write-Host '  3) GPT-5.6 Luna'
-  Write-Host '  4) Claude Opus 5'
-  Write-Host '  5) Claude Sonnet 5'
-  Write-Host '  6) Claude Fable 5 (may use Anthropic extra usage)'
-  $selection = Read-Host 'Selection [1-6]'
-  $choices = @{ '1' = 'sol'; '2' = 'terra'; '3' = 'luna'; '4' = 'opus'; '5' = 'sonnet'; '6' = 'fable' }
+  Write-Host 'Choose the Airlock hybrid orchestrator:'
+  Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5)'
+  Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])'
+  Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])'
+  Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])'
+  Write-Host '  5) Claude Opus 5 (claude-opus-5)'
+  Write-Host '  6) Claude Fable 5 (claude-fable-5; may use extra usage)'
+  Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
+  $selection = Read-Host 'Selection [1-7]'
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
   }
   return $choices[$selection]
+}
+
+if ($DefaultProfile -notin @('openai', 'hybrid')) {
+  [Console]::Error.WriteLine("airlock: unsupported default profile '$DefaultProfile' (expected openai or hybrid)")
+  exit 2
+}
+$DefaultOpenAIAlias = Resolve-OpenAIAlias $DefaultOpenAIModel
+if (-not $DefaultOpenAIAlias) {
+  [Console]::Error.WriteLine("airlock: unsupported saved OpenAI model '$DefaultOpenAIModel'")
+  exit 2
+}
+$DefaultOpenAIModel = $DefaultOpenAIAlias
+if (-not $HybridRoots.ContainsKey($DefaultHybridModel)) {
+  [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
+  exit 2
+}
+$DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
+if (-not $DefaultBgAlias) {
+  [Console]::Error.WriteLine("airlock: unsupported saved background model '$DefaultBgModel'")
+  exit 2
+}
+$DefaultBgModel = $DefaultBgAlias
+if ($DefaultProfile -eq 'hybrid') {
+  $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
+  $explicitCommands = @(
+    'mode', 'usage', 'bundle', 'access', 'models', '--models', 'config', '--config',
+    'hybrid', 'openai', 'bg', 'background', 'sol', 'sol-fast', 'terra',
+    'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
+  )
+  if ($firstArgument -notin $explicitCommands) {
+    if ($firstArgument -in @('--model', '-m') -or $firstArgument -like '--model=*') {
+      $Arguments = @('hybrid') + $Arguments
+    } else {
+      $Arguments = @('hybrid', $DefaultHybridModel) + $Arguments
+    }
+  }
+}
+
+if ($Arguments.Count -gt 0) {
+  if ($Arguments[0] -eq 'background') { $Arguments[0] = 'bg' }
+  if ($Arguments[0] -eq '--config') { $Arguments[0] = 'config' }
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'mode') {
@@ -473,6 +532,11 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'access') {
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   $hybridArgs = @()
   if ($Arguments.Count -gt 1) { $hybridArgs = @($Arguments[1..($Arguments.Count - 1)]) }
+  $chooseRoot = $false
+  if ($hybridArgs.Count -gt 0 -and $hybridArgs[0] -eq 'choose') {
+    $chooseRoot = $true
+    if ($hybridArgs.Count -gt 1) { $hybridArgs = @($hybridArgs[1..($hybridArgs.Count - 1)]) } else { $hybridArgs = @() }
+  }
 
   $rootAlias = $null
   if ($hybridArgs.Count -gt 0 -and $HybridRoots.ContainsKey($hybridArgs[0])) {
@@ -481,7 +545,9 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   }
 
   $explicitModel = Get-ExplicitModel $hybridArgs
-  if (-not $rootAlias -and -not $explicitModel) { $rootAlias = Select-HybridRoot }
+  if (-not $rootAlias -and -not $explicitModel) {
+    $rootAlias = if ($chooseRoot) { Select-HybridRoot } else { $DefaultHybridModel }
+  }
 
   if ($rootAlias) {
     $rootModel = $HybridRoots[$rootAlias][0]
@@ -522,7 +588,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   Invoke-AirlockSession 'hybrid-anthropic-root' $rootModel $rootName $hybridArgs
 }
 
-$requested = 'sol'
+$requested = $DefaultOpenAIModel
 $effort = $MainEffort
 $rest = @()
 
@@ -531,9 +597,16 @@ if ($Arguments.Count -gt 0) {
     'models'   { Show-Models; return }
     '--models' { Show-Models; return }
     'config'   {
-      Write-Host "Main model: $($Models[$requested][0])"
+      $openAIName = "$($Models[$DefaultOpenAIModel][1]) ($($Models[$DefaultOpenAIModel][0]))"
+      $hybridName = "$($HybridRoots[$DefaultHybridModel][1]) ($($HybridRoots[$DefaultHybridModel][0]))"
+      $defaultName = if ($DefaultProfile -eq 'hybrid') { $hybridName } else { $openAIName }
+      Write-Host "Config file: $ConfigFile"
+      Write-Host "Default profile: $DefaultProfile"
+      Write-Host "Default command: airlock -> $defaultName"
+      Write-Host "Hybrid root: $hybridName"
+      Write-Host "OpenAI root: $openAIName"
       Write-Host "Main effort: $MainEffort"
-      Write-Host "Background: $($Models['sol'][0]) / $BgEffort"
+      Write-Host "Background command: airlock bg -> $($Models[$DefaultBgModel][1]) ($($Models[$DefaultBgModel][0])) / $BgEffort effort"
       Write-Host "Utility model: $SmallFast"
       Write-Host "Context window: $ContextWin"
       Write-Host "Proxy URL: $ProxyUrl"
@@ -547,13 +620,62 @@ if ($Arguments.Count -gt 0) {
       if ($accessExitCode -ne 0) { exit $accessExitCode }
       return
     }
+    '--model' {
+      if ($Arguments.Count -lt 2) {
+        [Console]::Error.WriteLine('airlock: --model requires a model')
+        exit 2
+      }
+      $requested = $Arguments[1]
+      if ($Arguments.Count -gt 2) { $rest = @($Arguments[2..($Arguments.Count - 1)]) }
+    }
+    '-m' {
+      if ($Arguments.Count -lt 2) {
+        [Console]::Error.WriteLine('airlock: -m requires a model')
+        exit 2
+      }
+      $requested = $Arguments[1]
+      if ($Arguments.Count -gt 2) { $rest = @($Arguments[2..($Arguments.Count - 1)]) }
+    }
+    'openai' {
+      if ($Arguments.Count -gt 1) {
+        $openAIArgument = $Arguments[1]
+        $openAIAlias = Resolve-OpenAIAlias $openAIArgument
+        if ($openAIArgument -in @('--model', '-m')) {
+          if ($Arguments.Count -lt 3) {
+            [Console]::Error.WriteLine("airlock: $openAIArgument requires a model")
+            exit 2
+          }
+          $requested = $Arguments[2]
+          if ($Arguments.Count -gt 3) { $rest = @($Arguments[3..($Arguments.Count - 1)]) }
+        } elseif ($openAIArgument -like '--model=*') {
+          $requested = $openAIArgument.Substring('--model='.Length)
+          if (-not $requested) {
+            [Console]::Error.WriteLine('airlock: --model requires a model')
+            exit 2
+          }
+          if ($Arguments.Count -gt 2) { $rest = @($Arguments[2..($Arguments.Count - 1)]) }
+        } elseif ($openAIAlias) {
+          $requested = $openAIAlias
+          if ($Arguments.Count -gt 2) { $rest = @($Arguments[2..($Arguments.Count - 1)]) }
+        } else {
+          $rest = @($Arguments[1..($Arguments.Count - 1)])
+        }
+      }
+    }
     'bg' {
-      $requested = 'sol'
+      $requested = $DefaultBgModel
       $effort = $BgEffort
       if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
     }
     default {
-      if ($Models.ContainsKey($Arguments[0])) {
+      if ($Arguments[0] -like '--model=*') {
+        $requested = $Arguments[0].Substring('--model='.Length)
+        if (-not $requested) {
+          [Console]::Error.WriteLine('airlock: --model requires a model')
+          exit 2
+        }
+        if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
+      } elseif ($Models.ContainsKey($Arguments[0])) {
         $requested = $Arguments[0]
         if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
       } else {
@@ -563,8 +685,13 @@ if ($Arguments.Count -gt 0) {
   }
 }
 
-$selected = $Models[$requested][0]
-$modelName = $Models[$requested][1]
+$requestedAlias = Resolve-OpenAIAlias $requested
+if (-not $requestedAlias) {
+  [Console]::Error.WriteLine("airlock: unsupported OpenAI model '$requested'")
+  exit 2
+}
+$selected = $Models[$requestedAlias][0]
+$modelName = $Models[$requestedAlias][1]
 Test-FastRootModel $selected
 Set-OpenAIEnvironment $selected $modelName
 Remove-Item -LiteralPath 'Env:AIRLOCK_HYBRID' -ErrorAction SilentlyContinue

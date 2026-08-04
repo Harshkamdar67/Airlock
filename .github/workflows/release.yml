@@ -47,8 +47,10 @@ jobs:
           python tests/test-platform.py
           python tests/test-release.py
           python tests/test-docs.py
+          python -m py_compile tests/test-setup-pty.py
           bash tests/test-airlock.sh
           bash tests/test-setup.sh
+          python tests/test-setup-pty.py
 
       - name: Build source archives
         shell: bash
