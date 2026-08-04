@@ -7,12 +7,57 @@ $PowerShellFiles = @(
   (Join-Path $Root 'scripts\install.ps1'),
   (Join-Path $Root 'scripts\doctor.ps1')
 )
+# PowerShell reads an undefined variable as empty instead of failing, so a
+# parse check alone would let a typo or a missing default through. Compare the
+# variables each script reads against the ones it assigns.
+$AutomaticVariables = @(
+  'args', 'false', 'true', 'null', 'HOME', 'PSScriptRoot', 'PSCommandPath',
+  'LASTEXITCODE', 'Matches', '_', 'PSItem', 'MyInvocation', 'PID', 'Host',
+  'Error', 'input', 'foreach', 'switch', 'PSVersionTable', 'IsWindows',
+  'ErrorActionPreference', 'ProgressPreference', 'InformationPreference',
+  'WarningPreference', 'VerbosePreference', 'DebugPreference', 'OutputEncoding'
+)
+# UnqualifiedPath is empty for a plain name on Windows PowerShell 5.1, so strip
+# the scope prefix by hand instead. Drive-qualified names such as $env:PATH are
+# skipped before this runs.
+function Get-BareVariableName($VariablePath) {
+  $name = $VariablePath.UserPath
+  $separator = $name.LastIndexOf(':')
+  if ($separator -ge 0) { return $name.Substring($separator + 1) }
+  return $name
+}
 foreach ($path in $PowerShellFiles) {
   $tokens = $null
   $errors = $null
-  [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
   if ($errors.Count -gt 0) {
     throw "PowerShell parse failed for $path`: $($errors[0].Message)"
+  }
+  # Compare bare names so a scope prefix such as $script:Failures matches the
+  # plain $Failures that defined it.
+  $assigned = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in $AutomaticVariables) { [void]$assigned.Add($name) }
+  foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+    if ($node.Left -is [Management.Automation.Language.VariableExpressionAst]) {
+      [void]$assigned.Add((Get-BareVariableName $node.Left.VariablePath))
+    }
+  }
+  foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.ParameterAst] }, $true)) {
+    [void]$assigned.Add((Get-BareVariableName $node.Name.VariablePath))
+  }
+  foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] }, $true)) {
+    [void]$assigned.Add((Get-BareVariableName $node.Variable.VariablePath))
+  }
+  foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.ConvertExpressionAst] }, $true)) {
+    if ($node.Type.TypeName.Name -eq 'ref' -and $node.Child -is [Management.Automation.Language.VariableExpressionAst]) {
+      [void]$assigned.Add((Get-BareVariableName $node.Child.VariablePath))
+    }
+  }
+  foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
+    if ($node.VariablePath.IsDriveQualified) { continue }
+    if (-not $assigned.Contains((Get-BareVariableName $node.VariablePath))) {
+      throw "PowerShell script $path reads `$$($node.VariablePath.UserPath) without assigning it"
+    }
   }
 }
 
