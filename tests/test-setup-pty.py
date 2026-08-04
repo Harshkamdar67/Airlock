@@ -66,6 +66,36 @@ def disable_terminal_echo(fd: int) -> None:
     termios.tcsetattr(fd, termios.TCSANOW, attributes)
 
 
+def wait_for_child(child_pid: int, timeout: float) -> int | None:
+    """Reap a child without allowing waitpid itself to hang the test job."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
+        if waited_pid == child_pid:
+            return status
+        time.sleep(0.05)
+    return None
+
+
+def terminate_child_group(child_pid: int) -> int:
+    """Bound termination of the wizard and anything it started."""
+    try:
+        os.killpg(child_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    status = wait_for_child(child_pid, 2.0)
+    if status is not None:
+        return status
+    try:
+        os.killpg(child_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    status = wait_for_child(child_pid, 2.0)
+    if status is None:
+        raise AssertionError("guided setup process group could not be reaped")
+    return status
+
+
 def run_wizard(
     config_dir: Path,
     *,
@@ -88,6 +118,8 @@ def run_wizard(
     producing output, which is what makes single keystrokes such as an arrow key
     land on the question they are meant for.
     """
+    run_label = config_dir.name
+    print(f"Setup PTY: starting {run_label}", flush=True)
     master_fd, slave_fd = pty.openpty()
     set_window_size(slave_fd, rows, columns)
     if not echo_input:
@@ -169,14 +201,22 @@ def run_wizard(
                 output_parts.append(chunk)
                 quiet_since = time.monotonic()
             else:
-                _, status = os.waitpid(child_pid, 0)
-                break
+                status = wait_for_child(child_pid, 1.0)
+                if status is not None:
+                    break
+                time.sleep(0.05)
         else:
-            os.kill(child_pid, signal.SIGTERM)
-            os.waitpid(child_pid, 0)
+            status = terminate_child_group(child_pid)
+            partial_output = (
+                b"".join(output_parts)
+                .decode("utf-8", errors="replace")
+                .replace("\r", "")
+            )
             raise AssertionError(
-                f"guided setup did not finish within {timeout:g} seconds at "
-                f"{columns} columns"
+                f"guided setup {run_label} did not finish within {timeout:g} "
+                f"seconds at {columns} columns with {len(pending)} keystroke(s) "
+                f"left; terminated with {os.waitstatus_to_exitcode(status)}:\n"
+                f"{partial_output[-4000:]}"
             )
     finally:
         os.close(master_fd)
@@ -184,9 +224,14 @@ def run_wizard(
             os.close(pipe_read)
 
     if status is None:
-        _, status = os.waitpid(child_pid, 0)
+        status = wait_for_child(child_pid, 2.0)
+    if status is None:
+        status = terminate_child_group(child_pid)
+        raise AssertionError(f"guided setup {run_label} closed output but did not exit")
     output = b"".join(output_parts).decode("utf-8", errors="replace").replace("\r", "")
-    return os.waitstatus_to_exitcode(status), output
+    exit_code = os.waitstatus_to_exitcode(status)
+    print(f"Setup PTY: finished {run_label} with exit {exit_code}", flush=True)
+    return exit_code, output
 
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
@@ -372,7 +417,8 @@ REVIEW_SCREEN = (
     "Airlock will not:",
     "touch your Claude Code sign-in, native Claude Code, or native Codex",
     "change global settings, global hooks, registered plugins, or MCP configuration",
-    "read, copy, or store any login token",
+    "read, print, copy, or expose any login token; the upstream proxy keeps its "
+    "OAuth data private",
     "Press Enter to apply. Type n to quit without changes, or s to start over.",
     "Apply this configuration? [Y/n/s]:",
 )
@@ -395,6 +441,8 @@ EXPECTED_CONFIG = (
     "AIRLOCK_WORKER_EFFORT=inherit\n",
     "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n",
     "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n",
+    "AIRLOCK_PROXY_CONFIG_DIR=\n",
+    "AIRLOCK_PROXY_STATE_HOME=\n",
 )
 
 

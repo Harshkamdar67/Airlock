@@ -40,3 +40,7 @@ AIRLOCK_CONTEXT_WINDOW=272000
 # roots. Anything left off this list is turned off for them.
 AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
 AIRLOCK_PROXY_URL=http://127.0.0.1:18765
+# Usually blank. Setup fills these only when the proxy's normal user-owned
+# config or state parent is not writable. They are directory paths, not tokens.
+AIRLOCK_PROXY_CONFIG_DIR=
+AIRLOCK_PROXY_STATE_HOME=

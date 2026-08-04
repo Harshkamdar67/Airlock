@@ -53,12 +53,14 @@ The hybrid router accepts only exact enabled model IDs, the deterministic wire f
 
 ## Protect provider credentials
 
-Use only the proxy's official login commands:
+Use only the proxy's official login commands. After installation, Airlock's wrapper invokes those exact upstream commands with the configured private proxy directory:
 
 ```bash
-claude-code-proxy codex auth login
-claude-code-proxy codex auth device
+airlock proxy auth login
+airlock proxy auth device
 ```
+
+During first installation, `./scripts/install.sh --login` invokes `claude-code-proxy codex auth login` directly with the same supported directory selection.
 
 Never copy a token into this repository, a shell alias, an env file, an issue, or a support message.
 

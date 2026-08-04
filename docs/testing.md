@@ -72,7 +72,7 @@ python tests/test-setup-pty.py
 
 These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
 
-`test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. It prints a skip on Windows, where the Python PTY module is unavailable.
+`test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. Every run reports its start and finish. A timeout terminates the full child process group within a fixed grace period and reports the last output plus unsent key count. The suite prints a skip on Windows, where the Python PTY module is unavailable.
 
 ## macOS and Linux installer test
 
@@ -80,7 +80,7 @@ These tests replace Claude Code and provider commands with stubs. They verify ol
 bash tests/test-install.sh
 ```
 
-This test installs into a temporary folder with fake commands. It checks the installed file set and modes, managed-file conflicts, missing Claude Code, automatic proxy installation, signed-out Codex OAuth with and without approved login, separate Claude login reporting, and doctor failure for an unhealthy proxy. It exits without running on other systems, where `tests/test-windows.ps1` covers the same ground.
+This test installs into a temporary folder with fake commands. It checks the installed file set and modes, managed-file conflicts, missing Claude Code, automatic proxy installation, signed-out Codex OAuth with and without approved login, writable proxy config and state fallback selection, private directory modes, generated Homebrew service environment, the `airlock proxy auth` wrapper, separate Claude login reporting, and doctor failure for an unhealthy proxy. It exits without running on other systems, where `tests/test-windows.ps1` covers the same ground.
 
 ## Windows tests
 

@@ -165,6 +165,104 @@ if [[ ! -f "$agent_dir/airlock-worker.md" ]]; then
   exit 1
 fi
 
+# When both normal proxy parents are blocked, the installer must send the
+# documented directory overrides to every upstream auth command. It must not
+# inspect or copy the synthetic auth marker used by this test.
+(
+  fallback_home="$tmp_dir/proxy-fallback-home"
+  fallback_stubs="$tmp_dir/proxy-fallback-stubs"
+  fallback_log="$tmp_dir/proxy-fallback.log"
+  fallback_brew_log="$tmp_dir/proxy-fallback-brew.log"
+  fallback_auth_state="$tmp_dir/proxy-fallback-authenticated"
+  mkdir -p "$fallback_home" "$fallback_stubs"
+  printf 'blocked config parent\n' > "$fallback_home/.config"
+  printf 'blocked state parent\n' > "$fallback_home/.local"
+  cat > "$fallback_stubs/claude" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then printf 'Claude Code test\n'; fi
+if [[ "${1:-} ${2:-}" == "auth status" ]]; then exit 0; fi
+exit 0
+EOF
+  cat > "$fallback_stubs/claude-code-proxy" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${CCP_CONFIG_DIR:-unset}" "${XDG_STATE_HOME:-unset}" "$*" >> "$AIRLOCK_TEST_PROXY_LOG"
+if [[ "${1:-}" == "--version" ]]; then printf 'Proxy test\n'; exit 0; fi
+if [[ "${1:-} ${2:-} ${3:-}" == "codex auth status" ]]; then
+  [[ -f "$AIRLOCK_TEST_AUTH_STATE" ]]
+  exit
+fi
+if [[ "${1:-} ${2:-} ${3:-}" == "codex auth login" ]]; then
+  [[ "$CCP_CONFIG_DIR" == "$AIRLOCK_TEST_EXPECTED_CONFIG" ]]
+  [[ "$XDG_STATE_HOME" == "$AIRLOCK_TEST_EXPECTED_STATE" ]]
+  : > "$AIRLOCK_TEST_AUTH_STATE"
+  exit 0
+fi
+exit 0
+EOF
+  cat > "$fallback_stubs/brew" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AIRLOCK_TEST_BREW_LOG"
+exit 0
+EOF
+  chmod 0755 "$fallback_stubs/claude" "$fallback_stubs/claude-code-proxy" "$fallback_stubs/brew"
+  expected_proxy_config="$fallback_home/.airlock/claude-code-proxy"
+  expected_proxy_state="$fallback_home/.airlock/proxy-state"
+  HOME="$fallback_home" XDG_CONFIG_HOME='' XDG_STATE_HOME='' AIRLOCK_CONFIG_DIR='' \
+  AIRLOCK_INSTALL_DIR="$fallback_home/bin" AIRLOCK_AGENT_DIR="$fallback_home/agents" \
+  AIRLOCK_TEST_PROXY_LOG="$fallback_log" AIRLOCK_TEST_BREW_LOG="$fallback_brew_log" \
+  AIRLOCK_TEST_AUTH_STATE="$fallback_auth_state" \
+  AIRLOCK_TEST_EXPECTED_CONFIG="$expected_proxy_config" \
+  AIRLOCK_TEST_EXPECTED_STATE="$expected_proxy_state" \
+  PATH="$fallback_stubs:/usr/bin:/bin" \
+    bash "$repo_root/scripts/install.sh" --login --no-service >/dev/null
+  test -f "$fallback_auth_state"
+  test -d "$expected_proxy_config"
+  test -d "$expected_proxy_state"
+  python3 - "$expected_proxy_config" "$expected_proxy_state" <<'PY'
+from pathlib import Path
+import stat
+import sys
+for value in sys.argv[1:]:
+    assert stat.S_IMODE(Path(value).stat().st_mode) == 0o700
+PY
+  grep -q "^$expected_proxy_config|$expected_proxy_state|codex auth status$" "$fallback_log"
+  grep -q "^$expected_proxy_config|$expected_proxy_state|codex auth login$" "$fallback_log"
+  HOME="$fallback_home" XDG_CONFIG_HOME='' XDG_STATE_HOME='' AIRLOCK_CONFIG_DIR='' \
+  AIRLOCK_TEST_PROXY_LOG="$fallback_log" AIRLOCK_TEST_BREW_LOG="$fallback_brew_log" \
+  AIRLOCK_TEST_AUTH_STATE="$fallback_auth_state" \
+  PATH="$fallback_stubs:$fallback_home/bin:/usr/bin:/bin" \
+    "$fallback_home/bin/airlock" proxy auth status >/dev/null
+  HOME="$fallback_home" XDG_CONFIG_HOME='' XDG_STATE_HOME='' AIRLOCK_CONFIG_DIR='' \
+  AIRLOCK_TEST_PROXY_LOG="$fallback_log" AIRLOCK_TEST_BREW_LOG="$fallback_brew_log" \
+  AIRLOCK_TEST_AUTH_STATE="$fallback_auth_state" AIRLOCK_PROXY_URL='http://127.0.0.1:1' \
+  PATH="$fallback_stubs:$fallback_home/bin:/usr/bin:/bin" \
+    bash "$repo_root/scripts/doctor.sh" > "$tmp_dir/proxy-fallback-doctor.out" 2>&1 && {
+      printf 'test: fallback Doctor ignored the intentionally closed health port\n' >&2
+      exit 1
+    }
+  grep -q '^PASS  Codex OAuth is configured$' "$tmp_dir/proxy-fallback-doctor.out"
+  test "$(grep -c "^$expected_proxy_config|$expected_proxy_state|codex auth status$" "$fallback_log")" -eq 3
+
+  HOME="$fallback_home" XDG_CONFIG_HOME='' XDG_STATE_HOME='' AIRLOCK_CONFIG_DIR='' \
+  AIRLOCK_INSTALL_DIR="$fallback_home/bin" AIRLOCK_AGENT_DIR="$fallback_home/agents" \
+  AIRLOCK_TEST_PROXY_LOG="$fallback_log" AIRLOCK_TEST_BREW_LOG="$fallback_brew_log" \
+  AIRLOCK_TEST_AUTH_STATE="$fallback_auth_state" \
+  PATH="$fallback_stubs:/usr/bin:/bin" \
+    bash "$repo_root/scripts/install.sh" >/dev/null
+  case "$(uname -s)" in
+    Darwin)
+      fallback_service_file="$fallback_home/.airlock/claude-code-proxy.plist"
+      plutil -lint "$fallback_service_file" >/dev/null
+      ;;
+    Linux) fallback_service_file="$fallback_home/.airlock/claude-code-proxy.service" ;;
+  esac
+  test -f "$fallback_service_file"
+  grep -qF 'Managed by https://github.com/Harshkamdar67/Airlock' "$fallback_service_file"
+  grep -qF "$expected_proxy_config" "$fallback_service_file"
+  grep -qF "$expected_proxy_state" "$fallback_service_file"
+  grep -q "^services start claude-code-proxy --file=$fallback_service_file$" "$fallback_brew_log"
+)
+
 # A file the installer does not recognize must stop the install rather than be
 # replaced, and the refusal must leave the file exactly as it was.
 printf 'unmanaged launcher\n' > "$install_dir/airlock"

@@ -7,7 +7,7 @@ Your task in this repository is to install and verify Airlock without exposing c
 3. On macOS or Linux, ask for missing model, effort, worker, OAuth, and service choices, or invite the user to run `./scripts/setup.sh`.
 4. Apply explicit macOS or Linux choices with `./scripts/setup.sh --yes` and matching flags. The tested default installer is `./scripts/install.sh --with-agent`.
 5. On Windows, use `powershell -NoProfile -File .\scripts\install.ps1`. Add `-WithAgent` only when requested.
-6. If `claude-code-proxy codex auth status` is not healthy, stop and ask the user to run `claude-code-proxy codex auth login` in an interactive terminal. Never read, print, copy, summarize, or commit OAuth credentials or token files.
+6. If Codex OAuth is not healthy, stop for interactive approval. On macOS or Linux, use `./scripts/install.sh --login`, or `airlock proxy auth login` after installation, so the proxy receives Airlock's saved writable directory choice. On Windows, ask the user to run `claude-code-proxy codex auth login` in an interactive terminal. Never read, print, copy, summarize, or commit OAuth credentials or token files.
 7. Run the matching doctor script. Use `./scripts/doctor.sh` on macOS or Linux and `powershell -NoProfile -File .\scripts\doctor.ps1` on Windows.
 8. Run the normal stub tests. They do not make a model request. Include `bash tests/test-airlock.sh`, `bash tests/test-setup.sh`, and the platform tests listed in `docs/testing.md`.
 9. Do not run a live model test without permission that names the provider, model, repository files, public web access, extra usage, and worker count.

@@ -78,7 +78,7 @@ Clone this repository and run:
 ./scripts/setup.sh
 ```
 
-The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`.
+The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`. If the upstream proxy's normal config or state parent is also blocked, setup gives the proxy a private writable fallback and uses it consistently for OAuth, the service, the launcher, and Doctor.
 
 Background-command, utility, Fast, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 
@@ -172,6 +172,8 @@ airlock mode swarm-fast auto    # gate Luna Fast by plan and proxy support
 airlock usage                   # refresh stale OpenAI usage and show it
 airlock config                  # show saved roots and advanced values
 airlock bundle                  # verify managed files
+airlock proxy auth status       # check Codex OAuth in the selected proxy directory
+airlock proxy auth login        # start the upstream browser login
 airlock models                  # list model shortcuts
 ```
 

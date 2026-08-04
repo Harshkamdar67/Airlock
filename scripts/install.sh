@@ -27,6 +27,89 @@ resolve_airlock_config_dir() {
   fi
 }
 
+directory_is_writable_or_creatable() {
+  local directory="$1"
+  local parent
+  if [[ -d "$directory" ]]; then
+    [[ -w "$directory" ]]
+    return
+  fi
+  [[ ! -e "$directory" ]] || return 1
+  parent="$(dirname "$directory")"
+  while [[ ! -e "$parent" ]]; do
+    directory="$parent"
+    parent="$(dirname "$directory")"
+    [[ "$parent" != "$directory" ]] || break
+  done
+  [[ -d "$parent" && -w "$parent" ]]
+}
+
+read_config_value() {
+  local wanted_key="$1"
+  local key value
+  CONFIG_VALUE=''
+  [[ -f "$config_target" ]] || return 0
+  while IFS='=' read -r key value; do
+    if [[ "$key" == "$wanted_key" ]]; then
+      CONFIG_VALUE="${value%$'\r'}"
+    fi
+  done < "$config_target"
+}
+
+resolve_proxy_storage() {
+  local configured_config_dir configured_state_home default_config_dir default_state_home
+  read_config_value AIRLOCK_PROXY_CONFIG_DIR
+  configured_config_dir="$CONFIG_VALUE"
+  read_config_value AIRLOCK_PROXY_STATE_HOME
+  configured_state_home="$CONFIG_VALUE"
+
+  proxy_config_dir="${CCP_CONFIG_DIR:-${AIRLOCK_PROXY_CONFIG_DIR:-$configured_config_dir}}"
+  proxy_state_home="${XDG_STATE_HOME:-${AIRLOCK_PROXY_STATE_HOME:-$configured_state_home}}"
+  case "$(uname -s)" in
+    Darwin) default_config_dir="$HOME/.config/claude-code-proxy" ;;
+    *) default_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-proxy" ;;
+  esac
+  default_state_home="$HOME/.local/state"
+
+  if [[ -z "$proxy_config_dir" ]] && ! directory_is_writable_or_creatable "$default_config_dir"; then
+    proxy_config_dir="$config_dir/claude-code-proxy"
+  fi
+  if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_state_home"; then
+    proxy_state_home="$config_dir/proxy-state"
+  fi
+}
+
+prepare_private_proxy_directory() {
+  local directory="$1"
+  [[ -n "$directory" ]] || return 0
+  if [[ -L "$directory" || ( -e "$directory" && ! -d "$directory" ) ]]; then
+    printf 'install: refusing unsafe proxy data directory.\n' >&2
+    return 1
+  fi
+  if [[ ! -d "$directory" ]]; then
+    (umask 077 && mkdir -p "$directory") 2>/dev/null || {
+      printf 'install: Airlock could not create a private writable directory for the proxy.\n' >&2
+      return 1
+    }
+  fi
+  [[ -w "$directory" ]] || {
+    printf 'install: the selected proxy data directory is not writable.\n' >&2
+    return 1
+  }
+}
+
+run_proxy_command() {
+  if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  elif [[ -n "$proxy_config_dir" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" claude-code-proxy "$@"
+  elif [[ -n "$proxy_state_home" ]]; then
+    env XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  else
+    claude-code-proxy "$@"
+  fi
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_dir="${AIRLOCK_INSTALL_DIR:-$HOME/.local/bin}"
 launcher_target="$install_dir/airlock"
@@ -40,6 +123,9 @@ config_source="${AIRLOCK_CONFIG_SOURCE:-$repo_root/config/airlock.conf.example}"
 with_agent=0
 run_login=0
 skip_service=0
+proxy_config_dir=''
+proxy_state_home=''
+resolve_proxy_storage
 
 usage() {
   cat <<'EOF'
@@ -94,20 +180,142 @@ if ! command -v claude-code-proxy >/dev/null 2>&1; then
   brew install raine/claude-code-proxy/claude-code-proxy
 fi
 
-if ! claude-code-proxy codex auth status >/dev/null 2>&1; then
+prepare_private_proxy_directory "$proxy_config_dir"
+prepare_private_proxy_directory "$proxy_state_home"
+
+if ! run_proxy_command codex auth status >/dev/null 2>&1; then
   if [[ "$run_login" -eq 1 ]]; then
-    claude-code-proxy codex auth login
+    run_proxy_command codex auth login
   else
-    printf '\nCodex OAuth needs interactive approval. Run:\n\n'
-    printf '  claude-code-proxy codex auth login\n\n'
-    printf 'Then rerun this installer. No token needs to be copied into Airlock.\n'
+    printf '\nCodex OAuth needs interactive approval. Rerun this installer with:\n\n'
+    printf '  ./scripts/install.sh --login\n\n'
+    printf 'Airlock will choose the same private proxy directory automatically.\n'
     exit 2
   fi
 fi
 
+render_proxy_service_file() {
+  local platform proxy_executable state_home log_dir service_file python_bin
+  platform="$(uname -s)"
+  proxy_executable="$(command -v claude-code-proxy)"
+  state_home="${proxy_state_home:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+  log_dir="$state_home/claude-code-proxy"
+  prepare_private_proxy_directory "$state_home"
+  prepare_private_proxy_directory "$log_dir"
+  case "$platform" in
+    Darwin) service_file="$config_dir/claude-code-proxy.plist" ;;
+    Linux) service_file="$config_dir/claude-code-proxy.service" ;;
+    *) return 1 ;;
+  esac
+  if [[ -e "$service_file" ]] && ! grep -qF 'Managed by https://github.com/Harshkamdar67/Airlock' "$service_file"; then
+    printf 'install: refusing to overwrite an unmanaged proxy service file.\n' >&2
+    return 1
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="$(command -v python3)"
+  else
+    python_bin="$(command -v python)"
+  fi
+  "$python_bin" - "$platform" "$service_file" "$proxy_executable" "$proxy_config_dir" "$proxy_state_home" "$log_dir/service.log" <<'PY'
+from pathlib import Path
+import os
+import plistlib
+import sys
+import tempfile
+
+platform, target_text, executable, config_dir, state_home, log_file = sys.argv[1:]
+target = Path(target_text)
+environment = {}
+if config_dir:
+    environment["CCP_CONFIG_DIR"] = config_dir
+if state_home:
+    environment["XDG_STATE_HOME"] = state_home
+marker = "Managed by https://github.com/Harshkamdar67/Airlock"
+if platform == "Darwin":
+    payload = plistlib.dumps(
+        {
+            "Label": "homebrew.mxcl.claude-code-proxy",
+            "ProgramArguments": [executable, "serve", "--no-monitor"],
+            "KeepAlive": True,
+            "RunAtLoad": True,
+            "EnvironmentVariables": environment,
+            "StandardOutPath": log_file,
+            "StandardErrorPath": log_file,
+        },
+        sort_keys=False,
+    ).decode("utf-8")
+    payload = payload.replace("<plist version=\"1.0\">", f"<!-- {marker} -->\n<plist version=\"1.0\">", 1)
+else:
+    def quote(value: str) -> str:
+        value = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{value}"'
+
+    lines = [
+        f"# {marker}",
+        "[Unit]",
+        "Description=Airlock OpenAI proxy",
+        "",
+        "[Service]",
+        f"ExecStart={quote(executable)} serve --no-monitor",
+        "Restart=always",
+        "RestartSec=1",
+    ]
+    for key, value in environment.items():
+        lines.append(f"Environment={quote(f'{key}={value}')}")
+    lines.extend(["", "[Install]", "WantedBy=default.target", ""])
+    payload = "\n".join(lines)
+
+target.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(payload)
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, target)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  printf '%s' "$service_file"
+}
+
+start_proxy_background() {
+  local proxy_executable state_home log_dir
+  proxy_executable="$(command -v claude-code-proxy)"
+  state_home="${proxy_state_home:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+  log_dir="$state_home/claude-code-proxy"
+  prepare_private_proxy_directory "$state_home"
+  prepare_private_proxy_directory "$log_dir"
+  if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
+    nohup env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  elif [[ -n "$proxy_config_dir" ]]; then
+    nohup env CCP_CONFIG_DIR="$proxy_config_dir" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  elif [[ -n "$proxy_state_home" ]]; then
+    nohup env XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  else
+    nohup "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+  fi
+}
+
+start_proxy_service() {
+  local service_file=''
+  if [[ -n "$proxy_config_dir" || -n "$proxy_state_home" ]]; then
+    service_file="$(render_proxy_service_file)" || return 1
+    brew services stop claude-code-proxy >/dev/null 2>&1 || true
+    if brew services start claude-code-proxy --file="$service_file" >/dev/null 2>&1 || \
+       brew services start raine/claude-code-proxy/claude-code-proxy --file="$service_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    printf 'Homebrew could not register the private proxy service; starting it for this login session instead.\n'
+    start_proxy_background
+  else
+    brew services start claude-code-proxy >/dev/null 2>&1 || \
+      brew services start raine/claude-code-proxy/claude-code-proxy >/dev/null
+  fi
+}
+
 if [[ "$skip_service" -eq 0 ]]; then
-  brew services start claude-code-proxy >/dev/null 2>&1 || \
-    brew services start raine/claude-code-proxy/claude-code-proxy >/dev/null
+  start_proxy_service
 fi
 
 mkdir -p "$config_dir"

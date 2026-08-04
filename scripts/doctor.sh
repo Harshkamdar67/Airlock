@@ -34,7 +34,61 @@ resolve_airlock_config_dir() {
   fi
 }
 
+directory_is_writable_or_creatable() {
+  local directory="$1"
+  local parent
+  if [[ -d "$directory" ]]; then
+    [[ -w "$directory" ]]
+    return
+  fi
+  [[ ! -e "$directory" ]] || return 1
+  parent="$(dirname "$directory")"
+  while [[ ! -e "$parent" ]]; do
+    directory="$parent"
+    parent="$(dirname "$directory")"
+    [[ "$parent" != "$directory" ]] || break
+  done
+  [[ -d "$parent" && -w "$parent" ]]
+}
+
+run_proxy_command() {
+  if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  elif [[ -n "$proxy_config_dir" ]]; then
+    env CCP_CONFIG_DIR="$proxy_config_dir" claude-code-proxy "$@"
+  elif [[ -n "$proxy_state_home" ]]; then
+    env XDG_STATE_HOME="$proxy_state_home" claude-code-proxy "$@"
+  else
+    claude-code-proxy "$@"
+  fi
+}
+
 config_dir="$(resolve_airlock_config_dir)"
+config_target="${AIRLOCK_CONFIG_FILE:-$config_dir/config}"
+config_proxy_config_dir=''
+config_proxy_state_home=''
+if [[ -f "$config_target" ]]; then
+  while IFS='=' read -r config_key config_value; do
+    config_value="${config_value%$'\r'}"
+    case "$config_key" in
+      AIRLOCK_PROXY_CONFIG_DIR) config_proxy_config_dir="$config_value" ;;
+      AIRLOCK_PROXY_STATE_HOME) config_proxy_state_home="$config_value" ;;
+    esac
+  done < "$config_target"
+fi
+proxy_config_dir="${CCP_CONFIG_DIR:-${AIRLOCK_PROXY_CONFIG_DIR:-$config_proxy_config_dir}}"
+proxy_state_home="${XDG_STATE_HOME:-${AIRLOCK_PROXY_STATE_HOME:-$config_proxy_state_home}}"
+case "$(uname -s)" in
+  Darwin) default_proxy_config_dir="$HOME/.config/claude-code-proxy" ;;
+  *) default_proxy_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-proxy" ;;
+esac
+default_proxy_state_home="$HOME/.local/state"
+if [[ -z "$proxy_config_dir" ]] && ! directory_is_writable_or_creatable "$default_proxy_config_dir"; then
+  proxy_config_dir="$config_dir/claude-code-proxy"
+fi
+if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_proxy_state_home"; then
+  proxy_state_home="$config_dir/proxy-state"
+fi
 
 if command -v claude >/dev/null 2>&1; then
   pass "Claude Code: $(claude --version 2>/dev/null | head -1)"
@@ -50,15 +104,16 @@ else
 fi
 
 if command -v claude-code-proxy >/dev/null 2>&1; then
-  pass "Proxy: $(claude-code-proxy --version 2>/dev/null | head -1)"
+  pass "Proxy: $(run_proxy_command --version 2>/dev/null | head -1)"
 else
   fail 'claude-code-proxy is not on PATH'
 fi
 
-if command -v claude-code-proxy >/dev/null 2>&1 && claude-code-proxy codex auth status >/dev/null 2>&1; then
+if command -v claude-code-proxy >/dev/null 2>&1 && run_proxy_command codex auth status >/dev/null 2>&1; then
   pass 'Codex OAuth is configured'
 else
   fail 'Codex OAuth is missing or expired'
+  info 'Run: airlock proxy auth login'
 fi
 
 proxy_url="${AIRLOCK_PROXY_URL:-http://127.0.0.1:18765}"

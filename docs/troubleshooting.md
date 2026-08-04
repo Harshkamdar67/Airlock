@@ -20,15 +20,20 @@ Open a new terminal after changing PATH.
 
 ## Codex login is missing
 
-Run the proxy's official login:
+If Airlock is already installed, run the upstream login through Airlock so the proxy receives the same configured directory selection:
 
 ```bash
-claude-code-proxy codex auth login
+airlock proxy auth status
+airlock proxy auth login
 ```
 
-Then run the installer and doctor again.
+If the first installation stopped before copying the launcher, rerun it with login explicitly allowed:
 
-Never paste a token into Airlock, an issue, or a support message.
+```bash
+./scripts/install.sh --login
+```
+
+Then run the doctor again. Never paste a token into Airlock, an issue, or a support message.
 
 ## Claude login is missing
 
@@ -48,10 +53,10 @@ Check:
 curl --fail http://127.0.0.1:18765/healthz
 ```
 
-On macOS or Linux:
+On macOS or Linux, rerun the installer to restore the registered service with the saved proxy directory choice:
 
 ```bash
-brew services restart claude-code-proxy
+./scripts/install.sh
 ./scripts/doctor.sh
 ```
 

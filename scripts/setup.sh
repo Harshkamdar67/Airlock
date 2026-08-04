@@ -174,6 +174,49 @@ read_config_value() {
   done < "$config_target"
 }
 
+directory_is_writable_or_creatable() {
+  local directory="$1"
+  local parent
+  if [[ -d "$directory" ]]; then
+    [[ -w "$directory" ]]
+    return
+  fi
+  [[ ! -e "$directory" ]] || return 1
+  parent="$(dirname "$directory")"
+  while [[ ! -e "$parent" ]]; do
+    directory="$parent"
+    parent="$(dirname "$directory")"
+    [[ "$parent" != "$directory" ]] || break
+  done
+  [[ -d "$parent" && -w "$parent" ]]
+}
+
+resolve_proxy_storage() {
+  local default_config_dir default_state_home
+  proxy_config_dir="${CCP_CONFIG_DIR:-$default_proxy_config_dir}"
+  proxy_state_home="${XDG_STATE_HOME:-$default_proxy_state_home}"
+  proxy_storage_display='upstream default directories'
+
+  case "$(uname -s)" in
+    Darwin) default_config_dir="$HOME/.config/claude-code-proxy" ;;
+    *) default_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-proxy" ;;
+  esac
+  if [[ -z "$proxy_config_dir" ]] && ! directory_is_writable_or_creatable "$default_config_dir"; then
+    proxy_config_dir="$config_dir/claude-code-proxy"
+    proxy_storage_display='private writable Airlock fallback'
+  elif [[ -n "$proxy_config_dir" ]]; then
+    proxy_storage_display='configured proxy directories'
+  fi
+
+  default_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_state_home"; then
+    proxy_state_home="$config_dir/proxy-state"
+    proxy_storage_display='private writable Airlock fallback'
+  elif [[ -n "$proxy_state_home" && "$proxy_storage_display" == 'upstream default directories' ]]; then
+    proxy_storage_display='configured proxy directories'
+  fi
+}
+
 had_existing_config=0
 [[ -f "$config_target" ]] && had_existing_config=1
 if [[ "$had_existing_config" -eq 1 ]]; then
@@ -231,6 +274,11 @@ read_config_value AIRLOCK_OPENAI_EXTRA_MODELS ''
 openai_extra_models="$CONFIG_VALUE"
 read_config_value AIRLOCK_GPT_EFFORT_CAPABILITIES 'effort,xhigh_effort,max_effort'
 gpt_effort_capabilities="$CONFIG_VALUE"
+read_config_value AIRLOCK_PROXY_CONFIG_DIR ''
+default_proxy_config_dir="$CONFIG_VALUE"
+read_config_value AIRLOCK_PROXY_STATE_HOME ''
+default_proxy_state_home="$CONFIG_VALUE"
+resolve_proxy_storage
 
 claude_plan_was_detected=0
 if [[ "$default_claude_plan" == 'unknown' ]]; then
@@ -1468,6 +1516,7 @@ print_install_fields() {
   [[ "$run_login" == 'yes' ]] && codex_oauth_display='yes, only if Codex login is missing'
   print_field 'Codex OAuth:' "$codex_oauth_display"
   print_field 'Proxy service:' "$start_service"
+  print_field 'Proxy storage:' "$proxy_storage_display"
   print_field 'Config path:' "$config_target"
 }
 
@@ -1500,7 +1549,7 @@ print_apply_plan() {
   printf '\n%sAirlock will not:%s\n' "$STYLE_BOLD" "$STYLE_RESET"
   wrap_lines '  - ' '    ' '' 'touch your Claude Code sign-in, native Claude Code, or native Codex'
   wrap_lines '  - ' '    ' '' 'change global settings, global hooks, registered plugins, or MCP configuration'
-  wrap_lines '  - ' '    ' '' 'read, copy, or store any login token'
+  wrap_lines '  - ' '    ' '' 'read, print, copy, or expose any login token; the upstream proxy keeps its OAuth data private'
   return 0
 }
 
@@ -1583,6 +1632,8 @@ AIRLOCK_OPENAI_EXTRA_MODELS=$openai_extra_models
 AIRLOCK_CONTEXT_WINDOW=272000
 AIRLOCK_GPT_EFFORT_CAPABILITIES=$gpt_effort_capabilities
 AIRLOCK_PROXY_URL=http://127.0.0.1:18765
+AIRLOCK_PROXY_CONFIG_DIR=$proxy_config_dir
+AIRLOCK_PROXY_STATE_HOME=$proxy_state_home
 EOF
 chmod 0644 "$rendered_config"
 

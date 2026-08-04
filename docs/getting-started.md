@@ -41,7 +41,7 @@ Airlock treats the Claude and OpenAI paths separately:
 | Claude Code is missing | Installation stops with the official setup link before managed files are copied. | Installation stops and asks you to install Claude Code. |
 | Claude Code is installed but signed out | Installation can finish. Doctor says OpenAI-only sessions can work and tells you to run `claude auth login` before hybrid or Claude routes. | Same behavior. |
 | `claude-code-proxy` is missing | The installer installs it with Homebrew, then checks Codex OAuth. | Installation stops. Install the Windows proxy build, then rerun the installer. |
-| The proxy is installed but Codex OAuth is missing | Setup opens the official proxy login only if you approved that action. Otherwise installation stops with the exact login command. | Run `claude-code-proxy codex auth login`, or explicitly run the installer with `-Login`. |
+| The proxy is installed but Codex OAuth is missing | Setup opens the official proxy login only if you approved that action. Otherwise installation stops and tells you to rerun the installer with `--login`, which preserves the selected writable proxy directory. | Run `claude-code-proxy codex auth login`, or explicitly run the installer with `-Login`. |
 | Both sign-ins are healthy | Installation finishes and Doctor checks the local service and managed files. | Same behavior. |
 
 The native `codex` command is not an Airlock installation dependency. Codex OAuth here means the login managed by `claude-code-proxy`.
@@ -50,24 +50,26 @@ The native `codex` command is not an Airlock installation dependency. Codex OAut
 
 On macOS and Linux, Airlock normally uses `~/.config/airlock`. If that default location cannot be written and neither `AIRLOCK_CONFIG_DIR` nor `XDG_CONFIG_HOME` selected a location, setup automatically uses `~/.airlock` instead. The launcher, installer, and Doctor all resolve the same existing fallback. Airlock does not ask for `sudo` or change ownership of another application directory.
 
+The proxy keeps OAuth data separately from the Airlock config. If the upstream proxy's normal config or state parent cannot be written, setup selects private directories under the writable Airlock location and passes the proxy's documented environment overrides only to proxy commands. It uses the same selection for login, background startup, later launches, and Doctor. Existing healthy proxy storage is not moved.
+
 For the tested defaults, run:
 
 ```bash
 ./scripts/install.sh --with-agent
 ```
 
-If Codex OAuth is missing, the installer stops. Complete the official login:
+If Codex OAuth is missing, rerun the installer and explicitly allow the official login:
 
 ```bash
-claude-code-proxy codex auth login
+./scripts/install.sh --with-agent --login
 ```
 
-Then run setup again.
-
-On a machine without a browser, use the upstream device flow:
+After Airlock is installed, use its wrapper for later status checks or reauthentication. The wrapper applies the same proxy directory choice automatically:
 
 ```bash
-claude-code-proxy codex auth device
+airlock proxy auth status
+airlock proxy auth login
+airlock proxy auth device
 ```
 
 ## Windows
