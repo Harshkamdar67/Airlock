@@ -378,10 +378,20 @@ for line in sys.stdin:
                 self.assertIn("Do not narrate every read", guidance)
                 self.assertIn("skipped checks and reasons", guidance)
                 self.assertIn("exact-output or machine-readable contract", guidance)
-                self.assertLess(len(guidance), 12_000)
+                # This guard is about context cost, not a hard limit. A real
+                # session carries longer plan, headroom, and Fast eligibility
+                # strings than the defaults used here, so leave room for them.
+                self.assertLess(len(guidance), 13_000)
         pure = ACCESS.profile_guidance(policy, "openai-pure")
         self.assertIn("this OpenAI-only profile has no Anthropic worker", pure)
+        # Handoff wording is per provider, so a profile only carries the rules
+        # for the workers it can actually reach.
+        self.assertIn("returns only its final report", pure)
+        self.assertIn("GPT workers read the action word literally", pure)
+        self.assertNotIn("Claude workers plan first", pure)
         hybrid = ACCESS.profile_guidance(policy, "hybrid-openai-root")
+        self.assertIn("GPT workers read the action word literally", hybrid)
+        self.assertIn("Claude workers plan first", hybrid)
         self.assertIn("visual and interaction design is Anthropic-first and Opus-led", hybrid)
         self.assertIn("Prefer airlock-opus", hybrid)
         self.assertIn("Use airlock-sonnet", hybrid)

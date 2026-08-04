@@ -1827,6 +1827,30 @@ def root_orchestration_guidance(policy: dict[str, Any]) -> str:
     )
 
 
+def worker_handoff_guidance(policy: dict[str, Any], profile: str) -> str:
+    providers = {worker["provider"] for worker in enabled_profile_workers(policy, profile)}
+    parts = [
+        "Worker handoff wording: a worker sees only the query you send and returns only its final report, "
+        "so name the goal, the paths, the constraints, and what the report must contain."
+    ]
+    if "openai" in providers:
+        parts.append(
+            "GPT workers read the action word literally. Answer, explain, review, and diagnose mean look and "
+            "report without editing, and diagnose stops at the cause; use change, build, fix, or implement "
+            "when the worker should edit files, and name the files it owns. In an isolated worktree, say the "
+            "uncommitted changes are the starting point of the task, because a GPT worker otherwise treats "
+            "unfamiliar edits as the user's own and works around them. Do not hand one a task whose main "
+            "step is waiting on a long command."
+        )
+    if "anthropic" in providers:
+        parts.append(
+            "Claude workers plan first and work the problem out themselves, so send the question and the "
+            "evidence rather than a conclusion to confirm, and name the browser or test evidence you want "
+            "for a user-visible change."
+        )
+    return " ".join(parts)
+
+
 def managed_result_guidance() -> str:
     return (
         "Native Agent results: use background execution only when work is independent and collect every complete result "
@@ -1964,7 +1988,7 @@ def routing_guidance(policy: dict[str, Any], mode: str) -> str:
         "only after confirmation; an explicit matching Agent request counts as confirmation. Send a natural, self-contained "
         "query without task classifications, selection markers, or a transport schema. The configured worker limit is a "
         "ceiling, not a fan-out target. When it is off, Claude Code's native default applies. Automatic high-volume armies "
-        "use a useful background batch of exact Luna or eligible Luna Fast Agents at fixed max effort, never Sol Fast or "
+        "use a useful background batch of exact Luna or eligible Luna Fast Agents, never Sol Fast or "
         "an Anthropic swarm. "
         + managed_result_guidance() + " "
         + root_communication_guidance()
@@ -2051,6 +2075,7 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         portfolio_guidance(policy, profile),
         ui_ux_guidance(policy, profile, enabled_workers),
         root_orchestration_guidance(policy),
+        worker_handoff_guidance(policy, profile),
         managed_result_guidance(),
         root_communication_guidance(),
         skill_policy,
