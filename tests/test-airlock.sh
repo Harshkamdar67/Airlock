@@ -584,6 +584,17 @@ for root_spec in 'sol:gpt-5.6-sol[1m]:openai' 'luna:gpt-5.6-luna[1m]:openai' 'op
   fi
 done
 
+# An interactive launch forwards no extra arguments, so the launcher has to
+# expand an empty argument array before it inserts the root model and effort.
+# The bash that macOS ships as /bin/bash rejects a bare expansion of an empty
+# array under set -u, so both entry points need a no-argument run here.
+bare_hybrid_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus)"
+grep -Fq '"--effort", "xhigh", "--model", "claude-opus-5", "--append-system-prompt"' <<<"$bare_hybrid_output"
+grep -q '^OPENAI_BRIDGE=1$' <<<"$bare_hybrid_output"
+bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
+grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "xhigh", "--append-system-prompt"' <<<"$bare_openai_output"
+grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
+
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid fable -p test >/dev/null 2>&1; then
   printf 'test: unavailable Fable hybrid root unexpectedly launched\n' >&2
   exit 1

@@ -279,7 +279,7 @@ validate_csv_subset() {
     exit 2
   }
   IFS=',' read -r -a items <<< "$value"
-  for item in "${items[@]}"; do
+  for item in ${items[@]+"${items[@]}"}; do
     [[ -n "$item" && ",$allowed," == *",$item,"* ]] || {
       printf 'setup: unsupported %s value: %s\n' "$label" "$item" >&2
       exit 2
@@ -297,7 +297,7 @@ choose_option() {
   while true; do
     printf '\n%s\n' "$label"
     index=1
-    for option in "${options[@]}"; do
+    for option in ${options[@]+"${options[@]}"}; do
       if [[ "$option" == "$recommended" ]]; then
         printf '  %d) %s (current/default)\n' "$index" "$option"
       else
@@ -318,7 +318,7 @@ choose_option() {
         return
       fi
     fi
-    for option in "${options[@]}"; do
+    for option in ${options[@]+"${options[@]}"}; do
       if [[ "$answer" == "$option" ]]; then
         CHOICE="$option"
         return
@@ -591,7 +591,7 @@ if [[ "$start_service" == 'no' ]]; then install_args+=(--no-service); fi
 
 AIRLOCK_CONFIG_DIR="$config_dir" \
 AIRLOCK_SUBAGENT_EFFORT="$subagent_effort" \
-  "$repo_root/scripts/install.sh" "${install_args[@]}"
+  "$repo_root/scripts/install.sh" ${install_args[@]+"${install_args[@]}"}
 
 printf '\nFinal verification:\n'
 "$repo_root/scripts/doctor.sh"

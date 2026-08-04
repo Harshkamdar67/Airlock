@@ -485,7 +485,11 @@ launch_session() {
     exit 1
   fi
   compose_append_system_prompt "$guidance" "$@" || exit $?
-  exec "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir" --agents "$agents_json" --allowedTools "${allowed_tools[@]}" "${skill_guard[@]}" "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
+  # skill_guard is empty when the claude-api skill is allowed. Bash 3.2, which
+  # is what macOS still ships as /bin/bash, treats "${array[@]}" on an empty
+  # array as an unbound variable under set -u, so every expansion that can be
+  # empty uses the ${array[@]+...} form. Bash 4 and later behave identically.
+  exec "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir" --agents "$agents_json" --allowedTools "${allowed_tools[@]}" ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
 }
 
 select_hybrid_root() {
@@ -573,28 +577,28 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     root_model="$explicit_model"
     root_name="$explicit_model"
   elif [[ -z "$explicit_model" ]]; then
-    hybrid_args=(--model "$root_model" "${hybrid_args[@]}")
+    hybrid_args=(--model "$root_model" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
 
   has_effort=0
-  for argument in "${hybrid_args[@]}"; do
+  for argument in ${hybrid_args[@]+"${hybrid_args[@]}"}; do
     [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
   done
   if [[ "$has_effort" -eq 0 ]]; then
     root_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-xhigh}}"
     validate_effort "$root_effort"
-    hybrid_args=(--effort "$root_effort" "${hybrid_args[@]}")
+    hybrid_args=(--effort "$root_effort" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
 
   if [[ "$root_provider" == 'openai' ]]; then
     validate_fast_root_model "$root_model"
     unset AIRLOCK_HYBRID
     export AIRLOCK_GPT_HYBRID='1'
-    launch_session hybrid-openai-root "$root_model" "$root_name" "${hybrid_args[@]}"
+    launch_session hybrid-openai-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
   fi
   unset AIRLOCK_GPT_HYBRID
   export AIRLOCK_HYBRID='1'
-  launch_session hybrid-anthropic-root "$root_model" "$root_name" "${hybrid_args[@]}"
+  launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
 fi
 
 requested_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
