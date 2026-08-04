@@ -22,7 +22,7 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.05.1"
+MANAGED_BUNDLE_VERSION = "2026.08.05.2"
 MANAGED_PROTOCOL_VERSION = 3
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -180,7 +180,30 @@ def config_path() -> Path:
     configured = os.environ.get("AIRLOCK_CONFIG_FILE")
     if configured:
         return Path(configured).expanduser()
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "airlock" / "config"
+    configured_dir = os.environ.get("AIRLOCK_CONFIG_DIR")
+    if configured_dir:
+        return Path(configured_dir).expanduser() / "config"
+    xdg_root = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_root:
+        return Path(xdg_root).expanduser() / "airlock" / "config"
+
+    home = Path.home()
+    standard_root = home / ".config" / "airlock"
+    fallback_root = home / ".airlock"
+    standard_parent = standard_root.parent
+    if (fallback_root / "config").is_file() or fallback_root.is_dir():
+        return fallback_root / "config"
+    if standard_root.is_dir() and os.access(standard_root, os.W_OK):
+        return standard_root / "config"
+    if (
+        not standard_root.exists()
+        and standard_parent.is_dir()
+        and os.access(standard_parent, os.W_OK)
+    ):
+        return standard_root / "config"
+    if not standard_parent.exists() and os.access(home, os.W_OK):
+        return standard_root / "config"
+    return fallback_root / "config"
 
 
 def access_path() -> Path:
@@ -1772,10 +1795,10 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
             "disabled route; use the root or ask about an eligible route only when the choice blocks the task."
         )
     parts = [
-        "UI/UX routing: an exact user model choice wins. Subject to the active profile, enabled routes, "
-        "and extra-usage policy, substantial visual and interaction design is Anthropic-first and Opus-led. "
-        "A small copy or spacing fix may stay with the root, but creating or materially redesigning a user-facing "
-        "experience is not generic coupled work."
+        "UI/UX routing: an exact user model choice wins. Subject to enabled routes and extra-usage policy, "
+        "substantial visual and interaction design is Anthropic-first and Opus-led. Material keyboard navigation, "
+        "selection mechanics, onboarding flow, and information hierarchy are design judgment even when bounded. "
+        "Small copy or spacing fixes may stay with the root; material user-facing changes are not generic work."
     ]
     if opus:
         confirmation = (
@@ -1784,10 +1807,10 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
             else ""
         )
         parts.append(
-            f"Start {opus['agent']}{confirmation} before implementing a substantial visual redesign, product "
-            "flow, new design system, high-fidelity experience, or cross-surface UI change. This is a routing "
-            "requirement when Opus is enabled and eligible; the generic work-directly rule does not override it. "
-            "Let Opus own the visual direction and the implementation when they are tightly coupled."
+            f"Start {opus['agent']}{confirmation} before substantial visual, product-flow, design-system, "
+            "cross-surface, or material new interaction pattern such as keyboard selection work. This is a "
+            "routing requirement when Opus is enabled and eligible; the generic work-directly rule does not "
+            "override it. Let Opus own direction and tightly coupled implementation."
         )
     if sonnet:
         parts.append(
@@ -1797,17 +1820,20 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
     if opus and sonnet:
         parts.append("Start with Opus for new design judgment; do not launch both by default.")
     parts.append(
-        "For mixed UI/backend work, keep visual direction with the Anthropic worker and split backend "
-        "work only when separable. Inspect existing design assets and verify rendered behavior, "
-        "responsiveness, interactions, and accessibility before accepting the result."
+        "For mixed UI and systems requests, split the roles automatically: the Anthropic worker owns interaction, "
+        "and the root or best implementation route owns separable non-UI work. A shared result does not make every "
+        "phase coupled. Do not wait for the user to request this split. The root integrates and verifies behavior "
+        "and accessibility."
     )
     return " ".join(parts)
 
 
 def root_orchestration_guidance(policy: dict[str, Any]) -> str:
     return (
-        "Orchestration: choose the smallest effective path. Work directly for small, coupled, understood, integration, "
-        "or synthesis work. Use exact Explore for bounded read-only repository discovery; without a model field it "
+        "Orchestration: choose the smallest effective path. Before working directly on a multi-part request, split it "
+        "by skill and route independent parts. A coupled final result does not make every "
+        "phase coupled. Work directly only for small single-role work, inseparable edits, integration, or synthesis. "
+        "Use exact Explore for bounded read-only repository discovery; without a model field it "
         "inherits the orchestrator model. Use exact Plan for read-only technical design after context and do not duplicate "
         "the same discovery in Explore and Plan. Use exact general-purpose for multi-step work in the native runtime. Start one native "
         "airlock-* Agent for a separable task that benefits from its exact model. For a Luna army, launch "

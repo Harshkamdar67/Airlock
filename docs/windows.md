@@ -94,7 +94,7 @@ The doctor does not make a model request. It checks versions, OAuth, local proxy
 ## Start a session
 
 ```powershell
-airlock                 # saved default, new installs use hybrid Claude Sonnet 5
+airlock                 # saved default, new installs use hybrid GPT-5.6 Sol
 airlock openai          # saved OpenAI-only root
 airlock hybrid          # saved hybrid root
 airlock hybrid choose   # interactive hybrid picker

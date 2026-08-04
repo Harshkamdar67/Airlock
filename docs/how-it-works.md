@@ -10,7 +10,7 @@ airlock openai          # saved OpenAI-only root
 airlock hybrid          # saved hybrid root
 ```
 
-The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with Claude Sonnet 5. Existing configs without the profile key retain the original OpenAI-only bare command.
+The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with GPT-5.6 Sol. Existing configs without the profile key retain the original OpenAI-only bare command.
 
 The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
@@ -121,8 +121,10 @@ Remote Control is unavailable behind a non-Anthropic `ANTHROPIC_BASE_URL`.
 | Multi-step work that fits one model | general-purpose |
 | One focused task that benefits from an exact model | One named Agent |
 | Many independent high-volume tasks | A native Luna batch |
-| Difficult visual or product-flow judgment in hybrid | Opus |
+| Difficult visual, product-flow, or interaction judgment in hybrid | Opus |
 | Bounded design-system implementation or refinement | Sonnet |
+
+Before doing a multi-part request directly, the main model separates independent parts by skill. For example, a request that combines keyboard interaction design with filesystem behavior sends the interaction portion to Opus and keeps the filesystem portion with the root or its best implementation route. The root then integrates and verifies both. Users do not need to request this split. Small single-role changes still stay direct when another worker would add overhead.
 
 A worker query should contain the goal, useful repository paths, constraints, settled decisions, allowed side effects, evidence, and acceptance checks. It should not add transport forms, task-kind labels, or JSON response requirements unless the user needs that exact output.
 

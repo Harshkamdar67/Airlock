@@ -59,6 +59,17 @@ export AIRLOCK_PLUGIN_DIR="$repo_root/plugins/airlock"
 export AIRLOCK_MANAGED_BUNDLE_FILE="$repo_root/config/managed-bundle.json"
 unset AIRLOCK_ROUTING_POLICY AIRLOCK_EXTRA_USAGE_POLICY
 
+fallback_home="$tmp_dir/fallback-home"
+mkdir -p "$fallback_home/.airlock"
+printf 'blocked default config parent\n' > "$fallback_home/.config"
+cp "$tmp_dir/config" "$fallback_home/.airlock/config"
+fallback_config_output="$(
+  HOME="$fallback_home" \
+  AIRLOCK_CONFIG_FILE='' AIRLOCK_CONFIG_DIR='' XDG_CONFIG_HOME='' \
+    "$launcher" config
+)"
+grep -q "^Config file: $fallback_home/.airlock/config$" <<<"$fallback_config_output"
+
 mode_config="$tmp_dir/mode.conf"
 mode_access="$tmp_dir/mode-access.json"
 printf '# preserve this comment\r\nUNRELATED=value\r\nAIRLOCK_ROUTING_POLICY=balanced\r\nAIRLOCK_EXTRA_USAGE_POLICY=ask\r\n' > "$mode_config"
@@ -460,10 +471,16 @@ assert "Luna and eligible Luna Fast Agents run at the session effort unless they
 assert "Difficult implementation shards must have explicit file ownership" in guidance
 assert "Luna Fast" in guidance and "Never automatically swarm Sol" in guidance
 assert "substantial visual and interaction design is Anthropic-first and Opus-led" in guidance
+assert "keyboard navigation, selection mechanics" in guidance
 assert "Start airlock-opus" in guidance and "Use airlock-sonnet" in guidance
+assert "material new interaction pattern such as keyboard selection" in guidance
 assert "routing requirement when Opus is enabled and eligible" in guidance
 assert "generic work-directly rule does not override it" in guidance
 assert "Start with Opus for new design judgment; do not launch both by default" in guidance
+assert "split the roles automatically" in guidance
+assert "Do not wait for the user to request this split" in guidance
+assert "Before working directly on a multi-part request" in guidance
+assert "A coupled final result does not make every phase coupled" in guidance
 assert "Before assigning WebSearch, check effort compatibility" in guidance
 assert "User communication:" in guidance and "meaningful phase changes" in guidance
 PY
