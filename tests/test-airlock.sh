@@ -459,9 +459,12 @@ assert "Automatic high-volume swarms remain Luna-only" in guidance
 assert "Luna and eligible Luna Fast Agents run at the session effort unless they are pinned" in guidance
 assert "Difficult implementation shards must have explicit file ownership" in guidance
 assert "Luna Fast" in guidance and "Never automatically swarm Sol" in guidance
-assert "visual and interaction design is Anthropic-first and Opus-led" in guidance
-assert "Prefer airlock-opus" in guidance and "Use airlock-sonnet" in guidance
-assert "Start with Opus for design judgment; do not launch both by default" in guidance
+assert "substantial visual and interaction design is Anthropic-first and Opus-led" in guidance
+assert "Start airlock-opus" in guidance and "Use airlock-sonnet" in guidance
+assert "routing requirement when Opus is enabled and eligible" in guidance
+assert "generic work-directly rule does not override it" in guidance
+assert "Start with Opus for new design judgment; do not launch both by default" in guidance
+assert "Before assigning WebSearch, check effort compatibility" in guidance
 assert "User communication:" in guidance and "meaningful phase changes" in guidance
 PY
 

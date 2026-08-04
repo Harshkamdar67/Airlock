@@ -22,7 +22,7 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.04.6"
+MANAGED_BUNDLE_VERSION = "2026.08.05.1"
 MANAGED_PROTOCOL_VERSION = 3
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -1773,7 +1773,9 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
         )
     parts = [
         "UI/UX routing: an exact user model choice wins. Subject to the active profile, enabled routes, "
-        "and extra-usage policy, visual and interaction design is Anthropic-first and Opus-led."
+        "and extra-usage policy, substantial visual and interaction design is Anthropic-first and Opus-led. "
+        "A small copy or spacing fix may stay with the root, but creating or materially redesigning a user-facing "
+        "experience is not generic coupled work."
     ]
     if opus:
         confirmation = (
@@ -1782,16 +1784,18 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
             else ""
         )
         parts.append(
-            f"Prefer {opus['agent']}{confirmation} for visual direction, product flows, new design "
-            "systems, high-fidelity experiences, cross-surface redesigns, and final visual critique."
+            f"Start {opus['agent']}{confirmation} before implementing a substantial visual redesign, product "
+            "flow, new design system, high-fidelity experience, or cross-surface UI change. This is a routing "
+            "requirement when Opus is enabled and eligible; the generic work-directly rule does not override it. "
+            "Let Opus own the visual direction and the implementation when they are tightly coupled."
         )
     if sonnet:
         parts.append(
-            f"Use {sonnet['agent']} for design-system-aligned implementation, iterative refinement, "
-            "bounded component work, or when Opus is not eligible."
+            f"Use {sonnet['agent']} for work that follows an existing design system, iterative refinement, "
+            "bounded component work, or as the design fallback when Opus is not eligible."
         )
     if opus and sonnet:
-        parts.append("Start with Opus for design judgment; do not launch both by default.")
+        parts.append("Start with Opus for new design judgment; do not launch both by default.")
     parts.append(
         "For mixed UI/backend work, keep visual direction with the Anthropic worker and split backend "
         "work only when separable. Inspect existing design assets and verify rendered behavior, "
@@ -1823,7 +1827,10 @@ def root_orchestration_guidance(policy: dict[str, Any]) -> str:
         "paths, constraints, settled decisions, side-effect permissions, evidence requirements, and acceptance checks. Do "
         "not add task classifications, selection markers, or transport JSON. For public-web research include exact `Public "
         "web research authorized: yes` and never include repository content, local paths, credentials, tokens, untracked "
-        "data, or private prompt content."
+        "data, or private prompt content. Before assigning WebSearch, check effort compatibility: its internal search model "
+        "can reject xhigh or max when search-side thinking is disabled. Run search discovery with an eligible worker at "
+        "high or below, or give the design worker exact public URLs to read with WebFetch. Do not retry the same effort "
+        "compatibility error."
     )
 
 
