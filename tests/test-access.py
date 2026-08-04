@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""Non-model tests for sanitized usage state and effort recommendations."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("airlock_access_test", ROOT / "bin" / "airlock-access.py")
+assert SPEC and SPEC.loader
+ACCESS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ACCESS)
+REMOVED_TRANSPORT_FILES = (
+    "bin/airlock-delegate",
+    "bin/airlock-delegate.cmd",
+    "bin/airlock-delegate.py",
+    "bin/airlock-workflow",
+    "bin/airlock-workflow.cmd",
+    "bin/airlock-workflow.py",
+    "bin/airlock-child",
+    "bin/airlock-child.cmd",
+    "bin/airlock-child.py",
+    "bin/airlock-check",
+    "bin/airlock-check.cmd",
+    "bin/airlock-check.py",
+    "bin/airlock_runtime.py",
+)
+
+
+class AccessUsageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = self.root / "config"
+        self.access = self.root / "access.json"
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.config),
+            "AIRLOCK_ACCESS_FILE": str(self.access),
+            "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+        }, clear=False)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def bundle_components(self, platform: str = "posix") -> list[str]:
+        bundle = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
+        names = bundle["platforms"]["common"] + bundle["platforms"][platform]
+        return [f"{name}={ROOT / name}" for name in names]
+
+    def test_managed_bundle_accepts_exact_repository_components(self) -> None:
+        for platform in ("posix", "windows"):
+            with self.subTest(platform=platform):
+                expected = self.bundle_components(platform)
+                result = ACCESS.validate_managed_bundle(
+                    ROOT / "config" / "managed-bundle.json",
+                    platform,
+                    expected,
+                )
+                self.assertEqual(result["protocol_version"], 3)
+                self.assertEqual(result["components_checked"], len(expected))
+                self.assertGreater(result["components_checked"], 15)
+
+    def test_managed_bundle_rejects_stale_marker_and_changed_component(self) -> None:
+        original = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
+        stale = self.root / "stale.json"
+        original["bundle_version"] = "old"
+        stale.write_text(json.dumps(original), encoding="utf-8")
+        with self.assertRaisesRegex(ACCESS.AccessError, "bundle is stale"):
+            ACCESS.validate_managed_bundle(stale, "posix", self.bundle_components())
+
+        changed = self.root / "airlock-hybrid.py"
+        changed.write_text("changed\n", encoding="utf-8")
+        components = self.bundle_components()
+        key = "bin/airlock-hybrid.py="
+        components = [
+            key + str(changed) if item.startswith(key) else item
+            for item in components
+        ]
+        with self.assertRaisesRegex(ACCESS.AccessError, "stale or changed"):
+            ACCESS.validate_managed_bundle(
+                ROOT / "config" / "managed-bundle.json", "posix", components
+            )
+
+    def test_schema_one_migrates_with_usage_defaults(self) -> None:
+        self.access.write_text(json.dumps({
+            "schema_version": 1,
+            "providers": {"openai": {"detected_plan": "prolite"}},
+        }), encoding="utf-8")
+        policy = ACCESS.load_cached_policy()
+        self.assertEqual(policy["schema_version"], 2)
+        self.assertEqual(policy["providers"]["openai"]["usage"]["source"], "not_checked")
+
+    def test_bucket_validation_deduplicates_and_recomputes_remaining(self) -> None:
+        usage = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "buckets": [
+                {"limit_id": "codex", "window": "primary", "used_percent": 12.5,
+                 "remaining_percent": 99, "window_duration_mins": 300, "resets_at": 2_000_000_000},
+                {"limit_id": "codex", "window": "primary", "used_percent": 90,
+                 "window_duration_mins": 300, "resets_at": 2_000_000_000},
+                {"limit_id": "bad space", "window": "primary", "used_percent": 1,
+                 "window_duration_mins": 300, "resets_at": 2_000_000_000},
+                {"limit_id": "weekly", "window": "secondary", "used_percent": 101,
+                 "window_duration_mins": 10080, "resets_at": 2_000_000_000},
+            ],
+            "credit_state": "available",
+        })
+        self.assertEqual(len(usage["buckets"]), 1)
+        self.assertEqual(usage["buckets"][0]["remaining_percent"], 87.5)
+
+    def test_codex_refresh_uses_only_documented_rate_limit_read(self) -> None:
+        request_log = self.root / "requests.jsonl"
+        server = self.root / "app-server"
+        server.write_text(
+            """import json, os, sys
+log = os.environ['AIRLOCK_TEST_REQUEST_LOG']
+for line in sys.stdin:
+    value = json.loads(line)
+    with open(log, 'a', encoding='utf-8') as stream:
+        stream.write(json.dumps(value) + '\\n')
+    if value.get('method') == 'initialize':
+        print(json.dumps({'id': value['id'], 'result': {}}), flush=True)
+    elif value.get('method') == 'account/rateLimits/read':
+        print(json.dumps({'id': value['id'], 'result': {
+            'planType': 'prolite',
+            'rateLimitsByLimitId': {'codex': {
+                'primary': {'usedPercent': 12, 'windowDurationMins': 300, 'resetsAt': 2000000000},
+                'secondary': {'usedPercent': 34, 'windowDurationMins': 10080, 'resetsAt': 2000000100}}},
+            'credits': {'hasCredits': False, 'unlimited': False}}}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {
+            "AIRLOCK_ACCESS_CODEX": sys.executable,
+            "AIRLOCK_TEST_REQUEST_LOG": str(request_log),
+        }, clear=False):
+            old_cwd = Path.cwd()
+            os.chdir(self.root)
+            try:
+                policy, refreshed = ACCESS.refresh_usage()
+            finally:
+                os.chdir(old_cwd)
+        self.assertTrue(refreshed)
+        requests = [json.loads(line) for line in request_log.read_text(encoding="utf-8").splitlines()]
+        methods = [item["method"] for item in requests]
+        self.assertEqual(methods, ["initialize", "initialized", "account/rateLimits/read"])
+        self.assertNotIn("refreshToken", json.dumps(requests))
+        usage = policy["providers"]["openai"]["usage"]
+        self.assertEqual(len(usage["buckets"]), 2)
+        self.assertEqual(usage["buckets"][0]["remaining_percent"], 88.0)
+        self.assertEqual(usage["credit_state"], "unavailable")
+        self.assertEqual(policy["providers"]["openai"]["detected_plan"], "prolite")
+        raw_cache = self.access.read_text(encoding="utf-8")
+        self.assertNotIn("account/rateLimits/read", raw_cache)
+
+    def test_failed_refresh_preserves_cached_snapshot(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server", "checked_at": datetime.now(timezone.utc).isoformat(),
+            "buckets": [{"limit_id": "codex", "window": "primary", "used_percent": 10,
+                         "window_duration_mins": 300, "resets_at": 2_000_000_000}],
+        })
+        ACCESS._write_policy(policy, self.access)
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_CODEX": str(self.root / "missing-codex")}, clear=False):
+            loaded, refreshed = ACCESS.refresh_usage()
+        self.assertFalse(refreshed)
+        self.assertEqual(loaded["providers"]["openai"]["usage"]["buckets"][0]["remaining_percent"], 90.0)
+
+    def test_usage_refresh_due_uses_shared_fifteen_minute_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        policy = ACCESS.default_policy()
+        self.assertTrue(ACCESS.usage_refresh_due(policy, now=now))
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server",
+            "checked_at": (now - timedelta(minutes=5)).isoformat(),
+            "buckets": [],
+        })
+        self.assertFalse(ACCESS.usage_refresh_due(policy, now=now))
+        policy["providers"]["openai"]["usage"]["checked_at"] = (
+            now - timedelta(minutes=16)
+        ).isoformat()
+        self.assertTrue(ACCESS.usage_refresh_due(policy, now=now))
+
+    def test_usage_display_auto_refreshes_stale_cache_and_preserves_fallback(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server",
+            "checked_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            "buckets": [{"limit_id": "codex", "window": "primary", "used_percent": 10,
+                         "window_duration_mins": 300, "resets_at": 2_000_000_000}],
+        })
+        with patch.object(ACCESS, "load_policy", return_value=policy), patch.object(
+            ACCESS, "refresh_usage", return_value=(policy, False)
+        ) as refresh:
+            displayed, attempted, refreshed = ACCESS.usage_policy_for_display("show")
+        refresh.assert_called_once()
+        self.assertTrue(attempted)
+        self.assertFalse(refreshed)
+        self.assertEqual(
+            displayed["providers"]["openai"]["usage"]["buckets"][0]["remaining_percent"],
+            90.0,
+        )
+
+    def test_usage_display_keeps_fresh_cache_without_app_server(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "buckets": [],
+        })
+        with patch.object(ACCESS, "load_policy", return_value=policy), patch.object(
+            ACCESS, "refresh_usage"
+        ) as refresh:
+            displayed, attempted, refreshed = ACCESS.usage_policy_for_display(None)
+        refresh.assert_not_called()
+        self.assertIs(displayed, policy)
+        self.assertFalse(attempted)
+        self.assertFalse(refreshed)
+
+    def test_cached_display_starts_no_app_server(self) -> None:
+        marker = self.root / "should-not-exist"
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_CODEX": str(marker)}, clear=False):
+            lines = ACCESS.usage_lines(ACCESS.load_policy())
+        self.assertFalse(marker.exists())
+        self.assertIn("Remaining quota windows: unknown", "\n".join(lines))
+
+    def test_capacity_mapping_and_user_override(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["detected_plan"] = "prolite"
+        signal = ACCESS.capacity_signal(policy, "openai")
+        self.assertEqual((signal["multiplier"], signal["source"]), (5, "inferred"))
+        self.config.write_text("AIRLOCK_OPENAI_CAPACITY=20x\n", encoding="utf-8")
+        signal = ACCESS.capacity_signal(policy, "openai")
+        self.assertEqual((signal["multiplier"], signal["source"]), (20, "user_override"))
+        self.config.write_text("", encoding="utf-8")
+        policy["providers"]["anthropic"]["detected_plan"] = "max20x"
+        policy["providers"]["anthropic"]["plan_source"] = "status_field"
+        claude = ACCESS.capacity_signal(policy, "anthropic")
+        self.assertEqual((claude["multiplier"], claude["source"]), (20, "status_field"))
+
+    def test_effort_matrix_and_explicit_precedence(self) -> None:
+        now = datetime.now(timezone.utc)
+        policy = ACCESS.default_policy()
+        policy["policies"]["routing"] = "quality"
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server", "checked_at": now.isoformat(),
+            "buckets": [{"limit_id": "codex", "window": "primary", "used_percent": 94,
+                         "window_duration_mins": 300, "resets_at": 2_000_000_000}],
+        })
+        recommended = ACCESS.recommend_effort(policy, "openai", "standard")
+        self.assertEqual(recommended["effort"], "low")
+        critical = ACCESS.recommend_effort(policy, "openai", "critical")
+        self.assertEqual(critical["effort"], "high")
+        explicit = ACCESS.recommend_effort(policy, "openai", "low", "max")
+        self.assertEqual((explicit["effort"], explicit["effort_source"]), ("max", "explicit"))
+        policy["providers"]["openai"]["usage"]["checked_at"] = (
+            now - timedelta(hours=2)
+        ).isoformat()
+        stale = ACCESS.recommend_effort(policy, "openai", "standard")
+        self.assertEqual(stale["effort"], "high")
+        self.assertIn("no fresh", stale["rationale"])
+
+    def test_capacity_changes_escalation_tolerance_and_allowed_efforts_win(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["policies"]["routing"] = "quality"
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server", "checked_at": datetime.now(timezone.utc).isoformat(),
+            "buckets": [{"limit_id": "codex", "window": "primary", "used_percent": 65,
+                         "window_duration_mins": 300, "resets_at": 2_000_000_000}],
+        })
+        strict = ACCESS.recommend_effort(policy, "openai", "critical")
+        self.assertEqual(strict["effort"], "high")
+        self.config.write_text("AIRLOCK_OPENAI_CAPACITY=20x\n", encoding="utf-8")
+        roomy = ACCESS.recommend_effort(policy, "openai", "critical")
+        self.assertEqual(roomy["effort"], "max")
+        policy["policies"]["allowed_efforts"]["openai"] = ["low", "medium"]
+        constrained = ACCESS.recommend_effort(policy, "openai", "critical")
+        self.assertEqual(constrained["effort"], "medium")
+
+    def test_atomic_config_updates_and_defaults_clear_overrides(self) -> None:
+        self.config.write_bytes(b"# keep\r\nOTHER=value\r\nAIRLOCK_OPENAI_CAPACITY=5x\r\n")
+        ACCESS.write_flat_config_overrides({
+            "AIRLOCK_MAX_CONCURRENT_SUBAGENTS": "off",
+            "AIRLOCK_OPENAI_CAPACITY": None,
+        })
+        raw = self.config.read_bytes()
+        self.assertIn(b"# keep\r\n", raw)
+        self.assertIn(b"OTHER=value\r\n", raw)
+        self.assertIn(b"AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off\r\n", raw)
+        self.assertNotIn(b"AIRLOCK_OPENAI_CAPACITY", raw)
+    def test_adaptive_worker_policy_overrides_round_trip(self) -> None:
+        ACCESS.write_flat_config_overrides({
+            "AIRLOCK_FAILOVER_POLICY": "never",
+            "AIRLOCK_DESCENDANT_POLICY": "off",
+            "AIRLOCK_MAX_DESCENDANTS_PER_WORKER": "4",
+            "AIRLOCK_MAX_CONCURRENT_DESCENDANTS": "5",
+            "AIRLOCK_MAX_REPAIR_ROUNDS": "1",
+        })
+        policy = ACCESS.load_policy()
+        self.assertEqual(policy["policies"]["failover"], "never")
+        self.assertEqual(policy["policies"]["descendants"], "off")
+        self.assertEqual(policy["policies"]["max_descendants"], 4)
+        self.assertEqual(policy["policies"]["max_concurrent_descendants"], 5)
+        self.assertEqual(policy["policies"]["repair_rounds"], 1)
+        lines = "\n".join(ACCESS.mode_status_lines())
+        self.assertIn("Failover: never", lines)
+        self.assertIn("Agent nesting: off for named Agents; root spawn depth=1", lines)
+        self.assertNotIn("Descendants:", lines)
+        self.assertNotIn("Repair rounds:", lines)
+        usage_lines = "\n".join(ACCESS.status_lines(policy))
+        self.assertIn("Models (access/capability/usage):", usage_lines)
+        self.assertNotIn("Delegated efforts:", usage_lines)
+
+    def test_portfolio_guidance_uses_roles_headroom_and_ceiling(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["policies"]["routing"] = "balanced"
+        guidance = ACCESS.portfolio_guidance(policy, "hybrid-openai-root")
+        self.assertIn("recommended initial breadth=2", guidance)
+        self.assertIn("configured ceiling=Claude Code native default", guidance)
+        self.assertIn("use airlock-sonnet for deep repository research", guidance)
+        self.assertIn("prefer airlock-opus for difficult architecture, UI/UX design", guidance)
+        self.assertIn("prefer airlock-sol for difficult implementation", guidance)
+        self.assertIn("use airlock-luna for high-volume discovery", guidance)
+        self.assertIn("Automatic armies start the full background native Agent batch of exact Luna workers at fixed max effort", guidance)
+        self.assertIn("One stronger root or native Sol or Opus Agent performs final synthesis", guidance)
+        self.assertIn("use airlock-terra for adversarial review", guidance)
+        self.assertIn("soft routing preferences, not provider stereotypes", guidance)
+        self.assertIn("explicit user choice wins", guidance)
+        self.assertIn("Compare rendered results and accessibility for frontend work", guidance)
+        self.assertIn("require a reproducer and causal explanation for backend bugs", guidance)
+        self.assertIn("before-and-after measurements for performance work", guidance)
+        self.assertIn("independent tools plus manual verification for security work", guidance)
+        self.assertIn("No model is a source of record", guidance)
+        self.assertIn("ceiling is never a target", guidance)
+
+        self.config.write_text("AIRLOCK_MAX_CONCURRENT_SUBAGENTS=1\n", encoding="utf-8")
+        constrained = ACCESS.portfolio_guidance(policy, "hybrid-openai-root")
+        self.assertIn("recommended initial breadth=1", constrained)
+        self.assertIn("configured ceiling=1 concurrent", constrained)
+
+    def test_profile_guidance_has_orchestration_progress_and_full_results(self) -> None:
+        policy = ACCESS.default_policy()
+        for profile in ("openai-pure", "hybrid-openai-root", "hybrid-anthropic-root"):
+            with self.subTest(profile=profile):
+                guidance = ACCESS.profile_guidance(policy, profile)
+                self.assertIn("Orchestration: choose the smallest effective path", guidance)
+                self.assertIn("Use exact Explore for bounded read-only", guidance)
+                self.assertIn("without a model field it inherits the orchestrator model", guidance)
+                self.assertIn("Use exact Plan for read-only technical design", guidance)
+                self.assertIn("Use exact general-purpose for multi-step work", guidance)
+                self.assertIn("For a Luna army, launch multiple exact airlock-luna", guidance)
+                self.assertIn("Agent calls with `run_in_background: true`", guidance)
+                self.assertIn("useful non-overlapping batch before waiting", guidance)
+                self.assertIn("Luna and eligible Luna Fast Agents already use fixed max effort", guidance)
+                self.assertIn("Use Claude Code Workflow only when the user explicitly requests", guidance)
+                self.assertIn("Do not overlap direct Agent fan-out with Workflow", guidance)
+                self.assertIn("Automatic high-volume swarms remain Luna-only", guidance)
+                self.assertIn("Claude Code's Agent card, model identity, usage", guidance)
+                self.assertIn("Difficult implementation shards must have explicit file ownership", guidance)
+                self.assertIn("Named airlock-* Agents already bind their exact model and fixed effort", guidance)
+                self.assertIn("Native Agent results: use background execution only when work is independent", guidance)
+                self.assertIn("Preserve the full technical result", guidance)
+                self.assertIn("does not prove the task is semantically complete", guidance)
+                self.assertIn("state the immediate goal and approach", guidance)
+                self.assertIn("meaningful phase changes", guidance)
+                self.assertIn("Do not narrate every read", guidance)
+                self.assertIn("skipped checks and reasons", guidance)
+                self.assertIn("exact-output or machine-readable contract", guidance)
+                self.assertLess(len(guidance), 12_000)
+        pure = ACCESS.profile_guidance(policy, "openai-pure")
+        self.assertIn("this OpenAI-only profile has no Anthropic worker", pure)
+        hybrid = ACCESS.profile_guidance(policy, "hybrid-openai-root")
+        self.assertIn("visual and interaction design is Anthropic-first and Opus-led", hybrid)
+        self.assertIn("Prefer airlock-opus", hybrid)
+        self.assertIn("Use airlock-sonnet", hybrid)
+        self.assertIn("Start with Opus for design judgment", hybrid)
+        self.assertIn("Extra usage authorized: yes", hybrid)
+
+    def test_ui_ux_guidance_respects_access_and_confirmation(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["anthropic"]["models"]["opus"]["access"] = "extra"
+        workers = ACCESS.enabled_profile_workers(policy, "hybrid-openai-root")
+        guidance = ACCESS.ui_ux_guidance(policy, "hybrid-openai-root", workers)
+        self.assertIn("airlock-opus after explicit extra-usage confirmation", guidance)
+        self.assertIn("airlock-sonnet", guidance)
+
+        policy["providers"]["anthropic"]["models"]["opus"]["access"] = "unavailable"
+        workers = ACCESS.enabled_profile_workers(policy, "hybrid-openai-root")
+        fallback = ACCESS.ui_ux_guidance(policy, "hybrid-openai-root", workers)
+        self.assertNotIn("airlock-opus", fallback)
+        self.assertIn("airlock-sonnet", fallback)
+
+    def test_profile_guidance_uses_free_form_delegation_without_task_markers(self) -> None:
+        guidance = ACCESS.profile_guidance(ACCESS.default_policy(), "hybrid-openai-root")
+        self.assertIn("one natural, self-contained query", guidance)
+        self.assertIn("Do not add task kind, risk, or selection markers", guidance)
+        self.assertNotIn("Delegated task kind:", guidance)
+        self.assertNotIn("Delegated risk:", guidance)
+        self.assertNotIn("result.report", guidance)
+        self.assertFalse(hasattr(ACCESS, "DELEGATED_TASK_KINDS"))
+
+    def test_legacy_transport_files_are_removed(self) -> None:
+        for name in REMOVED_TRANSPORT_FILES:
+            with self.subTest(name=name):
+                self.assertFalse((ROOT / name).exists())
+
+    def test_luna_fast_is_plan_and_proxy_gated_without_sol_fast_swarm_fallback(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["detected_plan"] = "free"
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": True, "source": "test", "version": "0.1.22",
+        }):
+            status = ACCESS.fast_route_status(policy)
+            self.assertEqual(status["selected_route"], "luna")
+            policy["providers"]["openai"]["detected_plan"] = "prolite"
+            status = ACCESS.fast_route_status(policy)
+            self.assertEqual(status["selected_route"], "luna-fast")
+            self.assertNotIn("sol-fast", str(status))
+            policy["policies"]["swarm_fast"] = "off"
+            self.assertEqual(ACCESS.fast_route_status(policy)["selected_route"], "luna")
+            policy["policies"]["swarm_fast"] = "on"
+            policy["providers"]["openai"]["detected_plan"] = "unknown"
+            self.assertIsNone(ACCESS.fast_route_status(policy)["selected_route"])
+
+    def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
+        policy = ACCESS.default_policy()
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": True, "source": "test", "version": "0.1.22",
+        }):
+            pure = ACCESS.session_route_policy(policy, "openai-pure")
+            self.assertEqual(set(pure["routes"].values()), {"openai"})
+            self.assertEqual(pure["routes"]["gpt-5.6-sol[1m]"], "openai")
+            self.assertEqual(pure["routes"]["gpt-5.6-sol"], "openai")
+            self.assertEqual(
+                set(pure["model_ids"]),
+                {"gpt-5.6-sol[1m]", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
+            )
+            self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
+            hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
+            self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
+            self.assertNotIn("gpt-5.6-sol", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
+            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+
+            policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
+            hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertIn("claude-fable-5", hybrid["extra_model_ids"])
+            self.assertIn("airlock-fable", hybrid["extra_agent_names"])
+
+            policy["providers"]["openai"]["detected_plan"] = "pro"
+            hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            policy["policies"]["swarm_fast"] = "off"
+            hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+
+            policy["policies"]["extra_usage"] = "never"
+            hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
+
+    def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["policies"]["routing"] = "quality"
+        policy["providers"]["anthropic"]["models"]["sonnet"]["access"] = "unavailable"
+        policy["providers"]["openai"]["usage"] = ACCESS._normalize_usage("openai", {
+            "source": "codex_app_server",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "buckets": [{
+                "limit_id": "codex", "window": "primary", "used_percent": 92,
+                "window_duration_mins": 300, "resets_at": 2_000_000_000,
+            }],
+        })
+        headroom = ACCESS.provider_headroom(policy, "openai")
+        self.assertEqual(headroom["state"], "critical")
+        guidance = ACCESS.portfolio_guidance(policy, "hybrid-openai-root")
+        self.assertIn("recommended initial breadth=2", guidance)
+        self.assertIn("openai=critical (8.00% remaining", guidance)
+        self.assertNotIn("airlock-sonnet", guidance)
+        self.assertIn("no enabled native deep-research specialist", guidance)
+        self.assertIn("Unknown or stale headroom is conservative", guidance)
+
+    def test_managed_agent_names_are_exact_sorted_and_fail_closed(self) -> None:
+        rendered = {
+            "airlock-sonnet": {"model": "inherit"},
+            "airlock-luna": {"model": "inherit"},
+            "airlock-sol": {"model": "inherit"},
+        }
+        self.assertEqual(
+            ACCESS.managed_agent_names(rendered),
+            ["airlock-luna", "airlock-sol", "airlock-sonnet"],
+        )
+        self.assertEqual(
+            ACCESS.managed_agent_names_json(json.dumps(rendered)),
+            ["airlock-luna", "airlock-sol", "airlock-sonnet"],
+        )
+        for invalid in ({}, [], {"Explore": {}}, {"airlock-sol": "invalid"}):
+            with self.subTest(invalid=invalid), self.assertRaises(ACCESS.AccessError):
+                ACCESS.managed_agent_names(invalid)
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.managed_agent_names_json("not-json")
+
+    def test_native_catalogs_bind_exact_models_efforts_and_tools(self) -> None:
+        expected = {
+            profile["agent"]: (profile["model"], profile["effort"])
+            for provider in ACCESS.MODEL_PROFILES.values()
+            for profile in provider.values()
+        }
+        for catalog_name in (
+            "openai-direct-agents.json",
+            "anthropic-direct-agents.json",
+            "hybrid-agents.json",
+            "claude-agents.json",
+        ):
+            catalog = json.loads((ROOT / "config" / catalog_name).read_text(encoding="utf-8"))
+            with self.subTest(catalog=catalog_name):
+                self.assertTrue(catalog)
+                for name, agent in catalog.items():
+                    prompt = agent["prompt"]
+                    self.assertEqual(
+                        (agent["model"], agent["effort"]), expected[name]
+                    )
+                    self.assertNotIn("tools", agent)
+                    self.assertNotIn("permissionMode", agent)
+                    self.assertEqual(agent["disallowedTools"], ["Agent"])
+                    self.assertIn("native Claude Code tools", prompt)
+                    self.assertIn("preserve unrelated work", prompt)
+                    self.assertIn("Never access or expose credentials", prompt)
+                    self.assertIn("Do not invoke another Agent", prompt)
+                    self.assertNotIn("airlock-delegate", prompt)
+                    self.assertNotIn("airlock-workflow", prompt)
+                    self.assertNotIn("transport wrapper", prompt)
+                    self.assertNotIn("request file", prompt)
+                    self.assertNotIn("--task-kind", prompt)
+                    self.assertNotIn("result.report", prompt)
+                if "airlock-luna" in catalog:
+                    self.assertEqual(catalog["airlock-luna"]["effort"], "max")
+                    self.assertIn(
+                        "explicit file ownership",
+                        catalog["airlock-luna"]["prompt"],
+                    )
+                if "airlock-opus" in catalog:
+                    self.assertIn("UI/UX design and visual direction", catalog["airlock-opus"]["description"])
+                    self.assertIn("design-system work", catalog["airlock-opus"]["description"])
+                if "airlock-sonnet" in catalog:
+                    self.assertIn("design-system-aligned UI implementation", catalog["airlock-sonnet"]["description"])
+
+    def test_native_catalog_renderer_rejects_legacy_or_mismatched_entries(self) -> None:
+        policy = ACCESS.default_policy()
+        source = json.loads(
+            (ROOT / "config" / "openai-direct-agents.json").read_text(encoding="utf-8")
+        )
+        mutations = (
+            ("model", "inherit"),
+            ("effort", "low"),
+            ("tools", ["Write", "Bash"]),
+            ("permissionMode", "acceptEdits"),
+            ("prompt", "Use airlock-delegate for this request file."),
+        )
+        for key, value in mutations:
+            catalog = json.loads(json.dumps(source))
+            catalog["airlock-sol"][key] = value
+            with self.subTest(key=key), self.assertRaises(ACCESS.AccessError):
+                ACCESS.render_provider_agents(policy, "openai", catalog)
+
+    def test_full_hybrid_agent_profile_stays_within_windows_command_limit(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["policies"]["extra_usage"] = "allow"
+        policy["providers"]["openai"]["detected_plan"] = "pro"
+        for provider in ("openai", "anthropic"):
+            for model in policy["providers"][provider]["models"].values():
+                model["access"] = "unknown"
+        catalogs = {
+            "openai_direct": json.loads((ROOT / "config" / "openai-direct-agents.json").read_text(encoding="utf-8")),
+            "openai_wrappers": json.loads((ROOT / "config" / "hybrid-agents.json").read_text(encoding="utf-8")),
+            "anthropic_direct": json.loads((ROOT / "config" / "anthropic-direct-agents.json").read_text(encoding="utf-8")),
+            "anthropic_wrappers": json.loads((ROOT / "config" / "claude-agents.json").read_text(encoding="utf-8")),
+        }
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": True, "source": "test", "version": "0.1.22",
+        }):
+            for profile in ("hybrid-openai-root", "hybrid-anthropic-root"):
+                with self.subTest(profile=profile):
+                    rendered = ACCESS.render_profile(policy, profile, catalogs)
+                    serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
+                    self.assertEqual(len(rendered), 8)
+                    luna_description = rendered["airlock-luna"]["description"]
+                    self.assertIn("transport: native", luna_description)
+                    self.assertIn("fixed native effort: max", luna_description)
+                    self.assertIn("use run_in_background=true", luna_description)
+                    self.assertIn("useful non-overlapping batch before waiting", luna_description)
+                    self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])
+                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol[1m]")
+                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5")
+                    for agent in rendered.values():
+                        self.assertNotIn("tools", agent)
+                        self.assertNotIn("permissionMode", agent)
+                        self.assertNotIn("airlock-delegate", agent["prompt"])
+                    self.assertLessEqual(len(serialized.encode("utf-8")), 24 * 1024)
+
+    def test_managed_session_settings_trust_only_rendered_providers(self) -> None:
+        openai = json.loads(ACCESS.managed_session_settings_json(json.dumps({
+            "airlock-sol": {}, "airlock-luna": {},
+        })))
+        self.assertEqual(set(openai), {"autoMode"})
+        environment = openai["autoMode"]["environment"]
+        self.assertEqual(environment[0], "$defaults")
+        self.assertIn("OpenAI models", environment[1])
+        self.assertNotIn("Anthropic Claude", environment[1])
+        self.assertIn("airlock-luna, airlock-sol", environment[1])
+        self.assertIn("eligible non-ignored untracked regular files", environment[1])
+        self.assertIn("exact built-in Explore, Plan, and general-purpose", environment[1])
+        self.assertIn("inherit the orchestrator model", environment[1])
+        self.assertIn("exact session-allowed model", environment[1])
+        self.assertIn("Git-ignored or unsafe paths", environment[1])
+        self.assertNotIn("airlock-delegate", environment[1])
+
+        mixed = json.loads(ACCESS.managed_session_settings_json(json.dumps({
+            "airlock-sol": {}, "airlock-sonnet": {},
+        })))
+        context = mixed["autoMode"]["environment"][1]
+        self.assertIn("OpenAI models", context)
+        self.assertIn("Anthropic Claude", context)
+        self.assertIn("Credentials", context)
+
+
+if __name__ == "__main__":
+    unittest.main()
