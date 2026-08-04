@@ -234,7 +234,7 @@ For Anthropic plan bars, use native Claude Code:
 
 A native OpenAI worker can finish correctly and still show zero subagent tokens on its Agent card, while an Anthropic worker in the same session reports real numbers.
 
-Claude Code takes that number from the usage fields of the response. The router forwards responses byte for byte and never edits them, so a zero on the card means the usage fields did not arrive that way from upstream. The Anthropic side of the same router reports usage normally, which points at the OpenAI translation step rather than at Claude Code or the router.
+Claude Code reads that number from usage fields associated with the response. The router forwards responses byte for byte and never edits them, so it cannot repair a missing or ignored count. Airlock records the integer token fields that were present in the response so you can tell where the gap begins.
 
 The work itself is not affected. Only the reported count is.
 
@@ -244,7 +244,7 @@ To see what actually arrived, read the router diagnostics for the session:
 curl -s "$ANTHROPIC_BASE_URL/diagnostics"
 ```
 
-Each event carries a `usage` object when the response contained token counts. If OpenAI events have no `usage` object while Anthropic events do, the counts were missing upstream. The router reports what arrived and does not invent a number to fill the gap.
+Each event carries a `usage` object when the response contained token counts. If an OpenAI event has no `usage` object, the counts were missing from the response produced by the translation step. If the event has nonzero usage but the Agent card still shows zero, the display gap is inside Claude Code's accounting. The router reports what arrived and does not invent a number to fill either gap.
 
 ## Shell scripts fail with `\r`
 
