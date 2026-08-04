@@ -20,7 +20,7 @@ usage() {
 Usage: ./scripts/install.sh [options]
 
 Options:
-  --with-agent   Install the optional high-effort custom sub-agent
+  --with-agent   Install the optional custom sub-agent
   --login        Start interactive Codex OAuth if authentication is missing
   --no-service   Do not start the Homebrew background service
   -h, --help     Show this help

@@ -34,7 +34,8 @@ jobs:
             plugins/airlock/scripts/secret-guard.sh \
             plugins/airlock/scripts/worktree-create.sh \
             plugins/airlock/scripts/worktree-remove.sh \
-            tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh
+            tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh \
+            tests/test-install.sh
 
       - name: Check Python and JSON syntax
         shell: bash
@@ -75,6 +76,11 @@ jobs:
         run: |
           bash tests/test-airlock.sh
           bash tests/test-setup.sh
+
+      - name: Run the POSIX installer test
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash tests/test-install.sh
 
       - name: Run native Windows tests
         if: runner.os == 'Windows'

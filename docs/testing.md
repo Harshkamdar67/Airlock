@@ -71,6 +71,14 @@ bash tests/test-setup.sh
 
 These tests replace Claude Code and provider commands with stubs. They verify plain and hybrid environment construction, exact Agent catalogs, allowed tools, model allowlists, and saved settings without using OAuth or model quota.
 
+## macOS and Linux installer test
+
+```bash
+bash tests/test-install.sh
+```
+
+This test installs into a temporary folder with fake commands. It checks the installed file set and modes, managed-file conflicts, and doctor failure for an unhealthy proxy. It exits without running on other systems, where `tests/test-windows.ps1` covers the same ground.
+
 ## Windows tests
 
 From PowerShell:
