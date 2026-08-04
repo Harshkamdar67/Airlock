@@ -3,3 +3,8 @@
 .env
 .env.*
 !.env.example
+__pycache__/
+*.py[cod]
+dist/
+.claude/worktrees/
+.claude/settings.local.json

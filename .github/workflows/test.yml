@@ -8,13 +8,92 @@ permissions:
   contents: read
 
 jobs:
-  shell-tests:
-    runs-on: ubuntu-latest
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
       - name: Check shell syntax
-        run: bash -n bin/ccx scripts/setup.sh scripts/install.sh scripts/doctor.sh tests/stub-claude.sh tests/test-ccx.sh tests/test-setup.sh
-      - name: Test launcher behavior
-        run: bash tests/test-ccx.sh
-      - name: Test setup wizard
-        run: bash tests/test-setup.sh
+        shell: bash
+        run: |
+          bash -n bin/airlock \
+            scripts/setup.sh scripts/install.sh scripts/doctor.sh \
+            plugins/airlock/scripts/agent-guard.sh \
+            plugins/airlock/scripts/secret-guard.sh \
+            plugins/airlock/scripts/worktree-create.sh \
+            plugins/airlock/scripts/worktree-remove.sh \
+            tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh
+
+      - name: Check Python and JSON syntax
+        shell: bash
+        run: |
+          python -m py_compile \
+            bin/airlock-access.py bin/airlock-router.py bin/airlock-hybrid.py \
+            plugins/airlock/scripts/agent-guard.py \
+            plugins/airlock/scripts/secret-guard.py \
+            plugins/airlock/scripts/file_safety.py \
+            plugins/airlock/scripts/worktree.py scripts/update-bundle.py \
+            tests/test-access.py tests/test-agent-guard.py \
+            tests/test-router.py tests/test-hybrid.py tests/test-worktree.py \
+            tests/test-secret-guard.py tests/test-platform.py tests/test-release.py \
+            tests/test-docs.py
+          for catalog in config/*-agents.json; do
+            python -m json.tool "$catalog" >/dev/null
+          done
+          python -m json.tool config/managed-bundle.json >/dev/null
+          python -m json.tool plugins/airlock/.claude-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/airlock/hooks/hooks.json >/dev/null
+          python scripts/update-bundle.py --check
+
+      - name: Run Python tests
+        shell: bash
+        run: |
+          python tests/test-access.py
+          python tests/test-agent-guard.py
+          python tests/test-router.py
+          python tests/test-hybrid.py
+          python tests/test-secret-guard.py
+          python tests/test-worktree.py
+          python tests/test-platform.py
+          python tests/test-release.py
+          python tests/test-docs.py
+
+      - name: Run Bash launcher and setup tests
+        shell: bash
+        run: |
+          bash tests/test-airlock.sh
+          bash tests/test-setup.sh
+
+      - name: Run native Windows tests
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\tests\test-windows.ps1
+
+      - name: Test a clean worktree
+        shell: bash
+        run: |
+          temp_root="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null 2>&1; then
+            temp_root="$(cygpath -u "$RUNNER_TEMP")"
+          fi
+          worktree="$temp_root/airlock-clean-worktree"
+          git worktree add --detach "$worktree" HEAD
+          python "$worktree/tests/test-platform.py"
+          bash "$worktree/tests/test-airlock.sh"
+          git worktree remove --force "$worktree"
+
+      - name: Check patches
+        shell: bash
+        run: git diff --check

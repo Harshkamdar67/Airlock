@@ -1,0 +1,89 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Verify version and tests
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            printf 'Tag %s does not match VERSION %s\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+          bash -n bin/airlock \
+            scripts/setup.sh scripts/install.sh scripts/doctor.sh \
+            plugins/airlock/scripts/agent-guard.sh \
+            plugins/airlock/scripts/secret-guard.sh \
+            plugins/airlock/scripts/worktree-create.sh \
+            plugins/airlock/scripts/worktree-remove.sh \
+            tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh
+          python tests/test-access.py
+          python tests/test-agent-guard.py
+          python tests/test-router.py
+          python tests/test-hybrid.py
+          python tests/test-secret-guard.py
+          python tests/test-worktree.py
+          python tests/test-platform.py
+          python tests/test-release.py
+          python tests/test-docs.py
+          bash tests/test-airlock.sh
+          bash tests/test-setup.sh
+
+      - name: Build source archives
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          mkdir -p dist
+          git archive \
+            --format=tar.gz \
+            --prefix="airlock-${version}/" \
+            --output="dist/airlock-${version}.tar.gz" \
+            HEAD
+          git archive \
+            --format=zip \
+            --prefix="airlock-${version}/" \
+            --output="dist/airlock-${version}.zip" \
+            HEAD
+          cd dist
+          sha256sum airlock-* > SHA256SUMS
+
+      - name: Attest archives
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/airlock-*.tar.gz
+            dist/airlock-*.zip
+            dist/SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          options=(--verify-tag --generate-notes)
+          if [[ "$version" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* "${options[@]}"
