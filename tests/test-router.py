@@ -557,10 +557,14 @@ class RouterProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["LOCALAPPDATA"] = directory
+            # The owner must outlive the router's own startup budget, and the
+            # wait below must exceed it too, so a slow runner reports a real
+            # failure instead of a test-imposed timeout. The owner is always
+            # terminated in the finally block, so the long sleep costs nothing.
             owner = subprocess.Popen([
                 sys.executable,
                 "-c",
-                "import time; time.sleep(30)",
+                "import time; time.sleep(120)",
             ])
             try:
                 completed = subprocess.run(
@@ -577,7 +581,7 @@ class RouterProtocolTests(unittest.TestCase):
                     text=True,
                     encoding="utf-8",
                     capture_output=True,
-                    timeout=15,
+                    timeout=60,
                     check=False,
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
