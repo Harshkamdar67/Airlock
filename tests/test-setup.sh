@@ -10,6 +10,8 @@ config_dir="$tmp_dir/config"
 AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --main-model terra \
   --main-effort high \
+  --worker-effort inherit \
+  --worker-pins luna=max,sonnet=high \
   --bg-model sol \
   --bg-effort medium \
   --utility-model mini \
@@ -28,8 +30,13 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --yes
 
 config_file="$config_dir/config"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=openai$' "$config_file"
+grep -q '^AIRLOCK_HYBRID_MODEL=sonnet$' "$config_file"
 grep -q '^AIRLOCK_MODEL=terra$' "$config_file"
 grep -q '^AIRLOCK_MAIN_EFFORT=high$' "$config_file"
+grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$config_file"
+grep -q '^AIRLOCK_EFFORT_LUNA=max$' "$config_file"
+grep -q '^AIRLOCK_EFFORT_SONNET=high$' "$config_file"
 grep -q '^AIRLOCK_BG_MODEL=sol$' "$config_file"
 grep -q '^AIRLOCK_BG_EFFORT=medium$' "$config_file"
 grep -q '^AIRLOCK_SMALL_FAST_MODEL=gpt-5.4-mini\[1m\]$' "$config_file"
@@ -48,6 +55,7 @@ grep -q '^AIRLOCK_OPENAI_CAPACITY=20x$' "$config_file"
 grep -q '^AIRLOCK_ANTHROPIC_MODELS=opus,sonnet$' "$config_file"
 grep -q '^AIRLOCK_OPENAI_MODELS=sol,terra,luna$' "$config_file"
 grep -q '^AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable$' "$config_file"
+grep -q '^AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort$' "$config_file"
 
 configured_output="$(
   AIRLOCK_CONFIG_FILE="$config_file" \
@@ -70,6 +78,8 @@ grep -q '^SPAWN_DEPTH=1$' <<<"$configured_output"
 AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --main-model luna \
   --main-effort xhigh \
+  --worker-effort high \
+  --worker-pins '' \
   --bg-model sol \
   --bg-effort medium \
   --utility-model sol \
@@ -81,6 +91,11 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --yes >/dev/null
 
 grep -q '^AIRLOCK_MODEL=luna$' "$config_file"
+grep -q '^AIRLOCK_WORKER_EFFORT=high$' "$config_file"
+if grep -q '^AIRLOCK_EFFORT_' "$config_file"; then
+  printf 'test: explicit empty worker pins did not clear saved pins\n' >&2
+  exit 1
+fi
 grep -q '^AIRLOCK_EXTRA_USAGE_POLICY=never$' "$config_file"
 grep -q '^AIRLOCK_ROUTING_POLICY=quality$' "$config_file"
 backup_count="$(find "$config_dir" -maxdepth 1 -name 'config.backup-*' | wc -l | tr -d ' ')"
@@ -115,6 +130,67 @@ if AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   exit 1
 fi
 test "$before_hash" = "$(cksum "$config_file")"
+
+if AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
+  --worker-pins luna=max,luna=high --config-only --yes >/dev/null 2>&1; then
+  printf 'test: duplicate worker pin unexpectedly succeeded\n' >&2
+  exit 1
+fi
+test "$before_hash" = "$(cksum "$config_file")"
+
+hybrid_dir="$tmp_dir/hybrid-config"
+AIRLOCK_CONFIG_DIR="$hybrid_dir" "$repo_root/scripts/setup.sh" \
+  --default-profile hybrid \
+  --hybrid-model opus \
+  --main-effort xhigh \
+  --worker-effort inherit \
+  --worker-pins luna=max \
+  --anthropic-workers sonnet \
+  --openai-workers '' \
+  --without-agent \
+  --no-login \
+  --no-service \
+  --config-only \
+  --yes >"$tmp_dir/hybrid-summary.out"
+grep -q '^  Default command:    airlock -> Claude Opus 5 (claude-opus-5)$' "$tmp_dir/hybrid-summary.out"
+grep -q '^  Session profile:    hybrid: Claude and GPT workers$' "$tmp_dir/hybrid-summary.out"
+grep -q '^  Worker effort:      follow session; per-model pins: luna=max$' "$tmp_dir/hybrid-summary.out"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$hybrid_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=opus$' "$hybrid_dir/config"
+grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$hybrid_dir/config"
+grep -q '^AIRLOCK_EFFORT_LUNA=max$' "$hybrid_dir/config"
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=sonnet,opus$' "$hybrid_dir/config"
+grep -q '^AIRLOCK_OPENAI_MODELS=$' "$hybrid_dir/config"
+
+new_default_dir="$tmp_dir/new-default-config"
+AIRLOCK_CONFIG_DIR="$new_default_dir" "$repo_root/scripts/setup.sh" \
+  --no-login --no-service --config-only --yes >"$tmp_dir/new-default-summary.out"
+grep -q '^  Generic worker:     no (effort: inherit)$' "$tmp_dir/new-default-summary.out"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$new_default_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=sonnet$' "$new_default_dir/config"
+grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$new_default_dir/config"
+
+legacy_dir="$tmp_dir/legacy-config"
+mkdir -p "$legacy_dir"
+printf '%s\n' 'AIRLOCK_MODEL=terra' 'AIRLOCK_MAIN_EFFORT=high' > "$legacy_dir/config"
+AIRLOCK_CONFIG_DIR="$legacy_dir" "$repo_root/scripts/setup.sh" \
+  --without-agent --no-login --no-service --config-only --yes >/dev/null
+grep -q '^AIRLOCK_DEFAULT_PROFILE=openai$' "$legacy_dir/config"
+grep -q '^AIRLOCK_MODEL=terra$' "$legacy_dir/config"
+
+for invalid_case in \
+  '--default-profile invalid' \
+  '--hybrid-model invalid' \
+  '--worker-effort impossible' \
+  '--worker-pins unknown=max' \
+  '--worker-pins luna=impossible'; do
+  set -- $invalid_case
+  if AIRLOCK_CONFIG_DIR="$tmp_dir/invalid-new-options" "$repo_root/scripts/setup.sh" \
+    "$1" "$2" --config-only --yes >/dev/null 2>&1; then
+    printf 'test: invalid new setup option unexpectedly succeeded: %s\n' "$invalid_case" >&2
+    exit 1
+  fi
+done
 
 custom_dir="$tmp_dir/custom-config"
 AIRLOCK_CONFIG_DIR="$custom_dir" "$repo_root/scripts/setup.sh" \
