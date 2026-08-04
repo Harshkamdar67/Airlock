@@ -79,12 +79,64 @@ if ($LauncherText -notmatch [regex]::Escape("StartsWith('claude-')")) {
   throw 'bin\airlock.ps1 must skip capability declarations for Claude model IDs'
 }
 
+$RealPython = (Get-Command python.exe -ErrorAction Stop | Select-Object -First 1).Source
+$PowerShellExe = (Get-Process -Id $PID).Path
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("airlock-windows-test-{0}" -f [Guid]::NewGuid().ToString('N'))
 $StubDir = Join-Path $TempRoot 'stubs'
 $InstallDir = Join-Path $TempRoot 'bin'
 $ConfigDir = Join-Path $TempRoot 'config'
 $AgentDir = Join-Path $TempRoot 'agents'
 New-Item -ItemType Directory -Path $StubDir -Force | Out-Null
+
+$ClaudeStub = Join-Path $StubDir 'claude-launch-stub.exe'
+$ClaudeStubSource = @'
+using System;
+
+public static class ClaudeLaunchStub {
+  public static int Main(string[] args) {
+    Console.WriteLine("MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "unset"));
+    Console.WriteLine("CUSTOM_MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_CUSTOM_MODEL_OPTION") ?? "unset"));
+    Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
+    foreach (string argument in args) Console.WriteLine("ARG=" + argument);
+    return 0;
+  }
+}
+'@
+Add-Type -TypeDefinition $ClaudeStubSource -Language CSharp -OutputAssembly $ClaudeStub -OutputType ConsoleApplication
+
+function Invoke-LauncherProcess([string]$Launcher, [string[]]$LauncherArguments, [bool]$ExpectSuccess = $true) {
+  $quotedLauncher = '"' + $Launcher.Replace('"', '\"') + '"'
+  $quotedArguments = @()
+  foreach ($argument in $LauncherArguments) {
+    $quotedArguments += '"' + $argument.Replace('"', '\"') + '"'
+  }
+  $processInfo = New-Object Diagnostics.ProcessStartInfo
+  $processInfo.FileName = $PowerShellExe
+  $processInfo.Arguments = "-NoProfile -NonInteractive -File $quotedLauncher $($quotedArguments -join ' ')"
+  $processInfo.UseShellExecute = $false
+  $processInfo.RedirectStandardOutput = $true
+  $processInfo.RedirectStandardError = $true
+  [void]$processInfo.EnvironmentVariables.Remove('ANTHROPIC_API_KEY')
+  [void]$processInfo.EnvironmentVariables.Remove('ANTHROPIC_AUTH_TOKEN')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_DEFAULT_PROFILE')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_HYBRID_MODEL')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_MODEL')
+  $process = [Diagnostics.Process]::Start($processInfo)
+  $standardOutput = $process.StandardOutput.ReadToEnd()
+  $standardError = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+  if ($ExpectSuccess -and $process.ExitCode -ne 0) {
+    throw "Windows launcher exited $($process.ExitCode): $standardError"
+  }
+  if (-not $ExpectSuccess -and $process.ExitCode -eq 0) {
+    throw 'Windows launcher unexpectedly accepted invalid saved configuration.'
+  }
+  return [pscustomobject]@{
+    ExitCode = $process.ExitCode
+    Output = $standardOutput.Replace("`r", '')
+    Error = $standardError.Replace("`r", '')
+  }
+}
 
 function Write-Stub([string]$Name, [string]$Body = '@exit /b 0') {
   [IO.File]::WriteAllText(
@@ -155,6 +207,94 @@ try {
   }
   if (-not $blocked) { throw 'Windows installer replaced or accepted an unmanaged launcher.' }
   [IO.File]::Copy((Join-Path $Root 'bin\airlock.cmd'), (Join-Path $InstallDir 'airlock.cmd'), $true)
+
+  $InstalledLauncher = Join-Path $InstallDir 'airlock.ps1'
+  $InstalledConfig = Join-Path $ConfigDir 'config'
+  $env:AIRLOCK_PYTHON = $RealPython
+  $env:AIRLOCK_CONFIG_FILE = $InstalledConfig
+  $env:AIRLOCK_ACCESS_FILE = Join-Path $ConfigDir 'access.json'
+  $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE = Join-Path $ConfigDir 'openai-direct-agents.json'
+  $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE = Join-Path $ConfigDir 'anthropic-direct-agents.json'
+  $env:AIRLOCK_HYBRID_AGENTS_FILE = Join-Path $ConfigDir 'hybrid-agents.json'
+  $env:AIRLOCK_CLAUDE_AGENTS_FILE = Join-Path $ConfigDir 'claude-agents.json'
+  $env:AIRLOCK_PLUGIN_DIR = Join-Path $ConfigDir 'plugins\airlock'
+  $env:AIRLOCK_MANAGED_BUNDLE_FILE = Join-Path $ConfigDir 'managed-bundle.json'
+  $env:AIRLOCK_MANAGED_BIN_DIR = $InstallDir
+  $env:AIRLOCK_REAL_CLAUDE = $ClaudeStub
+  $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
+
+  $LegacyConfig = @'
+AIRLOCK_MODEL=terra
+AIRLOCK_MAIN_EFFORT=high
+AIRLOCK_BG_MODEL=luna
+AIRLOCK_BG_EFFORT=low
+AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna[1m]
+AIRLOCK_WORKER_EFFORT=inherit
+AIRLOCK_EXTRA_USAGE_POLICY=ask
+AIRLOCK_ROUTING_POLICY=balanced
+AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off
+AIRLOCK_SWARM_FAST=off
+AIRLOCK_FAILOVER_POLICY=ask
+AIRLOCK_ANTHROPIC_MODELS=opus,sonnet
+AIRLOCK_OPENAI_MODELS=sol,terra,luna
+AIRLOCK_ANTHROPIC_EXTRA_MODELS=
+AIRLOCK_OPENAI_EXTRA_MODELS=
+AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
+AIRLOCK_PROXY_URL=http://127.0.0.1:18765
+'@
+  [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
+  $LegacyLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
+  if ($LegacyLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
+    throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
+  }
+
+  $HybridConfig = "AIRLOCK_DEFAULT_PROFILE=hybrid`nAIRLOCK_HYBRID_MODEL=sonnet`n$LegacyConfig"
+  [IO.File]::WriteAllText($InstalledConfig, $HybridConfig, (New-Object Text.UTF8Encoding($false)))
+  $HybridLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
+  if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5$' -or
+      $HybridLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-anthropic-root$' -or
+      $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5$') {
+    throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
+  }
+  $ExplicitOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '-p', 'test')
+  if ($ExplicitOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
+      $ExplicitOpenAI.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
+    throw "Explicit OpenAI profile did not override the hybrid default: $($ExplicitOpenAI.Output)"
+  }
+  $ExactOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', 'gpt-5.6-luna[1m]', '-p', 'test')
+  if ($ExactOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna\[1m\]$') {
+    throw "Exact OpenAI model ID did not launch: $($ExactOpenAI.Output)"
+  }
+  $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-5.6-sol[1m]', '-p', 'test')
+  if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-sol\[1m\]$') {
+    throw "OpenAI --model= form did not launch: $($EqualsOpenAI.Output)"
+  }
+  $BackgroundLaunch = Invoke-LauncherProcess $InstalledLauncher @('background', '-p', 'test')
+  if ($BackgroundLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna\[1m\]$' -or
+      $BackgroundLaunch.Output -notmatch '(?m)^ARG=low$') {
+    throw "Background alias did not use the saved background route: $($BackgroundLaunch.Output)"
+  }
+  $ConfigAlias = Invoke-LauncherProcess $InstalledLauncher @('--config')
+  if ($ConfigAlias.Output -notmatch '(?m)^Default profile: hybrid$') {
+    throw "PowerShell --config alias did not show the saved profile: $($ConfigAlias.Output)"
+  }
+
+  $HybridGptConfig = $HybridConfig.Replace('AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=terra')
+  [IO.File]::WriteAllText($InstalledConfig, $HybridGptConfig, (New-Object Text.UTF8Encoding($false)))
+  $HybridGptLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
+  if ($HybridGptLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=gpt-5\.6-terra\[1m\]$' -or
+      $HybridGptLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-openai-root$') {
+    throw "Saved GPT hybrid root did not launch: $($HybridGptLaunch.Output)"
+  }
+
+  [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_DEFAULT_PROFILE=invalid`n", (New-Object Text.UTF8Encoding($false)))
+  [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
+  [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_MODEL=invalid`n", (New-Object Text.UTF8Encoding($false)))
+  [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
+  [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_HYBRID_MODEL=invalid`n", (New-Object Text.UTF8Encoding($false)))
+  [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
+  [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
 
   $env:PATH = "$InstallDir;$StubDir;$OldPath"
   $env:AIRLOCK_PROXY_URL = 'http://127.0.0.1:1'
