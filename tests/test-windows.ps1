@@ -138,12 +138,16 @@ function Invoke-LauncherProcess([string]$Launcher, [string[]]$LauncherArguments,
   }
 }
 
-function Write-Stub([string]$Name, [string]$Body = '@exit /b 0') {
+function Write-StubAt([string]$Directory, [string]$Name, [string]$Body = '@exit /b 0') {
   [IO.File]::WriteAllText(
-    (Join-Path $StubDir $Name),
+    (Join-Path $Directory $Name),
     "@echo off`r`n$Body`r`n",
     (New-Object Text.ASCIIEncoding)
   )
+}
+
+function Write-Stub([string]$Name, [string]$Body = '@exit /b 0') {
+  Write-StubAt $StubDir $Name $Body
 }
 
 Write-Stub 'git.cmd'
@@ -157,6 +161,41 @@ $OldInstall = $env:AIRLOCK_INSTALL_DIR
 $OldConfig = $env:AIRLOCK_CONFIG_DIR
 $OldAgent = $env:AIRLOCK_AGENT_DIR
 try {
+  $SystemPath = "$env:SystemRoot\System32;$env:SystemRoot"
+  $MissingClaudeDir = Join-Path $TempRoot 'missing-claude-stubs'
+  New-Item -ItemType Directory -Path $MissingClaudeDir -Force | Out-Null
+  foreach ($name in @('git.cmd', 'bash.cmd', 'claude-code-proxy.cmd', 'python.cmd')) {
+    Write-StubAt $MissingClaudeDir $name
+  }
+  $env:PATH = "$MissingClaudeDir;$SystemPath"
+  $env:AIRLOCK_INSTALL_DIR = Join-Path $TempRoot 'missing-claude-bin'
+  $env:AIRLOCK_CONFIG_DIR = Join-Path $TempRoot 'missing-claude-config'
+  $env:AIRLOCK_AGENT_DIR = Join-Path $TempRoot 'missing-claude-agents'
+  $missingClaudeBlocked = $false
+  try {
+    & (Join-Path $Root 'scripts\install.ps1') *> $null
+  } catch {
+    $missingClaudeBlocked = $_.Exception.Message -like '*Claude Code is required and was not found on PATH*'
+  }
+  if (-not $missingClaudeBlocked) { throw 'Windows installer accepted a missing Claude Code binary.' }
+
+  $MissingProxyDir = Join-Path $TempRoot 'missing-proxy-stubs'
+  New-Item -ItemType Directory -Path $MissingProxyDir -Force | Out-Null
+  foreach ($name in @('git.cmd', 'bash.cmd', 'claude.cmd', 'python.cmd')) {
+    Write-StubAt $MissingProxyDir $name
+  }
+  $env:PATH = "$MissingProxyDir;$SystemPath"
+  $env:AIRLOCK_INSTALL_DIR = Join-Path $TempRoot 'missing-proxy-bin'
+  $env:AIRLOCK_CONFIG_DIR = Join-Path $TempRoot 'missing-proxy-config'
+  $env:AIRLOCK_AGENT_DIR = Join-Path $TempRoot 'missing-proxy-agents'
+  $missingProxyBlocked = $false
+  try {
+    & (Join-Path $Root 'scripts\install.ps1') *> $null
+  } catch {
+    $missingProxyBlocked = $_.Exception.Message -like '*claude-code-proxy is required and was not found on PATH*'
+  }
+  if (-not $missingProxyBlocked) { throw 'Windows installer accepted a missing claude-code-proxy binary.' }
+
   $env:PATH = "$StubDir;$OldPath"
   $env:AIRLOCK_INSTALL_DIR = $InstallDir
   $env:AIRLOCK_CONFIG_DIR = $ConfigDir
@@ -296,10 +335,22 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
   [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
 
-  $env:PATH = "$InstallDir;$StubDir;$OldPath"
+  $env:PATH = "$InstallDir;$StubDir;$SystemPath"
   $env:AIRLOCK_PROXY_URL = 'http://127.0.0.1:1'
-  & (Join-Path $Root 'scripts\doctor.ps1') *> $null
-  if ($LASTEXITCODE -eq 0) { throw 'Windows doctor ignored an unhealthy proxy.' }
+  $DoctorOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
+  $DoctorExit = $LASTEXITCODE
+  if ($DoctorExit -eq 0) { throw 'Windows doctor ignored an unhealthy proxy.' }
+  if ($DoctorOutput -notmatch '(?m)^PASS  Claude login is configured$') {
+    throw "Windows doctor did not confirm the healthy Claude login stub: $DoctorOutput"
+  }
+
+  Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@if `"%1 %2`"==`"auth status`" exit /b 1`r`n@exit /b 0"
+  $SignedOutOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
+  if ($LASTEXITCODE -eq 0) { throw 'Windows doctor ignored an unhealthy proxy with Claude signed out.' }
+  if ($SignedOutOutput -notmatch '(?m)^INFO  Claude login was not detected; run: claude auth login$' -or
+      $SignedOutOutput -notmatch '(?m)^INFO  OpenAI-only sessions can still work, but hybrid and Claude routes need this login\.$') {
+    throw "Windows doctor did not explain the signed-out Claude behavior: $SignedOutOutput"
+  }
 } finally {
   $env:PATH = $OldPath
   $env:AIRLOCK_INSTALL_DIR = $OldInstall

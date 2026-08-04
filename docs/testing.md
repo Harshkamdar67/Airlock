@@ -72,7 +72,7 @@ python tests/test-setup-pty.py
 
 These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
 
-`test-setup-pty.py` runs the normal guided flow through a real POSIX terminal. It checks the six sections, full Claude and GPT names and IDs, honest effort wording, hidden Advanced details, and the saved hybrid defaults. It prints a skip on Windows, where the Python PTY module is unavailable.
+`test-setup-pty.py` runs the normal guided flow through a real POSIX terminal four times: a plain 80 column run, a color-capable run, a run with the output sent to a pipe, and a 40 column run. It checks the ASCII wordmark and the introduction, the six numbered sections and their progress track, full Claude and GPT names and IDs, the recommended markers and Enter hints, honest effort wording, the Claude Fable 5 choice, the separate Claude Code and Codex OAuth wording, the grouped review screen with its list of actions, hidden Advanced details, and the saved hybrid defaults. It also checks that no escape sequence reaches a plain or redirected stream and that wrapped lines fit the terminal. It prints a skip on Windows, where the Python PTY module is unavailable.
 
 ## macOS and Linux installer test
 
@@ -80,7 +80,7 @@ These tests replace Claude Code and provider commands with stubs. They verify ol
 bash tests/test-install.sh
 ```
 
-This test installs into a temporary folder with fake commands. It checks the installed file set and modes, managed-file conflicts, and doctor failure for an unhealthy proxy. It exits without running on other systems, where `tests/test-windows.ps1` covers the same ground.
+This test installs into a temporary folder with fake commands. It checks the installed file set and modes, managed-file conflicts, missing Claude Code, automatic proxy installation, signed-out Codex OAuth with and without approved login, separate Claude login reporting, and doctor failure for an unhealthy proxy. It exits without running on other systems, where `tests/test-windows.ps1` covers the same ground.
 
 ## Windows tests
 
@@ -90,7 +90,7 @@ From PowerShell:
 powershell -NoProfile -File .\tests\test-windows.ps1
 ```
 
-The test installs into a temporary folder with fake commands. It checks PowerShell parsing, managed-file conflicts, router and worktree-hook installation, saved Claude and GPT hybrid roots, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
+The test installs into a temporary folder with fake commands. It checks PowerShell parsing, missing Claude Code and proxy refusal, managed-file conflicts, separate Claude login reporting, router and worktree-hook installation, saved Claude and GPT hybrid roots, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
 
 ## JSON files
 

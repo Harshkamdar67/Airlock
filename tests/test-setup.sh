@@ -221,4 +221,23 @@ AIRLOCK_CONFIG_DIR="$detected_dir" "$repo_root/scripts/setup.sh" \
   --config-only --yes >/dev/null
 grep -q '^AIRLOCK_ANTHROPIC_PLAN=max20x$' "$detected_dir/config"
 
+# Configuration-only mode must not require or invoke Claude Code, the proxy,
+# either login, or a service. These stubs fail if setup touches them.
+config_only_stub_dir="$tmp_dir/config-only-stubs"
+mkdir -p "$config_only_stub_dir"
+for name in claude claude-code-proxy; do
+  cat > "$config_only_stub_dir/$name" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0 $*" >> "$AIRLOCK_TEST_COMMAND_LOG"
+exit 99
+EOF
+  chmod 0755 "$config_only_stub_dir/$name"
+done
+config_only_log="$tmp_dir/config-only-commands.log"
+AIRLOCK_TEST_COMMAND_LOG="$config_only_log" \
+PATH="$config_only_stub_dir:$PATH" \
+AIRLOCK_CONFIG_DIR="$tmp_dir/config-only-no-tools" \
+  "$repo_root/scripts/setup.sh" --config-only --no-login --no-service --yes >/dev/null
+test ! -e "$config_only_log"
+
 printf 'All setup wizard tests passed.\n'

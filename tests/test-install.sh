@@ -25,6 +25,57 @@ agent_dir="$tmp_dir/agents"
 config_dir="$config_home/airlock"
 mkdir -p "$stub_dir"
 
+# A missing Claude Code binary must stop before any managed file is written.
+missing_stub_dir="$tmp_dir/missing-stubs"
+mkdir -p "$missing_stub_dir"
+for name in brew curl install python3 claude-code-proxy; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$missing_stub_dir/$name"
+  chmod 0755 "$missing_stub_dir/$name"
+done
+platform_name="$(uname -s)"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$platform_name" > "$missing_stub_dir/uname"
+chmod 0755 "$missing_stub_dir/uname"
+if PATH="$missing_stub_dir:/usr/bin:/bin" \
+  HOME="$tmp_dir/missing-home" \
+  AIRLOCK_INSTALL_DIR="$tmp_dir/missing-bin" \
+  AIRLOCK_CONFIG_DIR="$tmp_dir/missing-config" \
+  bash "$repo_root/scripts/install.sh" --no-service > "$tmp_dir/missing.out" 2> "$tmp_dir/missing.err"; then
+  printf 'test: installer accepted a missing Claude Code binary\n' >&2
+  exit 1
+fi
+grep -q '^install: Claude Code is missing\.' "$tmp_dir/missing.err"
+test ! -e "$tmp_dir/missing-bin/airlock"
+
+# On macOS and Linux, a missing proxy is installed with Homebrew before its
+# OAuth status is checked. The stub creates a local proxy command only.
+proxy_stub_dir="$tmp_dir/proxy-missing-stubs"
+mkdir -p "$proxy_stub_dir"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$platform_name" > "$proxy_stub_dir/uname"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$proxy_stub_dir/python3"
+printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "--version" ]]; then printf "Claude Code test\\n"; fi\nexit 0\n' > "$proxy_stub_dir/claude"
+cat > "$proxy_stub_dir/brew" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "install" ]]; then
+  cat > "$AIRLOCK_TEST_PROXY_TARGET" <<'PROXY'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then printf 'Proxy test\n'; fi
+exit 0
+PROXY
+  chmod 0755 "$AIRLOCK_TEST_PROXY_TARGET"
+fi
+exit 0
+EOF
+chmod 0755 "$proxy_stub_dir/uname" "$proxy_stub_dir/python3" "$proxy_stub_dir/claude" "$proxy_stub_dir/brew"
+AIRLOCK_TEST_PROXY_TARGET="$proxy_stub_dir/claude-code-proxy" \
+PATH="$proxy_stub_dir:/usr/bin:/bin" \
+HOME="$tmp_dir/proxy-home" \
+AIRLOCK_INSTALL_DIR="$tmp_dir/proxy-bin" \
+AIRLOCK_CONFIG_DIR="$tmp_dir/proxy-config" \
+AIRLOCK_AGENT_DIR="$tmp_dir/proxy-agents" \
+  bash "$repo_root/scripts/install.sh" --no-service > "$tmp_dir/proxy-install.out"
+grep -q '^Installing raine/claude-code-proxy with Homebrew\.\.\.$' "$tmp_dir/proxy-install.out"
+test -x "$tmp_dir/proxy-bin/airlock"
+
 write_stub() {
   local name="$1"
   shift
@@ -38,13 +89,33 @@ write_stub() {
 
 write_stub brew ''
 write_stub claude 'if [[ "${1:-}" == "--version" ]]; then printf "Claude Code test\\n"; fi'
-write_stub claude-code-proxy 'if [[ "${1:-}" == "--version" ]]; then printf "Proxy test\\n"; fi'
+write_stub claude-code-proxy \
+  'if [[ "${1:-}" == "--version" ]]; then printf "Proxy test\\n"; fi' \
+  'if [[ "${1:-} ${2:-} ${3:-}" == "codex auth status" ]]; then [[ -f "$AIRLOCK_TEST_AUTH_STATE" ]]; exit; fi' \
+  'if [[ "${1:-} ${2:-} ${3:-}" == "codex auth login" ]]; then : > "$AIRLOCK_TEST_AUTH_STATE"; exit 0; fi'
 
 export PATH="$stub_dir:$PATH"
 export XDG_CONFIG_HOME="$config_home"
 export AIRLOCK_INSTALL_DIR="$install_dir"
 export AIRLOCK_AGENT_DIR="$agent_dir"
+export AIRLOCK_TEST_AUTH_STATE="$tmp_dir/proxy-authenticated"
 unset AIRLOCK_CONFIG_FILE AIRLOCK_ACCESS_FILE AIRLOCK_PLUGIN_DIR AIRLOCK_MANAGED_BUNDLE_FILE
+
+# A present proxy without Codex OAuth must stop cleanly unless login was
+# explicitly allowed. The interactive login stub stores only a fake state bit.
+if "$repo_root/scripts/install.sh" --no-service > "$tmp_dir/auth-missing.out" 2>&1; then
+  printf 'test: installer accepted a signed-out Codex proxy\n' >&2
+  exit 1
+else
+  auth_status=$?
+fi
+test "$auth_status" -eq 2
+grep -q '^Codex OAuth needs interactive approval\.' "$tmp_dir/auth-missing.out"
+test ! -e "$install_dir/airlock"
+
+"$repo_root/scripts/install.sh" --login --no-service > "$tmp_dir/login.out"
+test -f "$AIRLOCK_TEST_AUTH_STATE"
+grep -q '^Airlock installed\.$' "$tmp_dir/login.out"
 
 "$repo_root/scripts/install.sh" --with-agent --no-service > "$tmp_dir/install.out"
 grep -q '^Airlock installed\.$' "$tmp_dir/install.out"
@@ -120,10 +191,21 @@ if AIRLOCK_ACCESS_FILE="$tmp_dir/access.json" "$repo_root/scripts/doctor.sh" > "
   exit 1
 fi
 grep -q '^FAIL  Proxy health: http://127\.0\.0\.1:1/healthz$' "$tmp_dir/doctor.out"
+grep -q '^PASS  Claude login is configured$' "$tmp_dir/doctor.out"
 grep -q "^PASS  Launcher: $install_dir/airlock$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Managed bundle is current and complete$' "$tmp_dir/doctor.out"
 grep -q "^PASS  Hybrid router: $install_dir/airlock-router.py" "$tmp_dir/doctor.out"
 grep -q "^PASS  Session plugin: $plugin_dir$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Custom airlock-worker effort: ' "$tmp_dir/doctor.out"
+
+write_stub claude \
+  'if [[ "${1:-}" == "--version" ]]; then printf "Claude Code test\\n"; fi' \
+  'if [[ "${1:-} ${2:-}" == "auth status" ]]; then exit 1; fi'
+if AIRLOCK_ACCESS_FILE="$tmp_dir/access.json" "$repo_root/scripts/doctor.sh" > "$tmp_dir/doctor-signed-out.out" 2>&1; then
+  printf 'test: doctor ignored an unhealthy proxy while Claude was signed out\n' >&2
+  exit 1
+fi
+grep -q '^INFO  Claude login was not detected; run: claude auth login$' "$tmp_dir/doctor-signed-out.out"
+grep -q '^INFO  OpenAI-only sessions can still work, but hybrid and Claude routes need this login\.$' "$tmp_dir/doctor-signed-out.out"
 
 printf 'All installer tests passed.\n'

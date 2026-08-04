@@ -24,13 +24,29 @@ Install Claude Code, Homebrew, Git, Python 3, and curl. Then run:
 The guided terminal setup has six short sections:
 
 1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with Claude Sonnet 5.
-2. **Worker pool:** choose Balanced, Economical, or individual exact-model workers.
+2. **Worker pool:** choose the Balanced pool, the Economical pool, the Balanced pool plus Claude Fable 5, or individual exact-model workers.
 3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
 4. **Safety and budget:** choose extra-usage behavior, routing preference, and a parallel-worker ceiling.
-5. **Installation:** decide whether setup may open login when needed and start the local proxy service.
-6. **Review:** check the saved command, full worker names, effort behavior, actions, and config path before anything changes.
+5. **Installation:** decide whether setup may start Codex OAuth for the local proxy when the proxy reports that it is signed out, and whether to start the proxy service. Claude Code is a separate prerequisite, and Airlock never changes or reads its sign-in.
+6. **Review:** check the grouped settings, the numbered list of actions, and the config path. Nothing on the machine changes until you accept this screen, and you can start the questions over from here.
 
 Advanced settings are optional. They contain the separate `airlock bg` convenience command, the utility model used for lightweight Claude Code requests, Fast, failover, capacity hints, the optional generic worker, and per-model controls. None of those concepts are required to complete the normal setup path.
+
+## Missing tools and sign-ins
+
+Airlock treats the Claude and OpenAI paths separately:
+
+| Machine state | macOS and Linux | Windows |
+| --- | --- | --- |
+| Claude Code is missing | Installation stops with the official setup link before managed files are copied. | Installation stops and asks you to install Claude Code. |
+| Claude Code is installed but signed out | Installation can finish. Doctor says OpenAI-only sessions can work and tells you to run `claude auth login` before hybrid or Claude routes. | Same behavior. |
+| `claude-code-proxy` is missing | The installer installs it with Homebrew, then checks Codex OAuth. | Installation stops. Install the Windows proxy build, then rerun the installer. |
+| The proxy is installed but Codex OAuth is missing | Setup opens the official proxy login only if you approved that action. Otherwise installation stops with the exact login command. | Run `claude-code-proxy codex auth login`, or explicitly run the installer with `-Login`. |
+| Both sign-ins are healthy | Installation finishes and Doctor checks the local service and managed files. | Same behavior. |
+
+The native `codex` command is not an Airlock installation dependency. Codex OAuth here means the login managed by `claude-code-proxy`.
+
+`--config-only` is different by design. It writes only the noncredential Airlock configuration and does not install tools, check login, or start a service.
 
 For the tested defaults, run:
 
