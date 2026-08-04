@@ -80,6 +80,17 @@ A pull request should include:
 
 Keep generated archives and local state out of the commit.
 
+Before merge:
+
+- all required Ubuntu, macOS, and Windows checks must pass
+- the repository owner or the matching CODEOWNER must approve the change
+- every review conversation must be resolved
+- every commit must carry the Developer Certificate of Origin sign-off described below
+- security-sensitive changes need focused review of credential boundaries, loopback binding, and managed-file checks
+- pull requests are squash-merged so `main` keeps one reviewed commit per change
+
+Do not ask a maintainer to bypass a failed check, dismiss a valid review, or merge an unreviewed workflow change.
+
 ## Sign your commits
 
 This project uses the [Developer Certificate of Origin](https://developercertificate.org/). It is a short statement that you wrote the change, or that you have the right to submit it under the project's license. There is no separate agreement to sign.

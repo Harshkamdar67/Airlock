@@ -2,6 +2,16 @@
 
 Airlock handles local project files and routes model requests. Treat security problems seriously and report them privately.
 
+## Supported versions
+
+Before 1.0, security fixes are provided for the latest tagged beta only. Older betas may not receive patches. The default branch is development code and is not a supported release.
+
+| Version | Supported |
+| --- | --- |
+| Latest tagged beta | Yes |
+| Older betas | No |
+| Unreleased default branch | No |
+
 ## Report a security problem
 
 Use the repository's **Security** tab and choose **Report a vulnerability** to open a private GitHub Security Advisory.
