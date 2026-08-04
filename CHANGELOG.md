@@ -66,7 +66,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Setup automatically uses `~/.airlock` when the normal macOS or Linux config parent is not writable, and every installed component resolves the same fallback without `sudo`.
 - Long unbreakable config paths use a stacked review layout instead of overflowing the label column.
 - Codex OAuth and proxy startup now use a private writable config or state fallback when the upstream default parent is blocked, without moving an existing healthy login.
-- POSIX PTY timeouts now terminate the full child process group and report the exact run instead of leaving macOS CI waiting for the job timeout.
+- POSIX PTY tests now poll child exit independently of pipe EOF, use bounded process-group cleanup with a child fallback, and report the exact run instead of leaving macOS CI waiting for the job timeout.
 
 ### Security
 

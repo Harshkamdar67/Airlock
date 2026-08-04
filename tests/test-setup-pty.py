@@ -79,17 +79,26 @@ def wait_for_child(child_pid: int, timeout: float) -> int | None:
 
 def terminate_child_group(child_pid: int) -> int:
     """Bound termination of the wizard and anything it started."""
+    status = wait_for_child(child_pid, 0.1)
+    if status is not None:
+        return status
     try:
         os.killpg(child_pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     status = wait_for_child(child_pid, 2.0)
     if status is not None:
         return status
     try:
         os.killpg(child_pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     status = wait_for_child(child_pid, 2.0)
     if status is None:
         raise AssertionError("guided setup process group could not be reaped")
@@ -184,6 +193,26 @@ def run_wizard(
         quiet_since = time.monotonic()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            waited_pid, child_status = os.waitpid(child_pid, os.WNOHANG)
+            if waited_pid == child_pid:
+                status = child_status
+                # Pipe EOF can be delayed on macOS by a short-lived inherited
+                # descriptor. The wizard process is authoritative, so drain
+                # everything already buffered and stop waiting for EOF.
+                while True:
+                    ready, _, _ = select.select([read_fd], [], [], 0)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(read_fd, 65536)
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    output_parts.append(chunk)
+                break
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
                 if pending and time.monotonic() - quiet_since >= IDLE_GAP:
