@@ -29,9 +29,16 @@ class ReleaseMetadataTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("tags:", workflow)
+        self.assertIn("refs/remotes/origin/main", workflow)
+        self.assertIn("merge-base --is-ancestor", workflow)
+        self.assertIn('${GITHUB_REF_NAME}^{commit}', workflow)
         self.assertIn("git archive", workflow)
         self.assertIn("sha256sum", workflow)
         self.assertIn("attest-build-provenance", workflow)
+        self.assertIn("python tests/test-update.py", workflow)
+        self.assertIn("--verify-tag", workflow)
+        self.assertIn("environment: release", workflow)
+        self.assertIn("persist-credentials: false", workflow)
         self.assertNotRegex(workflow, re.compile(r"\b(npm publish|twine upload|brew tap-new)\b"))
 
     def test_github_contribution_security_baseline(self) -> None:

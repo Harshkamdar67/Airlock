@@ -206,18 +206,33 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("Agent(*)", rules)
         self.assertNotIn("Bash(airlock-delegate *)", rules)
         self.assertNotIn("Bash(airlock-workflow *)", rules)
-        settings = json.loads(HYBRID.managed_session_settings(access, agents_json))
+        settings = json.loads(
+            HYBRID.managed_session_settings(access, agents_json, "inherit")
+        )
         self.assertEqual(settings["autoMode"]["environment"][0], "$defaults")
+        self.assertNotIn("fastMode", settings)
         context = settings["autoMode"]["environment"][1]
         self.assertIn("OpenAI models", context)
         self.assertIn("Anthropic Claude", context)
         self.assertIn("eligible non-ignored untracked regular files", context)
         self.assertIn("exact built-in Explore, Plan, and general-purpose", context)
         self.assertIn("Git-ignored or unsafe paths", context)
+        self.assertTrue(
+            json.loads(HYBRID.managed_session_settings(access, agents_json, "on"))[
+                "fastMode"
+            ]
+        )
+        self.assertFalse(
+            json.loads(HYBRID.managed_session_settings(access, agents_json, "off"))[
+                "fastMode"
+            ]
+        )
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             HYBRID.managed_agent_permissions(access, '{"Explore":{}}')
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            HYBRID.managed_session_settings(access, '{"Explore":{}}')
+            HYBRID.managed_session_settings(access, '{"Explore":{}}', "off")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            HYBRID.managed_session_settings(access, agents_json, "invalid")
 
     def test_append_routing_guidance_preserves_custom_prompt_and_order(self) -> None:
         self.assertEqual(

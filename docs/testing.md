@@ -16,7 +16,7 @@ bash -n bin/airlock \
 
 ```bash
 python -m py_compile \
-  bin/airlock-access.py bin/airlock-router.py bin/airlock-hybrid.py \
+  bin/airlock-access.py bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
   plugins/airlock/scripts/agent-guard.py \
   plugins/airlock/scripts/secret-guard.py \
   plugins/airlock/scripts/file_safety.py \
@@ -35,8 +35,11 @@ python tests/test-secret-guard.py
 python tests/test-worktree.py
 python tests/test-platform.py
 python tests/test-release.py
+python tests/test-update.py
 python tests/test-docs.py
 ```
+
+`tests/test-update.py` uses only loopback fake release servers and temporary archives. It never contacts GitHub. It covers release channels, exact checksums, optional attestations, network failures, archive traversal and links, active-session refusal, confirmation, installation, Doctor, and cleanup.
 
 The native tests cover:
 
@@ -60,6 +63,7 @@ The native tests cover:
 - ignored, credential, private-key, link, reparse, size, and unstable-file blocking
 - changed-worktree preservation
 - managed bundle hashes and stale-install failure
+- offline release selection, checksum, attestation, archive safety, confirmation, and updater installation flows
 - line endings, release metadata, documentation links, and writing rules
 
 ## Bash launcher tests
@@ -70,9 +74,9 @@ bash tests/test-setup.sh
 python tests/test-setup-pty.py
 ```
 
-These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
+These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, update and version dispatch, provider Fast controls, paid Anthropic Fast refusal, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
 
-`test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. Every run reports its start and finish. A timeout terminates the full child process group within a fixed grace period and reports the last output plus unsent key count. The suite prints a skip on Windows, where the Python PTY module is unavailable.
+`test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, provider Fast choices and paid-credit wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. Every run reports its start and finish. The harness polls the child independently of pipe EOF, then drains buffered output. A timeout terminates the full child process group within a fixed grace period, falls back to the exact child when the platform rejects a group signal, and reports the last output plus unsent key count. The suite prints a skip on Windows, where the Python PTY module is unavailable.
 
 ## macOS and Linux installer test
 
@@ -90,7 +94,7 @@ From PowerShell:
 powershell -NoProfile -File .\tests\test-windows.ps1
 ```
 
-The test installs into a temporary folder with fake commands. It checks PowerShell parsing, missing Claude Code and proxy refusal, managed-file conflicts, separate Claude login reporting, router and worktree-hook installation, saved Claude and GPT hybrid roots, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
+The test installs into a temporary folder with fake commands. It checks PowerShell parsing, missing Claude Code and proxy refusal, managed-file conflicts, separate Claude login reporting, router and worktree-hook installation, saved Claude and GPT hybrid roots, provider Fast startup and paid-usage refusal, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
 
 ## JSON files
 

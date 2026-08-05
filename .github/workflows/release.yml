@@ -14,6 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: release
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -24,6 +25,19 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
+
+      - name: Verify release tag is on main
+        shell: bash
+        run: |
+          if ! git show-ref --verify --quiet refs/remotes/origin/main; then
+            printf 'Release refused: origin/main was not fetched.\n' >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            printf 'Release refused: tag %s does not point to a commit on main.\n' "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
 
       - name: Verify version and tests
         shell: bash
@@ -48,11 +62,15 @@ jobs:
           python tests/test-worktree.py
           python tests/test-platform.py
           python tests/test-release.py
+          python tests/test-update.py
           python tests/test-docs.py
           python -m py_compile tests/test-setup-pty.py
           bash tests/test-airlock.sh
           bash tests/test-setup.sh
           python tests/test-setup-pty.py
+          bash tests/test-install.sh
+          python scripts/update-bundle.py --check
+          git diff --check
 
       - name: Build source archives
         shell: bash

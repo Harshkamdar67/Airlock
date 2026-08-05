@@ -50,7 +50,15 @@ fi
 python - "$@" <<'PY'
 import json
 import sys
-print("ARGS_JSON=" + json.dumps(sys.argv[1:]))
+arguments = sys.argv[1:]
+print("ARGS_JSON=" + json.dumps(arguments))
+if "--settings" in arguments:
+    index = arguments.index("--settings")
+    settings = json.loads(arguments[index + 1])
+    fast_mode = settings.get("fastMode", "inherit")
+    if isinstance(fast_mode, bool):
+        fast_mode = "on" if fast_mode else "off"
+    print("FAST_MODE=" + str(fast_mode))
 PY
 for argument in "$@"; do
   printf 'ARG=%s\n' "$argument"

@@ -22,7 +22,7 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.05.3"
+MANAGED_BUNDLE_VERSION = "2026.08.05.5"
 MANAGED_PROTOCOL_VERSION = 3
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -41,11 +41,14 @@ VALID_FAILOVER_POLICIES = {"ask", "never", "allow"}
 VALID_DESCENDANT_POLICIES = {"bounded", "off"}
 VALID_ROUTING_POLICIES = {"balanced", "quality", "economy"}
 VALID_SWARM_FAST_POLICIES = {"auto", "on", "off"}
+VALID_PROVIDER_FAST_POLICIES = {"on", "off"}
 VALID_RISKS = ("low", "standard", "high", "critical")
 VALID_CLAUDE_PLANS = {"unknown", "pro", "max5x", "max20x"}
 VALID_OPENAI_CAPACITIES = {"auto", "1x", "5x", "20x"}
 DEFAULT_MAX_CONCURRENT_SUBAGENTS = "off"
 DEFAULT_SWARM_FAST = "auto"
+DEFAULT_OPENAI_FAST = "off"
+DEFAULT_ANTHROPIC_FAST = "off"
 DEFAULT_DESCENDANT_POLICY = "bounded"
 DEFAULT_MAX_DESCENDANTS = "2"
 DEFAULT_MAX_CONCURRENT_DESCENDANTS = "3"
@@ -64,6 +67,8 @@ MODE_CONFIG_KEYS = {
     "routing": "AIRLOCK_ROUTING_POLICY",
     "extra_usage": "AIRLOCK_EXTRA_USAGE_POLICY",
     "max_agents": "AIRLOCK_MAX_CONCURRENT_SUBAGENTS",
+    "openai_fast": "AIRLOCK_OPENAI_FAST",
+    "anthropic_fast": "AIRLOCK_ANTHROPIC_FAST",
     "swarm_fast": "AIRLOCK_SWARM_FAST",
     "failover": "AIRLOCK_FAILOVER_POLICY",
     "descendants": "AIRLOCK_DESCENDANT_POLICY",
@@ -228,6 +233,8 @@ def default_policy() -> dict[str, Any]:
         "policies": {
             "extra_usage": "ask",
             "routing": "balanced",
+            "openai_fast": DEFAULT_OPENAI_FAST,
+            "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
             "swarm_fast": DEFAULT_SWARM_FAST,
             "failover": "ask",
             "descendants": "bounded",
@@ -313,6 +320,8 @@ def mode_state() -> dict[str, object]:
         "routing": "balanced",
         "extra_usage": "ask",
         "max_agents": DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+        "openai_fast": DEFAULT_OPENAI_FAST,
+        "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
         "swarm_fast": DEFAULT_SWARM_FAST,
         "failover": "ask",
         "descendants": DEFAULT_DESCENDANT_POLICY,
@@ -324,6 +333,8 @@ def mode_state() -> dict[str, object]:
         "routing": VALID_ROUTING_POLICIES,
         "extra_usage": VALID_EXTRA_POLICIES,
         "max_agents": _valid_max_agents,
+        "openai_fast": VALID_PROVIDER_FAST_POLICIES,
+        "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
         "swarm_fast": VALID_SWARM_FAST_POLICIES,
         "failover": VALID_FAILOVER_POLICIES,
         "descendants": VALID_DESCENDANT_POLICIES,
@@ -355,6 +366,8 @@ def mode_state() -> dict[str, object]:
         "saved_routing": saved["routing"],
         "saved_extra_usage": saved["extra_usage"],
         "saved_max_agents": saved["max_agents"],
+        "saved_openai_fast": saved["openai_fast"],
+        "saved_anthropic_fast": saved["anthropic_fast"],
         "saved_swarm_fast": saved["swarm_fast"],
         "saved_failover": saved["failover"],
         "saved_descendants": saved["descendants"],
@@ -364,10 +377,14 @@ def mode_state() -> dict[str, object]:
         "saved_routing_source": sources["routing"],
         "saved_extra_source": sources["extra_usage"],
         "saved_max_source": sources["max_agents"],
+        "saved_openai_fast_source": sources["openai_fast"],
+        "saved_anthropic_fast_source": sources["anthropic_fast"],
         "saved_swarm_fast_source": sources["swarm_fast"],
         "effective_routing": effective["routing"],
         "effective_extra_usage": effective["extra_usage"],
         "effective_max_agents": effective["max_agents"],
+        "effective_openai_fast": effective["openai_fast"],
+        "effective_anthropic_fast": effective["anthropic_fast"],
         "effective_swarm_fast": effective["swarm_fast"],
         "effective_failover": effective["failover"],
         "effective_descendants": effective["descendants"],
@@ -377,6 +394,8 @@ def mode_state() -> dict[str, object]:
         "routing_environment_override": environment["routing"],
         "extra_environment_override": environment["extra_usage"],
         "max_environment_override": environment["max_agents"],
+        "openai_fast_environment_override": environment["openai_fast"],
+        "anthropic_fast_environment_override": environment["anthropic_fast"],
         "swarm_fast_environment_override": environment["swarm_fast"],
         "ignored_environment": ignored,
     }
@@ -387,6 +406,8 @@ def mode_status_lines(updated: bool = False) -> list[str]:
     routing_note = f"saved from {state['saved_routing_source']}"
     extra_note = f"saved from {state['saved_extra_source']}"
     max_note = f"saved from {state['saved_max_source']}"
+    openai_fast_note = f"saved from {state['saved_openai_fast_source']}"
+    anthropic_fast_note = f"saved from {state['saved_anthropic_fast_source']}"
     swarm_fast_note = f"saved from {state['saved_swarm_fast_source']}"
     if state["routing_environment_override"]:
         routing_note += f"; environment override={state['routing_environment_override']}"
@@ -394,6 +415,10 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         extra_note += f"; environment override={state['extra_environment_override']}"
     if state["max_environment_override"]:
         max_note += f"; environment override={state['max_environment_override']}"
+    if state["openai_fast_environment_override"]:
+        openai_fast_note += f"; environment override={state['openai_fast_environment_override']}"
+    if state["anthropic_fast_environment_override"]:
+        anthropic_fast_note += f"; environment override={state['anthropic_fast_environment_override']}"
     if state["swarm_fast_environment_override"]:
         swarm_fast_note += f"; environment override={state['swarm_fast_environment_override']}"
     lines = []
@@ -405,16 +430,26 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         f"Extra usage: {state['effective_extra_usage']} ({extra_note})",
         f"Failover: {state['effective_failover']}",
         f"Max concurrent top-level subagents: {state['effective_max_agents']} ({max_note})",
-        f"Luna swarm Fast policy: {state['effective_swarm_fast']} ({swarm_fast_note})",
+        f"OpenAI Fast routes: {state['effective_openai_fast']} ({openai_fast_note})",
+        f"Anthropic Fast startup: {state['effective_anthropic_fast']} ({anthropic_fast_note})",
+        f"Luna swarm Fast selection: {state['effective_swarm_fast']} ({swarm_fast_note})",
         "Agent nesting: off for named Agents; root spawn depth=1",
-        "Defaults: routing=balanced, extra-usage=ask, failover=ask, max-agents=off (Claude Code native default), swarm-fast=auto",
+        "Defaults: routing=balanced, extra-usage=ask, failover=ask, max-agents=off, provider Fast=off, swarm-fast=auto",
     ])
-    if state["effective_routing"] == "economy" and state["effective_extra_usage"] == "never":
+    if (
+        state["effective_routing"] == "economy"
+        and state["effective_extra_usage"] == "never"
+        and state["effective_openai_fast"] == "off"
+        and state["effective_anthropic_fast"] == "off"
+        and state["effective_failover"] == "never"
+    ):
         lines.append("Preset: budget")
     elif (
         state["effective_routing"] == "balanced"
         and state["effective_extra_usage"] == "ask"
         and state["effective_max_agents"] == DEFAULT_MAX_CONCURRENT_SUBAGENTS
+        and state["effective_openai_fast"] == DEFAULT_OPENAI_FAST
+        and state["effective_anthropic_fast"] == DEFAULT_ANTHROPIC_FAST
         and state["effective_swarm_fast"] == DEFAULT_SWARM_FAST
         and state["effective_failover"] == "ask"
     ):
@@ -438,6 +473,8 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["routing"]: VALID_ROUTING_POLICIES,
         MODE_CONFIG_KEYS["extra_usage"]: VALID_EXTRA_POLICIES,
         MODE_CONFIG_KEYS["max_agents"]: _valid_max_agents,
+        MODE_CONFIG_KEYS["openai_fast"]: VALID_PROVIDER_FAST_POLICIES,
+        MODE_CONFIG_KEYS["anthropic_fast"]: VALID_PROVIDER_FAST_POLICIES,
         MODE_CONFIG_KEYS["swarm_fast"]: VALID_SWARM_FAST_POLICIES,
         MODE_CONFIG_KEYS["failover"]: VALID_FAILOVER_POLICIES,
         MODE_CONFIG_KEYS["descendants"]: VALID_DESCENDANT_POLICIES,
@@ -540,7 +577,8 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             "legacy descendant and repair settings are unavailable in native Agent mode; fan-out stays at the root"
         )
     option_names = (
-        "routing", "extra_usage", "max_agents", "swarm_fast", "failover",
+        "routing", "extra_usage", "max_agents", "openai_fast", "anthropic_fast",
+        "swarm_fast", "failover",
     )
     options_used = any(getattr(args, name, None) for name in option_names)
     if action == "show":
@@ -557,6 +595,8 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         return {
             MODE_CONFIG_KEYS["routing"]: "economy",
             MODE_CONFIG_KEYS["extra_usage"]: "never",
+            MODE_CONFIG_KEYS["openai_fast"]: "off",
+            MODE_CONFIG_KEYS["anthropic_fast"]: "off",
             MODE_CONFIG_KEYS["failover"]: "never",
         }
     if action == "defaults":
@@ -566,6 +606,8 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             MODE_CONFIG_KEYS["routing"]: "balanced",
             MODE_CONFIG_KEYS["extra_usage"]: "ask",
             MODE_CONFIG_KEYS["max_agents"]: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+            MODE_CONFIG_KEYS["openai_fast"]: DEFAULT_OPENAI_FAST,
+            MODE_CONFIG_KEYS["anthropic_fast"]: DEFAULT_ANTHROPIC_FAST,
             MODE_CONFIG_KEYS["swarm_fast"]: DEFAULT_SWARM_FAST,
             MODE_CONFIG_KEYS["failover"]: "ask",
             MODE_CONFIG_KEYS["descendants"]: None,
@@ -573,9 +615,18 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             MODE_CONFIG_KEYS["max_total_descendants"]: None,
             MODE_CONFIG_KEYS["repair_rounds"]: None,
         }
+    if action == "fast":
+        if value not in {"all", "openai", "anthropic", "off"} or options_used:
+            raise AccessError("usage: airlock mode fast all|openai|anthropic|off")
+        return {
+            MODE_CONFIG_KEYS["openai_fast"]: "on" if value in {"all", "openai"} else "off",
+            MODE_CONFIG_KEYS["anthropic_fast"]: "on" if value in {"all", "anthropic"} else "off",
+        }
     simple_actions: dict[str, tuple[str, object, str]] = {
         "routing": ("routing", VALID_ROUTING_POLICIES, "balanced|economy|quality"),
         "extra-usage": ("extra_usage", VALID_EXTRA_POLICIES, "ask|never|allow"),
+        "openai-fast": ("openai_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
+        "anthropic-fast": ("anthropic_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
         "swarm-fast": ("swarm_fast", VALID_SWARM_FAST_POLICIES, "auto|on|off"),
         "failover": ("failover", VALID_FAILOVER_POLICIES, "ask|never|allow"),
     }
@@ -595,12 +646,14 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
     if action == "set":
         if value:
             raise AccessError(
-                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--swarm-fast VALUE] [--failover VALUE]"
+                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE]"
             )
         validators: dict[str, object] = {
             "routing": VALID_ROUTING_POLICIES,
             "extra_usage": VALID_EXTRA_POLICIES,
             "max_agents": _valid_max_agents,
+            "openai_fast": VALID_PROVIDER_FAST_POLICIES,
+            "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
             "swarm_fast": VALID_SWARM_FAST_POLICIES,
             "failover": VALID_FAILOVER_POLICIES,
         }
@@ -616,7 +669,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             raise AccessError("mode set requires at least one option")
         return updates
     raise AccessError(
-        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|swarm-fast|failover|nesting|max-agents|max-descendants|max-total-descendants|repair-rounds|set]"
+        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|max-agents|set]"
     )
 
 
@@ -758,10 +811,16 @@ def load_cached_policy(path: Path | None = None) -> dict[str, Any]:
                 extra = raw_policies.get("extra_usage")
                 routing = raw_policies.get("routing")
                 swarm_fast = raw_policies.get("swarm_fast")
+                openai_fast = raw_policies.get("openai_fast")
+                anthropic_fast = raw_policies.get("anthropic_fast")
                 if extra in VALID_EXTRA_POLICIES:
                     policy["policies"]["extra_usage"] = extra
                 if routing in VALID_ROUTING_POLICIES:
                     policy["policies"]["routing"] = routing
+                if openai_fast in VALID_PROVIDER_FAST_POLICIES:
+                    policy["policies"]["openai_fast"] = openai_fast
+                if anthropic_fast in VALID_PROVIDER_FAST_POLICIES:
+                    policy["policies"]["anthropic_fast"] = anthropic_fast
                 if swarm_fast in VALID_SWARM_FAST_POLICIES:
                     policy["policies"]["swarm_fast"] = swarm_fast
                 raw_efforts = raw_policies.get("allowed_efforts")
@@ -811,6 +870,8 @@ def _csv(value: str | None, valid: tuple[str, ...]) -> list[str] | None:
 def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
     extra = config.get("AIRLOCK_EXTRA_USAGE_POLICY")
     routing = config.get("AIRLOCK_ROUTING_POLICY")
+    openai_fast = config.get("AIRLOCK_OPENAI_FAST")
+    anthropic_fast = config.get("AIRLOCK_ANTHROPIC_FAST")
     swarm_fast = config.get("AIRLOCK_SWARM_FAST")
     failover = config.get("AIRLOCK_FAILOVER_POLICY")
     descendants = config.get("AIRLOCK_DESCENDANT_POLICY")
@@ -821,6 +882,10 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
         policy["policies"]["extra_usage"] = extra
     if routing in VALID_ROUTING_POLICIES:
         policy["policies"]["routing"] = routing
+    if openai_fast in VALID_PROVIDER_FAST_POLICIES:
+        policy["policies"]["openai_fast"] = openai_fast
+    if anthropic_fast in VALID_PROVIDER_FAST_POLICIES:
+        policy["policies"]["anthropic_fast"] = anthropic_fast
     if swarm_fast in VALID_SWARM_FAST_POLICIES:
         policy["policies"]["swarm_fast"] = swarm_fast
     if failover in VALID_FAILOVER_POLICIES:
@@ -875,8 +940,9 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
 def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
     defaults = default_policy()["policies"]
     for name in (
-        "extra_usage", "routing", "swarm_fast", "failover", "descendants",
-        "max_descendants", "max_concurrent_descendants", "repair_rounds",
+        "extra_usage", "routing", "openai_fast", "anthropic_fast", "swarm_fast",
+        "failover", "descendants", "max_descendants", "max_concurrent_descendants",
+        "repair_rounds",
     ):
         policy["policies"][name] = defaults[name]
     # Worker effort is a live preference rather than cached account state, so it
@@ -1586,11 +1652,14 @@ def proxy_fast_capability() -> dict[str, object]:
 def explicit_fast_status(policy: dict[str, Any], route: str) -> dict[str, object]:
     if route not in {"sol-fast", "luna-fast"}:
         raise AccessError(f"unknown Fast route: {route}")
+    fast_enabled = policy.get("policies", {}).get("openai_fast") == "on"
     plan = str(policy["providers"]["openai"].get("detected_plan", "unknown")).lower()
     capability = proxy_fast_capability()
     plan_eligible = plan in OPENAI_FAST_ELIGIBLE_PLANS
-    eligible = plan_eligible and capability["supported"] is True
-    if eligible:
+    eligible = fast_enabled and plan_eligible and capability["supported"] is True
+    if not fast_enabled:
+        reason = "OpenAI Fast routes are disabled by policy."
+    elif eligible:
         reason = f"OpenAI plan {plan} and proxy Fast support are verified."
     elif not plan_eligible:
         reason = "Fast processing requires a sanitized prolite or pro OpenAI plan."
@@ -1599,6 +1668,7 @@ def explicit_fast_status(policy: dict[str, Any], route: str) -> dict[str, object
     return {
         "route": route,
         "eligible": eligible,
+        "enabled_by_policy": fast_enabled,
         "plan": plan,
         "plan_eligible": plan_eligible,
         "proxy_supported": capability["supported"],
@@ -1616,7 +1686,11 @@ def fast_route_status(policy: dict[str, Any]) -> dict[str, object]:
     plan_eligible = plan in OPENAI_FAST_ELIGIBLE_PLANS
     capability = proxy_fast_capability()
     proxy_supported = capability["supported"] is True
-    if requested == "off":
+    fast_enabled = policy.get("policies", {}).get("openai_fast") == "on"
+    if not fast_enabled:
+        selected_route = "luna"
+        reason = "OpenAI Fast routes are disabled by provider policy."
+    elif requested == "off":
         selected_route = "luna"
         reason = "Fast processing is disabled by policy."
     elif plan_eligible and proxy_supported:
@@ -1636,6 +1710,7 @@ def fast_route_status(policy: dict[str, Any]) -> dict[str, object]:
             reason = "Automatic Fast processing fell back to standard Luna because proxy Fast support could not be verified."
     return {
         "requested": requested,
+        "enabled_by_policy": fast_enabled,
         "selected_route": selected_route,
         "plan": plan,
         "plan_eligible": plan_eligible,
@@ -2258,7 +2333,11 @@ def managed_agent_names_json(serialized: str) -> list[str]:
     return managed_agent_names(rendered)
 
 
-def managed_session_settings_json(serialized: str) -> str:
+def managed_session_settings_json(
+    serialized: str, fast_mode: str = "inherit"
+) -> str:
+    if fast_mode not in {"inherit", "on", "off"}:
+        raise AccessError("managed session Fast mode must be inherit, on, or off")
     names = managed_agent_names_json(serialized)
     enabled = set(names)
     services: list[str] = []
@@ -2284,7 +2363,9 @@ def managed_session_settings_json(serialized: str) -> str:
         "unsafe paths, files outside the working repository, unknown or bare Agent names, and every other external "
         "destination remain outside the trusted boundary."
     )
-    settings = {"autoMode": {"environment": ["$defaults", context]}}
+    settings: dict[str, object] = {"autoMode": {"environment": ["$defaults", context]}}
+    if fast_mode != "inherit":
+        settings["fastMode"] = fast_mode == "on"
     return json.dumps(settings, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -2307,7 +2388,9 @@ def status_lines(policy: dict[str, Any]) -> list[str]:
     lines = [
         f"Routing policy: {policy['policies']['routing']}",
         f"Extra usage: {policy['policies']['extra_usage']}",
-        f"Luna swarm Fast policy: {policy['policies']['swarm_fast']}",
+        f"OpenAI Fast routes: {policy['policies']['openai_fast']}",
+        f"Anthropic Fast startup: {policy['policies']['anthropic_fast']}",
+        f"Luna swarm Fast selection: {policy['policies']['swarm_fast']}",
         f"Failover: {policy['policies']['failover']}",
         "Agent nesting: off for named Agents; root spawn depth=1",
     ]
@@ -2483,6 +2566,8 @@ def main() -> int:
     mode_parser.add_argument("--routing", choices=sorted(VALID_ROUTING_POLICIES))
     mode_parser.add_argument("--extra-usage", choices=sorted(VALID_EXTRA_POLICIES))
     mode_parser.add_argument("--max-agents")
+    mode_parser.add_argument("--openai-fast", choices=sorted(VALID_PROVIDER_FAST_POLICIES))
+    mode_parser.add_argument("--anthropic-fast", choices=sorted(VALID_PROVIDER_FAST_POLICIES))
     mode_parser.add_argument("--swarm-fast", choices=sorted(VALID_SWARM_FAST_POLICIES))
     mode_parser.add_argument("--failover", choices=sorted(VALID_FAILOVER_POLICIES))
     mode_parser.add_argument("--descendants", choices=sorted(VALID_DESCENDANT_POLICIES))
@@ -2517,6 +2602,9 @@ def main() -> int:
     agent_names.add_argument("--agents-json", required=True)
     session_settings = subparsers.add_parser("managed-session-settings")
     session_settings.add_argument("--agents-json", required=True)
+    session_settings.add_argument(
+        "--fast-mode", choices=("inherit", "on", "off"), default="inherit"
+    )
     session_routes = subparsers.add_parser("session-routes")
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument(
@@ -2550,7 +2638,7 @@ def main() -> int:
             print("\n".join(managed_agent_names_json(args.agents_json)))
             return 0
         if args.command == "managed-session-settings":
-            print(managed_session_settings_json(args.agents_json))
+            print(managed_session_settings_json(args.agents_json, args.fast_mode))
             return 0
         if args.command == "refresh":
             policy = refresh_policy()

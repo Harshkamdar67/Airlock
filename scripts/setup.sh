@@ -48,6 +48,8 @@ subagent_effort=''
 extra_usage_policy=''
 routing_policy=''
 max_agents=''
+openai_fast=''
+anthropic_fast=''
 swarm_fast=''
 failover_policy=''
 claude_plan=''
@@ -86,7 +88,10 @@ Options:
   --extra-usage POLICY        Extra-usage workers: ask, never, or allow
   --routing-policy POLICY     Routing objective: balanced, quality, or economy
   --max-agents VALUE          Concurrent top-level workers: off or 1..20
-  --swarm-fast POLICY         Luna swarm Fast processing: auto, on, or off
+  --fast PROVIDERS            Fast startup: all, openai, anthropic, or off
+  --openai-fast on|off        Enable or disable eligible OpenAI Fast routes
+  --anthropic-fast on|off     Enable or disable Fast startup for supported Opus roots
+  --swarm-fast POLICY         Advanced Luna Fast selection: auto, on, or off
   --failover-policy POLICY    Worker failover: ask, never, or allow
   --claude-plan PLAN          Claude tier: unknown, pro, max5x, or max20x
   --openai-capacity VALUE     Codex capacity override: auto, 1x, 5x, or 20x
@@ -139,6 +144,19 @@ while [[ $# -gt 0 ]]; do
     --extra-usage) require_value "$@"; extra_usage_policy="$2"; shift ;;
     --routing-policy) require_value "$@"; routing_policy="$2"; shift ;;
     --max-agents) require_value "$@"; max_agents="$2"; shift ;;
+    --fast)
+      require_value "$@"
+      case "$2" in
+        all) openai_fast='on'; anthropic_fast='on' ;;
+        openai) openai_fast='on'; anthropic_fast='off' ;;
+        anthropic) openai_fast='off'; anthropic_fast='on' ;;
+        off) openai_fast='off'; anthropic_fast='off' ;;
+        *) printf 'setup: --fast must be all, openai, anthropic, or off\n' >&2; exit 2 ;;
+      esac
+      shift
+      ;;
+    --openai-fast) require_value "$@"; openai_fast="$2"; shift ;;
+    --anthropic-fast) require_value "$@"; anthropic_fast="$2"; shift ;;
     --swarm-fast) require_value "$@"; swarm_fast="$2"; shift ;;
     --failover-policy) require_value "$@"; failover_policy="$2"; shift ;;
     --claude-plan) require_value "$@"; claude_plan="$2"; shift ;;
@@ -256,6 +274,10 @@ read_config_value AIRLOCK_ROUTING_POLICY balanced
 default_routing_policy="$CONFIG_VALUE"
 read_config_value AIRLOCK_MAX_CONCURRENT_SUBAGENTS off
 default_max_agents="$CONFIG_VALUE"
+read_config_value AIRLOCK_OPENAI_FAST off
+default_openai_fast="$CONFIG_VALUE"
+read_config_value AIRLOCK_ANTHROPIC_FAST off
+default_anthropic_fast="$CONFIG_VALUE"
 read_config_value AIRLOCK_SWARM_FAST auto
 default_swarm_fast="$CONFIG_VALUE"
 read_config_value AIRLOCK_FAILOVER_POLICY ask
@@ -444,6 +466,13 @@ validate_max_agents() {
     printf 'setup: max agents must be off or an integer from 1 to 20\n' >&2
     exit 2
   fi
+}
+
+validate_provider_fast() {
+  case "$2" in
+    on|off) ;;
+    *) printf 'setup: %s Fast policy must be on or off\n' "$1" >&2; exit 2 ;;
+  esac
 }
 
 validate_swarm_fast() {
@@ -1303,6 +1332,36 @@ if [[ "$assume_yes" -eq 0 ]]; then
     'never|Block extra usage||Fail closed instead of using paid extra capacity.' \
     'allow|Allow extra usage||Permit configured extra routes without another confirmation.'
   extra_usage_policy="$CHOICE"
+  current_fast='off'
+  resolved_openai_fast="${openai_fast:-$default_openai_fast}"
+  resolved_anthropic_fast="${anthropic_fast:-$default_anthropic_fast}"
+  if [[ "$resolved_openai_fast" == 'on' && "$resolved_anthropic_fast" == 'on' ]]; then
+    current_fast='all'
+  elif [[ "$resolved_openai_fast" == 'on' ]]; then
+    current_fast='openai'
+  elif [[ "$resolved_anthropic_fast" == 'on' ]]; then
+    current_fast='anthropic'
+  fi
+  while true; do
+    print_question 'Fast startup' 'Choose both providers at once or control them separately. Unsupported models stay at standard speed.'
+    choose_rich_option "$current_fast" off \
+      'off|Off for both providers||Recommended. Start Airlock sessions at standard speed and avoid Fast-specific usage.' \
+      'all|On where supported for both||Enable eligible OpenAI Fast routes and native Anthropic Fast for supported Opus roots.' \
+      'openai|OpenAI only||Enable eligible OpenAI Fast routes. Claude sessions start with native Fast off.' \
+      'anthropic|Anthropic only||Start supported Opus roots with native Fast. This uses paid Anthropic usage credits from the first token.'
+    case "$CHOICE" in
+      all) openai_fast='on'; anthropic_fast='on' ;;
+      openai) openai_fast='on'; anthropic_fast='off' ;;
+      anthropic) openai_fast='off'; anthropic_fast='on' ;;
+      off) openai_fast='off'; anthropic_fast='off' ;;
+    esac
+    if [[ "$anthropic_fast" == 'on' && "$extra_usage_policy" == 'never' ]]; then
+      print_notice 'Anthropic Fast uses paid usage credits and cannot be enabled while extra usage is blocked.'
+      current_fast="$CHOICE"
+      continue
+    fi
+    break
+  done
   print_question 'Routing preference' 'How the orchestrator should trade quality against relative usage.'
   choose_rich_option "${routing_policy:-$default_routing_policy}" balanced \
     'balanced|Balanced||Use the smallest effective route while balancing quality and relative usage.' \
@@ -1410,6 +1469,8 @@ if [[ "$openai_models_was_decided" -eq 0 ]]; then openai_models="$default_openai
 extra_usage_policy="${extra_usage_policy:-$default_extra_usage_policy}"
 routing_policy="${routing_policy:-$default_routing_policy}"
 max_agents="${max_agents:-$default_max_agents}"
+openai_fast="${openai_fast:-$default_openai_fast}"
+anthropic_fast="${anthropic_fast:-$default_anthropic_fast}"
 swarm_fast="${swarm_fast:-$default_swarm_fast}"
 failover_policy="${failover_policy:-$default_failover_policy}"
 claude_plan="${claude_plan:-$default_claude_plan}"
@@ -1459,6 +1520,12 @@ validate_subagent_effort "$subagent_effort"
 validate_extra_usage_policy "$extra_usage_policy"
 validate_routing_policy "$routing_policy"
 validate_max_agents "$max_agents"
+validate_provider_fast OpenAI "$openai_fast"
+validate_provider_fast Anthropic "$anthropic_fast"
+if [[ "$anthropic_fast" == 'on' && "$extra_usage_policy" == 'never' ]]; then
+  printf 'setup: Anthropic Fast uses paid usage credits and cannot be combined with --extra-usage never\n' >&2
+  exit 2
+fi
 validate_swarm_fast "$swarm_fast"
 validate_failover_policy "$failover_policy"
 validate_claude_plan "$claude_plan"
@@ -1507,6 +1574,7 @@ print_worker_fields() {
 
 print_policy_fields() {
   print_field 'Extra usage:' "$extra_usage_policy"
+  print_field 'Fast startup:' "OpenAI $openai_fast; Anthropic $anthropic_fast"
   print_field 'Routing preference:' "$routing_policy"
   print_field 'Parallel workers:' "$max_agents"
 }
@@ -1522,7 +1590,7 @@ print_install_fields() {
 
 print_advanced_fields() {
   print_field 'Advanced:' "airlock bg -> $(model_summary "$bg_model") / $bg_effort; utility -> $(model_summary "$utility_model")"
-  print_field 'Fast / failover:' "$swarm_fast / $failover_policy"
+  print_field 'Fast details:' "Luna swarm $swarm_fast; failover $failover_policy"
   print_field 'Generic worker:' "$install_agent (effort: $subagent_effort)"
 }
 
@@ -1621,6 +1689,8 @@ AIRLOCK_SUBAGENT_EFFORT=$subagent_effort
 AIRLOCK_EXTRA_USAGE_POLICY=$extra_usage_policy
 AIRLOCK_ROUTING_POLICY=$routing_policy
 AIRLOCK_MAX_CONCURRENT_SUBAGENTS=$max_agents
+AIRLOCK_OPENAI_FAST=$openai_fast
+AIRLOCK_ANTHROPIC_FAST=$anthropic_fast
 AIRLOCK_SWARM_FAST=$swarm_fast
 AIRLOCK_FAILOVER_POLICY=$failover_policy
 AIRLOCK_ANTHROPIC_PLAN=$claude_plan

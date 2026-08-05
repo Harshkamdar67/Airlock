@@ -97,7 +97,15 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "unset"));
     Console.WriteLine("CUSTOM_MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_CUSTOM_MODEL_OPTION") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
-    foreach (string argument in args) Console.WriteLine("ARG=" + argument);
+    for (int index = 0; index < args.Length; index++) {
+      Console.WriteLine("ARG=" + args[index]);
+      if (args[index] == "--settings" && index + 1 < args.Length) {
+        string settings = args[index + 1].Replace(" ", "");
+        if (settings.Contains("\"fastMode\":true")) Console.WriteLine("FAST_MODE=on");
+        else if (settings.Contains("\"fastMode\":false")) Console.WriteLine("FAST_MODE=off");
+        else Console.WriteLine("FAST_MODE=inherit");
+      }
+    }
     return 0;
   }
 }
@@ -121,6 +129,10 @@ function Invoke-LauncherProcess([string]$Launcher, [string[]]$LauncherArguments,
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_DEFAULT_PROFILE')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_HYBRID_MODEL')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_MODEL')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_OPENAI_FAST')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_ANTHROPIC_FAST')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_ANTHROPIC_FAST_AUTHORIZED')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_EXTRA_USAGE_POLICY')
   $process = [Diagnostics.Process]::Start($processInfo)
   $standardOutput = $process.StandardOutput.ReadToEnd()
   $standardError = $process.StandardError.ReadToEnd()
@@ -205,7 +217,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Windows installer returned a failure.' }
 
   foreach ($relative in @(
-    'airlock', 'airlock.cmd', 'airlock.ps1', 'airlock-access.py', 'airlock-router.py', 'airlock-hybrid.py'
+    'airlock', 'airlock.cmd', 'airlock.ps1', 'airlock-access.py', 'airlock-update.py', 'airlock-router.py', 'airlock-hybrid.py'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf)) {
       throw "Windows installer missed $relative"
@@ -262,6 +274,16 @@ try {
   $env:AIRLOCK_REAL_CLAUDE = $ClaudeStub
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
 
+  $VersionCommand = Invoke-LauncherProcess $InstalledLauncher @('version')
+  if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.1$') {
+    throw "Windows version command returned unexpected output: $($VersionCommand.Output)"
+  }
+  $UpdateHelp = Invoke-LauncherProcess $InstalledLauncher @('update', '--help')
+  if ($UpdateHelp.Output -notmatch '(?m)^usage: airlock update') {
+    throw "Windows update help was not dispatched: $($UpdateHelp.Output)"
+  }
+  [void](Invoke-LauncherProcess $InstalledLauncher @('update', '--check', '--yes') $false)
+
   $LegacyConfig = @'
 AIRLOCK_MODEL=terra
 AIRLOCK_MAIN_EFFORT=high
@@ -272,6 +294,8 @@ AIRLOCK_WORKER_EFFORT=inherit
 AIRLOCK_EXTRA_USAGE_POLICY=ask
 AIRLOCK_ROUTING_POLICY=balanced
 AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off
+AIRLOCK_OPENAI_FAST=off
+AIRLOCK_ANTHROPIC_FAST=off
 AIRLOCK_SWARM_FAST=off
 AIRLOCK_FAILOVER_POLICY=ask
 AIRLOCK_ANTHROPIC_MODELS=opus,sonnet
@@ -293,9 +317,32 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $HybridLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
   if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5$' -or
       $HybridLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-anthropic-root$' -or
+      $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5$') {
     throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
   }
+  $AnthropicFastConfig = $HybridConfig.Replace(
+    'AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=opus'
+  ).Replace(
+    'AIRLOCK_EXTRA_USAGE_POLICY=ask', 'AIRLOCK_EXTRA_USAGE_POLICY=allow'
+  ).Replace(
+    'AIRLOCK_ANTHROPIC_FAST=off', 'AIRLOCK_ANTHROPIC_FAST=on'
+  )
+  [IO.File]::WriteAllText($InstalledConfig, $AnthropicFastConfig, (New-Object Text.UTF8Encoding($false)))
+  $AnthropicFastLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
+  if ($AnthropicFastLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-opus-5$' -or
+      $AnthropicFastLaunch.Output -notmatch '(?m)^FAST_MODE=on$') {
+    throw "Authorized Anthropic Fast did not reach Claude Code: $($AnthropicFastLaunch.Output)"
+  }
+  $BlockedFastConfig = $AnthropicFastConfig.Replace(
+    'AIRLOCK_EXTRA_USAGE_POLICY=allow', 'AIRLOCK_EXTRA_USAGE_POLICY=never'
+  )
+  [IO.File]::WriteAllText($InstalledConfig, $BlockedFastConfig, (New-Object Text.UTF8Encoding($false)))
+  $BlockedFastLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false
+  if ($BlockedFastLaunch.Error -notmatch 'Anthropic Fast uses paid usage credits and is blocked by the extra-usage policy') {
+    throw "Anthropic Fast refusal was unclear: $($BlockedFastLaunch.Error)"
+  }
+  [IO.File]::WriteAllText($InstalledConfig, $HybridConfig, (New-Object Text.UTF8Encoding($false)))
   $ExplicitOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '-p', 'test')
   if ($ExplicitOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
       $ExplicitOpenAI.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
@@ -348,15 +395,27 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
   [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_HYBRID_MODEL=invalid`n", (New-Object Text.UTF8Encoding($false)))
   [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
+  [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_OPENAI_FAST=invalid`n", (New-Object Text.UTF8Encoding($false)))
+  [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
+  [IO.File]::WriteAllText($InstalledConfig, "AIRLOCK_ANTHROPIC_FAST=invalid`n", (New-Object Text.UTF8Encoding($false)))
+  [void](Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false)
   [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
 
   $env:PATH = "$InstallDir;$StubDir;$SystemPath"
+  $BundleBeforeDoctor = Invoke-LauncherProcess $InstalledLauncher @('bundle')
+  if ($BundleBeforeDoctor.Output -notmatch '(?m)^Managed bundle is current and complete\.$') {
+    throw "Windows bundle check was not current before Doctor: $($BundleBeforeDoctor.Output)"
+  }
   $env:AIRLOCK_PROXY_URL = 'http://127.0.0.1:1'
   $DoctorOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
   $DoctorExit = $LASTEXITCODE
   if ($DoctorExit -eq 0) { throw 'Windows doctor ignored an unhealthy proxy.' }
   if ($DoctorOutput -notmatch '(?m)^PASS  Claude login is configured$') {
     throw "Windows doctor did not confirm the healthy Claude login stub: $DoctorOutput"
+  }
+  $DoctorCompact = $DoctorOutput -replace '\s+', ' '
+  if ($DoctorCompact -notmatch 'PASS Release updater: .*airlock-update\.py \(manual checks only\)') {
+    throw "Windows doctor did not verify the release updater: $DoctorOutput"
   }
 
   Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@if `"%1 %2`"==`"auth status`" exit /b 1`r`n@exit /b 0"

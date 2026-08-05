@@ -135,6 +135,7 @@ $managedFiles = [ordered]@{
   'bin\airlock.cmd' = (Join-Path $InstallDir 'airlock.cmd')
   'bin\airlock.ps1' = (Join-Path $InstallDir 'airlock.ps1')
   'bin\airlock-access.py' = (Join-Path $InstallDir 'airlock-access.py')
+  'bin\airlock-update.py' = (Join-Path $InstallDir 'airlock-update.py')
   'bin\airlock-router.py' = (Join-Path $InstallDir 'airlock-router.py')
   'bin\airlock-hybrid.py' = (Join-Path $InstallDir 'airlock-hybrid.py')
   'config\openai-direct-agents.json' = (Join-Path $ConfigDir 'openai-direct-agents.json')

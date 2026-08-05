@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+## 0.1.0-beta.1 - 2026-08-05
+
+First public beta of Airlock, built from the MIT-licensed Claudex project.
+
 ### Added
 
 - A session-scoped loopback router for mixed OpenAI and Anthropic sessions.
@@ -29,6 +33,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Keyboard option selection with Up and Down arrows plus Enter, while number and name entry remain available.
 - CODEOWNERS, safe issue forms, a pull request security checklist, and Dependabot updates for GitHub Actions.
 - `airlock proxy auth` commands that preserve the proxy directory selected during setup.
+- Provider-wide and provider-specific Fast controls for eligible OpenAI routes and native Claude Opus Fast startup, with paid Anthropic usage confirmation.
+- A verified release-archive update guide for macOS, Linux, and Windows.
+- `airlock version`, manual `airlock update --check` notices, confirmed `airlock update`, and explicit noninteractive `airlock update --yes` on every platform.
 
 ### Changed
 
@@ -50,6 +57,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Mixed requests are split by skill automatically, so UI/UX judgment and separable systems work go to their strongest eligible routes before root integration.
 - Doctor reports Claude login and Codex OAuth separately, while keeping signed-out OpenAI-only behavior clear.
 - GitHub workflows pin third-party Actions to full commit hashes and avoid persisting checkout credentials.
+- Budget mode now turns both provider Fast controls off as well as blocking extra usage and automatic failover.
+- Release tags must match the project version and point to a commit already on `main` before archives can be published.
 
 ### Fixed
 
@@ -66,7 +75,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Setup automatically uses `~/.airlock` when the normal macOS or Linux config parent is not writable, and every installed component resolves the same fallback without `sudo`.
 - Long unbreakable config paths use a stacked review layout instead of overflowing the label column.
 - Codex OAuth and proxy startup now use a private writable config or state fallback when the upstream default parent is blocked, without moving an existing healthy login.
-- POSIX PTY timeouts now terminate the full child process group and report the exact run instead of leaving macOS CI waiting for the job timeout.
+- POSIX PTY tests now poll child exit independently of pipe EOF, use bounded process-group cleanup with a child fallback, and report the exact run instead of leaving macOS CI waiting for the job timeout.
 
 ### Security
 
@@ -78,13 +87,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Direct tool guards block known credential paths and high-confidence credential content.
 - Installer and startup bundle checks include every native router and worktree safety component.
 - Pull request workflows use read-only permissions, immutable Action commits, non-persistent checkout credentials, and bounded job timeouts.
+- Release jobs target a protected approval environment, refuse tags outside `main`, verify the full offline suite, publish checksums, and attach GitHub build provenance.
+- The updater requires an exact release checksum, restricts downloads and redirects to GitHub, verifies attestations when GitHub CLI is present, rejects unsafe archives, and delegates installation to managed-file conflict checks.
 
 ### Removed
 
 - The `airlock-delegate`, `airlock-workflow`, `airlock-child`, and `airlock-check` helpers, their platform wrappers, and the delegate-only runtime module.
 - The `airlock delegate` and `airlock workflow` subcommands and the `AIRLOCK_ENABLE_LEGACY_TRANSPORT` switch.
 - Broker run state, descendant slots, and provider circuit breakers, which Claude Code's native Agent lifecycle now owns.
-
-## 0.1.0-beta.1 - Planned
-
-First public beta of Airlock, built from the MIT-licensed Claudex project.

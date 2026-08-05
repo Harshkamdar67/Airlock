@@ -26,6 +26,12 @@ AIRLOCK_SUBAGENT_EFFORT=inherit
 AIRLOCK_EXTRA_USAGE_POLICY=ask
 AIRLOCK_ROUTING_POLICY=balanced
 AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off
+# Provider Fast startup is off by default. OpenAI Fast applies only to eligible
+# Fast routes. Anthropic Fast applies only to supported Opus roots and uses paid
+# usage credits from the first token. These settings affect Airlock sessions only.
+AIRLOCK_OPENAI_FAST=off
+AIRLOCK_ANTHROPIC_FAST=off
+# Advanced selection within an enabled OpenAI Fast policy.
 AIRLOCK_SWARM_FAST=auto
 AIRLOCK_FAILOVER_POLICY=ask
 AIRLOCK_ANTHROPIC_PLAN=unknown

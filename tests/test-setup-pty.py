@@ -33,8 +33,9 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 
 # One Enter for each question in the recommended path: session profile,
 # orchestrator, worker pool, session effort, worker effort, extra usage,
-# routing, parallel workers, Advanced, Codex OAuth, proxy service, and apply.
-ENTER_PRESSES = 12
+# Fast startup, routing, parallel workers, Advanced, Codex OAuth, proxy service,
+# and apply.
+ENTER_PRESSES = 13
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -79,17 +80,26 @@ def wait_for_child(child_pid: int, timeout: float) -> int | None:
 
 def terminate_child_group(child_pid: int) -> int:
     """Bound termination of the wizard and anything it started."""
+    status = wait_for_child(child_pid, 0.1)
+    if status is not None:
+        return status
     try:
         os.killpg(child_pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     status = wait_for_child(child_pid, 2.0)
     if status is not None:
         return status
     try:
         os.killpg(child_pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     status = wait_for_child(child_pid, 2.0)
     if status is None:
         raise AssertionError("guided setup process group could not be reaped")
@@ -105,7 +115,7 @@ def run_wizard(
     pipe_stdout: bool = False,
     timeout: float = 30.0,
     keystrokes: list[bytes] | None = None,
-    echo_input: bool = True,
+    echo_input: bool = False,
 ) -> tuple[int, str]:
     """Run the wizard with a real terminal on stdin and return exit code and output.
 
@@ -113,10 +123,10 @@ def run_wizard(
     always sees the intended width, and stdout can be sent to a pipe instead to
     cover the redirected-stream case.
 
-    With no `keystrokes`, one Enter per question is written up front. With a
-    `keystrokes` list, each entry is written only once the wizard has stopped
-    producing output, which is what makes single keystrokes such as an arrow key
-    land on the question they are meant for.
+    With no `keystrokes`, one Enter is sent for each question. Every key waits
+    for visible output from the wizard and then for the output to become quiet.
+    This matches normal typing and avoids racing the child's controlling-terminal
+    setup on macOS.
     """
     run_label = config_dir.name
     print(f"Setup PTY: starting {run_label}", flush=True)
@@ -176,18 +186,43 @@ def run_wizard(
     output_parts: list[bytes] = []
     status: int | None = None
     try:
-        pending: list[bytes] = []
         if keystrokes is None:
-            os.write(master_fd, b"\n" * ENTER_PRESSES)
+            pending = [KEY_ENTER] * ENTER_PRESSES
         else:
             pending = list(keystrokes)
+        output_since_key = False
         quiet_since = time.monotonic()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            waited_pid, child_status = os.waitpid(child_pid, os.WNOHANG)
+            if waited_pid == child_pid:
+                status = child_status
+                # Pipe EOF can be delayed on macOS by a short-lived inherited
+                # descriptor. The wizard process is authoritative, so drain
+                # everything already buffered and stop waiting for EOF.
+                while True:
+                    ready, _, _ = select.select([read_fd], [], [], 0)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(read_fd, 65536)
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    output_parts.append(chunk)
+                break
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
-                if pending and time.monotonic() - quiet_since >= IDLE_GAP:
+                if (
+                    pending
+                    and output_since_key
+                    and time.monotonic() - quiet_since >= IDLE_GAP
+                ):
                     os.write(master_fd, pending.pop(0))
+                    output_since_key = False
                     quiet_since = time.monotonic()
                 continue
             try:
@@ -199,6 +234,7 @@ def run_wizard(
                     raise
             if chunk:
                 output_parts.append(chunk)
+                output_since_key = True
                 quiet_since = time.monotonic()
             else:
                 status = wait_for_child(child_pid, 1.0)
@@ -385,6 +421,9 @@ CHOICE_PRESENTATION = (
     "Access depends on the connected plans and is checked again when a session starts.",
     "Claude Code does not expose per-call Agent effort.",
     "workers either follow the session level or keep a setup-time pin.",
+    "Fast startup",
+    "On where supported for both",
+    "This uses paid Anthropic usage credits from the first token.",
     "Answer [Y/n, Enter = yes]:",
     "Answer [y/N, Enter = no]:",
 )
@@ -408,6 +447,7 @@ REVIEW_SCREEN = (
     "Session",
     "Workers",
     "Safety and budget",
+    "Fast startup: OpenAI off; Anthropic off",
     "Install actions",
     "Codex OAuth: yes, only if Codex login is missing",
     "When you accept, Airlock will:",
@@ -441,6 +481,8 @@ EXPECTED_CONFIG = (
     "AIRLOCK_WORKER_EFFORT=inherit\n",
     "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n",
     "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n",
+    "AIRLOCK_OPENAI_FAST=off\n",
+    "AIRLOCK_ANTHROPIC_FAST=off\n",
     "AIRLOCK_PROXY_CONFIG_DIR=\n",
     "AIRLOCK_PROXY_STATE_HOME=\n",
 )
@@ -574,6 +616,7 @@ try:
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
+        + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
         + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
     )
@@ -619,6 +662,7 @@ try:
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
+        + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
         + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
     )

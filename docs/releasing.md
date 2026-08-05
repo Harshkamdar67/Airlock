@@ -57,6 +57,7 @@ python tests/test-secret-guard.py
 python tests/test-worktree.py
 python tests/test-platform.py
 python tests/test-release.py
+python tests/test-update.py
 python tests/test-docs.py
 bash tests/test-airlock.sh
 bash tests/test-setup.sh
@@ -127,9 +128,10 @@ Before announcing the repository, configure these GitHub settings. Some controls
 - Enable the dependency graph, dependency vulnerability alerts, Dependabot security updates, secret scanning, and push protection.
 - Keep the default workflow token permission read-only and do not allow workflows to approve pull requests.
 - Allow squash merges, disable merge commits and rebase merges, and delete merged branches automatically.
-- Add a `main` branch ruleset that requires a pull request, one CODEOWNER approval, dismissal of stale approvals, approval after the latest push, resolved review conversations, and every `test` workflow job.
-- Block force pushes and branch deletion. Do not allow bypass except for an emergency repository owner path.
-- Add a tag ruleset for `v*` that limits tag creation and deletion to maintainers.
+- Add a `main` branch ruleset that requires a pull request, one CODEOWNER approval, dismissal of stale approvals, approval after the latest push, resolved review conversations, and the Ubuntu, macOS, and Windows jobs from the `test` workflow.
+- Require branches to be up to date before merge, block force pushes and deletion, and do not allow bypass except for an emergency repository owner path.
+- Add a tag ruleset for `v*` that limits tag creation and deletion to maintainers. Do not allow release tags to be moved or recreated.
+- Create a protected GitHub environment named `release`. Require maintainer approval, allow deployments only from `v*` tags, and store no credentials in it. The release job targets this environment, so a pushed tag still cannot publish without approval.
 - Keep third-party Actions pinned to full commit hashes. Dependabot may open reviewed updates for those pins.
 
 The repository includes CODEOWNERS, pull request and issue templates, a restricted workflow token declaration, and Dependabot configuration. These files guide contributions, but the GitHub ruleset is what enforces review and passing checks.
@@ -138,9 +140,11 @@ Recheck the rules from a non-owner test account before accepting the first outsi
 
 ## Tag and publish
 
-After the release commit is on the final remote:
+After the release commit is merged into protected `main` and every required check is green:
 
 ```bash
+git switch main
+git pull --ff-only origin main
 git tag v0.1.0-beta.1
 git push origin v0.1.0-beta.1
 ```
@@ -149,14 +153,16 @@ Pushing the tag is an outward action. Confirm it immediately before running the 
 
 The tag starts `.github/workflows/release.yml`. The workflow:
 
-1. Checks that the tag matches `VERSION`.
-2. Runs the non-model test suite.
-3. Builds source ZIP and tar archives from tracked Git files.
-4. Creates SHA256 checksums.
-5. Adds GitHub build provenance.
-6. Creates a prerelease when the version contains a prerelease suffix.
+1. Waits for approval through the protected `release` environment.
+2. Refuses a tag whose commit is not contained in `origin/main`.
+3. Checks that the tag matches `VERSION`.
+4. Runs the non-model test suite and managed-bundle check.
+5. Builds source ZIP and tar archives from tracked Git files.
+6. Creates SHA256 checksums.
+7. Adds GitHub build provenance.
+8. Creates a prerelease when the version contains a prerelease suffix.
 
-The workflow does not publish to npm, PyPI, Homebrew, or Scoop.
+The workflow does not publish to npm, PyPI, Homebrew, or Scoop. Users run `airlock update --check` for a manual notice and `airlock update` for a confirmed, verified installation from these release assets. Normal startup never checks GitHub. The manual and rollback paths are in [Updating Airlock](updating.md).
 
 ## After release
 

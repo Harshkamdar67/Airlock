@@ -76,6 +76,8 @@ printf '# preserve this comment\r\nUNRELATED=value\r\nAIRLOCK_ROUTING_POLICY=bal
 mode_show_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode)"
 grep -q '^Routing: balanced' <<<"$mode_show_output"
 grep -q '^Extra usage: ask' <<<"$mode_show_output"
+grep -q '^OpenAI Fast routes: off' <<<"$mode_show_output"
+grep -q '^Anthropic Fast startup: off' <<<"$mode_show_output"
 grep -q '^Preset: defaults$' <<<"$mode_show_output"
 grep -q 'newly launched airlock sessions' <<<"$mode_show_output"
 [[ ! -e "$mode_access" ]]
@@ -91,16 +93,32 @@ grep -q '^Extra usage: allow' <<<"$extra_output"
 budget_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode budget)"
 grep -q '^Routing: economy' <<<"$budget_output"
 grep -q '^Extra usage: never' <<<"$budget_output"
+grep -q '^OpenAI Fast routes: off' <<<"$budget_output"
+grep -q '^Anthropic Fast startup: off' <<<"$budget_output"
 grep -q '^Preset: budget$' <<<"$budget_output"
 defaults_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode defaults)"
 grep -q '^Routing: balanced' <<<"$defaults_output"
 grep -q '^Extra usage: ask' <<<"$defaults_output"
-set_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode set --routing quality --extra-usage allow --failover never --max-agents 3 --swarm-fast on)"
+grep -q '^OpenAI Fast routes: off' <<<"$defaults_output"
+grep -q '^Anthropic Fast startup: off' <<<"$defaults_output"
+fast_all_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode fast all)"
+grep -q '^OpenAI Fast routes: on' <<<"$fast_all_output"
+grep -q '^Anthropic Fast startup: on' <<<"$fast_all_output"
+fast_openai_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode fast openai)"
+grep -q '^OpenAI Fast routes: on' <<<"$fast_openai_output"
+grep -q '^Anthropic Fast startup: off' <<<"$fast_openai_output"
+anthropic_fast_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode anthropic-fast on)"
+grep -q '^Anthropic Fast startup: on' <<<"$anthropic_fast_output"
+openai_fast_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode openai-fast off)"
+grep -q '^OpenAI Fast routes: off' <<<"$openai_fast_output"
+set_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode set --routing quality --extra-usage allow --failover never --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast on)"
 grep -q '^Routing: quality' <<<"$set_output"
 grep -q '^Extra usage: allow' <<<"$set_output"
 grep -q '^Failover: never' <<<"$set_output"
 grep -q '^Max concurrent top-level subagents: 3' <<<"$set_output"
-grep -q '^Luna swarm Fast policy: on' <<<"$set_output"
+grep -q '^OpenAI Fast routes: on' <<<"$set_output"
+grep -q '^Anthropic Fast startup: off' <<<"$set_output"
+grep -q '^Luna swarm Fast selection: on' <<<"$set_output"
 grep -q '^Agent nesting: off for named Agents; root spawn depth=1' <<<"$set_output"
 if grep -Eq '^(Descendants:|Repair rounds:)' <<<"$set_output"; then
   printf 'test: native mode output retained legacy delegate settings\n' >&2
@@ -143,6 +161,11 @@ if AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launc
   exit 1
 fi
 cmp "$mode_config" "$tmp_dir/mode-before-invalid.conf"
+if AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode fast invalid >/dev/null 2>&1; then
+  printf 'test: invalid provider Fast selection unexpectedly succeeded\n' >&2
+  exit 1
+fi
+cmp "$mode_config" "$tmp_dir/mode-before-invalid.conf"
 
 missing_mode_config="$tmp_dir/missing/config"
 missing_output="$(AIRLOCK_CONFIG_FILE="$missing_mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode budget)"
@@ -153,6 +176,24 @@ grep -q '^AIRLOCK_EXTRA_USAGE_POLICY=never$' "$missing_mode_config"
 
 bundle_output="$("$launcher" bundle)"
 grep -q '^Managed bundle is current and complete\.$' <<<"$bundle_output"
+
+version_output="$("$launcher" version)"
+grep -q '^Airlock 0\.1\.0-beta\.1$' <<<"$version_output"
+update_help_output="$("$launcher" update --help)"
+grep -q '^usage: airlock update' <<<"$update_help_output"
+if "$launcher" version unexpected >/dev/null 2>&1; then
+  printf 'test: version command accepted an unexpected argument\n' >&2
+  exit 1
+fi
+if "$launcher" update --check --yes >/dev/null 2>&1; then
+  printf 'test: update command accepted conflicting arguments\n' >&2
+  exit 1
+fi
+if AIRLOCK_ACTIVE_PROFILE=openai-pure "$launcher" update --yes >"$tmp_dir/update-active.out" 2>"$tmp_dir/update-active.err"; then
+  printf 'test: update installed from an active Airlock session\n' >&2
+  exit 1
+fi
+grep -q 'installation cannot run from an active Airlock session' "$tmp_dir/update-active.err"
 
 models_output="$("$launcher" models)"
 for removed in 'airlock delegate' 'airlock workflow'; do
@@ -214,14 +255,15 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
   powershell_helper="$(cygpath -w "$repo_root/bin/airlock-access.py")"
   powershell_config="$(cygpath -w "$tmp_dir/powershell-mode.conf")"
   powershell_access="$(cygpath -w "$tmp_dir/powershell-mode-access.json")"
-  powershell_output="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" mode set --routing economy --extra-usage never --failover never --max-agents 3 --swarm-fast off)"
+  powershell_output="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" mode set --routing economy --extra-usage never --failover never --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast off)"
   grep -q '^Routing: economy' <<<"$powershell_output"
   grep -q '^Extra usage: never' <<<"$powershell_output"
   grep -q '^Failover: never' <<<"$powershell_output"
   grep -q '^Max concurrent top-level subagents: 3' <<<"$powershell_output"
-  grep -q '^Luna swarm Fast policy: off' <<<"$powershell_output"
+  grep -q '^OpenAI Fast routes: on' <<<"$powershell_output"
+  grep -q '^Anthropic Fast startup: off' <<<"$powershell_output"
+  grep -q '^Luna swarm Fast selection: off' <<<"$powershell_output"
   grep -q '^Agent nesting: off for named Agents; root spawn depth=1' <<<"$powershell_output"
-  grep -q '^Preset: budget' <<<"$powershell_output"
   powershell_usage="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" usage set --claude-plan pro --openai-capacity 5x)"
   grep -q 'configured-tier=pro; effective-tier=pro (source=user_override)' <<<"$powershell_usage"
 
@@ -643,6 +685,7 @@ printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=hybrid' 'AIRLOCK_HYBRID_MODEL=sonnet' >> 
 saved_hybrid_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$saved_hybrid_output"
 grep -Fq 'ARG=claude-sonnet-5' <<<"$saved_hybrid_output"
+grep -q '^FAST_MODE=off$' <<<"$saved_hybrid_output"
 saved_hybrid_command_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid -p test)"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$saved_hybrid_command_output"
 grep -Fq 'ARG=claude-sonnet-5' <<<"$saved_hybrid_command_output"
@@ -659,6 +702,13 @@ grep -q '^ARG=low$' <<<"$saved_background_output"
 saved_alias_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" luna -p test)"
 grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_alias_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$saved_alias_output"
+
+anthropic_fast_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_ANTHROPIC_FAST=on AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test)"
+grep -q '^FAST_MODE=on$' <<<"$anthropic_fast_output"
+if AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_ANTHROPIC_FAST=on AIRLOCK_EXTRA_USAGE_POLICY=never AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test >/dev/null 2>&1; then
+  printf 'test: Anthropic Fast bypassed the blocked extra-usage policy\n' >&2
+  exit 1
+fi
 
 saved_gpt_config="$tmp_dir/saved-hybrid-gpt.conf"
 cp "$custom_config" "$saved_gpt_config"
@@ -693,7 +743,7 @@ if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid fa
   exit 1
 fi
 
-if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test >/dev/null 2>&1; then
+if AIRLOCK_OPENAI_FAST=on AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test >/dev/null 2>&1; then
   printf 'test: Sol Fast unexpectedly bypassed the plan gate\n' >&2
   exit 1
 fi
@@ -705,7 +755,7 @@ value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 value["providers"]["openai"]["detected_plan"] = "pro"
 Path(sys.argv[2]).write_text(json.dumps(value), encoding="utf-8")
 PY
-fast_root_output="$(AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test)"
+fast_root_output="$(AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_OPENAI_FAST=on AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test)"
 grep -q '^MODEL=gpt-5.6-sol-fast\[1m\]$' <<<"$fast_root_output"
 
 skill_opt_in_output="$(AIRLOCK_ALLOW_CLAUDE_API_SKILL=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol -p test)"

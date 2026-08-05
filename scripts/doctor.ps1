@@ -93,6 +93,17 @@ if (Test-Path -LiteralPath $Router -PathType Leaf) {
 } else {
   Fail "Hybrid router is missing: $Router"
 }
+$Updater = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $InstallDir 'airlock-update.py' }
+if (Test-Path -LiteralPath $Updater -PathType Leaf) {
+  $updaterItem = Get-Item -LiteralPath $Updater -Force
+  if ($updaterItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    Fail "Release updater is unsafe: $Updater"
+  } else {
+    Pass "Release updater: $Updater (manual checks only)"
+  }
+} else {
+  Fail "Release updater is missing: $Updater"
+}
 $ConfigDir = if ($env:AIRLOCK_CONFIG_DIR) { $env:AIRLOCK_CONFIG_DIR } else { Join-Path $HOME '.config\airlock' }
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
 $pluginFiles = @(

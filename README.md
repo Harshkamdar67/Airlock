@@ -80,7 +80,7 @@ Clone this repository and run:
 
 The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`. If the upstream proxy's normal config or state parent is also blocked, setup gives the proxy a private writable fallback and uses it consistently for OAuth, the service, the launcher, and Doctor.
 
-Background-command, utility, Fast, failover, capacity, generic-worker, and per-model controls stay under Advanced.
+Provider Fast startup is part of safety and budget. Background-command, utility, Luna swarm selection, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 
 For the tested defaults without the wizard:
 
@@ -113,7 +113,7 @@ powershell -NoProfile -File .\scripts\doctor.ps1
 
 The installer does not change PATH, native Claude settings, native Codex settings, global hooks, registered plugins, or MCP settings. Add `%USERPROFILE%\.local\bin` to your user PATH if `airlock` is not found.
 
-[Read the Windows guide](docs/windows.md).
+[Read the Windows guide](docs/windows.md). After installation, use `airlock update --check` for a manual notice and `airlock update` for a confirmed, verified update. Normal startup never checks GitHub. Existing configuration is preserved, and only recognized managed files are replaced. [Read the update guide](docs/updating.md).
 
 ## First run
 
@@ -135,7 +135,7 @@ Inside the session, ask for work normally. The main model can use:
 
 Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. The OpenAI-only profile accepts enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
 
-Named `airlock-*` workers have a fixed exact model. Their effort follows the session by default, so `/effort` moves the main model and those workers together. You can pin one route or every worker in the config. A caller cannot override a named worker's model or effort for one call. They use Claude Code's normal subagent tools.
+Named `airlock-*` workers have a fixed exact model. Their effort follows the session by default, so `/effort` moves the main model and those workers together. You can pin one route or every worker in the config. Claude Code does not expose per-call Agent effort for either Claude or OpenAI workers, so Airlock cannot yet vary one worker's effort task by task. Automatic task-specific effort routing is under design. Until it is available, use session `/effort` or setup-time pins. Named workers use Claude Code's normal subagent tools.
 
 ## How work is routed
 
@@ -168,13 +168,13 @@ airlock mode                    # show routing and worker limits
 airlock mode budget             # prefer lower use and block extra usage
 airlock mode max-agents off     # use Claude Code's native worker limit
 airlock mode max-agents 3       # save a smaller worker cap
-airlock mode swarm-fast auto    # gate Luna Fast by plan and proxy support
+airlock mode fast openai        # enable eligible OpenAI Fast routes only
 airlock usage                   # refresh stale OpenAI usage and show it
 airlock config                  # show saved roots and advanced values
 airlock bundle                  # verify managed files
-airlock proxy auth status       # check Codex OAuth in the selected proxy directory
-airlock proxy auth login        # start the upstream browser login
-airlock models                  # list model shortcuts
+airlock version                 # show the installed Airlock version
+airlock update --check          # manually check for a newer release
+airlock update                  # download, verify, and confirm an update
 ```
 
 Use native Claude Code's `/usage` screen for Anthropic subscription bars. Anthropic does not document a personal subscription API that Airlock can safely read.
