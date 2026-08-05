@@ -23,6 +23,9 @@ $DefaultHybridModel = if ($env:AIRLOCK_HYBRID_MODEL) { $env:AIRLOCK_HYBRID_MODEL
 $DefaultOpenAIModel = if ($env:AIRLOCK_MODEL) { $env:AIRLOCK_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_MODEL')) { $ConfigValues['AIRLOCK_MODEL'] } else { 'sol' }
 $DefaultBgModel = if ($env:AIRLOCK_BG_MODEL) { $env:AIRLOCK_BG_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_MODEL')) { $ConfigValues['AIRLOCK_BG_MODEL'] } else { 'sol' }
 $MaxAgents = if ($env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS) { $env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAX_CONCURRENT_SUBAGENTS')) { $ConfigValues['AIRLOCK_MAX_CONCURRENT_SUBAGENTS'] } else { 'off' }
+$OpenAIFast = if ($env:AIRLOCK_OPENAI_FAST) { $env:AIRLOCK_OPENAI_FAST } elseif ($ConfigValues.ContainsKey('AIRLOCK_OPENAI_FAST')) { $ConfigValues['AIRLOCK_OPENAI_FAST'] } else { 'off' }
+$AnthropicFast = if ($env:AIRLOCK_ANTHROPIC_FAST) { $env:AIRLOCK_ANTHROPIC_FAST } elseif ($ConfigValues.ContainsKey('AIRLOCK_ANTHROPIC_FAST')) { $ConfigValues['AIRLOCK_ANTHROPIC_FAST'] } else { 'off' }
+$ExtraUsagePolicy = if ($env:AIRLOCK_EXTRA_USAGE_POLICY) { $env:AIRLOCK_EXTRA_USAGE_POLICY } elseif ($ConfigValues.ContainsKey('AIRLOCK_EXTRA_USAGE_POLICY')) { $ConfigValues['AIRLOCK_EXTRA_USAGE_POLICY'] } else { 'ask' }
 $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOCK_GPT_EFFORT_CAPABILITIES } elseif ($ConfigValues.ContainsKey('AIRLOCK_GPT_EFFORT_CAPABILITIES')) { $ConfigValues['AIRLOCK_GPT_EFFORT_CAPABILITIES'] } else { 'effort,xhigh_effort,max_effort' }
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
@@ -34,6 +37,7 @@ $OpenAIWrapperAgentsFile = if ($env:AIRLOCK_HYBRID_AGENTS_FILE) { $env:AIRLOCK_H
 $AnthropicWrapperAgentsFile = if ($env:AIRLOCK_CLAUDE_AGENTS_FILE) { $env:AIRLOCK_CLAUDE_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\claude-agents.json' }
 $AccessHelper = if ($env:AIRLOCK_ACCESS_HELPER) { $env:AIRLOCK_ACCESS_HELPER } else { Join-Path $PSScriptRoot 'airlock-access.py' }
 $RouterHelper = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } else { Join-Path $PSScriptRoot 'airlock-router.py' }
+$UpdateHelper = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $PSScriptRoot 'airlock-update.py' }
 $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DIR } else { $PSScriptRoot }
 $ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $HOME '.config\airlock\managed-bundle.json' }
 
@@ -88,7 +92,7 @@ function Show-Models {
   Write-Host ''
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku'
-  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models, proxy auth'
+  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models, proxy auth, version, update'
   Write-Host ''
   Write-Host 'Proxy login commands:'
   Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
@@ -103,13 +107,22 @@ function Show-Models {
   Write-Host '  airlock mode extra-usage ask|never|allow'
   Write-Host '  airlock mode failover ask|never|allow'
   Write-Host '  airlock mode max-agents off|1..20'
+  Write-Host '  airlock mode fast all|openai|anthropic|off'
+  Write-Host '  airlock mode openai-fast on|off'
+  Write-Host '  airlock mode anthropic-fast on|off'
   Write-Host '  airlock mode swarm-fast auto|on|off'
-  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto'
+  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto'
   Write-Host '  airlock usage                    Show cached sanitized subscription usage'
   Write-Host '  airlock usage refresh            Refresh OpenAI quota windows without a model call'
   Write-Host '  airlock usage set --claude-plan pro|max5x|max20x|unknown'
   Write-Host '  airlock usage set --openai-capacity auto|1x|5x|20x'
   Write-Host '  airlock usage defaults           Clear capacity overrides'
+  Write-Host ''
+  Write-Host 'Update commands:'
+  Write-Host '  airlock version                  Show the installed Airlock version'
+  Write-Host '  airlock update                   Download, verify, and confirm an update'
+  Write-Host '  airlock update --check           Check without downloading or installing'
+  Write-Host '  airlock update --yes             Install without an interactive confirmation'
   Write-Host ''
   Write-Host 'Examples:'
   Write-Host '  airlock                          # saved default profile and orchestrator'
@@ -219,6 +232,7 @@ function Test-ManagedBundle {
     '--component', "bin/airlock.cmd=$(Join-Path $PSScriptRoot 'airlock.cmd')",
     '--component', "bin/airlock.ps1=$(Join-Path $PSScriptRoot 'airlock.ps1')",
     '--component', "bin/airlock-access.py=$AccessHelper",
+    '--component', "bin/airlock-update.py=$UpdateHelper",
     '--component', "bin/airlock-router.py=$RouterHelper",
     '--component', "bin/airlock-hybrid.py=$(Join-Path $ManagedBinDir 'airlock-hybrid.py')",
     '--component', "config/openai-direct-agents.json=$OpenAIDirectAgentsFile",
@@ -383,6 +397,35 @@ function Add-DefaultEffort {
   return @('--effort', $Effort) + $ChildArguments
 }
 
+function Get-SessionFastMode {
+  param([string]$RootModel)
+  if ($RootModel -ne 'claude-opus-5' -or $AnthropicFast -ne 'on') { return 'off' }
+  switch ($ExtraUsagePolicy) {
+    'allow' { return 'on' }
+    'never' {
+      [Console]::Error.WriteLine('airlock: Anthropic Fast uses paid usage credits and is blocked by the extra-usage policy.')
+      exit 2
+    }
+    'ask' {
+      if ($env:AIRLOCK_ANTHROPIC_FAST_AUTHORIZED -eq 'yes') { return 'on' }
+      $interactive = [Environment]::UserInteractive
+      try { $interactive = $interactive -and -not [Console]::IsInputRedirected } catch { }
+      if (-not $interactive) {
+        [Console]::Error.WriteLine('airlock: Anthropic Fast needs confirmation because it uses paid usage credits. Set AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes for this launch or use an interactive terminal.')
+        exit 2
+      }
+      $answer = Read-Host 'Anthropic Fast uses paid usage credits from the first token. Enable it for this Opus session? [y/N]'
+      if ($answer -in @('y', 'Y', 'yes', 'YES', 'Yes')) { return 'on' }
+      [Console]::Error.WriteLine('airlock: Anthropic Fast launch cancelled.')
+      exit 2
+    }
+    default {
+      [Console]::Error.WriteLine("airlock: unsupported extra-usage policy '$ExtraUsagePolicy'")
+      exit 2
+    }
+  }
+}
+
 function Invoke-AirlockSession {
   param(
     [string]$Profile,
@@ -437,6 +480,7 @@ function Invoke-AirlockSession {
   $launchDirectory = Join-Path $env:LOCALAPPDATA 'Airlock\launch'
   New-Item -ItemType Directory -Force -Path $launchDirectory | Out-Null
   $launchRequestPath = Join-Path $launchDirectory ("{0}.json" -f [Guid]::NewGuid().ToString('N'))
+  $sessionFastMode = Get-SessionFastMode -RootModel $RootModel
   $launchRequest = [ordered]@{
     profile = $Profile
     claude = [string]$claudeBin
@@ -448,6 +492,7 @@ function Invoke-AirlockSession {
     root_name = [string]$RootName
     context_window = [string]$ContextWin
     max_agents = [string]$MaxAgents
+    fast_mode = [string]$sessionFastMode
     args = [string[]]$ChildArguments
   }
   $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
@@ -494,6 +539,18 @@ if ($DefaultProfile -notin @('openai', 'hybrid')) {
   [Console]::Error.WriteLine("airlock: unsupported default profile '$DefaultProfile' (expected openai or hybrid)")
   exit 2
 }
+if ($OpenAIFast -notin @('on', 'off')) {
+  [Console]::Error.WriteLine("airlock: unsupported OpenAI Fast policy '$OpenAIFast' (expected on or off)")
+  exit 2
+}
+if ($AnthropicFast -notin @('on', 'off')) {
+  [Console]::Error.WriteLine("airlock: unsupported Anthropic Fast policy '$AnthropicFast' (expected on or off)")
+  exit 2
+}
+if ($ExtraUsagePolicy -notin @('ask', 'never', 'allow')) {
+  [Console]::Error.WriteLine("airlock: unsupported extra-usage policy '$ExtraUsagePolicy'")
+  exit 2
+}
 $DefaultOpenAIAlias = Resolve-OpenAIAlias $DefaultOpenAIModel
 if (-not $DefaultOpenAIAlias) {
   [Console]::Error.WriteLine("airlock: unsupported saved OpenAI model '$DefaultOpenAIModel'")
@@ -514,7 +571,7 @@ if ($DefaultProfile -eq 'hybrid') {
   $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
   $explicitCommands = @(
     'mode', 'usage', 'bundle', 'access', 'proxy', 'models', '--models', 'config', '--config',
-    'hybrid', 'openai', 'bg', 'background', 'sol', 'sol-fast', 'terra',
+    'version', 'update', 'hybrid', 'openai', 'bg', 'background', 'sol', 'sol-fast', 'terra',
     'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
   )
   if ($firstArgument -notin $explicitCommands) {
@@ -545,6 +602,47 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'usage') {
     $usageArguments += @($Arguments[1..($Arguments.Count - 1)])
   }
   exit (Invoke-AccessPolicy -PolicyArguments $usageArguments)
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'version') {
+  if ($Arguments.Count -ne 1) {
+    [Console]::Error.WriteLine('airlock: usage: airlock version')
+    exit 2
+  }
+  if ((Test-ManagedBundle) -ne 0) { exit 1 }
+  if (-not (Test-Path -LiteralPath $UpdateHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed update helper is missing: $UpdateHelper")
+    exit 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for release updates.')
+    exit 1
+  }
+  & $python $UpdateHelper version --manifest (Join-Path $PluginDir '.claude-plugin\plugin.json')
+  exit $LASTEXITCODE
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'update') {
+  $updateOption = if ($Arguments.Count -eq 2) { $Arguments[1] } else { $null }
+  if ($Arguments.Count -gt 2 -or ($Arguments.Count -eq 2 -and $updateOption -notin @('--check', '--yes', '--help', '-h'))) {
+    [Console]::Error.WriteLine('airlock: usage: airlock update [--check|--yes|--help]')
+    exit 2
+  }
+  if ((Test-ManagedBundle) -ne 0) { exit 1 }
+  if (-not (Test-Path -LiteralPath $UpdateHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed update helper is missing: $UpdateHelper")
+    exit 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for release updates.')
+    exit 1
+  }
+  $updateArguments = @('update', '--manifest', (Join-Path $PluginDir '.claude-plugin\plugin.json'))
+  if ($updateOption) { $updateArguments += $updateOption }
+  & $python $UpdateHelper @updateArguments
+  exit $LASTEXITCODE
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'bundle') {
@@ -668,6 +766,8 @@ if ($Arguments.Count -gt 0) {
       Write-Host "Anthropic bridge agents: $AnthropicWrapperAgentsFile"
       Write-Host "Managed plugin: $PluginDir"
       Write-Host "Max concurrent top-level subagents: $MaxAgents"
+      Write-Host "OpenAI Fast routes: $OpenAIFast"
+      Write-Host "Anthropic Fast startup: $AnthropicFast (supported Opus roots only)"
       $accessExitCode = Invoke-AccessPolicy -PolicyArguments @('show')
       if ($accessExitCode -ne 0) { exit $accessExitCode }
       return

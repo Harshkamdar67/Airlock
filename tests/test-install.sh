@@ -120,7 +120,7 @@ grep -q '^Airlock installed\.$' "$tmp_dir/login.out"
 "$repo_root/scripts/install.sh" --with-agent --no-service > "$tmp_dir/install.out"
 grep -q '^Airlock installed\.$' "$tmp_dir/install.out"
 
-for relative in airlock airlock-access.py airlock-router.py airlock-hybrid.py; do
+for relative in airlock airlock-access.py airlock-update.py airlock-router.py airlock-hybrid.py; do
   if [[ ! -f "$install_dir/$relative" || ! -x "$install_dir/$relative" ]]; then
     printf 'test: installer did not place an executable %s\n' "$relative" >&2
     exit 1
@@ -293,6 +293,7 @@ grep -q '^PASS  Claude login is configured$' "$tmp_dir/doctor.out"
 grep -q "^PASS  Launcher: $install_dir/airlock$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Managed bundle is current and complete$' "$tmp_dir/doctor.out"
 grep -q "^PASS  Hybrid router: $install_dir/airlock-router.py" "$tmp_dir/doctor.out"
+grep -q "^PASS  Release updater: $install_dir/airlock-update.py" "$tmp_dir/doctor.out"
 grep -q "^PASS  Session plugin: $plugin_dir$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Custom airlock-worker effort: ' "$tmp_dir/doctor.out"
 

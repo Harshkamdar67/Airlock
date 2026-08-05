@@ -53,6 +53,7 @@ openai_wrapper_agents_file="${AIRLOCK_HYBRID_AGENTS_FILE:-$config_root/hybrid-ag
 anthropic_wrapper_agents_file="${AIRLOCK_CLAUDE_AGENTS_FILE:-$config_root/claude-agents.json}"
 access_helper="${AIRLOCK_ACCESS_HELPER:-$(dirname "$0")/airlock-access.py}"
 router_helper="${AIRLOCK_ROUTER_HELPER:-$(dirname "$access_helper")/airlock-router.py}"
+update_helper="${AIRLOCK_UPDATE_HELPER:-$(dirname "$access_helper")/airlock-update.py}"
 managed_bin_dir="${AIRLOCK_MANAGED_BIN_DIR:-$(dirname "$access_helper")}"
 bundle_file="${AIRLOCK_MANAGED_BUNDLE_FILE:-$config_root/managed-bundle.json}"
 plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_root/plugins/airlock}"
@@ -88,6 +89,9 @@ config_proxy_url=''
 config_proxy_config_dir=''
 config_proxy_state_home=''
 config_max_agents=''
+config_openai_fast=''
+config_anthropic_fast=''
+config_extra_usage=''
 config_gpt_effort_capabilities=''
 
 if [[ -f "$config_file" ]]; then
@@ -106,6 +110,9 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_PROXY_CONFIG_DIR) config_proxy_config_dir="$config_value" ;;
       AIRLOCK_PROXY_STATE_HOME) config_proxy_state_home="$config_value" ;;
       AIRLOCK_MAX_CONCURRENT_SUBAGENTS) config_max_agents="$config_value" ;;
+      AIRLOCK_OPENAI_FAST) config_openai_fast="$config_value" ;;
+      AIRLOCK_ANTHROPIC_FAST) config_anthropic_fast="$config_value" ;;
+      AIRLOCK_EXTRA_USAGE_POLICY) config_extra_usage="$config_value" ;;
       AIRLOCK_GPT_EFFORT_CAPABILITIES) config_gpt_effort_capabilities="$config_value" ;;
     esac
   done < "$config_file"
@@ -135,6 +142,9 @@ default_profile="${AIRLOCK_DEFAULT_PROFILE:-${config_default_profile:-openai}}"
 default_hybrid_model="${AIRLOCK_HYBRID_MODEL:-${config_hybrid_model:-sonnet}}"
 default_openai_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
 default_bg_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
+openai_fast_policy="${AIRLOCK_OPENAI_FAST:-${config_openai_fast:-off}}"
+anthropic_fast_policy="${AIRLOCK_ANTHROPIC_FAST:-${config_anthropic_fast:-off}}"
+extra_usage_policy="${AIRLOCK_EXTRA_USAGE_POLICY:-${config_extra_usage:-ask}}"
 
 print_models() {
   cat <<'EOF'
@@ -151,7 +161,7 @@ Profiles:
 
 OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku
-Other commands: bg, mode, usage, access, bundle, config, models, proxy auth
+Other commands: bg, mode, usage, access, bundle, config, models, proxy auth, version, update
 
 Proxy login commands:
   airlock proxy auth status          Check Codex OAuth in Airlock's selected proxy directory
@@ -166,13 +176,22 @@ Policy commands:
   airlock mode extra-usage ask|never|allow
   airlock mode failover ask|never|allow
   airlock mode max-agents off|1..20
+  airlock mode fast all|openai|anthropic|off
+  airlock mode openai-fast on|off
+  airlock mode anthropic-fast on|off
   airlock mode swarm-fast auto|on|off
-  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --swarm-fast auto
+  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto
   airlock usage                    Show cached sanitized subscription usage
   airlock usage refresh            Refresh OpenAI quota windows without a model call
   airlock usage set --claude-plan pro|max5x|max20x|unknown
   airlock usage set --openai-capacity auto|1x|5x|20x
   airlock usage defaults           Clear capacity overrides
+
+Update commands:
+  airlock version                  Show the installed Airlock version
+  airlock update                   Download, verify, and confirm an update
+  airlock update --check           Check without downloading or installing
+  airlock update --yes             Install without an interactive confirmation
 
 Examples:
   airlock                          # saved default profile and orchestrator
@@ -206,6 +225,18 @@ run_access() {
   "$python_bin" "$access_helper" "$@"
 }
 
+run_update() {
+  if [[ ! -f "$update_helper" || -L "$update_helper" ]]; then
+    printf 'airlock: managed update helper is missing or unsafe: %s\n' "$update_helper" >&2
+    return 1
+  fi
+  if [[ -z "$python_bin" ]]; then
+    printf 'airlock: Python 3 is required for release updates.\n' >&2
+    return 1
+  fi
+  "$python_bin" "$update_helper" "$@"
+}
+
 validate_managed_bundle() {
   if [[ -z "$python_bin" ]]; then
     printf 'airlock: Python 3 is required to validate the managed installation.\n' >&2
@@ -215,6 +246,7 @@ validate_managed_bundle() {
     bundle-check --quiet --platform posix --bundle "$bundle_file"
     --component "bin/airlock=$0"
     --component "bin/airlock-access.py=$access_helper"
+    --component "bin/airlock-update.py=$update_helper"
     --component "bin/airlock-router.py=$router_helper"
     --component "bin/airlock-hybrid.py=$managed_bin_dir/airlock-hybrid.py"
     --component "config/openai-direct-agents.json=$openai_direct_agents_file"
@@ -266,6 +298,8 @@ OpenAI bridge agents: $openai_wrapper_agents_file
 Anthropic bridge agents: $anthropic_wrapper_agents_file
 Managed plugin: $plugin_dir
 Max concurrent top-level subagents: ${AIRLOCK_MAX_CONCURRENT_SUBAGENTS:-${config_max_agents:-off}}
+OpenAI Fast routes: $openai_fast_policy
+Anthropic Fast startup: $anthropic_fast_policy (supported Opus roots only)
 EOF
   run_access show
 }
@@ -286,6 +320,46 @@ validate_effort() {
     *)
       printf "airlock: unsupported effort '%s' (expected low, medium, high, xhigh, or max)\n" "$1" >&2
       return 1
+      ;;
+  esac
+}
+
+validate_provider_fast_policy() {
+  case "$2" in
+    on|off) ;;
+    *)
+      printf "airlock: unsupported %s Fast policy '%s' (expected on or off)\n" "$1" "$2" >&2
+      return 1
+      ;;
+  esac
+}
+
+confirm_anthropic_fast() {
+  local answer=''
+  case "$extra_usage_policy" in
+    allow) return 0 ;;
+    never)
+      printf 'airlock: Anthropic Fast uses paid usage credits and is blocked by the extra-usage policy.\n' >&2
+      return 2
+      ;;
+    ask)
+      if [[ "${AIRLOCK_ANTHROPIC_FAST_AUTHORIZED:-}" == 'yes' ]]; then
+        return 0
+      fi
+      if [[ ! -t 0 ]]; then
+        printf 'airlock: Anthropic Fast needs confirmation because it uses paid usage credits. Set AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes for this launch or use an interactive terminal.\n' >&2
+        return 2
+      fi
+      printf 'Anthropic Fast uses paid usage credits from the first token. Enable it for this Opus session? [y/N]: ' >&2
+      IFS= read -r answer
+      case "$answer" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        *) printf 'airlock: Anthropic Fast launch cancelled.\n' >&2; return 2 ;;
+      esac
+      ;;
+    *)
+      printf "airlock: unsupported extra-usage policy '%s'\n" "$extra_usage_policy" >&2
+      return 2
       ;;
   esac
 }
@@ -618,7 +692,7 @@ launch_session() {
   unset CLAUDE_CODE_SUBAGENT_MODEL
   export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH='1'
   export AIRLOCK_ACTIVE_PROFILE="$profile"
-  local agents_json guidance claude_bin managed_agent_output agent_name session_settings
+  local agents_json guidance claude_bin managed_agent_output agent_name session_settings fast_mode
   local route_agent_names allowed_model_ids extra_agent_names extra_model_ids routes_json
   local -a skill_guard=() allowed_tools=('Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)') enabled_agents=()
   if [[ "${AIRLOCK_ALLOW_CLAUDE_API_SKILL:-0}" != '1' ]]; then
@@ -672,7 +746,12 @@ launch_session() {
     esac
     set_hybrid_environment "$session_model" "$session_name" "$routes_json" || exit $?
   fi
-  session_settings="$(run_access managed-session-settings --agents-json "$agents_json")" || exit $?
+  fast_mode='off'
+  if [[ "$session_model" == 'claude-opus-5' && "$anthropic_fast_policy" == 'on' ]]; then
+    confirm_anthropic_fast || exit $?
+    fast_mode='on'
+  fi
+  session_settings="$(run_access managed-session-settings --agents-json "$agents_json" --fast-mode "$fast_mode")" || exit $?
   guidance="$(run_access profile-guidance --profile "$profile")"
   claude_bin="${AIRLOCK_REAL_CLAUDE:-}"
   [[ -n "$claude_bin" ]] || claude_bin="$(command -v claude || true)"
@@ -702,6 +781,8 @@ select_hybrid_root() {
 }
 
 validate_default_profile "$default_profile" || exit $?
+validate_provider_fast_policy OpenAI "$openai_fast_policy" || exit $?
+validate_provider_fast_policy Anthropic "$anthropic_fast_policy" || exit $?
 if ! resolve_hybrid_alias "$default_hybrid_model"; then
   printf "airlock: unsupported saved hybrid model '%s'\n" "$default_hybrid_model" >&2
   exit 2
@@ -716,7 +797,7 @@ if ! resolve_model "$default_bg_model" >/dev/null 2>&1; then
 fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    mode|usage|bundle|access|proxy|models|--models|config|--config|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    mode|usage|bundle|access|proxy|models|--models|config|--config|version|update|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*) set -- hybrid "$@" ;;
     *) set -- hybrid "$default_hybrid_model" "$@" ;;
   esac
@@ -731,6 +812,28 @@ fi
 if [[ "${1:-}" == 'usage' ]]; then
   shift
   run_access usage "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'version' ]]; then
+  shift
+  if (( $# != 0 )); then
+    printf 'airlock: usage: airlock version\n' >&2
+    exit 2
+  fi
+  validate_managed_bundle || exit $?
+  run_update version --manifest "$plugin_dir/.claude-plugin/plugin.json"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'update' ]]; then
+  shift
+  if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != '--check' && "$1" != '--yes' && "$1" != '--help' && "$1" != '-h' ]]; }; then
+    printf 'airlock: usage: airlock update [--check|--yes|--help]\n' >&2
+    exit 2
+  fi
+  validate_managed_bundle || exit $?
+  run_update update --manifest "$plugin_dir/.claude-plugin/plugin.json" "$@"
   exit $?
 fi
 

@@ -438,6 +438,7 @@ for line in sys.stdin:
 
     def test_luna_fast_is_plan_and_proxy_gated_without_sol_fast_swarm_fallback(self) -> None:
         policy = ACCESS.default_policy()
+        policy["policies"]["openai_fast"] = "on"
         policy["providers"]["openai"]["detected_plan"] = "free"
         with patch.object(ACCESS, "proxy_fast_capability", return_value={
             "supported": True, "source": "test", "version": "0.1.22",
@@ -456,6 +457,7 @@ for line in sys.stdin:
 
     def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
         policy = ACCESS.default_policy()
+        policy["policies"]["openai_fast"] = "on"
         with patch.object(ACCESS, "proxy_fast_capability", return_value={
             "supported": True, "source": "test", "version": "0.1.22",
         }):
@@ -652,6 +654,7 @@ for line in sys.stdin:
     def test_full_hybrid_agent_profile_stays_within_windows_command_limit(self) -> None:
         policy = ACCESS.default_policy()
         policy["policies"]["extra_usage"] = "allow"
+        policy["policies"]["openai_fast"] = "on"
         policy["providers"]["openai"]["detected_plan"] = "pro"
         for provider in ("openai", "anthropic"):
             for model in policy["providers"][provider]["models"].values():
@@ -708,6 +711,17 @@ for line in sys.stdin:
         self.assertIn("OpenAI models", context)
         self.assertIn("Anthropic Claude", context)
         self.assertIn("Credentials", context)
+
+        fast_on = json.loads(ACCESS.managed_session_settings_json(
+            json.dumps({"airlock-opus": {}}), "on"
+        ))
+        self.assertIs(fast_on["fastMode"], True)
+        fast_off = json.loads(ACCESS.managed_session_settings_json(
+            json.dumps({"airlock-opus": {}}), "off"
+        ))
+        self.assertIs(fast_off["fastMode"], False)
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.managed_session_settings_json(json.dumps({"airlock-opus": {}}), "maybe")
 
 
 if __name__ == "__main__":

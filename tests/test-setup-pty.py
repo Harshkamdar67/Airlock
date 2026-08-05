@@ -33,8 +33,9 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 
 # One Enter for each question in the recommended path: session profile,
 # orchestrator, worker pool, session effort, worker effort, extra usage,
-# routing, parallel workers, Advanced, Codex OAuth, proxy service, and apply.
-ENTER_PRESSES = 12
+# Fast startup, routing, parallel workers, Advanced, Codex OAuth, proxy service,
+# and apply.
+ENTER_PRESSES = 13
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -420,6 +421,9 @@ CHOICE_PRESENTATION = (
     "Access depends on the connected plans and is checked again when a session starts.",
     "Claude Code does not expose per-call Agent effort.",
     "workers either follow the session level or keep a setup-time pin.",
+    "Fast startup",
+    "On where supported for both",
+    "This uses paid Anthropic usage credits from the first token.",
     "Answer [Y/n, Enter = yes]:",
     "Answer [y/N, Enter = no]:",
 )
@@ -443,6 +447,7 @@ REVIEW_SCREEN = (
     "Session",
     "Workers",
     "Safety and budget",
+    "Fast startup: OpenAI off; Anthropic off",
     "Install actions",
     "Codex OAuth: yes, only if Codex login is missing",
     "When you accept, Airlock will:",
@@ -476,6 +481,8 @@ EXPECTED_CONFIG = (
     "AIRLOCK_WORKER_EFFORT=inherit\n",
     "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n",
     "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n",
+    "AIRLOCK_OPENAI_FAST=off\n",
+    "AIRLOCK_ANTHROPIC_FAST=off\n",
     "AIRLOCK_PROXY_CONFIG_DIR=\n",
     "AIRLOCK_PROXY_STATE_HOME=\n",
 )
@@ -609,6 +616,7 @@ try:
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
+        + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
         + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
     )
@@ -654,6 +662,7 @@ try:
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
+        + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
         + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
     )

@@ -143,6 +143,12 @@ if command -v airlock >/dev/null 2>&1; then
     else
       fail "Hybrid router is missing or unsafe: $router_path"
     fi
+    updater_path="${AIRLOCK_UPDATE_HELPER:-$(dirname "$launcher_path")/airlock-update.py}"
+    if [[ -f "$updater_path" && ! -L "$updater_path" ]]; then
+      pass "Release updater: $updater_path (manual checks only)"
+    else
+      fail "Release updater is missing or unsafe: $updater_path"
+    fi
     if grep -qF "'usage'" "$launcher_path" 2>/dev/null; then
       while IFS= read -r usage_line; do
         info "$usage_line"

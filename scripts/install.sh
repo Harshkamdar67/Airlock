@@ -347,6 +347,7 @@ install_managed_file() {
 
 install_managed_file "$repo_root/bin/airlock" "$launcher_target" 0755
 install_managed_file "$repo_root/bin/airlock-access.py" "$install_dir/airlock-access.py" 0755
+install_managed_file "$repo_root/bin/airlock-update.py" "$install_dir/airlock-update.py" 0755
 install_managed_file "$repo_root/bin/airlock-router.py" "$install_dir/airlock-router.py" 0755
 install_managed_file "$repo_root/bin/airlock-hybrid.py" "$install_dir/airlock-hybrid.py" 0755
 install_managed_file "$repo_root/config/openai-direct-agents.json" "$config_dir/openai-direct-agents.json" 0644

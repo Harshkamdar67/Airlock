@@ -26,11 +26,11 @@ The guided terminal setup supports Up and Down arrow selection with Enter. Numbe
 1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-5.6 Sol.
 2. **Worker pool:** choose the Balanced pool, the Economical pool, the Balanced pool plus Claude Fable 5, or individual exact-model workers.
 3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
-4. **Safety and budget:** choose extra-usage behavior, routing preference, and a parallel-worker ceiling.
+4. **Safety and budget:** choose extra-usage behavior, provider Fast startup, routing preference, and a parallel-worker ceiling.
 5. **Installation:** decide whether setup may start Codex OAuth for the local proxy when the proxy reports that it is signed out, and whether to start the proxy service. Claude Code is a separate prerequisite, and Airlock never changes or reads its sign-in.
 6. **Review:** check the grouped settings, the numbered list of actions, and the config path. Nothing on the machine changes until you accept this screen, and you can start the questions over from here.
 
-Advanced settings are optional. They contain the separate `airlock bg` convenience command, the utility model used for lightweight Claude Code requests, Fast, failover, capacity hints, the optional generic worker, and per-model controls. None of those concepts are required to complete the normal setup path.
+Advanced settings are optional. They contain the separate `airlock bg` convenience command, the utility model used for lightweight Claude Code requests, Luna Fast selection, failover, capacity hints, the optional generic worker, and per-model controls. None of those concepts are required to complete the normal setup path.
 
 ## Missing tools and sign-ins
 
@@ -111,6 +111,16 @@ The doctor reports:
 
 It does not make a model request.
 
+## Check for updates
+
+Airlock does not check GitHub during normal startup. Check manually with:
+
+```bash
+airlock update --check
+```
+
+Inside a session, run `! airlock update --check`. To install, exit every Airlock session and run `airlock update` from the terminal. Airlock downloads the platform archive, requires its SHA-256 checksum, verifies GitHub provenance when GitHub CLI is available, shows the target release, and asks before installation. Read [Updating Airlock](updating.md) for the noninteractive command and manual fallback.
+
 ## Start a session
 
 Start the profile and orchestrator saved by setup:
@@ -176,6 +186,21 @@ airlock mode defaults
 ```
 
 These changes apply to new sessions. The default top-level worker setting is `off`, which uses Claude Code's native concurrency. Automatic armies start a native Luna or eligible Luna Fast batch before the main model waits, then collect every result. Workers follow the session effort, so `/effort` moves the main model and its workers together. Restart `airlock` after changing settings.
+
+## Choose Fast startup
+
+Control both providers at once or change one without changing the other:
+
+```bash
+airlock mode fast all
+airlock mode fast openai
+airlock mode fast anthropic
+airlock mode fast off
+airlock mode openai-fast on
+airlock mode anthropic-fast off
+```
+
+OpenAI Fast still requires an eligible sanitized plan and verified proxy support. Anthropic Fast starts only an exact Claude Opus 5 root in native Fast mode and does not switch another Claude root to Opus. It uses paid Anthropic usage credits from the first token, so `ask` requires confirmation, `never` refuses, and `allow` starts it directly. Unsupported models stay at standard speed. See [Models, limits, and usage](models-and-usage.md) for the advanced Luna swarm control.
 
 ## Check plan usage
 

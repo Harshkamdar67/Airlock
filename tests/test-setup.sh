@@ -19,6 +19,7 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --extra-usage never \
   --routing-policy quality \
   --max-agents 4 \
+  --fast openai \
   --swarm-fast on \
   --failover-policy never \
   --claude-plan max5x \
@@ -44,6 +45,8 @@ grep -q '^AIRLOCK_SUBAGENT_EFFORT=xhigh$' "$config_file"
 grep -q '^AIRLOCK_EXTRA_USAGE_POLICY=never$' "$config_file"
 grep -q '^AIRLOCK_ROUTING_POLICY=quality$' "$config_file"
 grep -q '^AIRLOCK_MAX_CONCURRENT_SUBAGENTS=4$' "$config_file"
+grep -q '^AIRLOCK_OPENAI_FAST=on$' "$config_file"
+grep -q '^AIRLOCK_ANTHROPIC_FAST=off$' "$config_file"
 grep -q '^AIRLOCK_SWARM_FAST=on$' "$config_file"
 grep -q '^AIRLOCK_FAILOVER_POLICY=never$' "$config_file"
 if grep -Eq '^AIRLOCK_(DESCENDANT_POLICY|MAX_DESCENDANTS_PER_WORKER|MAX_CONCURRENT_DESCENDANTS|MAX_REPAIR_ROUNDS|ANTHROPIC_DELEGATE_EFFORTS|OPENAI_DELEGATE_EFFORTS)=' "$config_file"; then
@@ -118,6 +121,20 @@ fi
 test "$before_hash" = "$(cksum "$config_file")"
 
 if AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
+  --fast all --extra-usage never --config-only --yes >/dev/null 2>&1; then
+  printf 'test: Anthropic Fast accepted a blocked extra-usage policy\n' >&2
+  exit 1
+fi
+test "$before_hash" = "$(cksum "$config_file")"
+
+if AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
+  --openai-fast maybe --config-only --yes >/dev/null 2>&1; then
+  printf 'test: invalid OpenAI Fast policy unexpectedly succeeded\n' >&2
+  exit 1
+fi
+test "$before_hash" = "$(cksum "$config_file")"
+
+if AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --swarm-fast always --config-only --yes >/dev/null 2>&1; then
   printf 'test: invalid swarm Fast policy unexpectedly succeeded\n' >&2
   exit 1
@@ -169,6 +186,8 @@ grep -q '^  Generic worker:     no (effort: inherit)$' "$tmp_dir/new-default-sum
 grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$new_default_dir/config"
 grep -q '^AIRLOCK_HYBRID_MODEL=sol$' "$new_default_dir/config"
 grep -q '^AIRLOCK_WORKER_EFFORT=inherit$' "$new_default_dir/config"
+grep -q '^AIRLOCK_OPENAI_FAST=off$' "$new_default_dir/config"
+grep -q '^AIRLOCK_ANTHROPIC_FAST=off$' "$new_default_dir/config"
 
 legacy_dir="$tmp_dir/legacy-config"
 mkdir -p "$legacy_dir"

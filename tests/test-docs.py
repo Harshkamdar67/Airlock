@@ -35,6 +35,21 @@ class DocumentationTests(unittest.TestCase):
                     self.assertTrue(resolved.is_relative_to(ROOT.resolve()))
                     self.assertTrue(resolved.exists(), f"missing link target: {target}")
 
+    def test_airlock_owned_text_has_no_stale_runtime_brand(self) -> None:
+        forbidden = "Code" + " Crossroads"
+        text_suffixes = {".cmd", ".example", ".json", ".md", ".ps1", ".py", ".sh", ".yaml", ".yml"}
+        for path in ROOT.rglob("*"):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or ".git" in path.parts
+                or "__pycache__" in path.parts
+                or (path.suffix.lower() not in text_suffixes and path.name not in {"VERSION"})
+            ):
+                continue
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotIn(forbidden, path.read_text(encoding="utf-8"))
+
     def test_readme_is_short_and_starts_with_useful_sections(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(readme.splitlines()), 250)

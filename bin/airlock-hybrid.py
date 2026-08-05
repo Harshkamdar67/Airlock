@@ -178,14 +178,19 @@ def managed_agent_permissions(access, agents_json: str) -> tuple[list[str], list
     ]
 
 
-def managed_session_settings(access, agents_json: str) -> str:
+def managed_session_settings(
+    access, agents_json: str, fast_mode: str
+) -> str:
     try:
-        settings = access.managed_session_settings_json(agents_json)
+        settings = access.managed_session_settings_json(agents_json, fast_mode)
         parsed = json.loads(settings)
     except Exception as error:
         fail(f"managed Auto-mode settings are invalid: {error}")
-    if not isinstance(parsed, dict) or set(parsed) != {"autoMode"}:
-        fail("managed Auto-mode settings have an unexpected shape")
+    allowed_keys = {"autoMode"} if fast_mode == "inherit" else {"autoMode", "fastMode"}
+    if not isinstance(parsed, dict) or set(parsed) != allowed_keys:
+        fail("managed session settings have an unexpected shape")
+    if fast_mode != "inherit" and parsed.get("fastMode") is not (fast_mode == "on"):
+        fail("managed session Fast setting is invalid")
     return settings
 
 
@@ -410,6 +415,9 @@ def main() -> int:
     context_window = required_request_string(
         request, "context_window", "context window"
     )
+    fast_mode = required_request_string(request, "fast_mode", "Fast mode")
+    if fast_mode not in {"inherit", "on", "off"}:
+        fail("session Fast mode is invalid")
     if not context_window.isdigit() or int(context_window) <= 0:
         fail("context window is invalid")
 
@@ -430,7 +438,7 @@ def main() -> int:
         route_policy = access.session_route_policy(policy, profile)
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")
-        session_settings = managed_session_settings(access, agents_json)
+        session_settings = managed_session_settings(access, agents_json, fast_mode)
         guidance = access.profile_guidance(policy, profile)
     except SystemExit:
         raise

@@ -110,7 +110,7 @@ airlock mode defaults
 - Economy starts small and prefers lower-use workers.
 - Balanced uses the best fit and may add one useful reviewer.
 - Quality can use more workers for difficult independent work.
-- Budget selects economy, blocks extra usage, and disables automatic failover.
+- Budget selects economy, blocks extra usage and automatic failover, and turns both provider Fast controls off.
 - Defaults restores the tested settings.
 
 ## Top-level concurrency
@@ -123,6 +123,25 @@ airlock mode max-agents 3
 `off` is the default. It removes the Airlock cap and uses Claude Code's native limit. It is not permission to start unnecessary workers.
 
 A number saves a smaller cap for new sessions. Top-level spawn depth remains one and named Agents cannot invoke Agent. This keeps fan-out visible at the root.
+
+## Provider Fast controls
+
+```bash
+airlock mode fast all
+airlock mode fast openai
+airlock mode fast anthropic
+airlock mode fast off
+airlock mode openai-fast on
+airlock mode anthropic-fast off
+```
+
+The four `airlock mode fast` choices set both provider controls together. The provider-specific commands change only one. `airlock mode defaults` turns both off, and `airlock mode budget` also turns both off.
+
+OpenAI Fast permits eligible `sol-fast` and `luna-fast` routes. It does not rename a standard route or claim that an unsupported model became faster. Use `airlock sol-fast` for the explicit Fast root. Luna Fast can also be selected for an automatic army by the advanced policy below. Both paths still require an eligible sanitized OpenAI plan and verified proxy support.
+
+Anthropic Fast is Claude Code's native Fast mode. Airlock enables it only when the exact session root is `claude-opus-5`; it never changes a Sonnet, Fable, or Haiku root into Opus. Anthropic Fast uses paid usage credits from the first token. With `AIRLOCK_EXTRA_USAGE_POLICY=ask`, an interactive launch asks first, or one noninteractive launch can set `AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes`. `never` refuses the launch and `allow` starts it directly.
+
+Unsupported models stay at standard speed. These settings are session-scoped and do not change global Claude Code settings.
 
 ## Luna armies
 
@@ -152,7 +171,9 @@ airlock mode swarm-fast on
 airlock mode swarm-fast off
 ```
 
-- `auto` selects Luna Fast only when the sanitized OpenAI plan is exactly `prolite` or `pro` and proxy support is verified.
+The provider-wide OpenAI Fast control must be on before any Luna Fast selection can take effect.
+
+- `auto` selects Luna Fast only when OpenAI Fast is on, the sanitized OpenAI plan is exactly `prolite` or `pro`, and proxy support is verified.
 - `on` requires the same checks and fails closed when they are not satisfied.
 - `off` always uses standard Luna.
 
@@ -210,8 +231,10 @@ A pinned worker keeps its level no matter what `/effort` is set to. An inheritin
 
 Two limits are worth knowing:
 
-- Claude Code has no per-call effort field on the Agent tool. The main model can choose which worker to use, but it cannot ask for a different effort for one task. Only you can change effort, with `/effort` or by pinning.
+- Claude Code's Agent tool currently has no per-call effort field. This applies to both Claude and OpenAI workers because Claude Code starts the Agent before Airlock routes the model request. The main model can choose a worker, but it cannot ask for a different effort for one task.
 - If you ask for a level the active model does not support, Claude Code falls back to the highest supported level at or below it.
+
+For now, use `/effort` when the session phase changes, `AIRLOCK_WORKER_EFFORT` for one default shared by all workers, or `AIRLOCK_EFFORT_<ROUTE>` for a model-specific default. Automatic task-specific effort routing is under design. It will remain documented as planned work until Airlock can implement it without falsely claiming that the native Agent call supports an effort value.
 
 Airlock never sets `CLAUDE_CODE_EFFORT_LEVEL`. That variable overrides everything else, including `/effort`, so leaving it alone is what keeps the knob working.
 

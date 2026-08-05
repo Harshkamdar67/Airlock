@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           python -m py_compile \
-            bin/airlock-access.py bin/airlock-router.py bin/airlock-hybrid.py \
+            bin/airlock-access.py bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
             plugins/airlock/scripts/agent-guard.py \
             plugins/airlock/scripts/secret-guard.py \
             plugins/airlock/scripts/file_safety.py \
@@ -51,7 +51,7 @@ jobs:
             tests/test-access.py tests/test-agent-guard.py \
             tests/test-router.py tests/test-hybrid.py tests/test-worktree.py \
             tests/test-secret-guard.py tests/test-platform.py tests/test-release.py \
-            tests/test-docs.py tests/test-setup-pty.py
+            tests/test-update.py tests/test-docs.py tests/test-setup-pty.py
           for catalog in config/*-agents.json; do
             python -m json.tool "$catalog" >/dev/null
           done
@@ -71,6 +71,7 @@ jobs:
           python tests/test-worktree.py
           python tests/test-platform.py
           python tests/test-release.py
+          python tests/test-update.py
           python tests/test-docs.py
 
       - name: Run Bash launcher tests
