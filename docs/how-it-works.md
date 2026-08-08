@@ -36,7 +36,7 @@ The router reads only the top-level model ID needed for routing:
 - exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - unknown or disabled IDs fail closed
 
-The router registers a wire form only for an enabled full GPT ID. It does not accept arbitrary aliases. The request body is forwarded without rewriting it. Streaming responses are sent to Claude Code as they arrive.
+The router registers a wire form only for an enabled full model ID. It does not accept arbitrary aliases. The request body is forwarded without rewriting it. Streaming responses are sent to Claude Code as they arrive.
 
 On an Anthropic route, the router preserves Claude Code capability and Agent attribution headers. It forwards saved Claude login authorization opaquely to Anthropic.
 
@@ -91,7 +91,7 @@ For one call, the main model may pass an exact full model ID:
 
 ```text
 Agent(subagent_type="Explore", model="gpt-5.6-luna[1m]", ...)
-Agent(subagent_type="Plan", model="claude-opus-5", ...)
+Agent(subagent_type="Plan", model="claude-opus-5[1m]", ...)
 ```
 
 The session guard checks the ID before Claude Code starts the Agent.
@@ -105,6 +105,15 @@ The session guard checks the ID before Claude Code starts the Agent.
 A named Agent has no per-call effort field. It follows the session effort by default, and `/effort` can move it in the middle of a session. A configured pin stays fixed until the config changes.
 
 ## Model selection and `/model`
+
+A provider-pure profile cannot leave Claude Code's Fable, Opus, Sonnet, or Haiku slots pointing at native Claude IDs. Selecting one would send the wrong provider's model ID to the subscription proxy. Airlock fills all four slots from models that are enabled for that provider:
+
+- OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna or eligible Luna Fast. A missing route falls back to the closest enabled OpenAI model.
+- Grok Fable and Opus use Grok 4.5, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
+- A route that still needs explicit extra-usage confirmation is not placed in `/model`, because the picker has no way to carry Airlock's confirmation marker.
+- The exact root named on the launch command remains available as the custom option, even when it is not one of those worker routes.
+
+These are Claude Code picker slots, not claims that GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact provider model ID so the menu reports what will actually receive the request. It also clears every proxy-specific slot before a hybrid session, where the Claude family names keep their native meanings.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 

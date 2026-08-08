@@ -98,9 +98,15 @@ $HybridRoots = @{
 
 $ProxyVariables = @(
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
-  'ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME', 'ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME', 'ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME', 'ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME', 'ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
@@ -113,17 +119,20 @@ $ProxyVariables = @(
 function Show-Models {
   Write-Host 'Usage: airlock [claude arguments]'
   Write-Host '       airlock openai [model] [claude arguments]'
+  Write-Host '       airlock grok [model] [claude arguments]'
   Write-Host '       airlock hybrid [model|choose] [claude arguments]'
   Write-Host '       airlock [sol|terra|luna|...] [claude arguments]'
   Write-Host ''
   Write-Host 'Profiles:'
   Write-Host '  airlock          Start the saved default profile and orchestrator'
   Write-Host '  airlock openai   Start the saved OpenAI-only orchestrator'
+  Write-Host '  airlock grok     Start the saved Grok-only orchestrator (subscription proxy)'
   Write-Host '  airlock hybrid   Start the saved hybrid orchestrator'
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
-  Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku'
+  Write-Host 'Grok root aliases: grok, composer'
+  Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
   Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models, proxy auth, version, update'
   Write-Host ''
   Write-Host 'Proxy login commands:'
@@ -353,10 +362,11 @@ function Start-ProxyIfNeeded {
 }
 
 # Claude Code decides whether a model supports effort by matching the model ID
-# against known Anthropic patterns. A pinned GPT ID matches nothing, which would
-# leave /effort unavailable, so declare the levels explicitly. Only do this for
-# GPT IDs: declaring capabilities for a real Claude ID would disable every
-# capability left off the list, and built-in detection already gets those right.
+# against known Anthropic patterns. A pinned GPT or Grok ID matches nothing,
+# which would leave /effort unavailable, so declare the levels explicitly. Only
+# do this for non-Claude IDs: declaring capabilities for a real Claude ID would
+# disable every capability left off the list, and built-in detection already
+# gets those right.
 function Set-GptEffortCapabilities {
   param([string]$Variable, [string]$Model)
   if (-not $Model -or $Model.StartsWith('claude-')) { return }
@@ -369,12 +379,15 @@ function Set-OpenAIEnvironment {
   $env:ANTHROPIC_BASE_URL   = $ProxyUrl
   $env:ANTHROPIC_AUTH_TOKEN = 'unused'
   $env:ANTHROPIC_MODEL      = $Model
+  $env:ANTHROPIC_DEFAULT_FABLE_MODEL = $Model
   $env:ANTHROPIC_DEFAULT_OPUS_MODEL = $Model
   $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $Model
   $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $SmallFast
   $env:ANTHROPIC_SMALL_FAST_MODEL = $SmallFast
   $env:ANTHROPIC_CUSTOM_MODEL_OPTION = $Model
   $env:ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = "$ModelName ($ProviderLabel)"
+  $env:ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = "Selected Airlock root ($Model)"
+  Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_FABLE_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_OPUS_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast

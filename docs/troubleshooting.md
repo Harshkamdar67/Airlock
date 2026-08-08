@@ -144,6 +144,14 @@ Do not retry the same failing search. Use one of these paths:
 
 The error does not mean that Opus, the public website, or provider login failed. It is an effort mismatch at the Web Search helper boundary.
 
+## `/model` shows provider models under Claude family slots
+
+Claude Code always presents Fable, Opus, Sonnet, and Haiku slots. In an OpenAI-only or Grok-only Airlock session, leaving those slots on native Claude IDs would send unsupported IDs to the subscription proxy. Airlock maps them to distinct enabled models from the active provider and labels each entry with its exact model ID. The launch command's exact root also stays available as the custom option.
+
+If every slot shows the same root or Fable still shows a native Claude model, the installation is stale. Run `airlock bundle`, reinstall the current branch or release, and start a new session. Existing sessions keep the environment they started with.
+
+A hybrid session behaves differently. Its Claude family slots keep their native Claude meanings, while a GPT or Grok root appears as the custom hybrid option.
+
 ## A GPT model is missing from `/model`
 
 Claude Code gateway discovery can ignore non-Claude model IDs. This is a discovery limit, not proof that the router cannot use the ID.

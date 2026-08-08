@@ -1927,6 +1927,50 @@ def wire_model_id(model: str) -> str:
     return model
 
 
+def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
+    """Map Claude Code's four family slots to enabled models from one provider.
+
+    A proxy-pure session cannot leave a Claude family alias untouched: selecting
+    it would send a Claude ID to the OpenAI/Grok subscription proxy. Pointing all
+    four aliases at the root is safe but makes /model look like four copies of
+    one model. Use the enabled provider portfolio instead. Models gated behind
+    an explicit extra-usage confirmation are excluded because /model has no
+    place to carry that confirmation marker.
+    """
+    if profile not in {"openai-pure", "grok-pure"}:
+        return {}
+    workers = [
+        worker for worker in enabled_profile_workers(policy, profile)
+        if not (
+            worker["access"] == "extra"
+            and policy["policies"]["extra_usage"] == "ask"
+        )
+    ]
+    by_route = {worker["route"]: worker["model"] for worker in workers}
+
+    def first(*routes: str) -> str:
+        for route in routes:
+            model = by_route.get(route)
+            if model:
+                return model
+        raise AccessError(f"{profile} has no model eligible for the /model picker")
+
+    if profile == "openai-pure":
+        primary = first("sol", "terra", "luna", "luna-fast")
+        balanced = first("terra", "sol", "luna", "luna-fast")
+        utility = first("luna-fast", "luna", "terra", "sol")
+    else:
+        primary = first("grok", "composer")
+        balanced = first("composer", "grok")
+        utility = balanced
+    return {
+        "fable": primary,
+        "opus": primary,
+        "sonnet": balanced,
+        "haiku": utility,
+    }
+
+
 def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, object]:
     workers = enabled_profile_workers(policy, profile)
     routes: dict[str, str] = {}
@@ -1955,6 +1999,7 @@ def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, obje
         "agent_names": sorted(agent_names),
         "extra_model_ids": sorted(extra_model_ids),
         "extra_agent_names": sorted(extra_agent_names),
+        "picker_models": proxy_picker_models(policy, profile),
     }
 
 
@@ -1963,6 +2008,17 @@ def session_route_field(policy: dict[str, Any], profile: str, field: str) -> str
     if field == "routes":
         return json.dumps(
             route_policy["routes"], separators=(",", ":"), ensure_ascii=True
+        )
+    if field == "picker-models":
+        picker_models = route_policy.get("picker_models")
+        if not isinstance(picker_models, dict) or any(
+            family not in {"fable", "opus", "sonnet", "haiku"}
+            or not isinstance(model, str) or not model
+            for family, model in picker_models.items()
+        ):
+            raise AccessError("native session picker model map is invalid")
+        return "\n".join(
+            f"{family}={picker_models[family]}" for family in sorted(picker_models)
         )
     values = route_policy.get(field.replace("-", "_"))
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
@@ -2870,7 +2926,7 @@ def main() -> int:
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument(
         "--field",
-        choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names"),
+        choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names", "picker-models"),
         default="routes",
     )
     profile_help = subparsers.add_parser("profile-guidance")

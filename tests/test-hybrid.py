@@ -29,6 +29,12 @@ ROUTE_POLICY = {
     "agent_names": ["airlock-luna", "airlock-opus", "airlock-sol"],
     "extra_model_ids": [],
     "extra_agent_names": [],
+    "picker_models": {
+        "fable": "gpt-5.6-sol[1m]",
+        "opus": "gpt-5.6-sol[1m]",
+        "sonnet": "gpt-5.6-sol[1m]",
+        "haiku": "gpt-5.6-luna[1m]",
+    },
 }
 
 
@@ -39,6 +45,10 @@ class HybridLauncherTests(unittest.TestCase):
             "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5",
             "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "wrong inherited label",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION": "wrong inherited description",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES": "effort",
             "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "19",
             "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5-20251001",
         }, clear=True):
@@ -58,6 +68,10 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_MODEL", environment)
         self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", environment)
         self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", environment)
+        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL", environment)
+        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME", environment)
+        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION", environment)
+        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES", environment)
         self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", environment)
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "hybrid-anthropic-root")
         self.assertEqual(environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"], "3")
@@ -237,6 +251,9 @@ class HybridLauncherTests(unittest.TestCase):
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
             "ANTHROPIC_AUTH_TOKEN": "unused",
             "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "wrong inherited label",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "wrong inherited description",
             "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "19",
             "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5-20251001",
         }, clear=True):
@@ -255,8 +272,19 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"], "1")
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
         self.assertEqual(environment["ANTHROPIC_AUTH_TOKEN"], "unused")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol[1m]")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol[1m]")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol[1m]")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna[1m]")
+        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna[1m]")
+        for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
+            variable = f"ANTHROPIC_DEFAULT_{family}_MODEL"
+            self.assertEqual(environment[f"{variable}_NAME"], environment[variable])
+            self.assertIn("Airlock OpenAI route", environment[f"{variable}_DESCRIPTION"])
+            self.assertEqual(
+                environment[f"{variable}_SUPPORTED_CAPABILITIES"],
+                "effort,xhigh_effort,max_effort",
+            )
 
     def test_router_start_uses_exact_route_table_and_parent(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -366,6 +394,12 @@ class GrokProfileTests(unittest.TestCase):
         ],
         "extra_model_ids": [],
         "extra_agent_names": [],
+        "picker_models": {
+            "fable": "grok-4.5",
+            "opus": "grok-4.5",
+            "sonnet": "grok-composer-2.5-fast",
+            "haiku": "grok-composer-2.5-fast",
+        },
     }
 
     def build(self, profile: str, root_model: str, router_url: str | None, **environment: str):
@@ -386,10 +420,15 @@ class GrokProfileTests(unittest.TestCase):
             "grok-pure", "grok-4.5", None,
             ANTHROPIC_BASE_URL="http://127.0.0.1:18765",
             ANTHROPIC_MODEL="grok-4.5",
+            ANTHROPIC_DEFAULT_FABLE_MODEL="claude-fable-5",
+            ANTHROPIC_SMALL_FAST_MODEL="gpt-5.6-sol[1m]",
         )
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "grok-4.5")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "grok-4.5")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "grok-4.5")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "grok-composer-2.5-fast")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "grok-composer-2.5-fast")
+        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "grok-pure")
         for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
             self.assertNotIn(marker, environment)

@@ -459,6 +459,32 @@ for line in sys.stdin:
             policy["providers"]["openai"]["detected_plan"] = "unknown"
             self.assertIsNone(ACCESS.fast_route_status(policy)["selected_route"])
 
+    def test_proxy_picker_stays_in_provider_and_excludes_unconfirmed_extra_usage(self) -> None:
+        policy = ACCESS.default_policy()
+        for model in policy["providers"]["grok"]["models"].values():
+            model["access"] = "unknown"
+        self.assertEqual(ACCESS.proxy_picker_models(policy, "grok-pure"), {
+            "fable": "grok-4.5",
+            "opus": "grok-4.5",
+            "sonnet": "grok-composer-2.5-fast",
+            "haiku": "grok-composer-2.5-fast",
+        })
+        self.assertEqual(ACCESS.proxy_picker_models(policy, "hybrid-grok-root"), {})
+
+        # /model cannot carry Airlock's explicit extra-usage marker. If Terra
+        # requires confirmation, its Sonnet slot must fall back to an ordinary
+        # enabled model instead of bypassing the billing policy.
+        policy["providers"]["openai"]["models"]["terra"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "ask"
+        picker = ACCESS.proxy_picker_models(policy, "openai-pure")
+        self.assertEqual(picker["sonnet"], "gpt-5.6-sol[1m]")
+        self.assertNotIn("gpt-5.6-terra[1m]", picker.values())
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["sonnet"],
+            "gpt-5.6-terra[1m]",
+        )
+
     def test_natively_1m_anthropic_models_keep_their_window_behind_the_router(self) -> None:
         # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
         # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com.
@@ -495,7 +521,19 @@ for line in sys.stdin:
                 {"gpt-5.6-sol[1m]", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
             )
             self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
+            self.assertEqual(pure["picker_models"], {
+                "fable": "gpt-5.6-sol[1m]",
+                "opus": "gpt-5.6-sol[1m]",
+                "sonnet": "gpt-5.6-terra[1m]",
+                "haiku": "gpt-5.6-luna[1m]",
+            })
+            self.assertEqual(
+                ACCESS.session_route_field(policy, "openai-pure", "picker-models"),
+                "fable=gpt-5.6-sol[1m]\nhaiku=gpt-5.6-luna[1m]\n"
+                "opus=gpt-5.6-sol[1m]\nsonnet=gpt-5.6-terra[1m]",
+            )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertEqual(hybrid["picker_models"], {})
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
             # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
             # native 1M window from behind the router, and Claude Code strips

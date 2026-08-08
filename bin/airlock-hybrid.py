@@ -41,12 +41,23 @@ PROXY_VARIABLES = {
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_SMALL_FAST_MODEL",
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
     "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
@@ -90,6 +101,38 @@ def declare_non_claude_effort_capabilities(
 
 # Backward-compatible alias used by older call sites and tests.
 declare_gpt_effort_capabilities = declare_non_claude_effort_capabilities
+
+
+def configure_proxy_model_picker(
+    environment: dict[str, str], profile: str, picker_models: object
+) -> None:
+    """Keep every Claude Code family slot inside the active pure provider.
+
+    Claude Code 2.1.226 added a Fable family override alongside Opus, Sonnet,
+    and Haiku. Leaving any one unset exposes a native Claude ID through the
+    subscription proxy. Give the four slots distinct enabled provider models
+    where the pool permits it, and set the label metadata ourselves so values
+    inherited from a parent shell cannot misdescribe the selected model.
+    """
+    families = ("fable", "opus", "sonnet", "haiku")
+    if not isinstance(picker_models, dict) or set(picker_models) != set(families):
+        fail(f"{profile} model picker map is invalid")
+    provider = "OpenAI" if profile == "openai-pure" else "Grok"
+    for family in families:
+        model = picker_models.get(family)
+        if not isinstance(model, str) or not model:
+            fail(f"{profile} model picker map is invalid")
+        variable = f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL"
+        environment[variable] = model
+        environment[f"{variable}_NAME"] = model
+        environment[f"{variable}_DESCRIPTION"] = (
+            f"Airlock {provider} route for Claude Code's {family.title()} slot"
+        )
+        declare_non_claude_effort_capabilities(environment, variable, model)
+    # OpenAI honours the user's explicit utility override. Grok-pure must not
+    # inherit a GPT utility model and cross the provider boundary silently.
+    if profile == "grok-pure" or not environment.get("ANTHROPIC_SMALL_FAST_MODEL"):
+        environment["ANTHROPIC_SMALL_FAST_MODEL"] = picker_models["haiku"]
 
 
 def local_app_data() -> Path:
@@ -348,13 +391,8 @@ def build_child_environment(
         if router_url is not None:
             fail(f"{profile} cannot use the hybrid router")
         require_proxy_environment(environment, proxy_url, root_model, profile)
-        environment["ANTHROPIC_DEFAULT_OPUS_MODEL"] = root_model
-        environment["ANTHROPIC_DEFAULT_SONNET_MODEL"] = root_model
-        declare_non_claude_effort_capabilities(
-            environment, "ANTHROPIC_DEFAULT_OPUS_MODEL", root_model
-        )
-        declare_non_claude_effort_capabilities(
-            environment, "ANTHROPIC_DEFAULT_SONNET_MODEL", root_model
+        configure_proxy_model_picker(
+            environment, profile, route_policy.get("picker_models")
         )
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
@@ -374,6 +412,9 @@ def build_child_environment(
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
         f"{root_name} (native hybrid route)"
+    )
+    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
+        f"Selected Airlock hybrid root ({root_model})"
     )
     declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model

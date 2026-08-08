@@ -65,8 +65,9 @@ foreach ($path in $PowerShellFiles) {
 # Claude model IDs to Claude Code's own detection.
 $LauncherText = [IO.File]::ReadAllText((Join-Path $Root 'bin\airlock.ps1'))
 foreach ($variable in @(
-  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION'
+  'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION'
 )) {
   if ($LauncherText -notmatch [regex]::Escape("'${variable}_SUPPORTED_CAPABILITIES'")) {
     throw "bin\airlock.ps1 does not clear ${variable}_SUPPORTED_CAPABILITIES between sessions"
@@ -96,6 +97,12 @@ public static class ClaudeLaunchStub {
   public static int Main(string[] args) {
     Console.WriteLine("MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "unset"));
     Console.WriteLine("CUSTOM_MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_CUSTOM_MODEL_OPTION") ?? "unset"));
+    Console.WriteLine("DEFAULT_FABLE=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL") ?? "unset"));
+    Console.WriteLine("DEFAULT_OPUS=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_OPUS_MODEL") ?? "unset"));
+    Console.WriteLine("DEFAULT_SONNET=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_SONNET_MODEL") ?? "unset"));
+    Console.WriteLine("DEFAULT_HAIKU=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_HAIKU_MODEL") ?? "unset"));
+    Console.WriteLine("SMALL_FAST=" + (Environment.GetEnvironmentVariable("ANTHROPIC_SMALL_FAST_MODEL") ?? "unset"));
+    Console.WriteLine("FABLE_NAME=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
     Console.WriteLine("COMPACT_WINDOW=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW") ?? "unset"));
     for (int index = 0; index < args.Length; index++) {
@@ -294,6 +301,17 @@ try {
   if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.1$') {
     throw "Windows version command returned unexpected output: $($VersionCommand.Output)"
   }
+  $ModelsCommand = Invoke-LauncherProcess $InstalledLauncher @('models')
+  foreach ($expected in @(
+    'airlock grok [model] [claude arguments]',
+    'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
+    'Grok root aliases: grok, composer',
+    'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+  )) {
+    if (-not $ModelsCommand.Output.Contains($expected)) {
+      throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
+    }
+  }
   $UpdateHelp = Invoke-LauncherProcess $InstalledLauncher @('update', '--help')
   if ($UpdateHelp.Output -notmatch '(?m)^usage: airlock update') {
     throw "Windows update help was not dispatched: $($UpdateHelp.Output)"
@@ -326,6 +344,17 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   if ($LegacyLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
       $LegacyLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
     throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
+  }
+  foreach ($ExpectedPickerLine in @(
+    'DEFAULT_FABLE=gpt-5.6-sol[1m]',
+    'DEFAULT_OPUS=gpt-5.6-sol[1m]',
+    'DEFAULT_SONNET=gpt-5.6-terra[1m]',
+    'DEFAULT_HAIKU=gpt-5.6-luna[1m]',
+    'FABLE_NAME=gpt-5.6-sol[1m]'
+  )) {
+    if ($LegacyLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedPickerLine))$") {
+      throw "Windows OpenAI picker did not keep distinct enabled models: $($LegacyLaunch.Output)"
+    }
   }
 
   # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
@@ -366,6 +395,11 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
       $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
     throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
+  }
+  foreach ($Family in @('FABLE', 'OPUS', 'SONNET', 'HAIKU')) {
+    if ($HybridLaunch.Output -notmatch "(?m)^DEFAULT_${Family}=unset$") {
+      throw "Windows hybrid launch retained a proxy model picker override: $($HybridLaunch.Output)"
+    }
   }
   $AnthropicFastConfig = $HybridConfig.Replace(
     'AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=opus'
@@ -513,6 +547,17 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   }
   if ($GrokLaunch.Output -match 'airlock-sol' -or $GrokLaunch.Output -match 'airlock-opus') {
     throw "Grok-only session leaked a non-Grok worker: $($GrokLaunch.Output)"
+  }
+  foreach ($ExpectedPickerLine in @(
+    'DEFAULT_FABLE=grok-4.5',
+    'DEFAULT_OPUS=grok-4.5',
+    'DEFAULT_SONNET=grok-composer-2.5-fast',
+    'DEFAULT_HAIKU=grok-composer-2.5-fast',
+    'SMALL_FAST=grok-composer-2.5-fast'
+  )) {
+    if ($GrokLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedPickerLine))$") {
+      throw "Windows Grok picker crossed providers or collapsed its models: $($GrokLaunch.Output)"
+    }
   }
   $GrokComposer = Invoke-LauncherProcess $InstalledLauncher @('grok', 'composer', '-p', 'test')
   if ($GrokComposer.Output -notmatch '(?m)^MODEL=grok-composer-2\.5-fast$') {
