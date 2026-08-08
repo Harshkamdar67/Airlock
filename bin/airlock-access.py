@@ -93,27 +93,42 @@ ROUTING_OBJECTIVES = {
 PROVIDER_ROUTES = {
     "anthropic": ("opus", "sonnet", "fable", "haiku"),
     "openai": ("sol", "terra", "luna", "luna-fast"),
+    "grok": ("grok", "composer"),
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
 PROFILE_COMPONENTS = {
     "openai-pure": (("openai", "openai_direct"),),
+    "grok-pure": (("grok", "grok_direct"),),
     "hybrid-openai-root": (
-        ("openai", "openai_direct"), ("anthropic", "anthropic_wrappers"),
+        ("openai", "openai_direct"),
+        ("anthropic", "anthropic_wrappers"),
+        ("grok", "grok_wrappers"),
     ),
     "hybrid-anthropic-root": (
-        ("anthropic", "anthropic_direct"), ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_direct"),
+        ("openai", "openai_wrappers"),
+        ("grok", "grok_wrappers"),
+    ),
+    "hybrid-grok-root": (
+        ("grok", "grok_direct"),
+        ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_wrappers"),
     ),
 }
 PROFILE_ROOT_PROVIDERS = {
     "openai-pure": "openai",
+    "grok-pure": "grok",
     "hybrid-openai-root": "openai",
     "hybrid-anthropic-root": "anthropic",
+    "hybrid-grok-root": "grok",
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
     "openai_wrappers": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
     "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
     "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
+    "grok_direct": {"airlock-grok", "airlock-composer"},
+    "grok_wrappers": {"airlock-grok", "airlock-composer"},
 }
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
 MAX_RENDERED_AGENTS_BYTES = 24 * 1024
@@ -162,6 +177,18 @@ MODEL_PROFILES = {
             "strength": "priority-processed high-volume discovery, reading, extraction, lookup, summarization, and triage on eligible OpenAI plans",
         },
     },
+    "grok": {
+        "grok": {
+            "agent": "airlock-grok", "model": "grok-4.5", "effort": "xhigh",
+            "capability": "frontier", "cost": "premium",
+            "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
+        },
+        "composer": {
+            "agent": "airlock-composer", "model": "grok-composer-2.5-fast", "effort": "high",
+            "capability": "general", "cost": "economical",
+            "strength": "fast low-latency agentic coding loops, automated debugging, web implementation, and bounded multi-step edits that need speed more than depth",
+        },
+    },
 }
 MANAGED_AGENT_NAMES = frozenset(
     profile["agent"]
@@ -173,6 +200,9 @@ OPENAI_MANAGED_AGENT_NAMES = frozenset(
 )
 ANTHROPIC_MANAGED_AGENT_NAMES = frozenset(
     profile["agent"] for profile in MODEL_PROFILES["anthropic"].values()
+)
+GROK_MANAGED_AGENT_NAMES = frozenset(
+    profile["agent"] for profile in MODEL_PROFILES["grok"].values()
 )
 PLAN_KEYS = ("plan", "tier", "subscriptionPlan", "subscriptionTier")
 
@@ -244,6 +274,7 @@ def default_policy() -> dict[str, Any]:
             "allowed_efforts": {
                 "anthropic": list(VALID_EFFORTS),
                 "openai": list(VALID_EFFORTS),
+                "grok": list(VALID_EFFORTS),
             },
             "worker_effort": {
                 route: INHERIT_EFFORT
@@ -273,6 +304,17 @@ def default_policy() -> dict[str, Any]:
                 "usage": _default_usage("openai"),
                 "models": {
                     route: {"access": "unknown"} for route in PROVIDER_ROUTES["openai"]
+                },
+            },
+            "grok": {
+                "authenticated": None,
+                "detected_plan": "unknown",
+                "plan_source": "not_checked",
+                "account_metadata": {},
+                "usage": _default_usage("grok"),
+                # Off until AIRLOCK_GROK_MODELS enables routes (pure grok launch enables them).
+                "models": {
+                    route: {"access": "unavailable"} for route in PROVIDER_ROUTES["grok"]
                 },
             },
         },
@@ -691,6 +733,7 @@ def _normalize_account_metadata(provider: str, raw: object) -> dict[str, object]
             "organization_rate_limit_tier", "user_rate_limit_tier", "seat_tier",
         },
         "openai": {"account_type"},
+        "grok": set(),
     }[provider]
     result: dict[str, object] = {}
     for key in allowed:
@@ -912,7 +955,11 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
             if isinstance(value, str) and value.strip().lower() in VALID_WORKER_EFFORTS:
                 policy["policies"]["worker_effort"][route] = value.strip().lower()
 
-    for provider, prefix in (("anthropic", "ANTHROPIC"), ("openai", "OPENAI")):
+    for provider, prefix in (
+        ("anthropic", "ANTHROPIC"),
+        ("openai", "OPENAI"),
+        ("grok", "GROK"),
+    ):
         routes = PROVIDER_ROUTES[provider]
         enabled = _csv(config.get(f"AIRLOCK_{prefix}_MODELS"), routes)
         included = _csv(config.get(f"AIRLOCK_{prefix}_INCLUDED_MODELS"), routes) or []
@@ -950,6 +997,12 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
     policy["policies"]["worker_effort"] = dict(defaults["worker_effort"])
     apply_config_overrides(policy, read_flat_config())
     apply_config_overrides(policy, dict(os.environ))
+    # A confirmed logged-out Grok proxy wins over any enable the config asked
+    # for. Advertising a worker whose provider has no login only produces a
+    # failed request one Agent call later.
+    if policy["providers"]["grok"].get("authenticated") is False:
+        for state in policy["providers"]["grok"]["models"].values():
+            state["access"] = "unavailable"
     return policy
 
 
@@ -1423,7 +1476,22 @@ def refresh_usage(path: Path | None = None) -> tuple[dict[str, Any], bool]:
                 policy["providers"]["openai"]["detected_plan"] = plan
                 policy["providers"]["openai"]["plan_source"] = "codex_app_server"
             refreshed = True
-    if refreshed or metadata:
+    # Grok login state is account state, not usage. It is tracked separately so
+    # that probing it never counts as a usage refresh, which would otherwise
+    # restart the shared fifteen-minute window and report a refresh that did
+    # not happen.
+    grok = grok_auth_status()
+    grok_changed = False
+    if grok["source"] != "not_found":
+        grok_state = policy["providers"]["grok"]
+        if (
+            grok_state.get("authenticated") != grok["authenticated"]
+            or grok_state.get("plan_source") != grok["source"]
+        ):
+            grok_state["authenticated"] = grok["authenticated"]
+            grok_state["plan_source"] = str(grok["source"])
+            grok_changed = True
+    if refreshed or metadata or grok_changed:
         _write_policy(policy, target)
     return apply_runtime_overrides(policy), refreshed
 
@@ -1649,6 +1717,39 @@ def proxy_fast_capability() -> dict[str, object]:
     }
 
 
+def grok_auth_status() -> dict[str, object]:
+    """Ask the local proxy whether it holds a usable Grok login.
+
+    ``authenticated`` stays None when the answer is genuinely unknown so a
+    caller can tell "checked and logged out" apart from "never checked". Only a
+    confirmed negative should disable routes: a missing proxy or a probe that
+    times out must not quietly remove workers the user configured.
+
+    A proxy too old to know the `grok` subcommand exits non-zero, which reads as
+    not authenticated. That is the correct answer for routing, because Grok
+    cannot work through that proxy either way.
+    """
+    override = os.environ.get("AIRLOCK_ACCESS_GROK_AUTH", "").strip().lower()
+    if override in {"1", "true", "yes"}:
+        return {"authenticated": True, "source": "environment"}
+    if override in {"0", "false", "no"}:
+        return {"authenticated": False, "source": "environment"}
+    executable = (
+        os.environ.get("AIRLOCK_ACCESS_PROXY")
+        or shutil.which("claude-code-proxy.exe")
+        or shutil.which("claude-code-proxy")
+    )
+    if not executable:
+        return {"authenticated": None, "source": "not_found"}
+    completed = _run_status([executable, "grok", "auth", "status"])
+    if completed is None:
+        return {"authenticated": None, "source": "probe_failed"}
+    return {
+        "authenticated": completed.returncode == 0,
+        "source": "proxy_status",
+    }
+
+
 def explicit_fast_status(policy: dict[str, Any], route: str) -> dict[str, object]:
     if route not in {"sol-fast", "luna-fast"}:
         raise AccessError(f"unknown Fast route: {route}")
@@ -1861,6 +1962,11 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
             "UI/UX routing: this OpenAI-only profile has no Anthropic worker. Do not invoke or "
             "claim an Anthropic route; follow the user's exact eligible choice and the enabled OpenAI pool."
         )
+    if profile == "grok-pure":
+        return (
+            "UI/UX routing: this Grok-only profile has no Anthropic worker. Do not invoke or "
+            "claim an Anthropic or OpenAI route; follow the user's exact eligible choice and the enabled Grok pool."
+        )
     by_route = {worker["route"]: worker for worker in workers}
     opus = by_route.get("opus")
     sonnet = by_route.get("sonnet")
@@ -1903,7 +2009,73 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
     return " ".join(parts)
 
 
-def root_orchestration_guidance(policy: dict[str, Any]) -> str:
+SWARM_ROUTES = ("luna", "luna-fast", "composer")
+
+
+def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
+    """Describe automatic fan-out using only the routes this session enabled.
+
+    Automatic armies stay restricted to the economical high-volume routes. When
+    none of them are enabled the session must be told that plainly rather than
+    handed instructions for an agent it cannot start.
+    """
+    by_route = {worker["route"]: worker["agent"] for worker in workers}
+    swarm = [by_route[route] for route in SWARM_ROUTES if route in by_route]
+    never = sorted(
+        agent for route, agent in by_route.items() if route not in SWARM_ROUTES
+    )
+    strong = [
+        by_route[route] for route in ("sol", "opus", "grok") if route in by_route
+    ]
+    if swarm:
+        launch = (
+            "For an automatic army, launch multiple "
+            + " or ".join(f"exact {agent}" for agent in swarm)
+            + " Agent calls with `run_in_background: true`. Start the useful "
+            "non-overlapping batch before waiting so its cards overlap in Claude "
+            "Code's native Agent UI, then collect every complete response before "
+            "synthesis. Automatic high-volume swarms are limited to "
+            + " and ".join(swarm)
+            + " for independent, non-overlapping work with low cross-shard "
+            "reasoning. They run at the session effort unless they are pinned."
+        )
+        armies = (
+            "Automatic armies start the full background native Agent batch of "
+            + " or ".join(swarm)
+            + " workers before waiting. Shards must be independent, "
+            "non-overlapping, high-volume work with low cross-shard reasoning."
+        )
+    else:
+        launch = (
+            "This session has no automatic swarm route enabled, so do not "
+            "multiply any worker automatically. Fan out only across distinct "
+            "roles, one Agent per role."
+        )
+        armies = (
+            "No enabled route may be multiplied automatically in this session."
+        )
+    if never:
+        forbid = f" Never automatically swarm {', '.join(never)}."
+    else:
+        forbid = ""
+    if strong:
+        synthesis = (
+            " One stronger " + " or ".join(strong) + " Agent, or the root, "
+            "reviews, integrates, tests, and synthesizes the full results."
+        )
+    else:
+        synthesis = " The root reviews, integrates, tests, and synthesizes the full results."
+    return {
+        "launch": launch + forbid,
+        "armies": armies + forbid + synthesis,
+        "synthesis": synthesis,
+    }
+
+
+def root_orchestration_guidance(
+    policy: dict[str, Any], workers: list[dict[str, str]]
+) -> str:
+    plan = swarm_plan(workers)
     return (
         "Orchestration: choose the smallest effective path. Before working directly on a multi-part request, split it "
         "by skill and route independent parts. A coupled final result does not make every "
@@ -1911,16 +2083,15 @@ def root_orchestration_guidance(policy: dict[str, Any]) -> str:
         "Use exact Explore for bounded read-only repository discovery; without a model field it "
         "inherits the orchestrator model. Use exact Plan for read-only technical design after context and do not duplicate "
         "the same discovery in Explore and Plan. Use exact general-purpose for multi-step work in the native runtime. Start one native "
-        "airlock-* Agent for a separable task that benefits from its exact model. For a Luna army, launch "
-        "multiple exact airlock-luna or eligible airlock-luna-fast Agent calls with `run_in_background: true`. Start the "
-        "useful non-overlapping batch before waiting so its cards overlap in Claude Code's native Agent UI, then collect "
-        "every complete response before synthesis. Use Claude Code Workflow only when the user explicitly requests "
+        "airlock-* Agent for a separable task that benefits from its exact model. "
+        + plan["launch"]
+        + " Use Claude Code Workflow only when the user explicitly requests "
         "multi-agent orchestration. Do not overlap direct Agent fan-out with Workflow; any explicit top-level limit is an "
-        "aggregate ceiling. Automatic high-volume swarms remain Luna-only for independent, non-overlapping work with low "
-        "cross-shard reasoning. Luna and eligible Luna Fast Agents run at the session effort unless they are pinned. Difficult implementation "
-        "shards must have explicit file ownership, no-touch boundaries, and acceptance checks. One stronger Sol, Opus, or "
-        "capable root reviews, integrates, tests, and synthesizes the full results. Start with the fewest useful shards and "
-        "expand only when coverage requires it. Never automatically swarm Sol, Terra, Opus, Sonnet, Fable, or Haiku. Do "
+        "aggregate ceiling. Difficult implementation "
+        "shards must have explicit file ownership, no-touch boundaries, and acceptance checks."
+        + plan["synthesis"]
+        + " Start with the fewest useful shards and "
+        "expand only when coverage requires it. Do "
         "not swarm coupled edits, architecture, security judgment, cross-file integration, or final synthesis. An explicit "
         "user model choice always wins. Do not silently retry with a different provider or model. Named airlock-* "
         "Agents cannot invoke Agent, and the native session spawn depth is one. Keep every fan-out decision at the root. "
@@ -2043,24 +2214,43 @@ def portfolio_guidance(policy: dict[str, Any], profile: str) -> str:
         role_rules.append(
             f"keep {by_route['haiku']} available for an explicit bounded utility choice, but do not select it for automatic swarms"
         )
+    if by_route.get("grok"):
+        role_rules.append(
+            f"prefer {by_route['grok']} for long-horizon agentic work that must hold context across many "
+            "tool calls, terminal and command-line heavy tasks, and multi-step debugging where the loop "
+            "matters more than a single deep answer; it is not the default choice for novel architecture "
+            "or security judgment"
+        )
+    if by_route.get("composer"):
+        role_rules.append(
+            f"use {by_route['composer']} for fast edit-run-check coding loops, automated debugging, and "
+            "bounded multi-step implementation where latency matters more than depth; it is a coding "
+            "worker, so do not route plain summarization to it when a cheaper discovery route is enabled"
+        )
     if not by_route.get("sonnet"):
         role_rules.append("no enabled native deep-research specialist is available; do not imitate one with a large inherited workflow")
     ceiling = (
         "Claude Code native default" if configured_max == "off" else f"{configured_max} concurrent top-level workers"
     )
-    fast = fast_route_status(policy)
-    fast_detail = (
-        f"Luna swarm Fast policy={fast['requested']}; selected route={fast['selected_route'] or 'none'}; "
-        f"plan={fast['plan']}; proxy support={'verified' if fast['proxy_supported'] else 'unverified'}. {fast['reason']}"
-    )
+    # Fast eligibility is an OpenAI Luna concept, not a property of every swarm
+    # route. A session without a Luna route gains nothing from the detail and
+    # should not be told about a model it cannot call.
+    if any(worker["route"] in {"luna", "luna-fast"} for worker in workers):
+        fast = fast_route_status(policy)
+        fast_detail = (
+            f"Luna swarm Fast policy={fast['requested']}; selected route={fast['selected_route'] or 'none'}; "
+            f"plan={fast['plan']}; proxy support={'verified' if fast['proxy_supported'] else 'unverified'}. {fast['reason']} "
+        )
+    else:
+        fast_detail = ""
     return (
         f"Portfolio policy: configured ceiling={ceiling}; recommended initial breadth={initial_breadth} for {routing} routing. "
         "The ceiling is never a target. Start with the fewest orthogonal roles and expand only when useful. Native "
         "concurrency does not authorize wasteful fan-out. "
-        f"Enabled role map: {role_map}. Provider headroom: {', '.join(headroom_parts) or 'none'}. {fast_detail} "
+        f"Enabled role map: {role_map}. Provider headroom: {', '.join(headroom_parts) or 'none'}. {fast_detail}"
         "Unknown or stale headroom is conservative, never unlimited; avoid automatic fan-out on a provider with low or critical headroom. "
         + ("Role guidance: " + "; ".join(role_rules) + ". " if role_rules else "")
-        + "Automatic armies start the full background native Agent batch of exact Luna workers before waiting. Shards must be independent, non-overlapping, high-volume work with low cross-shard reasoning. Never automatically multiply premium or Anthropic models. One stronger root or native Sol or Opus Agent performs final synthesis. "
+        + swarm_plan(workers)["armies"] + " "
         + "These are soft routing preferences, not provider stereotypes; an explicit user choice wins. Route by task evidence and the exact harness. Compare rendered results and accessibility for frontend work, require a reproducer and causal explanation for backend bugs, require before-and-after measurements for performance work, and require independent tools plus manual verification for security work. Separate planning, implementation, and review for architecture or large refactors. Use cross-provider review only when it adds an independent error mode and usage permits it. No model is a source of record: verify citations, APIs, tests, migrations, and production assumptions. "
         + "Choose roles before models and diversify providers only for distinct work or independent error modes, not to consume every enabled model."
     )
@@ -2131,25 +2321,69 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         f"{worker['capability']}/{worker['cost']}"
         for worker in enabled_workers
     ]
+    enabled_providers = {PROFILE_ROOT_PROVIDERS[profile]} | {
+        worker["provider"] for worker in enabled_workers
+    }
     signals = ", ".join(
         f"{provider}({provider_signal_summary(policy, provider)})"
-        for provider in ("openai", "anthropic")
-        if profile != "openai-pure" or provider == "openai"
+        for provider in ("openai", "anthropic", "grok")
+        if provider in enabled_providers and provider in policy.get("providers", {})
     )
     if profile == "openai-pure":
         boundary = (
             "Provider boundary: this is an OpenAI-only native session. The root, built-in Agents, and exact "
-            "airlock-* Agents may use only enabled OpenAI model IDs. Do not invoke or claim an Anthropic route."
+            "airlock-* Agents may use only enabled OpenAI model IDs. Do not invoke or claim an Anthropic or Grok route."
+        )
+    elif profile == "grok-pure":
+        boundary = (
+            "Provider boundary: this is a Grok-only native session through the local subscription proxy. The root, "
+            "built-in Agents, and exact airlock-* Agents may use only enabled Grok model IDs. Do not invoke or claim "
+            "an Anthropic or OpenAI Codex route."
         )
     else:
         root_provider = PROFILE_ROOT_PROVIDERS[profile]
+        # Describe only the providers this session actually enabled. Naming a
+        # route the user never logged into invites the orchestrator to attempt
+        # it and fail at request time.
+        proxy_providers = [
+            name for name in ("openai", "grok") if name in enabled_providers
+        ]
+        routes = []
+        if "anthropic" in enabled_providers:
+            routes.append("Exact Claude IDs go only to Anthropic.")
+        if proxy_providers == ["openai", "grok"]:
+            routes.append(
+                "Exact GPT and Grok IDs go only to the loopback subscription proxy "
+                "(Codex OAuth for GPT; Grok OAuth for Grok)."
+            )
+        elif proxy_providers == ["openai"]:
+            routes.append(
+                "Exact GPT IDs go only to the loopback subscription proxy on Codex OAuth."
+            )
+        elif proxy_providers == ["grok"]:
+            routes.append(
+                "Exact Grok IDs go only to the loopback subscription proxy on Grok OAuth."
+            )
+        excluded = [
+            label
+            for name, label in (
+                ("anthropic", "Anthropic"),
+                ("openai", "OpenAI Codex"),
+                ("grok", "Grok"),
+            )
+            if name not in enabled_providers
+        ]
+        if excluded:
+            routes.append(
+                f"This session has no {' or '.join(excluded)} route enabled, so do not "
+                "invoke or claim one."
+            )
         boundary = (
-            f"Provider boundary: this hybrid root starts on {root_provider}, while one session-scoped loopback router "
-            "keeps both providers inside the same Claude Code process. Exact enabled Claude model IDs route only to "
-            "Anthropic and exact enabled GPT model IDs route only to the loopback OpenAI proxy. Named airlock-* Agents "
-            "use their exact model. Built-in Explore, Plan, and general-purpose inherit the orchestrator model "
-            "unless their Agent call supplies an exact model allowed by this profile. The endpoint remains fixed, so "
-            "native model changes do not require a broker or a new Claude Code process."
+            f"Provider boundary: this hybrid root starts on {root_provider}. One session-scoped loopback router keeps "
+            "every enabled provider inside the same Claude Code process. "
+            + " ".join(routes)
+            + " Named airlock-* Agents use their exact model. Built-in Explore, Plan, and general-purpose inherit the "
+            "orchestrator model unless an exact model allowed by this profile is supplied."
         )
     metadata = (
         "Native Agent handoff: send the selected worker one natural, self-contained query. Do not add task kind, risk, "
@@ -2182,7 +2416,7 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         failure_policy,
         portfolio_guidance(policy, profile),
         ui_ux_guidance(policy, profile, enabled_workers),
-        root_orchestration_guidance(policy),
+        root_orchestration_guidance(policy, enabled_workers),
         worker_handoff_guidance(policy, profile),
         managed_result_guidance(),
         root_communication_guidance(),
@@ -2280,9 +2514,16 @@ def read_agent_catalog(path: Path, catalog_name: str) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AccessError(f"agent catalog is invalid JSON: {catalog_name}") from exc
     expected = CATALOG_EXPECTED_AGENTS[catalog_name]
-    if not isinstance(payload, dict) or set(payload) != expected:
+    if not isinstance(payload, dict):
         raise AccessError(f"agent catalog has unexpected definitions: {catalog_name}")
-    return payload
+    # Underscore keys carry file metadata such as the managed marker, never an
+    # Agent definition, so they are dropped before the exact-agent-set check.
+    definitions = {
+        key: value for key, value in payload.items() if not key.startswith("_")
+    }
+    if set(definitions) != expected:
+        raise AccessError(f"agent catalog has unexpected definitions: {catalog_name}")
+    return definitions
 
 
 def render_profile(
@@ -2348,6 +2589,10 @@ def managed_session_settings_json(
     if enabled.intersection(ANTHROPIC_MANAGED_AGENT_NAMES):
         services.append(
             "Anthropic Claude models reached through Claude Code's native Agent runtime and the official Anthropic route"
+        )
+    if enabled.intersection(GROK_MANAGED_AGENT_NAMES):
+        services.append(
+            "Grok models reached through Claude Code's native Agent runtime and the active loopback subscription proxy"
         )
     if not services:
         raise AccessError("rendered Agent profile has no native provider")
@@ -2598,6 +2843,8 @@ def main() -> int:
     profile_render.add_argument("--anthropic-direct-file")
     profile_render.add_argument("--openai-wrappers-file")
     profile_render.add_argument("--anthropic-wrappers-file")
+    profile_render.add_argument("--grok-direct-file")
+    profile_render.add_argument("--grok-wrappers-file")
     agent_names = subparsers.add_parser("managed-agent-names")
     agent_names.add_argument("--agents-json", required=True)
     session_settings = subparsers.add_parser("managed-session-settings")
@@ -2693,6 +2940,8 @@ def main() -> int:
                 "anthropic_direct": args.anthropic_direct_file,
                 "openai_wrappers": args.openai_wrappers_file,
                 "anthropic_wrappers": args.anthropic_wrappers_file,
+                "grok_direct": args.grok_direct_file,
+                "grok_wrappers": args.grok_wrappers_file,
             }
             rendered_profile = render_profile_from_paths(policy, args.profile, catalog_paths)
             print(json.dumps(rendered_profile, separators=(",", ":"), ensure_ascii=True))

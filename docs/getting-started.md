@@ -69,6 +69,12 @@ After Airlock is installed, use its wrapper for later status checks or reauthent
 ```bash
 airlock proxy auth status
 airlock proxy auth login
+```
+
+Grok is optional and signs in separately. Skip this unless you want the Grok routes:
+
+```bash
+airlock proxy grok auth login
 airlock proxy auth device
 ```
 
@@ -148,6 +154,9 @@ Direct choices:
 
 ```bash
 airlock terra
+airlock grok
+airlock grok composer
+airlock hybrid grok
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna

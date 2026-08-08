@@ -67,12 +67,16 @@ config_dir="$(resolve_airlock_config_dir)"
 config_target="${AIRLOCK_CONFIG_FILE:-$config_dir/config}"
 config_proxy_config_dir=''
 config_proxy_state_home=''
+config_grok_models=''
+config_default_profile=''
 if [[ -f "$config_target" ]]; then
   while IFS='=' read -r config_key config_value; do
     config_value="${config_value%$'\r'}"
     case "$config_key" in
       AIRLOCK_PROXY_CONFIG_DIR) config_proxy_config_dir="$config_value" ;;
       AIRLOCK_PROXY_STATE_HOME) config_proxy_state_home="$config_value" ;;
+      AIRLOCK_GROK_MODELS) config_grok_models="$config_value" ;;
+      AIRLOCK_DEFAULT_PROFILE) config_default_profile="$config_value" ;;
     esac
   done < "$config_target"
 fi
@@ -114,6 +118,31 @@ if command -v claude-code-proxy >/dev/null 2>&1 && run_proxy_command codex auth 
 else
   fail 'Codex OAuth is missing or expired'
   info 'Run: airlock proxy auth login'
+fi
+
+# Grok is optional, so a missing Grok login is only a failure once the saved
+# configuration actually enables Grok routes.
+if [[ -n "${AIRLOCK_GROK_MODELS:-$config_grok_models}" \
+  || "${AIRLOCK_DEFAULT_PROFILE:-$config_default_profile}" == 'grok' ]]; then
+  grok_status_output=''
+  if command -v claude-code-proxy >/dev/null 2>&1; then
+    grok_status_output="$(run_proxy_command grok auth status 2>&1)" || grok_status_output=''
+  fi
+  if [[ -n "$grok_status_output" ]]; then
+    pass 'Grok OAuth is configured'
+    # The access token is short lived, but the proxy renews it from the stored
+    # refresh token about five minutes before expiry. This is informational, so
+    # do not advise a re-login just because the number looks small.
+    grok_expires="$(printf '%s\n' "$grok_status_output" | sed -n 's/.*Expires in \([0-9][0-9]*\)s.*/\1/p' | head -1)"
+    if [[ -n "$grok_expires" ]]; then
+      info "Grok access token expires in $((grok_expires / 3600))h $(((grok_expires % 3600) / 60))m; the proxy renews it automatically"
+    fi
+  else
+    fail 'Grok OAuth is missing or expired'
+    info 'Run: airlock proxy grok auth login'
+  fi
+else
+  info 'Grok workers are not enabled in the saved configuration'
 fi
 
 proxy_url="${AIRLOCK_PROXY_URL:-http://127.0.0.1:18765}"

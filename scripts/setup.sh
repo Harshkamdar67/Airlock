@@ -37,6 +37,9 @@ setup_args=("$@")
 
 default_profile=''
 hybrid_model=''
+grok_model=''
+grok_models=''
+grok_models_was_decided=0
 main_model=''
 main_effort=''
 bg_model=''
@@ -75,9 +78,10 @@ Usage: ./scripts/setup.sh [options]
 Without options, setup.sh opens an interactive questionnaire.
 
 Options:
-  --default-profile PROFILE   Bare airlock: hybrid or openai
+  --default-profile PROFILE   Bare airlock: hybrid, openai, or grok
   --main-model MODEL          Backward-compatible root choice; Claude implies hybrid
   --hybrid-model MODEL        Saved hybrid orchestrator alias
+  --grok-model MODEL          Saved Grok-only root: grok or composer
   --main-effort EFFORT        Starting session effort: low, medium, high, xhigh, or max
   --worker-effort EFFORT      Named model workers: inherit, low, medium, high, xhigh, or max
   --worker-pins LIST          Per-route pins such as luna=max,sonnet=high; empty clears
@@ -97,6 +101,7 @@ Options:
   --openai-capacity VALUE     Codex capacity override: auto, 1x, 5x, or 20x
   --anthropic-workers LIST    Enabled Claude workers; empty clears the list
   --openai-workers LIST       Enabled GPT workers; empty clears the list
+  --grok-workers LIST         Enabled Grok workers; empty clears the list
   --with-agent                Install the optional generic airlock-worker
   --without-agent             Do not install the custom worker
   --login                     Run Codex OAuth for the local proxy if it is signed out
@@ -134,6 +139,7 @@ while [[ $# -gt 0 ]]; do
     --default-profile) require_value "$@"; default_profile="$2"; profile_was_explicit=1; shift ;;
     --main-model) require_value "$@"; main_model="$2"; main_model_was_explicit=1; shift ;;
     --hybrid-model) require_value "$@"; hybrid_model="$2"; shift ;;
+    --grok-model) require_value "$@"; grok_model="$2"; shift ;;
     --main-effort) require_value "$@"; main_effort="$2"; shift ;;
     --worker-effort) require_value "$@"; worker_effort="$2"; shift ;;
     --worker-pins) require_argument "$@"; worker_pins="$2"; worker_pins_were_decided=1; shift ;;
@@ -163,6 +169,7 @@ while [[ $# -gt 0 ]]; do
     --openai-capacity) require_value "$@"; openai_capacity="$2"; shift ;;
     --anthropic-workers) require_argument "$@"; anthropic_models="$2"; anthropic_models_was_decided=1; shift ;;
     --openai-workers) require_argument "$@"; openai_models="$2"; openai_models_was_decided=1; shift ;;
+    --grok-workers) require_argument "$@"; grok_models="$2"; grok_models_was_decided=1; shift ;;
     --with-agent) install_agent='yes' ;;
     --without-agent) install_agent='no' ;;
     --login) run_login='yes' ;;
@@ -243,8 +250,20 @@ else
   read_config_value AIRLOCK_DEFAULT_PROFILE hybrid
 fi
 default_default_profile="$CONFIG_VALUE"
-read_config_value AIRLOCK_HYBRID_MODEL sol
+# A brand new setup recommends Sol. An existing config that simply never had
+# this key must fall back to sonnet instead, because that is what both
+# launchers already use for it; picking anything else would silently move the
+# hybrid root the first time setup rewrites the file.
+if [[ -f "$config_target" ]]; then
+  read_config_value AIRLOCK_HYBRID_MODEL sonnet
+else
+  read_config_value AIRLOCK_HYBRID_MODEL sol
+fi
 default_hybrid_model="$CONFIG_VALUE"
+read_config_value AIRLOCK_GROK_MODEL grok
+default_grok_model="$CONFIG_VALUE"
+read_config_value AIRLOCK_GROK_MODELS ''
+default_grok_models="$CONFIG_VALUE"
 read_config_value AIRLOCK_MODEL sol
 default_main_model="$CONFIG_VALUE"
 read_config_value AIRLOCK_MAIN_EFFORT high
@@ -258,7 +277,7 @@ default_utility_wire="$CONFIG_VALUE"
 read_config_value AIRLOCK_WORKER_EFFORT inherit
 default_worker_effort="$CONFIG_VALUE"
 default_worker_pins=''
-for route in sol terra luna opus sonnet fable haiku; do
+for route in sol terra luna opus sonnet fable haiku grok composer; do
   key="AIRLOCK_EFFORT_$(printf '%s' "$route" | tr '[:lower:]-' '[:upper:]_')"
   read_config_value "$key" ''
   if [[ -n "$CONFIG_VALUE" ]]; then
@@ -352,6 +371,8 @@ set_model_info() {
     5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex[1m]'; MODEL_DETAIL='Supported Codex root.' ;;
     spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
     5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    grok) MODEL_TITLE='Grok 4.5'; MODEL_ID='grok-4.5'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
+    composer) MODEL_TITLE='Grok Composer 2.5 Fast'; MODEL_ID='grok-composer-2.5-fast'; MODEL_DETAIL='Discovery, triage, and bounded mechanical work. Economical usage.' ;;
     *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
   esac
 }
@@ -379,15 +400,22 @@ wire_model_from_alias() {
 
 validate_default_profile() {
   case "$1" in
-    openai|hybrid) ;;
-    *) printf 'setup: default profile must be hybrid or openai\n' >&2; exit 2 ;;
+    openai|hybrid|grok) ;;
+    *) printf 'setup: default profile must be hybrid, openai, or grok\n' >&2; exit 2 ;;
   esac
 }
 
 validate_hybrid_model() {
   case "$1" in
-    sonnet|sol|terra|luna|opus|fable|haiku) ;;
+    sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
+  esac
+}
+
+validate_grok_model() {
+  case "$1" in
+    grok|composer) ;;
+    *) printf 'setup: unsupported Grok orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
 
@@ -1195,22 +1223,57 @@ if [[ "$assume_yes" -eq 0 ]]; then
   print_header
 
   print_section 1 'SESSION AND ORCHESTRATOR' 'Choose what the bare `airlock` command starts. An explicit command such as `airlock openai` always overrides this.'
-  print_question 'Which session profile should bare `airlock` start?' 'Hybrid keeps both providers reachable from one session. OpenAI only stays on the local proxy.'
+  print_question 'Which session profile should bare `airlock` start?' 'Hybrid keeps several providers reachable from one session. The single-provider profiles stay on the local proxy.'
   choose_rich_option "$default_profile" hybrid \
-    'hybrid|Hybrid: Claude and GPT together||Choose any enabled Claude or GPT orchestrator and keep both worker providers available.' \
-    'openai|OpenAI only||Use the local OpenAI proxy without starting the mixed-provider router.'
+    'hybrid|Hybrid: Claude and GPT together||Choose any enabled Claude or GPT orchestrator and keep both worker providers available. Grok can be added below.' \
+    'openai|OpenAI only||Use the local OpenAI proxy without starting the mixed-provider router.' \
+    'grok|Grok only||Use the local subscription proxy on a Grok login without starting the mixed-provider router.'
   default_profile="$CHOICE"
 
-  if [[ "$default_profile" == 'hybrid' ]]; then
+  # Grok rides the same loopback proxy as Codex but authenticates separately,
+  # so it stays off until the user says they have a Grok plan. Advertising a
+  # worker with no login behind it only fails one Agent call later.
+  grok_enabled='no'
+  if [[ "$default_profile" == 'grok' ]]; then
+    grok_enabled='yes'
+  elif [[ "$default_profile" == 'hybrid' ]]; then
+    current_grok_answer='no'
+    [[ -n "$default_grok_models" ]] && current_grok_answer='yes'
+    print_question 'Grok subscription' 'Grok runs through the same local proxy as Codex but needs its own login with `airlock proxy grok auth login`. Leave this off if you do not have a Grok plan.'
+    ask_yes_no 'Make Grok models available in hybrid sessions?' "$current_grok_answer"
+    grok_enabled="$ANSWER"
+  fi
+  if [[ "$grok_enabled" == 'no' ]]; then
+    case "$hybrid_model" in grok|composer) hybrid_model='' ;; esac
+    case "$default_hybrid_model" in grok|composer) default_hybrid_model='sol' ;; esac
+  fi
+
+  if [[ "$default_profile" == 'grok' ]]; then
+    print_question 'Default orchestrator' 'Grok-only sessions can still use exact Grok workers.'
+    choose_rich_option "${grok_model:-$default_grok_model}" grok \
+      'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+    grok_model="$CHOICE"
+    main_model="$default_main_model"
+    hybrid_model="${hybrid_model:-$default_hybrid_model}"
+  elif [[ "$default_profile" == 'hybrid' ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
-    choose_rich_option "$hybrid_model" sol \
-      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.' \
-      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.' \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.' \
-      'opus|Claude Opus 5|claude-opus-5|Architecture, security, and visual direction. Premium usage.' \
-      'fable|Claude Fable 5|claude-fable-5|Efficient frontier work. May require extra usage.' \
+    hybrid_options=(
+      'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.'
+      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.'
+      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.'
+      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.'
+      'opus|Claude Opus 5|claude-opus-5|Architecture, security, and visual direction. Premium usage.'
+      'fable|Claude Fable 5|claude-fable-5|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
+    )
+    if [[ "$grok_enabled" == 'yes' ]]; then
+      hybrid_options+=(
+        'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.'
+        'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+      )
+    fi
+    choose_rich_option "$hybrid_model" sol "${hybrid_options[@]}"
     hybrid_model="$CHOICE"
     main_model="$default_main_model"
   else
@@ -1276,6 +1339,35 @@ if [[ "$assume_yes" -eq 0 ]]; then
       done
       ;;
   esac
+
+  # Grok sits outside the presets on purpose. It bills against a separate
+  # subscription, so folding it into 'balanced' would enable a provider the
+  # user may not have.
+  grok_models_was_decided=1
+  if [[ "$grok_enabled" == 'yes' ]]; then
+    current_grok_preset='both'
+    case "$default_grok_models" in
+      grok) current_grok_preset='grok' ;;
+      composer) current_grok_preset='composer' ;;
+    esac
+    print_question 'Which Grok workers should the orchestrator be allowed to use?' 'These run on your Grok subscription through the local proxy.'
+    choose_rich_option "$current_grok_preset" both \
+      'both|Grok 4.5 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
+      'grok|Grok 4.5 only|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'composer|Grok Composer 2.5 Fast only|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+    case "$CHOICE" in
+      both) grok_models='grok,composer' ;;
+      grok) grok_models='grok' ;;
+      composer) grok_models='composer' ;;
+    esac
+    # A Grok root that is not itself an enabled worker cannot start, so keep
+    # the saved root inside the pool the user just chose.
+    if ! csv_contains "$grok_models" "$grok_model"; then
+      grok_model="${grok_models%%,*}"
+    fi
+  else
+    grok_models=''
+  fi
 
   print_section 3 'EFFORT' 'Set the starting session level and decide whether workers move with `/effort`.'
   print_question 'Starting session effort' 'You can change this at any time inside a session with `/effort`.'
@@ -1466,6 +1558,11 @@ if [[ "$worker_pins_were_decided" -eq 0 ]]; then worker_pins="$default_worker_pi
 subagent_effort="${subagent_effort:-$default_subagent_effort}"
 if [[ "$anthropic_models_was_decided" -eq 0 ]]; then anthropic_models="$default_anthropic_models"; fi
 if [[ "$openai_models_was_decided" -eq 0 ]]; then openai_models="$default_openai_models"; fi
+grok_model="${grok_model:-$default_grok_model}"
+if [[ "$grok_models_was_decided" -eq 0 ]]; then grok_models="$default_grok_models"; fi
+# A Grok-only profile is meaningless without Grok routes, so an explicit
+# --default-profile grok enables the pool the same way `airlock grok` does.
+if [[ "$default_profile" == 'grok' && -z "$grok_models" ]]; then grok_models='grok,composer'; fi
 extra_usage_policy="${extra_usage_policy:-$default_extra_usage_policy}"
 routing_policy="${routing_policy:-$default_routing_policy}"
 max_agents="${max_agents:-$default_max_agents}"
@@ -1483,7 +1580,11 @@ if [[ "$default_profile" == 'hybrid' ]]; then
   case "$hybrid_model" in
     opus|sonnet|fable|haiku) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
     sol|terra|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
+    grok|composer) csv_add "$grok_models" "$hybrid_model"; grok_models="$CSV_RESULT" ;;
   esac
+fi
+if [[ "$default_profile" == 'grok' ]]; then
+  csv_add "$grok_models" "$grok_model"; grok_models="$CSV_RESULT"
 fi
 
 if [[ "$assume_yes" -eq 0 ]] && { [[ -z "$run_login" ]] || [[ -z "$start_service" ]]; }; then
@@ -1509,6 +1610,7 @@ fi
 
 validate_default_profile "$default_profile"
 validate_hybrid_model "$hybrid_model"
+validate_grok_model "$grok_model"
 validate_model "$main_model"
 validate_model "$bg_model"
 validate_model "$utility_model"
@@ -1532,6 +1634,7 @@ validate_claude_plan "$claude_plan"
 validate_openai_capacity "$openai_capacity"
 validate_csv_subset 'Anthropic model' "$anthropic_models" 'opus,sonnet,fable,haiku'
 validate_csv_subset 'OpenAI model' "$openai_models" 'sol,terra,luna'
+validate_csv_subset 'Grok model' "$grok_models" 'grok,composer'
 if [[ -n "$anthropic_extra_models" ]]; then
   validate_csv_subset 'Anthropic extra model' "$anthropic_extra_models" 'opus,sonnet,fable,haiku'
 fi
@@ -1544,6 +1647,10 @@ utility_wire_model="$WIRE_MODEL"
 if [[ "$default_profile" == 'hybrid' ]]; then
   default_command_model="$(model_summary "$hybrid_model")"
   default_command_profile='hybrid: Claude and GPT workers'
+  [[ -n "$grok_models" ]] && default_command_profile='hybrid: Claude, GPT, and Grok workers'
+elif [[ "$default_profile" == 'grok' ]]; then
+  default_command_model="$(model_summary "$grok_model")"
+  default_command_profile='Grok only'
 else
   default_command_model="$(model_summary "$main_model")"
   default_command_profile='OpenAI only'
@@ -1552,6 +1659,12 @@ worker_list_display "$anthropic_models"
 claude_worker_display="$DISPLAY_LIST"
 worker_list_display "$openai_models"
 gpt_worker_display="$DISPLAY_LIST"
+if [[ -n "$grok_models" ]]; then
+  worker_list_display "$grok_models"
+  grok_worker_display="$DISPLAY_LIST"
+else
+  grok_worker_display='none (no Grok subscription selected)'
+fi
 if [[ -n "$worker_pins" ]]; then
   worker_effort_display="follow session; per-model pins: $worker_pins"
 elif [[ "$worker_effort" == 'inherit' ]]; then
@@ -1569,6 +1682,7 @@ print_session_fields() {
 print_worker_fields() {
   print_field 'Claude workers:' "$claude_worker_display"
   print_field 'GPT workers:' "$gpt_worker_display"
+  print_field 'Grok workers:' "$grok_worker_display"
   print_field 'Worker effort:' "$worker_effort_display"
 }
 
@@ -1678,6 +1792,7 @@ cat > "$rendered_config" <<EOF
 # Generated by scripts/setup.sh. Do not put credentials in this file.
 AIRLOCK_DEFAULT_PROFILE=$default_profile
 AIRLOCK_HYBRID_MODEL=$hybrid_model
+AIRLOCK_GROK_MODEL=$grok_model
 AIRLOCK_MODEL=$main_model
 AIRLOCK_MAIN_EFFORT=$main_effort
 AIRLOCK_WORKER_EFFORT=$worker_effort
@@ -1697,6 +1812,7 @@ AIRLOCK_ANTHROPIC_PLAN=$claude_plan
 AIRLOCK_OPENAI_CAPACITY=$openai_capacity
 AIRLOCK_ANTHROPIC_MODELS=$anthropic_models
 AIRLOCK_OPENAI_MODELS=$openai_models
+AIRLOCK_GROK_MODELS=$grok_models
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=$anthropic_extra_models
 AIRLOCK_OPENAI_EXTRA_MODELS=$openai_extra_models
 AIRLOCK_CONTEXT_WINDOW=272000

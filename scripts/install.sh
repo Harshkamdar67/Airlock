@@ -326,17 +326,56 @@ else
 fi
 
 mkdir -p "$install_dir"
+airlock_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+  else
+    command -v python
+  fi
+}
+
+# A file whose hash matches what the installed bundle recorded for the same
+# component was written by a previous Airlock release, even if it carries no
+# marker string. JSON catalogs never carried one.
+target_matches_installed_bundle() {
+  local component="$1"
+  local target="$2"
+  local python_bin
+  [[ -f "$bundle_target" && -f "$target" ]] || return 1
+  python_bin="$(airlock_python)"
+  [[ -n "$python_bin" ]] || return 1
+  "$python_bin" - "$bundle_target" "$component" "$target" <<'PY'
+import hashlib
+import json
+import sys
+
+bundle_path, component, target = sys.argv[1:4]
+try:
+    with open(bundle_path, encoding="utf-8") as handle:
+        recorded = json.load(handle).get("components", {}).get(component)
+    if not isinstance(recorded, str) or not recorded:
+        raise SystemExit(1)
+    with open(target, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if digest == recorded else 1)
+PY
+}
+
 install_managed_file() {
   local source="$1"
   local target="$2"
   local mode="$3"
+  local component="${source#"$repo_root/"}"
   if [[ -L "$target" ]]; then
     printf 'install: refusing to replace symlinked managed target: %s\n' "$target" >&2
     exit 1
   fi
   if [[ -e "$target" ]] && ! cmp -s "$source" "$target"; then
     if ! grep -qF 'Managed by https://github.com/Harshkamdar67/Airlock' "$target" &&
-       ! grep -qF 'Managed by Airlock' "$target"; then
+       ! grep -qF 'Managed by Airlock' "$target" &&
+       ! target_matches_installed_bundle "$component" "$target"; then
       printf 'install: refusing to overwrite existing unmanaged file: %s\n' "$target" >&2
       printf 'install: review it, move it, or choose another install/config directory.\n' >&2
       exit 1
@@ -354,6 +393,7 @@ install_managed_file "$repo_root/config/openai-direct-agents.json" "$config_dir/
 install_managed_file "$repo_root/config/anthropic-direct-agents.json" "$config_dir/anthropic-direct-agents.json" 0644
 install_managed_file "$repo_root/config/hybrid-agents.json" "$config_dir/hybrid-agents.json" 0644
 install_managed_file "$repo_root/config/claude-agents.json" "$config_dir/claude-agents.json" 0644
+install_managed_file "$repo_root/config/grok-agents.json" "$config_dir/grok-agents.json" 0644
 
 ensure_plugin_directory() {
   local directory="$1"

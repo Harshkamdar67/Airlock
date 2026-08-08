@@ -51,6 +51,8 @@ openai_direct_agents_file="${AIRLOCK_OPENAI_DIRECT_AGENTS_FILE:-$config_root/ope
 anthropic_direct_agents_file="${AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE:-$config_root/anthropic-direct-agents.json}"
 openai_wrapper_agents_file="${AIRLOCK_HYBRID_AGENTS_FILE:-$config_root/hybrid-agents.json}"
 anthropic_wrapper_agents_file="${AIRLOCK_CLAUDE_AGENTS_FILE:-$config_root/claude-agents.json}"
+grok_direct_agents_file="${AIRLOCK_GROK_DIRECT_AGENTS_FILE:-$config_root/grok-agents.json}"
+grok_wrapper_agents_file="${AIRLOCK_GROK_WRAPPER_AGENTS_FILE:-${AIRLOCK_GROK_AGENTS_FILE:-$config_root/grok-agents.json}}"
 access_helper="${AIRLOCK_ACCESS_HELPER:-$(dirname "$0")/airlock-access.py}"
 router_helper="${AIRLOCK_ROUTER_HELPER:-$(dirname "$access_helper")/airlock-router.py}"
 update_helper="${AIRLOCK_UPDATE_HELPER:-$(dirname "$access_helper")/airlock-update.py}"
@@ -93,6 +95,7 @@ config_openai_fast=''
 config_anthropic_fast=''
 config_extra_usage=''
 config_gpt_effort_capabilities=''
+config_grok_model=''
 
 if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
@@ -101,6 +104,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_MODEL) config_model="$config_value" ;;
       AIRLOCK_DEFAULT_PROFILE) config_default_profile="$config_value" ;;
       AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
+      AIRLOCK_GROK_MODEL) config_grok_model="$config_value" ;;
       AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
       AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
       AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
@@ -141,6 +145,7 @@ export AIRLOCK_GPT_EFFORT_CAPABILITIES="$gpt_effort_capabilities"
 default_profile="${AIRLOCK_DEFAULT_PROFILE:-${config_default_profile:-openai}}"
 default_hybrid_model="${AIRLOCK_HYBRID_MODEL:-${config_hybrid_model:-sonnet}}"
 default_openai_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
+default_grok_model="${AIRLOCK_GROK_MODEL:-${config_grok_model:-grok}}"
 default_bg_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
 openai_fast_policy="${AIRLOCK_OPENAI_FAST:-${config_openai_fast:-off}}"
 anthropic_fast_policy="${AIRLOCK_ANTHROPIC_FAST:-${config_anthropic_fast:-off}}"
@@ -150,23 +155,29 @@ print_models() {
   cat <<'EOF'
 Usage: airlock [claude arguments]
        airlock openai [model] [claude arguments]
+       airlock grok [model] [claude arguments]
        airlock hybrid [model|choose] [claude arguments]
        airlock [sol|terra|luna|...] [claude arguments]
 
 Profiles:
   airlock          Start the saved default profile and orchestrator
   airlock openai   Start the saved OpenAI-only orchestrator
+  airlock grok     Start the saved Grok-only orchestrator (subscription proxy)
   airlock hybrid   Start the saved hybrid orchestrator
   claude           Start the native Anthropic CLI without Airlock
 
 OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
-Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku
+Grok root aliases: grok, composer
+Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer
 Other commands: bg, mode, usage, access, bundle, config, models, proxy auth, version, update
 
 Proxy login commands:
   airlock proxy auth status          Check Codex OAuth in Airlock's selected proxy directory
   airlock proxy auth login           Start the upstream browser login
   airlock proxy auth device          Start the upstream device-code login
+  airlock proxy grok auth status     Check Grok OAuth in Airlock's selected proxy directory
+  airlock proxy grok auth login      Start the upstream Grok browser login
+  airlock proxy grok auth device     Start the upstream Grok device-code login
 
 Policy commands:
   airlock mode                     Show the saved routing and usage policy
@@ -196,10 +207,12 @@ Update commands:
 Examples:
   airlock                          # saved default profile and orchestrator
   airlock openai                   # saved OpenAI-only orchestrator
+  airlock grok                     # saved Grok-only orchestrator
   airlock terra                    # explicit OpenAI-only root
   airlock hybrid                   # saved hybrid orchestrator
-  airlock hybrid choose            # interactive seven-model picker
+  airlock hybrid choose            # interactive hybrid root picker
   airlock hybrid opus              # explicit hybrid root
+  airlock hybrid grok              # hybrid with Grok orchestrator
   airlock access refresh
 
 Inside a session:
@@ -253,6 +266,7 @@ validate_managed_bundle() {
     --component "config/anthropic-direct-agents.json=$anthropic_direct_agents_file"
     --component "config/hybrid-agents.json=$openai_wrapper_agents_file"
     --component "config/claude-agents.json=$anthropic_wrapper_agents_file"
+    --component "config/grok-agents.json=$grok_direct_agents_file"
     --component "plugins/airlock/.claude-plugin/plugin.json=$plugin_dir/.claude-plugin/plugin.json"
     --component "plugins/airlock/hooks/hooks.json=$plugin_dir/hooks/hooks.json"
     --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
@@ -306,9 +320,20 @@ EOF
 
 validate_default_profile() {
   case "$1" in
-    openai|hybrid) ;;
+    openai|hybrid|grok) ;;
     *)
-      printf "airlock: unsupported default profile '%s' (expected openai or hybrid)\n" "$1" >&2
+      printf "airlock: unsupported default profile '%s' (expected openai, hybrid, or grok)\n" "$1" >&2
+      return 1
+      ;;
+  esac
+}
+
+resolve_grok_model() {
+  case "$1" in
+    grok|grok-4.5) selected_model='grok-4.5'; model_name='Grok 4.5' ;;
+    composer|grok-composer|grok-composer-2.5-fast) selected_model='grok-composer-2.5-fast'; model_name='Grok Composer 2.5 Fast' ;;
+    *)
+      printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
       return 1
       ;;
   esac
@@ -395,6 +420,7 @@ model_provider() {
   case "$1" in
     gpt-*) printf 'openai' ;;
     claude-*) printf 'anthropic' ;;
+    grok-*) printf 'grok' ;;
     *) return 1 ;;
   esac
 }
@@ -408,6 +434,8 @@ resolve_hybrid_alias() {
     sonnet) root_model='claude-sonnet-5'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
     fable) root_model='claude-fable-5'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
+    grok) root_model='grok-4.5'; root_name='Grok 4.5'; root_provider='grok' ;;
+    composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
     *) return 1 ;;
   esac
 }
@@ -702,7 +730,9 @@ launch_session() {
     --openai-direct-file "$openai_direct_agents_file" \
     --anthropic-direct-file "$anthropic_direct_agents_file" \
     --openai-wrappers-file "$openai_wrapper_agents_file" \
-    --anthropic-wrappers-file "$anthropic_wrapper_agents_file")"
+    --anthropic-wrappers-file "$anthropic_wrapper_agents_file" \
+    --grok-direct-file "$grok_direct_agents_file" \
+    --grok-wrappers-file "$grok_wrapper_agents_file")"
   managed_agent_output="$(run_access managed-agent-names --agents-json "$agents_json")" || exit $?
   if [[ -z "$managed_agent_output" ]]; then
     printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
@@ -772,11 +802,23 @@ select_hybrid_root() {
     printf 'airlock: hybrid choose needs an interactive terminal; otherwise use airlock hybrid MODEL\n' >&2
     exit 2
   fi
-  printf '%s\n' 'Choose the Airlock hybrid orchestrator:' '  1) Claude Sonnet 5 (claude-sonnet-5)' '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])' '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' '  5) Claude Opus 5 (claude-opus-5)' '  6) Claude Fable 5 (claude-fable-5; may use extra usage)' '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
-  read -r -p 'Selection [1-7]: ' selection
+  printf '%s\n' \
+    'Choose the Airlock hybrid orchestrator:' \
+    '  1) Claude Sonnet 5 (claude-sonnet-5)' \
+    '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])' \
+    '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' \
+    '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' \
+    '  5) Claude Opus 5 (claude-opus-5)' \
+    '  6) Claude Fable 5 (claude-fable-5; may use extra usage)' \
+    '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
+    '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)' \
+    '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
+  read -r -p 'Selection [1-9]: ' selection
   case "$selection" in
-    1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;; 5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
-    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 7.\n' >&2; exit 2 ;;
+    1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;;
+    5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
+    8) root_alias='grok' ;; 9) root_alias='composer' ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 9.\n' >&2; exit 2 ;;
   esac
 }
 
@@ -795,11 +837,21 @@ if ! resolve_model "$default_bg_model" >/dev/null 2>&1; then
   printf "airlock: unsupported saved background model '%s'\n" "$default_bg_model" >&2
   exit 2
 fi
+if ! resolve_grok_model "$default_grok_model" >/dev/null 2>&1; then
+  printf "airlock: unsupported saved Grok model '%s'\n" "$default_grok_model" >&2
+  exit 2
+fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    mode|usage|bundle|access|proxy|models|--models|config|--config|version|update|hybrid|openai|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    mode|usage|bundle|access|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*) set -- hybrid "$@" ;;
     *) set -- hybrid "$default_hybrid_model" "$@" ;;
+  esac
+elif [[ "$default_profile" == 'grok' ]]; then
+  case "${1:-}" in
+    mode|usage|bundle|access|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    --model|-m|--model=*) set -- grok "$@" ;;
+    *) set -- grok "$default_grok_model" "$@" ;;
   esac
 fi
 
@@ -895,7 +947,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     root_name="$explicit_model"
     root_provider="$(model_provider "$explicit_model" || true)"
     if [[ -z "$root_provider" ]]; then
-      printf 'airlock: cannot determine the hybrid root provider from --model; use a gpt-* or claude-* model ID.\n' >&2
+      printf 'airlock: cannot determine the hybrid root provider from --model; use a gpt-*, claude-*, or grok-* model ID.\n' >&2
       exit 2
     fi
   fi
@@ -922,28 +974,43 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     hybrid_args=(--effort "$root_effort" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
 
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID
   if [[ "$root_provider" == 'openai' ]]; then
     validate_fast_root_model "$root_model"
-    unset AIRLOCK_HYBRID
     export AIRLOCK_GPT_HYBRID='1'
     launch_session hybrid-openai-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
+  elif [[ "$root_provider" == 'grok' ]]; then
+    # A Grok root cannot start without an enabled Grok route, so an explicit
+    # Grok root turns the routes on. Every other hybrid root leaves Grok off
+    # unless the saved config enables it, because advertising a worker whose
+    # provider the user never logged into would fail at request time.
+    if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+      export AIRLOCK_GROK_MODELS='grok,composer'
+    fi
+    export AIRLOCK_GROK_HYBRID='1'
+    launch_session hybrid-grok-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
+  else
+    export AIRLOCK_HYBRID='1'
+    launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
   fi
-  unset AIRLOCK_GPT_HYBRID
-  export AIRLOCK_HYBRID='1'
-  launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
 fi
 
 if [[ "${1:-}" == 'proxy' ]]; then
   shift
+  proxy_provider='codex'
+  if [[ "${1:-}" == 'grok' ]]; then
+    proxy_provider='grok'
+    shift
+  fi
   if [[ "${1:-}" != 'auth' ]]; then
-    printf 'airlock: usage: airlock proxy auth [status|login|device]\n' >&2
+    printf 'airlock: usage: airlock proxy [grok] auth [status|login|device]\n' >&2
     exit 2
   fi
   shift
   proxy_auth_action="${1:-status}"
   if (( $# > 0 )); then shift; fi
   if (( $# != 0 )); then
-    printf 'airlock: usage: airlock proxy auth [status|login|device]\n' >&2
+    printf 'airlock: usage: airlock proxy [grok] auth [status|login|device]\n' >&2
     exit 2
   fi
   case "$proxy_auth_action" in
@@ -959,8 +1026,48 @@ if [[ "${1:-}" == 'proxy' ]]; then
   fi
   prepare_private_proxy_directory "$proxy_config_dir" || exit $?
   prepare_private_proxy_directory "$proxy_state_home" || exit $?
-  run_proxy_command codex auth "$proxy_auth_action"
+  run_proxy_command "$proxy_provider" auth "$proxy_auth_action"
   exit $?
+fi
+
+if [[ "${1:-}" == 'grok' ]]; then
+  shift
+  requested_grok="$default_grok_model"
+  case "${1:-}" in
+    --model|-m)
+      [[ $# -ge 2 ]] || { printf 'airlock: %s requires a model\n' "$1" >&2; exit 2; }
+      requested_grok="$2"
+      shift 2
+      ;;
+    --model=*)
+      requested_grok="${1#--model=}"
+      [[ -n "$requested_grok" ]] || { printf 'airlock: --model requires a model\n' >&2; exit 2; }
+      shift
+      ;;
+    *)
+      if [[ $# -gt 0 ]] && resolve_grok_model "$1" >/dev/null 2>&1; then
+        requested_grok="$1"
+        shift
+      fi
+      ;;
+  esac
+  resolve_grok_model "$requested_grok" || exit $?
+  selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
+  validate_effort "$selected_effort"
+  # Pure Grok needs enabled Grok routes even when the shared default is unavailable.
+  if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+    export AIRLOCK_GROK_MODELS='grok,composer'
+  fi
+  set_openai_environment "$selected_model" "$model_name"
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID
+  has_effort=0
+  for argument in "$@"; do
+    [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
+  done
+  session_args=(--model "$selected_model")
+  [[ "$has_effort" -eq 1 ]] || session_args+=(--effort "$selected_effort")
+  session_args+=("$@")
+  launch_session grok-pure "$selected_model" "$model_name" "${session_args[@]}"
 fi
 
 requested_model="$default_openai_model"

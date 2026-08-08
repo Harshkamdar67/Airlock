@@ -35,6 +35,26 @@ If the first installation stopped before copying the launcher, rerun it with log
 
 Then run the doctor again. Never paste a token into Airlock, an issue, or a support message.
 
+## Grok workers are missing
+
+Grok is off unless you enable it, so an empty Grok pool is usually the intended state.
+
+Check the saved configuration and the login:
+
+```bash
+airlock config
+airlock proxy grok auth status
+```
+
+Enable the routes by rerunning setup and answering the Grok question, or by passing the workers directly:
+
+```bash
+./scripts/setup.sh --yes --grok-workers grok,composer
+airlock proxy grok auth login
+```
+
+A session that confirms the proxy is signed out of Grok disables the Grok routes on purpose, so that the main model is never offered a worker whose first request would fail. `airlock grok` and `airlock hybrid grok` enable the routes themselves, because naming a Grok root is an explicit request for that provider.
+
 ## Claude login is missing
 
 Run the official Claude Code login:

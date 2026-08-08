@@ -188,11 +188,13 @@ class RouterConfig:
         if not routes or any(
             not isinstance(model, str)
             or not model
-            or provider not in {"openai", "anthropic"}
+            or provider not in {"openai", "anthropic", "grok"}
             for model, provider in routes.items()
         ):
             raise RouterError("router model routes are invalid")
         self.routes = dict(routes)
+        # GPT (Codex) and Grok subscription models share the loopback proxy;
+        # the proxy selects the upstream from the model ID and its own OAuth store.
         self.openai = parse_upstream(openai_url, "openai", production=production)
         self.anthropic = parse_upstream(
             anthropic_url, "anthropic", production=production
@@ -374,11 +376,10 @@ class RouterHandler(BaseHTTPRequestHandler):
     def forward(
         self, provider: str, body: bytes
     ) -> tuple[int, int, str, dict[str, int] | None]:
-        upstream = (
-            self.router.config.openai
-            if provider == "openai"
-            else self.router.config.anthropic
-        )
+        if provider in {"openai", "grok"}:
+            upstream = self.router.config.openai
+        else:
+            upstream = self.router.config.anthropic
         connection = make_connection(upstream)
         headers = forwarded_headers(self.headers.items(), provider, len(body))
         target = upstream_path(upstream, self.path)
@@ -515,14 +516,14 @@ def forwarded_headers(
         lowered = name.lower()
         if lowered in HOP_BY_HOP_HEADERS or lowered in {"host", "content-length"}:
             continue
-        if provider == "openai" and (
+        if provider in {"openai", "grok"} and (
             lowered in OPENAI_PRIVATE_HEADERS or lowered == "anthropic-beta"
         ):
             continue
         result[name] = value
     result["content-length"] = str(content_length)
     result["connection"] = "close"
-    if provider == "openai":
+    if provider in {"openai", "grok"}:
         result["authorization"] = "Bearer unused"
     return result
 

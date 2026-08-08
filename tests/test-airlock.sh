@@ -45,6 +45,15 @@ cat > "$tmp_dir/access.json" <<'EOF'
         "sol": {"access": "unknown"}, "terra": {"access": "unknown"},
         "luna": {"access": "unknown"}
       }
+    },
+    "grok": {
+      "authenticated": true,
+      "detected_plan": "unknown",
+      "plan_source": "proxy_status",
+      "account_metadata": {},
+      "models": {
+        "grok": {"access": "unavailable"}, "composer": {"access": "unavailable"}
+      }
     }
   }
 }
@@ -55,6 +64,8 @@ export AIRLOCK_OPENAI_DIRECT_AGENTS_FILE="$repo_root/config/openai-direct-agents
 export AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE="$repo_root/config/anthropic-direct-agents.json"
 export AIRLOCK_HYBRID_AGENTS_FILE="$repo_root/config/hybrid-agents.json"
 export AIRLOCK_CLAUDE_AGENTS_FILE="$repo_root/config/claude-agents.json"
+export AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json"
+export AIRLOCK_GROK_WRAPPER_AGENTS_FILE="$repo_root/config/grok-agents.json"
 export AIRLOCK_PLUGIN_DIR="$repo_root/plugins/airlock"
 export AIRLOCK_MANAGED_BUNDLE_FILE="$repo_root/config/managed-bundle.json"
 unset AIRLOCK_ROUTING_POLICY AIRLOCK_EXTRA_USAGE_POLICY
@@ -378,10 +389,10 @@ assert "Skill(claude-api *)" in args
 guidance = args[args.index("--append-system-prompt") + 1]
 assert "claude-api skill is blocked" in guidance
 assert "Work directly" in guidance and "Use exact Explore" in guidance and "Use exact Plan" in guidance
-assert "Use exact general-purpose" in guidance and "For a Luna army, launch multiple exact airlock-luna" in guidance
+assert "Use exact general-purpose" in guidance and "For an automatic army, launch multiple exact airlock-luna" in guidance
 assert "Agent calls with `run_in_background: true`" in guidance
 assert "useful non-overlapping batch before waiting" in guidance
-assert "Luna and eligible Luna Fast Agents run at the session effort unless they are pinned" in guidance
+assert "They run at the session effort unless they are pinned" in guidance
 assert "Use Claude Code Workflow only when the user explicitly requests" in guidance
 assert "Claude Code's Agent card, model identity, usage" in guidance
 assert "Native Agent results:" in guidance and "Preserve the full technical result" in guidance
@@ -501,17 +512,24 @@ expected_allowed = ["Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)", *
 assert allowed == expected_allowed, (allowed, expected_allowed)
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
 guidance = args[args.index("--append-system-prompt") + 1]
-assert "one session-scoped loopback router keeps both providers inside the same Claude Code process" in guidance
+assert "one session-scoped loopback router keeps every enabled provider inside the same Claude Code process" in guidance.replace("One session", "one session")
+# Grok is off unless the config or an explicit Grok root enables it, so this
+# session must be told the route does not exist rather than left to guess.
+assert "This session has no Grok route enabled" in guidance
+assert "Grok OAuth" not in guidance
 assert "Built-in Explore, Plan, and general-purpose inherit the orchestrator model" in guidance
 assert "Do not add task kind, risk, or selection markers" in guidance
 assert "Preserve the full technical result" in guidance and "result.report" not in guidance
 assert "Named airlock-* Agents cannot invoke Agent" in guidance
 assert "Keep every fan-out decision at the root" in guidance
 assert "never silently retry on a different provider or model" in guidance
-assert "Automatic high-volume swarms remain Luna-only" in guidance
-assert "Luna and eligible Luna Fast Agents run at the session effort unless they are pinned" in guidance
+assert "Automatic high-volume swarms are limited to airlock-luna" in guidance
+assert "They run at the session effort unless they are pinned" in guidance
 assert "Difficult implementation shards must have explicit file ownership" in guidance
-assert "Luna Fast" in guidance and "Never automatically swarm Sol" in guidance
+# The roster follows the enabled pool, so assert the rule and the one
+# agent that must never appear in it rather than a fixed list.
+assert "Never automatically swarm airlock-opus" in guidance
+assert "Never automatically swarm airlock-luna" not in guidance
 assert "substantial visual and interaction design is Anthropic-first and Opus-led" in guidance
 assert "keyboard navigation, selection mechanics" in guidance
 assert "Start airlock-opus" in guidance and "Use airlock-sonnet" in guidance
@@ -766,6 +784,45 @@ fi
 
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid choose </dev/null >/dev/null 2>&1; then
   printf 'test: noninteractive hybrid picker unexpectedly selected a root\n' >&2
+  exit 1
+fi
+
+# Grok routes are opt-in, so an explicit Grok root is what turns them on.
+# No AIRLOCK_STUB_INSPECT_ROUTER here: a pure profile has no router to probe,
+# and BASE_URL staying on the proxy port is what proves the router never ran.
+grok_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok -p test)"
+grep -q '^MODEL=grok-4.5$' <<<"$grok_output"
+grep -q '^ACTIVE_PROFILE=grok-pure$' <<<"$grok_output"
+grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$grok_output"
+grep -q '^ALLOWED_AGENTS=airlock-composer,airlock-grok$' <<<"$grok_output"
+grep -q '^ALLOWED_MODELS=grok-4.5,grok-composer-2.5-fast$' <<<"$grok_output"
+
+grok_composer_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok composer -p test)"
+grep -q '^MODEL=grok-composer-2.5-fast$' <<<"$grok_composer_output"
+
+if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+  "$launcher" grok --model=bogus -p test >/dev/null 2>&1; then
+  printf 'test: unsupported Grok model was accepted\n' >&2
+  exit 1
+fi
+
+hybrid_grok_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_GROK_WRAPPER_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid grok -p test)"
+grep -q '^ACTIVE_PROFILE=hybrid-grok-root$' <<<"$hybrid_grok_output"
+grep -Eq '^ROUTER_MODELS=.*grok-4\.5' <<<"$hybrid_grok_output"
+grep -Eq '^ROUTER_MODELS=.*claude-opus-5' <<<"$hybrid_grok_output"
+
+# A hybrid session that did not ask for Grok must not gain Grok workers.
+hybrid_plain_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+  "$launcher" hybrid sonnet -p test)"
+if grep -q 'airlock-grok' <<<"$hybrid_plain_output"; then
+  printf 'test: hybrid session enabled Grok without an explicit opt-in\n' >&2
   exit 1
 fi
 

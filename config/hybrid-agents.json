@@ -1,29 +1,38 @@
 {
+  "_comment": "Managed by https://github.com/Harshkamdar67/Airlock",
   "airlock-sol": {
     "description": "GPT-5.6 Sol native worker. Configured strength: difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and technical synthesis. Limitation: premium relative usage. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect the relevant code before changing it, preserve unrelated work, and keep edits within the requested scope. For bugs, establish a reproducer and causal explanation. For performance work, provide before-and-after measurements. Run the stated acceptance checks and report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
-    "disallowedTools": ["Agent"],
+    "disallowedTools": [
+      "Agent"
+    ],
     "model": "gpt-5.6-sol[1m]",
     "effort": "xhigh"
   },
   "airlock-terra": {
     "description": "GPT-5.6 Terra native worker. Configured strength: independent second opinions, adversarial review, competing designs, and alternative debugging hypotheses. Limitation: not the default integration owner or final authority for difficult coupled changes. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions and inspect primary evidence rather than trusting assumptions. For review or debugging, try to disprove the proposed conclusion, identify concrete failure scenarios, and distinguish confirmed defects from hypotheses. Make edits only when explicitly requested, preserve unrelated work, and keep them within the stated scope. Report evidence, checks, uncertainties, and exact outcomes. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
-    "disallowedTools": ["Agent"],
+    "disallowedTools": [
+      "Agent"
+    ],
     "model": "gpt-5.6-terra[1m]",
     "effort": "high"
   },
   "airlock-luna": {
     "description": "GPT-5.6 Luna native worker. Configured strength: high-volume discovery, webpage reading, extraction, lookup, summarization, test or log triage, small mechanical work, and explicitly bounded implementation. Limitation: not the sole authority for architecture, security judgment, coupled integration, or final synthesis. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions and return complete evidence and exact outcomes. For discovery, search only the assigned area and summarize the useful result instead of dumping files. For implementation, proceed only when the task gives explicit file ownership, no-touch boundaries, and acceptance checks; keep edits inside those boundaries and preserve unrelated work. Run the assigned checks and report failures or skipped checks plainly. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
-    "disallowedTools": ["Agent"],
+    "disallowedTools": [
+      "Agent"
+    ],
     "model": "gpt-5.6-luna[1m]",
     "effort": "max"
   },
   "airlock-luna-fast": {
     "description": "GPT-5.6 Luna Fast native worker. Configured strength: priority-processed high-volume discovery, reading, extraction, lookup, summarization, triage, and explicitly bounded implementation on eligible plans. Limitation: Fast processing can consume plan capacity faster and is not the sole authority for architecture, security judgment, coupled integration, or final synthesis. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions and return complete evidence and exact outcomes. For discovery, search only the assigned area and summarize the useful result instead of dumping files. For implementation, proceed only when the task gives explicit file ownership, no-touch boundaries, and acceptance checks; keep edits inside those boundaries and preserve unrelated work. Run the assigned checks and report failures or skipped checks plainly. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
-    "disallowedTools": ["Agent"],
+    "disallowedTools": [
+      "Agent"
+    ],
     "model": "gpt-5.6-luna-fast[1m]",
     "effort": "max"
   }

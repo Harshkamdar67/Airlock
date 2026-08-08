@@ -16,6 +16,8 @@ These descriptions guide selection. They are not vendor rankings.
 | Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | Medium |
 | Fable | An explicit focused Anthropic choice when enabled and authorized | Plan dependent |
 | Haiku | An explicit bounded Anthropic utility choice when enabled | Low |
+| Grok | Difficult implementation, tool-heavy coding, debugging, and synthesis on a Grok plan | High |
+| Composer | High-volume discovery, extraction, lookup, summarization, triage, and bounded mechanical work | Low |
 
 The active profile, enabled routes, Fast eligibility, and extra-usage policy still apply.
 
@@ -51,7 +53,18 @@ airlock hybrid opus
 airlock hybrid sonnet
 airlock hybrid fable
 airlock hybrid haiku
+airlock hybrid grok
+airlock hybrid composer
 ```
+
+Grok-only sessions:
+
+```bash
+airlock grok
+airlock grok composer
+```
+
+Grok needs its own login with `airlock proxy grok auth login`, and its routes stay off until the saved configuration enables them or you name a Grok root. `airlock usage` does not cover Grok, because there is no documented plan-window method Airlock can read safely.
 
 `airlock hybrid` uses the saved hybrid root. `airlock hybrid choose` opens the full picker. An explicit OpenAI alias such as `airlock terra` stays OpenAI-only even when bare `airlock` is saved as hybrid.
 

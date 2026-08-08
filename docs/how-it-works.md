@@ -7,6 +7,7 @@ Airlock is a launch and policy layer around Claude Code. Claude Code still owns 
 ```bash
 airlock                 # saved default profile
 airlock openai          # saved OpenAI-only root
+airlock grok            # saved Grok-only root
 airlock hybrid          # saved hybrid root
 ```
 
@@ -15,6 +16,8 @@ The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each pr
 The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
 An explicit OpenAI alias such as `airlock terra` always starts this profile. `airlock hybrid MODEL` always starts the mixed-provider profile.
+
+The Grok-only profile works the same way. It points Claude Code at the same local proxy, which selects the Grok upstream from the model ID and its own Grok login. Codex and Grok never share a login even though they share the proxy.
 
 ## Hybrid routing
 
@@ -30,6 +33,7 @@ The router reads only the top-level model ID needed for routing:
 - exact enabled `gpt-*` IDs go to the local OpenAI proxy
 - Claude Code's deterministic GPT wire form also goes to OpenAI, such as `gpt-5.6-sol[1m]` becoming `gpt-5.6-sol`
 - exact enabled `claude-*` IDs go to `https://api.anthropic.com`
+- exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - unknown or disabled IDs fail closed
 
 The router registers a wire form only for an enabled full GPT ID. It does not accept arbitrary aliases. The request body is forwarded without rewriting it. Streaming responses are sent to Claude Code as they arrive.
@@ -55,6 +59,8 @@ airlock-opus
 airlock-sonnet
 airlock-fable
 airlock-haiku
+airlock-grok
+airlock-composer
 ```
 
 Each name has:
@@ -91,7 +97,8 @@ Agent(subagent_type="Plan", model="claude-opus-5", ...)
 The session guard checks the ID before Claude Code starts the Agent.
 
 - The OpenAI-only profile allows only enabled OpenAI IDs.
-- Hybrid allows enabled OpenAI and Anthropic IDs.
+- The Grok-only profile allows only enabled Grok IDs.
+- Hybrid allows enabled OpenAI and Anthropic IDs, plus Grok IDs when Grok is enabled.
 - Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
 - Omitting `model` keeps normal inheritance.
 
@@ -138,6 +145,7 @@ Automatic armies may use only:
 
 - `airlock-luna`
 - `airlock-luna-fast` when plan and proxy checks allow it
+- `airlock-composer` when Grok is enabled
 
 Both run at the session effort. Pin them with `AIRLOCK_EFFORT_LUNA=max` if you want armies to think harder than the rest of the session.
 
@@ -150,7 +158,9 @@ Luna can also implement code when each shard has:
 - no dependency on another shard
 - acceptance checks
 
-A stronger Sol, Opus, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, and Haiku are not multiplied automatically.
+A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, Haiku, and Grok 4.5 are not multiplied automatically.
+
+A session is only told about the routes it actually enabled. A Grok-only session is not given Luna army instructions, and a session with no economical high-volume route is told plainly that it has no automatic swarm route.
 
 ## Concurrency
 
@@ -203,6 +213,8 @@ This is a practical safety layer, not a full shell sandbox. A model with Bash ca
 ## Usage and failure handling
 
 `airlock usage` reads OpenAI plan windows through the documented Codex app-server method. It does not send a model request.
+
+Grok has no equivalent readable plan window, so Airlock reports Grok headroom as unknown rather than guessing. It does record whether the proxy holds a Grok login, and a session that confirms it is signed out disables the Grok routes instead of advertising workers that would fail on their first request.
 
 Use native Claude Code's `/usage` screen for Anthropic subscription bars. Airlock does not read Claude login files or guess Anthropic percentages.
 

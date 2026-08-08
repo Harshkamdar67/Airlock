@@ -4,7 +4,11 @@ $Arguments = @($args)
 
 $ErrorActionPreference = 'Stop'
 
-$ConfigFile = if ($env:AIRLOCK_CONFIG_FILE) { $env:AIRLOCK_CONFIG_FILE } else { Join-Path $HOME '.config\airlock\config' }
+# Every managed path hangs off one resolved config root. install.ps1
+# honours AIRLOCK_CONFIG_DIR, so the launcher has to honour it too, or an
+# install into a custom directory validates another installation's files.
+$ConfigDir = if ($env:AIRLOCK_CONFIG_DIR) { $env:AIRLOCK_CONFIG_DIR } else { Join-Path $HOME '.config\airlock' }
+$ConfigFile = if ($env:AIRLOCK_CONFIG_FILE) { $env:AIRLOCK_CONFIG_FILE } else { Join-Path $ConfigDir 'config' }
 $ConfigValues = @{}
 if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
   foreach ($line in [IO.File]::ReadAllLines($ConfigFile)) {
@@ -20,6 +24,7 @@ $SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL 
 $ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW) { $env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 $DefaultProfile = if ($env:AIRLOCK_DEFAULT_PROFILE) { $env:AIRLOCK_DEFAULT_PROFILE } elseif ($ConfigValues.ContainsKey('AIRLOCK_DEFAULT_PROFILE')) { $ConfigValues['AIRLOCK_DEFAULT_PROFILE'] } else { 'openai' }
 $DefaultHybridModel = if ($env:AIRLOCK_HYBRID_MODEL) { $env:AIRLOCK_HYBRID_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_HYBRID_MODEL')) { $ConfigValues['AIRLOCK_HYBRID_MODEL'] } else { 'sonnet' }
+$DefaultGrokModel = if ($env:AIRLOCK_GROK_MODEL) { $env:AIRLOCK_GROK_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_GROK_MODEL')) { $ConfigValues['AIRLOCK_GROK_MODEL'] } else { 'grok' }
 $DefaultOpenAIModel = if ($env:AIRLOCK_MODEL) { $env:AIRLOCK_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_MODEL')) { $ConfigValues['AIRLOCK_MODEL'] } else { 'sol' }
 $DefaultBgModel = if ($env:AIRLOCK_BG_MODEL) { $env:AIRLOCK_BG_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_MODEL')) { $ConfigValues['AIRLOCK_BG_MODEL'] } else { 'sol' }
 $MaxAgents = if ($env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS) { $env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAX_CONCURRENT_SUBAGENTS')) { $ConfigValues['AIRLOCK_MAX_CONCURRENT_SUBAGENTS'] } else { 'off' }
@@ -30,16 +35,17 @@ $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOC
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
 $env:AIRLOCK_GPT_EFFORT_CAPABILITIES = $GptEffortCapabilities
-$PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $HOME '.config\airlock\plugins\airlock' }
-$OpenAIDirectAgentsFile = if ($env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE) { $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\openai-direct-agents.json' }
-$AnthropicDirectAgentsFile = if ($env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE) { $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\anthropic-direct-agents.json' }
-$OpenAIWrapperAgentsFile = if ($env:AIRLOCK_HYBRID_AGENTS_FILE) { $env:AIRLOCK_HYBRID_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\hybrid-agents.json' }
-$AnthropicWrapperAgentsFile = if ($env:AIRLOCK_CLAUDE_AGENTS_FILE) { $env:AIRLOCK_CLAUDE_AGENTS_FILE } else { Join-Path $HOME '.config\airlock\claude-agents.json' }
+$PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
+$OpenAIDirectAgentsFile = if ($env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE) { $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'openai-direct-agents.json' }
+$AnthropicDirectAgentsFile = if ($env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE) { $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'anthropic-direct-agents.json' }
+$OpenAIWrapperAgentsFile = if ($env:AIRLOCK_HYBRID_AGENTS_FILE) { $env:AIRLOCK_HYBRID_AGENTS_FILE } else { Join-Path $ConfigDir 'hybrid-agents.json' }
+$AnthropicWrapperAgentsFile = if ($env:AIRLOCK_CLAUDE_AGENTS_FILE) { $env:AIRLOCK_CLAUDE_AGENTS_FILE } else { Join-Path $ConfigDir 'claude-agents.json' }
+$GrokAgentsFile = if ($env:AIRLOCK_GROK_DIRECT_AGENTS_FILE) { $env:AIRLOCK_GROK_DIRECT_AGENTS_FILE } elseif ($env:AIRLOCK_GROK_AGENTS_FILE) { $env:AIRLOCK_GROK_AGENTS_FILE } else { Join-Path $ConfigDir 'grok-agents.json' }
 $AccessHelper = if ($env:AIRLOCK_ACCESS_HELPER) { $env:AIRLOCK_ACCESS_HELPER } else { Join-Path $PSScriptRoot 'airlock-access.py' }
 $RouterHelper = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } else { Join-Path $PSScriptRoot 'airlock-router.py' }
 $UpdateHelper = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $PSScriptRoot 'airlock-update.py' }
 $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DIR } else { $PSScriptRoot }
-$ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $HOME '.config\airlock\managed-bundle.json' }
+$ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $ConfigDir 'managed-bundle.json' }
 
 $Models = @{
   'sol'      = @('gpt-5.6-sol[1m]',        'GPT-5.6 Sol')
@@ -54,6 +60,11 @@ $Models = @{
   '5.2'      = @('gpt-5.2[1m]',            'GPT-5.2')
 }
 
+$GrokModels = @{
+  'grok'     = @('grok-4.5', 'Grok 4.5')
+  'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast')
+}
+
 $HybridRoots = @{
   'sol'    = @('gpt-5.6-sol[1m]', 'GPT-5.6 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra[1m]', 'GPT-5.6 Terra', 'openai')
@@ -62,6 +73,8 @@ $HybridRoots = @{
   'sonnet' = @('claude-sonnet-5', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5', 'Claude Fable 5', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
+  'grok'     = @('grok-4.5', 'Grok 4.5', 'grok')
+  'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
 }
 
 $ProxyVariables = @(
@@ -96,8 +109,11 @@ function Show-Models {
   Write-Host ''
   Write-Host 'Proxy login commands:'
   Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
-  Write-Host '  airlock proxy auth login           Start the upstream browser login'
-  Write-Host '  airlock proxy auth device          Start the upstream device-code login'
+  Write-Host '  airlock proxy auth login           Start the upstream Codex browser login'
+  Write-Host '  airlock proxy auth device          Start the upstream Codex device-code login'
+  Write-Host '  airlock proxy grok auth status     Check Grok OAuth in Airlock''s selected proxy directory'
+  Write-Host '  airlock proxy grok auth login      Start the upstream Grok browser login'
+  Write-Host '  airlock proxy grok auth device     Start the upstream Grok device-code login'
   Write-Host ''
   Write-Host 'Policy commands:'
   Write-Host '  airlock mode                     Show the saved routing and usage policy'
@@ -239,6 +255,7 @@ function Test-ManagedBundle {
     '--component', "config/anthropic-direct-agents.json=$AnthropicDirectAgentsFile",
     '--component', "config/hybrid-agents.json=$OpenAIWrapperAgentsFile",
     '--component', "config/claude-agents.json=$AnthropicWrapperAgentsFile",
+    '--component', "config/grok-agents.json=$GrokAgentsFile",
     '--component', "plugins/airlock/.claude-plugin/plugin.json=$(Join-Path $PluginDir '.claude-plugin\plugin.json')",
     '--component', "plugins/airlock/hooks/hooks.json=$(Join-Path $PluginDir 'hooks\hooks.json')",
     '--component', "plugins/airlock/skills/usage/SKILL.md=$(Join-Path $PluginDir 'skills\usage\SKILL.md')",
@@ -328,7 +345,7 @@ function Set-GptEffortCapabilities {
 }
 
 function Set-OpenAIEnvironment {
-  param([string]$Model, [string]$ModelName)
+  param([string]$Model, [string]$ModelName, [string]$ProviderLabel = 'OpenAI subscription')
   Start-ProxyIfNeeded
   $env:ANTHROPIC_BASE_URL   = $ProxyUrl
   $env:ANTHROPIC_AUTH_TOKEN = 'unused'
@@ -338,7 +355,7 @@ function Set-OpenAIEnvironment {
   $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $SmallFast
   $env:ANTHROPIC_SMALL_FAST_MODEL = $SmallFast
   $env:ANTHROPIC_CUSTOM_MODEL_OPTION = $Model
-  $env:ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = "$ModelName (OpenAI subscription)"
+  $env:ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = "$ModelName ($ProviderLabel)"
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_OPUS_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
@@ -372,10 +389,23 @@ function Get-ExplicitModel {
   return $null
 }
 
+function Resolve-GrokAlias {
+  param([string]$Value)
+  switch ($Value) {
+    'grok' { return 'grok' }
+    'grok-4.5' { return 'grok' }
+    'composer' { return 'composer' }
+    'grok-composer' { return 'composer' }
+    'grok-composer-2.5-fast' { return 'composer' }
+  }
+  return $null
+}
+
 function Get-ModelProvider {
   param([string]$Model)
   if ($Model -like 'gpt-*') { return 'openai' }
   if ($Model -like 'claude-*') { return 'anthropic' }
+  if ($Model -like 'grok-*') { return 'grok' }
   return $null
 }
 
@@ -476,6 +506,8 @@ function Invoke-AirlockSession {
     anthropic_direct = [IO.Path]::GetFullPath($AnthropicDirectAgentsFile)
     openai_wrappers = [IO.Path]::GetFullPath($OpenAIWrapperAgentsFile)
     anthropic_wrappers = [IO.Path]::GetFullPath($AnthropicWrapperAgentsFile)
+    grok_direct = [IO.Path]::GetFullPath($GrokAgentsFile)
+    grok_wrappers = [IO.Path]::GetFullPath($GrokAgentsFile)
   }
   $launchDirectory = Join-Path $env:LOCALAPPDATA 'Airlock\launch'
   New-Item -ItemType Directory -Force -Path $launchDirectory | Out-Null
@@ -526,8 +558,10 @@ function Select-HybridRoot {
   Write-Host '  5) Claude Opus 5 (claude-opus-5)'
   Write-Host '  6) Claude Fable 5 (claude-fable-5; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
-  $selection = Read-Host 'Selection [1-7]'
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku' }
+  Write-Host '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)'
+  Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
+  $selection = Read-Host 'Selection [1-9]'
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
@@ -535,8 +569,12 @@ function Select-HybridRoot {
   return $choices[$selection]
 }
 
-if ($DefaultProfile -notin @('openai', 'hybrid')) {
-  [Console]::Error.WriteLine("airlock: unsupported default profile '$DefaultProfile' (expected openai or hybrid)")
+if ($DefaultProfile -notin @('openai', 'hybrid', 'grok')) {
+  [Console]::Error.WriteLine("airlock: unsupported default profile '$DefaultProfile' (expected openai, hybrid, or grok)")
+  exit 2
+}
+if (-not (Resolve-GrokAlias $DefaultGrokModel)) {
+  [Console]::Error.WriteLine("airlock: unsupported saved Grok model '$DefaultGrokModel'")
   exit 2
 }
 if ($OpenAIFast -notin @('on', 'off')) {
@@ -567,13 +605,24 @@ if (-not $DefaultBgAlias) {
   exit 2
 }
 $DefaultBgModel = $DefaultBgAlias
+$ExplicitCommands = @(
+  'mode', 'usage', 'bundle', 'access', 'proxy', 'models', '--models', 'config', '--config',
+  'version', 'update', 'hybrid', 'openai', 'grok', 'bg', 'background', 'sol', 'sol-fast', 'terra',
+  'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
+)
+if ($DefaultProfile -eq 'grok') {
+  $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
+  if ($firstArgument -notin $ExplicitCommands) {
+    if ($firstArgument -in @('--model', '-m') -or $firstArgument -like '--model=*') {
+      $Arguments = @('grok') + $Arguments
+    } else {
+      $Arguments = @('grok', $DefaultGrokModel) + $Arguments
+    }
+  }
+}
 if ($DefaultProfile -eq 'hybrid') {
   $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
-  $explicitCommands = @(
-    'mode', 'usage', 'bundle', 'access', 'proxy', 'models', '--models', 'config', '--config',
-    'version', 'update', 'hybrid', 'openai', 'bg', 'background', 'sol', 'sol-fast', 'terra',
-    'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
-  )
+  $explicitCommands = $ExplicitCommands
   if ($firstArgument -notin $explicitCommands) {
     if ($firstArgument -in @('--model', '-m') -or $firstArgument -like '--model=*') {
       $Arguments = @('hybrid') + $Arguments
@@ -665,16 +714,66 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'access') {
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'proxy') {
-  if ($Arguments.Count -lt 2 -or $Arguments[1] -ne 'auth' -or $Arguments.Count -gt 3) {
-    [Console]::Error.WriteLine('airlock: usage: airlock proxy auth [status|login|device]')
+  $proxyRest = @()
+  if ($Arguments.Count -gt 1) { $proxyRest = @($Arguments[1..($Arguments.Count - 1)]) }
+  $proxyProvider = 'codex'
+  if ($proxyRest.Count -gt 0 -and $proxyRest[0] -eq 'grok') {
+    $proxyProvider = 'grok'
+    if ($proxyRest.Count -gt 1) { $proxyRest = @($proxyRest[1..($proxyRest.Count - 1)]) } else { $proxyRest = @() }
+  }
+  if ($proxyRest.Count -lt 1 -or $proxyRest[0] -ne 'auth' -or $proxyRest.Count -gt 2) {
+    [Console]::Error.WriteLine('airlock: usage: airlock proxy [grok] auth [status|login|device]')
     exit 2
   }
-  $proxyAuthAction = if ($Arguments.Count -eq 3) { $Arguments[2] } else { 'status' }
+  $proxyAuthAction = if ($proxyRest.Count -eq 2) { $proxyRest[1] } else { 'status' }
   if ($proxyAuthAction -notin @('status', 'login', 'device')) {
     [Console]::Error.WriteLine("airlock: unsupported proxy auth action: $proxyAuthAction")
     exit 2
   }
-  exit (Invoke-ProxyCommand -ProxyArguments @('codex', 'auth', $proxyAuthAction))
+  exit (Invoke-ProxyCommand -ProxyArguments @($proxyProvider, 'auth', $proxyAuthAction))
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'grok') {
+  $grokArgs = @()
+  if ($Arguments.Count -gt 1) { $grokArgs = @($Arguments[1..($Arguments.Count - 1)]) }
+  $requestedGrok = $DefaultGrokModel
+  if ($grokArgs.Count -gt 0) {
+    if ($grokArgs[0] -eq '--model' -or $grokArgs[0] -eq '-m') {
+      if ($grokArgs.Count -lt 2) {
+        [Console]::Error.WriteLine("airlock: $($grokArgs[0]) requires a model")
+        exit 2
+      }
+      $requestedGrok = $grokArgs[1]
+      $grokArgs = if ($grokArgs.Count -gt 2) { @($grokArgs[2..($grokArgs.Count - 1)]) } else { @() }
+    } elseif ($grokArgs[0] -like '--model=*') {
+      $requestedGrok = $grokArgs[0].Substring('--model='.Length)
+      if (-not $requestedGrok) {
+        [Console]::Error.WriteLine('airlock: --model requires a model')
+        exit 2
+      }
+      $grokArgs = if ($grokArgs.Count -gt 1) { @($grokArgs[1..($grokArgs.Count - 1)]) } else { @() }
+    } elseif (Resolve-GrokAlias $grokArgs[0]) {
+      $requestedGrok = $grokArgs[0]
+      $grokArgs = if ($grokArgs.Count -gt 1) { @($grokArgs[1..($grokArgs.Count - 1)]) } else { @() }
+    }
+  }
+  $grokAlias = Resolve-GrokAlias $requestedGrok
+  if (-not $grokAlias) {
+    [Console]::Error.WriteLine("airlock: unsupported Grok model '$requestedGrok' (expected grok or composer)")
+    exit 2
+  }
+  $grokModel = $GrokModels[$grokAlias][0]
+  $grokName = $GrokModels[$grokAlias][1]
+  # Pure Grok needs enabled Grok routes even when the saved config leaves
+  # them off, because the user asked for this provider by name.
+  if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+  Set-OpenAIEnvironment $grokModel $grokName 'Grok subscription'
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+    Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
+  }
+  $grokCmdArgs = @('--model', $grokModel)
+  $grokCmdArgs += Add-DefaultEffort $grokArgs $MainEffort
+  Invoke-AirlockSession 'grok-pure' $grokModel $grokName $grokCmdArgs
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
@@ -717,21 +816,30 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     $rootName = $explicitModel
     $rootProvider = Get-ModelProvider $explicitModel
     if (-not $rootProvider) {
-      [Console]::Error.WriteLine('airlock: cannot determine the hybrid root provider from --model; use a gpt-* or claude-* model ID.')
+      [Console]::Error.WriteLine('airlock: cannot determine the hybrid root provider from --model; use a gpt-*, claude-*, or grok-* model ID.')
       exit 2
     }
   }
   $hybridArgs = Add-DefaultEffort $hybridArgs $MainEffort
 
   Start-ProxyIfNeeded
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+    Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
+  }
   if ($rootProvider -eq 'openai') {
     Test-FastRootModel $rootModel
-    Remove-Item -LiteralPath 'Env:AIRLOCK_HYBRID' -ErrorAction SilentlyContinue
     $env:AIRLOCK_GPT_HYBRID = '1'
     Invoke-AirlockSession 'hybrid-openai-root' $rootModel $rootName $hybridArgs
   }
+  if ($rootProvider -eq 'grok') {
+    # A Grok root cannot start without an enabled Grok route, so an explicit
+    # Grok root turns the routes on. Every other hybrid root leaves Grok off
+    # unless the saved config enables it.
+    if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+    $env:AIRLOCK_GROK_HYBRID = '1'
+    Invoke-AirlockSession 'hybrid-grok-root' $rootModel $rootName $hybridArgs
+  }
 
-  Remove-Item -LiteralPath 'Env:AIRLOCK_GPT_HYBRID' -ErrorAction SilentlyContinue
   $env:AIRLOCK_HYBRID = '1'
   Invoke-AirlockSession 'hybrid-anthropic-root' $rootModel $rootName $hybridArgs
 }

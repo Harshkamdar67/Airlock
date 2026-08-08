@@ -16,6 +16,7 @@ airlock                 # Saved default, new setups recommend GPT-5.6 Sol hybrid
 airlock openai          # Saved OpenAI-only root, no mixed-provider router
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
+airlock grok            # Saved Grok-only root, needs a separate Grok login
 ```
 
 > [!NOTE]
@@ -51,7 +52,9 @@ Claude Code
           `-- exact claude-* ID   --> Anthropic
 ```
 
-The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with GPT-5.6 Sol. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. Existing configs without a saved profile keep the original OpenAI-only bare command.
+The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with GPT-5.6 Sol. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command.
+
+Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`.
 
 The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
 
@@ -71,6 +74,7 @@ You need:
 - Python 3
 - curl
 - A ChatGPT plan with Codex access
+- Optional: a Grok plan, only if you want the Grok routes
 
 Clone this repository and run:
 
@@ -117,21 +121,14 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
-```bash
-airlock                 # saved profile and orchestrator
-airlock openai          # saved OpenAI-only root
-airlock terra           # explicit OpenAI-only root
-airlock hybrid          # saved hybrid root
-airlock hybrid choose   # full hybrid picker
-airlock hybrid opus     # explicit hybrid root
-```
+Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock grok`, `airlock hybrid opus`, or `airlock hybrid choose`. [Common commands](#common-commands) lists the full set.
 
 Inside the session, ask for work normally. The main model can use:
 
 - built-in Explore for read-only repository discovery
 - built-in Plan for read-only technical design
 - built-in general-purpose for multi-step work
-- exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`
+- exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`, plus `airlock-grok` and `airlock-composer` when Grok is enabled
 
 Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. The OpenAI-only profile accepts enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
 
@@ -149,7 +146,7 @@ The main model starts with the smallest useful approach:
 6. Use several Luna Agents only for independent high-volume work.
 7. Keep integration and final synthesis with a stronger main model, Sol, or Opus.
 
-Automatic armies are Luna-only. Each Luna or eligible Luna Fast shard runs at the session effort unless you pin one. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
+Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer when it is enabled. Each shard runs at the session effort unless you pin one. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
 
 For UI and UX work in a hybrid session, an exact user choice wins. Otherwise visual direction, product flows, new design systems, broad redesigns, and final visual critique prefer Opus. Sonnet fits bounded components and work that follows an existing design system.
 
@@ -164,6 +161,8 @@ airlock terra                   # explicit OpenAI-only GPT-5.6 Terra root
 airlock hybrid                  # saved hybrid orchestrator
 airlock hybrid choose           # full interactive hybrid picker
 airlock hybrid opus             # explicit hybrid Claude Opus 5 root
+airlock grok                    # saved Grok-only orchestrator
+airlock proxy grok auth login   # sign in to Grok on the local proxy
 airlock mode                    # show routing and worker limits
 airlock mode budget             # prefer lower use and block extra usage
 airlock mode max-agents off     # use Claude Code's native worker limit
@@ -212,6 +211,7 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
 - Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
 - File hooks and prompts do not replace an operating-system sandbox.
+- Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
 - Subscription access, provider terms, model availability, and usage limits can change.
 
 ## Documentation

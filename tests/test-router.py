@@ -190,6 +190,7 @@ class RouterProtocolTests(unittest.TestCase):
             {
                 "gpt-test": "openai",
                 "claude-test": "anthropic",
+                "grok-test": "grok",
             },
             f"http://127.0.0.1:{self.openai.server_address[1]}",
             f"http://127.0.0.1:{self.anthropic.server_address[1]}",
@@ -292,6 +293,32 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertNotIn("anthropic-beta", headers)
         self.assertEqual(headers["x-claude-code-session-id"], "session-test")
         self.assertEqual(headers["x-claude-code-agent-id"], "agent-test")
+
+    def test_grok_route_uses_the_loopback_proxy_without_claude_credentials(self) -> None:
+        # Grok shares the loopback proxy with Codex, so it must inherit the same
+        # credential stripping. A Claude token reaching this hop would cross the
+        # boundary the whole project exists to hold.
+        status, response, _elapsed = self.request("grok-test")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(response)["ok"])
+        self.assertEqual(self.anthropic.requests, [])
+        self.assertEqual(len(self.openai.requests), 1)
+        headers = self.openai.requests[0]["headers"]
+        self.assertEqual(headers["authorization"], "Bearer unused")
+        self.assertNotIn("x-api-key", headers)
+        self.assertNotIn("anthropic-beta", headers)
+        self.assertNotIn("cookie", headers)
+        self.assertEqual(headers["x-claude-code-session-id"], "session-test")
+
+    def test_grok_route_is_recorded_with_its_own_provider_label(self) -> None:
+        # Grok and Codex share an upstream, so the diagnostics label is the only
+        # way a parity check can tell the two apart.
+        status, _response, _elapsed = self.request("grok-test")
+        self.assertEqual(status, 200)
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["provider"], "grok")
+        self.assertEqual(event["model"], "grok-test")
 
     def test_count_tokens_uses_the_model_route(self) -> None:
         status, _response, _elapsed = self.request(
@@ -549,7 +576,7 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(models.status, 200)
         self.assertEqual(
             {entry["id"] for entry in json.loads(models.read())["data"]},
-            {"gpt-test", "claude-test"},
+            {"gpt-test", "claude-test", "grok-test"},
         )
         connection.close()
 

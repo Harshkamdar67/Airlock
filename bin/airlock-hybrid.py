@@ -20,8 +20,17 @@ MAX_AGENTS_BYTES = 24 * 1024
 ROUTER_START_TIMEOUT_SECONDS = 15
 PROFILES = {
     "openai-pure",
+    "grok-pure",
     "hybrid-openai-root",
     "hybrid-anthropic-root",
+    "hybrid-grok-root",
+}
+PROXY_PURE_PROFILES = {"openai-pure", "grok-pure"}
+PROXY_PURE_ROOT_PREFIXES = {"openai-pure": "gpt-", "grok-pure": "grok-"}
+HYBRID_PROFILES = {
+    "hybrid-openai-root",
+    "hybrid-anthropic-root",
+    "hybrid-grok-root",
 }
 PROTECTED_OPTIONS = {
     "--safe-mode", "--bare", "--agent", "--agents",
@@ -58,24 +67,29 @@ def fail(message: str, exit_code: int = 1) -> NoReturn:
     raise SystemExit(exit_code)
 
 
-def declare_gpt_effort_capabilities(
+def declare_non_claude_effort_capabilities(
     environment: dict[str, str], variable: str, model: str
 ) -> None:
-    """Tell Claude Code which effort levels a pinned GPT model supports.
+    """Tell Claude Code which effort levels a pinned non-Claude model supports.
 
     Claude Code decides whether a model supports effort by matching the model ID
-    against known Anthropic patterns. A pinned GPT ID matches nothing, which
-    would leave /effort unavailable. Only declare for GPT IDs: a declaration
-    disables every capability left off the list, and built-in detection already
-    gets real Claude IDs right.
+    against known Anthropic patterns. A pinned GPT or Grok ID matches nothing,
+    which would leave /effort unavailable. Only declare for non-Claude IDs: a
+    declaration disables every capability left off the list, and built-in
+    detection already gets real Claude IDs right.
     """
     if not model or model.startswith("claude-"):
         return
     capabilities = (
-        environment.get("AIRLOCK_GPT_EFFORT_CAPABILITIES")
+        environment.get("AIRLOCK_NON_CLAUDE_EFFORT_CAPABILITIES")
+        or environment.get("AIRLOCK_GPT_EFFORT_CAPABILITIES")
         or DEFAULT_GPT_EFFORT_CAPABILITIES
     )
     environment[f"{variable}_SUPPORTED_CAPABILITIES"] = capabilities
+
+
+# Backward-compatible alias used by older call sites and tests.
+declare_gpt_effort_capabilities = declare_non_claude_effort_capabilities
 
 
 def local_app_data() -> Path:
@@ -228,12 +242,21 @@ def append_routing_guidance(child_args: list[str], guidance: str) -> list[str]:
 
 
 def require_proxy_environment(
-    environment: dict[str, str], proxy_url: str, root_model: str
+    environment: dict[str, str], proxy_url: str, root_model: str, profile: str
 ) -> None:
+    # Both proxy-backed profiles share the loopback endpoint, so the root model
+    # prefix is what keeps a Codex session from starting on a Grok ID and the
+    # other way round.
+    prefix = PROXY_PURE_ROOT_PREFIXES.get(profile)
+    if prefix is None:
+        fail(f"unknown proxy-backed profile: {profile}")
     if environment.get("ANTHROPIC_BASE_URL") != proxy_url:
-        fail(f"OpenAI-backed mode requires {proxy_url}")
-    if environment.get("ANTHROPIC_MODEL") != root_model or not root_model.startswith("gpt-"):
-        fail("OpenAI-backed mode requires the selected GPT parent model")
+        fail(f"{profile} requires {proxy_url}")
+    if (
+        environment.get("ANTHROPIC_MODEL") != root_model
+        or not root_model.startswith(prefix)
+    ):
+        fail(f"{profile} requires a selected {prefix}* parent model")
 
 
 def validate_router_path(raw_path: object) -> Path:
@@ -318,20 +341,21 @@ def build_child_environment(
     environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"] = ",".join(extra_agents)
     environment["AIRLOCK_EXTRA_USAGE_AGENT_MODELS"] = ",".join(extra_models)
 
-    if profile == "openai-pure":
+    if profile in PROXY_PURE_PROFILES:
         if router_url is not None:
-            fail("OpenAI-only mode cannot use the hybrid router")
-        require_proxy_environment(environment, proxy_url, root_model)
+            fail(f"{profile} cannot use the hybrid router")
+        require_proxy_environment(environment, proxy_url, root_model, profile)
         environment["ANTHROPIC_DEFAULT_OPUS_MODEL"] = root_model
         environment["ANTHROPIC_DEFAULT_SONNET_MODEL"] = root_model
-        declare_gpt_effort_capabilities(
+        declare_non_claude_effort_capabilities(
             environment, "ANTHROPIC_DEFAULT_OPUS_MODEL", root_model
         )
-        declare_gpt_effort_capabilities(
+        declare_non_claude_effort_capabilities(
             environment, "ANTHROPIC_DEFAULT_SONNET_MODEL", root_model
         )
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
+        environment.pop("AIRLOCK_GROK_HYBRID", None)
         return environment
 
     if environment.get("ANTHROPIC_API_KEY") or environment.get("ANTHROPIC_AUTH_TOKEN") not in {None, "", "unused"}:
@@ -348,19 +372,22 @@ def build_child_environment(
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
         f"{root_name} (native hybrid route)"
     )
-    declare_gpt_effort_capabilities(
+    declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
     environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
+    environment.pop("AIRLOCK_HYBRID", None)
+    environment.pop("AIRLOCK_GPT_HYBRID", None)
+    environment.pop("AIRLOCK_GROK_HYBRID", None)
     if profile == "hybrid-anthropic-root":
-        environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment["AIRLOCK_HYBRID"] = "1"
-    else:
-        environment.pop("AIRLOCK_HYBRID", None)
+    elif profile == "hybrid-openai-root":
         environment["AIRLOCK_GPT_HYBRID"] = "1"
+    elif profile == "hybrid-grok-root":
+        environment["AIRLOCK_GROK_HYBRID"] = "1"
     return environment
 
 
@@ -380,6 +407,8 @@ def validate_launch_marker(profile: str) -> None:
         expected = "AIRLOCK_HYBRID"
     elif profile == "hybrid-openai-root":
         expected = "AIRLOCK_GPT_HYBRID"
+    elif profile == "hybrid-grok-root":
+        expected = "AIRLOCK_GROK_HYBRID"
     else:
         return
     if os.environ.get(expected) != "1":
@@ -446,7 +475,7 @@ def main() -> int:
         fail(f"managed access policy could not be applied: {error}")
 
     router_url: str | None = None
-    if profile != "openai-pure":
+    if profile not in PROXY_PURE_PROFILES:
         if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             fail(
                 "hybrid native routing requires saved Claude subscription login without "
@@ -454,13 +483,15 @@ def main() -> int:
             )
         routes = route_policy.get("routes")
         if not isinstance(routes, dict) or routes.get(root_model) not in {
-            "openai", "anthropic"
+            "openai", "anthropic", "grok"
         }:
             fail(f"hybrid root model is not enabled by the active session policy: {root_model}", 2)
-        expected_provider = (
-            "openai" if profile == "hybrid-openai-root" else "anthropic"
-        )
-        if routes[root_model] != expected_provider:
+        expected_provider = {
+            "hybrid-openai-root": "openai",
+            "hybrid-anthropic-root": "anthropic",
+            "hybrid-grok-root": "grok",
+        }.get(profile)
+        if expected_provider is None or routes[root_model] != expected_provider:
             fail("hybrid root model does not match the selected root provider", 2)
         router = validate_router_path(request.get("router_helper"))
         router_url = start_native_router(router, routes, proxy_url)

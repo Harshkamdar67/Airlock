@@ -13,16 +13,15 @@ MANAGED_BUNDLE_VERSION = "2026.08.05.5"
 MANAGED_PROTOCOL_VERSION = 3
 EXTRA_USAGE_MARKER = "Extra usage authorized: yes"
 BUILTIN_AGENT_TYPES = {"Explore", "Plan", "general-purpose"}
+GROK_AGENTS = {"airlock-grok", "airlock-composer"}
+OPENAI_AGENTS = {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"}
+ANTHROPIC_AGENTS = {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"}
 PROFILE_AGENTS = {
-    "openai-pure": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
-    "hybrid-openai-root": {
-        "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
-        "airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku",
-    },
-    "hybrid-anthropic-root": {
-        "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
-        "airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku",
-    },
+    "openai-pure": set(OPENAI_AGENTS),
+    "grok-pure": set(GROK_AGENTS),
+    "hybrid-openai-root": OPENAI_AGENTS | ANTHROPIC_AGENTS | GROK_AGENTS,
+    "hybrid-anthropic-root": OPENAI_AGENTS | ANTHROPIC_AGENTS | GROK_AGENTS,
+    "hybrid-grok-root": OPENAI_AGENTS | ANTHROPIC_AGENTS | GROK_AGENTS,
 }
 OPENAI_MODELS = {
     "gpt-5.6-sol[1m]",
@@ -36,10 +35,16 @@ ANTHROPIC_MODELS = {
     "claude-fable-5",
     "claude-haiku-4-5-20251001",
 }
+GROK_MODELS = {
+    "grok-4.5",
+    "grok-composer-2.5-fast",
+}
 PROFILE_MODELS = {
     "openai-pure": OPENAI_MODELS,
-    "hybrid-openai-root": OPENAI_MODELS | ANTHROPIC_MODELS,
-    "hybrid-anthropic-root": OPENAI_MODELS | ANTHROPIC_MODELS,
+    "grok-pure": GROK_MODELS,
+    "hybrid-openai-root": OPENAI_MODELS | ANTHROPIC_MODELS | GROK_MODELS,
+    "hybrid-anthropic-root": OPENAI_MODELS | ANTHROPIC_MODELS | GROK_MODELS,
+    "hybrid-grok-root": OPENAI_MODELS | ANTHROPIC_MODELS | GROK_MODELS,
 }
 
 

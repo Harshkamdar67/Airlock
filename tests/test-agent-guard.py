@@ -231,6 +231,71 @@ class AgentGuardTests(unittest.TestCase):
         self.assert_denied(self.invoke("openai-pure", None))
         self.assert_denied(self.invoke("openai-pure", {"subagent_type": "airlock-sol"}, "Read"))
 
+    def test_grok_pure_allows_only_grok_workers(self) -> None:
+        for name in ("airlock-grok", "airlock-composer"):
+            with self.subTest(name=name, allowed=True):
+                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
+        for name in ("airlock-sol", "airlock-opus", "airlock-luna-fast", "airlock-sonnet"):
+            with self.subTest(name=name, allowed=False):
+                self.assert_denied(self.invoke("grok-pure", {"subagent_type": name}))
+
+    def test_grok_pure_builtins_take_only_grok_model_overrides(self) -> None:
+        grok_models = "grok-4.5,grok-composer-2.5-fast"
+        for name in ("Explore", "Plan", "general-purpose"):
+            with self.subTest(name=name, mode="inherit"):
+                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
+            with self.subTest(name=name, mode="grok"):
+                self.assertIsNone(self.invoke(
+                    "grok-pure",
+                    {"subagent_type": name, "model": "grok-4.5"},
+                    allowed_models=grok_models,
+                ))
+            for model in ("gpt-5.6-sol[1m]", "claude-opus-5", "grok", "grok-4.5-latest"):
+                with self.subTest(name=name, model=model):
+                    self.assert_denied(self.invoke(
+                        "grok-pure",
+                        {"subagent_type": name, "model": model},
+                        allowed_models=grok_models,
+                    ))
+
+    def test_hybrid_grok_root_reaches_every_provider(self) -> None:
+        for name in (
+            "airlock-grok", "airlock-composer", "airlock-sol", "airlock-opus",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(self.invoke("hybrid-grok-root", {"subagent_type": name}))
+        every_model = (
+            "grok-4.5,grok-composer-2.5-fast,gpt-5.6-sol[1m],claude-opus-5"
+        )
+        for model in ("grok-4.5", "gpt-5.6-sol[1m]", "claude-opus-5"):
+            with self.subTest(model=model):
+                self.assertIsNone(self.invoke(
+                    "hybrid-grok-root",
+                    {"subagent_type": "Explore", "model": model},
+                    allowed_models=every_model,
+                ))
+
+    def test_named_grok_workers_reject_caller_model_overrides(self) -> None:
+        # A named worker's identity binds its model, so a caller override would
+        # let the card name and the billed model disagree.
+        for profile in ("grok-pure", "hybrid-grok-root"):
+            with self.subTest(profile=profile):
+                self.assert_denied(self.invoke(profile, {
+                    "subagent_type": "airlock-grok", "model": "grok-composer-2.5-fast",
+                }))
+
+    def test_grok_session_can_narrow_its_own_worker_set(self) -> None:
+        # A config that enables only one Grok route must not leave the other one
+        # reachable through the guard.
+        self.assertIsNone(self.invoke(
+            "grok-pure", {"subagent_type": "airlock-grok"},
+            allowed_agents="airlock-grok",
+        ))
+        self.assert_denied(self.invoke(
+            "grok-pure", {"subagent_type": "airlock-composer"},
+            allowed_agents="airlock-grok",
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+### Added
+
+- Grok subscription path (Phase 1 of multi-provider work): `airlock grok`, hybrid roots `grok` / `composer`, workers `airlock-grok` and `airlock-composer`, router provider label `grok` (shared loopback proxy with Codex), and `airlock proxy grok auth` for Grok OAuth. Available on macOS, Linux, and Windows.
+- Setup wizard support for Grok: a `grok` default profile, a Grok subscription question in hybrid, a Grok worker pool question, and `--grok-model` / `--grok-workers` flags.
+- Doctor reports Grok OAuth on both platforms, and treats a missing Grok login as a failure only when the saved configuration enables Grok routes.
+
+### Changed
+
+- Grok routes are opt-in. A hybrid session gains Grok workers only when the saved configuration enables them or the root is itself a Grok model. Earlier work in this cycle enabled Grok for every hybrid session, which advertised workers to accounts without a Grok login.
+- Hybrid provider-boundary guidance now names only the providers a session actually enabled, instead of always describing all three.
+- A session that confirms the proxy is signed out of Grok disables the Grok routes rather than offering workers whose first request would fail. An unknown login state leaves the configured routes alone.
+
+- Session guidance now names only the providers and workers a session actually enabled. A Grok-only session previously spent most of its guidance describing Luna armies and Anthropic workers it could not call.
+- Grok and Composer now have explicit routing rules rather than only a descriptive role-map entry, so the orchestrator can positively select them. Composer is described as the agentic coding worker it is instead of a summarizer, and is eligible for automatic fan-out.
+
+### Fixed
+
+- `require_proxy_environment` hardcoded a `gpt-` root prefix, so the Windows launch path rejected every Grok-only session.
+- The Windows launcher had no `grok` command, no Grok hybrid roots, and never passed the Grok agent catalogs to the access helper.
+- `airlock.ps1` resolved every managed path from `$HOME\.config\airlock` while `install.ps1` honoured `AIRLOCK_CONFIG_DIR`, so a Windows install into a custom directory validated another installation's files.
+- The installers refused to update any agent catalog whose contents changed, because catalogs carried no managed marker. They now carry one, and a file whose hash matches the installed bundle's record for that component is recognised as Airlock's own. A file with neither is still refused.
+- `setup.sh` defaulted `AIRLOCK_HYBRID_MODEL` to `sol` while both launchers fall back to `sonnet`, so rewriting a config that never had the key silently moved the hybrid root. A new setup still recommends Sol.
+
 ## 0.1.0-beta.1 - 2026-08-05
 
 First public beta of Airlock, built from the MIT-licensed Claudex project.

@@ -381,6 +381,127 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   }
   Remove-Item Env:AIRLOCK_TEST_PROXY_LOG -ErrorAction SilentlyContinue
 
+  # Upgrading from a release whose catalogs carried no managed marker must
+  # succeed, because the installed bundle already records their hashes. A
+  # hand-edited file must still be refused.
+  $UpgradeRoot = Join-Path $TempRoot 'upgrade-sim'
+  $UpgradeConfig = Join-Path $UpgradeRoot 'config'
+  New-Item -ItemType Directory -Force -Path $UpgradeConfig | Out-Null
+  $UpgradeComponents = @{}
+  foreach ($catalog in @('openai-direct-agents.json', 'grok-agents.json')) {
+    $unmarked = (Get-Content -LiteralPath (Join-Path $Root "config\$catalog") -Raw) -replace
+      'Managed by https://github\.com/Harshkamdar67/Airlock', 'legacy build'
+    $staged = Join-Path $UpgradeConfig $catalog
+    [IO.File]::WriteAllText($staged, $unmarked, (New-Object Text.UTF8Encoding($false)))
+    $UpgradeComponents["config/$catalog"] = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLower()
+    if (Select-String -LiteralPath $staged -SimpleMatch 'Managed by https://github.com/Harshkamdar67/Airlock' -Quiet) {
+      throw "upgrade fixture still carries the managed marker: $catalog"
+    }
+  }
+  @{
+    bundle_version = 'legacy'
+    protocol_version = 3
+    managed_by = 'Managed by https://github.com/Harshkamdar67/Airlock'
+    components = $UpgradeComponents
+  } | ConvertTo-Json -Depth 5 |
+    Set-Content -LiteralPath (Join-Path $UpgradeConfig 'managed-bundle.json') -Encoding utf8
+  $SavedConfigDir = $env:AIRLOCK_CONFIG_DIR
+  $SavedInstallDir = $env:AIRLOCK_INSTALL_DIR
+  $env:AIRLOCK_CONFIG_DIR = $UpgradeConfig
+  $env:AIRLOCK_INSTALL_DIR = Join-Path $UpgradeRoot 'bin'
+  & (Join-Path $Root 'scripts\install.ps1') *> $null
+  if ($LASTEXITCODE -ne 0) {
+    throw 'installer refused to upgrade an install whose catalogs predate the managed marker'
+  }
+  foreach ($catalog in @('openai-direct-agents.json', 'grok-agents.json')) {
+    $installed = (Get-FileHash -LiteralPath (Join-Path $UpgradeConfig $catalog) -Algorithm SHA256).Hash
+    $expected = (Get-FileHash -LiteralPath (Join-Path $Root "config\$catalog") -Algorithm SHA256).Hash
+    if ($installed -ne $expected) { throw "upgrade did not replace $catalog" }
+  }
+  # A file with neither the marker nor a hash the bundle recorded is genuinely
+  # unowned and must still be refused. Staged separately, because the upgrade
+  # above leaves marked files behind, and a marked file is managed by the
+  # pre-existing rule no matter what its hash is.
+  $TamperRoot = Join-Path $TempRoot 'tamper-sim'
+  $TamperConfig = Join-Path $TamperRoot 'config'
+  New-Item -ItemType Directory -Force -Path $TamperConfig | Out-Null
+  $unmarked = ((Get-Content -LiteralPath (Join-Path $Root 'config\grok-agents.json') -Raw) -replace
+    'Managed by https://github\.com/Harshkamdar67/Airlock', 'hand written') + '   '
+  [IO.File]::WriteAllText((Join-Path $TamperConfig 'grok-agents.json'), $unmarked,
+    (New-Object Text.UTF8Encoding($false)))
+  @{
+    bundle_version = 'legacy'
+    protocol_version = 3
+    managed_by = 'Managed by https://github.com/Harshkamdar67/Airlock'
+    components = @{ 'config/grok-agents.json' = ('0' * 64) }
+  } | ConvertTo-Json -Depth 5 |
+    Set-Content -LiteralPath (Join-Path $TamperConfig 'managed-bundle.json') -Encoding utf8
+  $env:AIRLOCK_CONFIG_DIR = $TamperConfig
+  $env:AIRLOCK_INSTALL_DIR = Join-Path $TamperRoot 'bin'
+  # install.ps1 signals refusal with throw, and calling it in-process surfaces
+  # that as a terminating error rather than an exit code.
+  $TamperRefused = $false
+  try {
+    & (Join-Path $Root 'scripts\install.ps1') *> $null
+  } catch {
+    $TamperRefused = $_.Exception.Message -match 'refusing to overwrite an unmanaged file'
+    if (-not $TamperRefused) {
+      throw "unowned catalog was refused for the wrong reason: $($_.Exception.Message)"
+    }
+  }
+  if (-not $TamperRefused) {
+    throw 'installer overwrote a file it never wrote and cannot recognise'
+  }
+  $env:AIRLOCK_CONFIG_DIR = $SavedConfigDir
+  $env:AIRLOCK_INSTALL_DIR = $SavedInstallDir
+
+  # Grok parity. The POSIX launcher never runs airlock-hybrid.py, so these
+  # paths are only ever exercised here.
+  $GrokLaunch = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test')
+  if ($GrokLaunch.Output -notmatch '(?m)^MODEL=grok-4\.5$' -or
+      $GrokLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=grok-pure$') {
+    throw "Explicit Grok profile did not launch: $($GrokLaunch.Output)"
+  }
+  if ($GrokLaunch.Output -notmatch 'airlock-grok' -or $GrokLaunch.Output -notmatch 'airlock-composer') {
+    throw "Grok-only session did not expose the Grok workers: $($GrokLaunch.Output)"
+  }
+  if ($GrokLaunch.Output -match 'airlock-sol' -or $GrokLaunch.Output -match 'airlock-opus') {
+    throw "Grok-only session leaked a non-Grok worker: $($GrokLaunch.Output)"
+  }
+  $GrokComposer = Invoke-LauncherProcess $InstalledLauncher @('grok', 'composer', '-p', 'test')
+  if ($GrokComposer.Output -notmatch '(?m)^MODEL=grok-composer-2\.5-fast$') {
+    throw "Grok alias did not select Composer: $($GrokComposer.Output)"
+  }
+  $GrokEquals = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.5', '-p', 'test')
+  if ($GrokEquals.Output -notmatch '(?m)^MODEL=grok-4\.5$') {
+    throw "Grok --model= form did not launch: $($GrokEquals.Output)"
+  }
+  # An unrecognized bare argument passes through to Claude Code, matching the
+  # POSIX launcher; only an explicit --model names a route and can be rejected.
+  $BadGrok = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=bogus', '-p', 'test') $false
+  if ($BadGrok.Error -notmatch 'unsupported Grok model') {
+    throw "Unknown Grok model was not rejected clearly: $($BadGrok.Error)"
+  }
+  $HybridGrok = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'grok', '-p', 'test')
+  if ($HybridGrok.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-grok-root$' -or
+      $HybridGrok.Output -notmatch '(?m)^CUSTOM_MODEL=grok-4\.5$') {
+    throw "Hybrid Grok root did not launch: $($HybridGrok.Output)"
+  }
+  # Grok stays out of a hybrid session that did not ask for it.
+  $HybridWithoutGrok = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'sonnet', '-p', 'test')
+  if ($HybridWithoutGrok.Output -match 'airlock-grok') {
+    throw "Hybrid session enabled Grok without an explicit opt-in: $($HybridWithoutGrok.Output)"
+  }
+
+  $env:AIRLOCK_TEST_PROXY_LOG = $ProxyCommandLog
+  $GrokProxyStatus = Invoke-LauncherProcess $InstalledLauncher @('proxy', 'grok', 'auth', 'status')
+  if ($GrokProxyStatus.ExitCode -ne 0) { throw "Grok proxy status wrapper failed: $($GrokProxyStatus.Error)" }
+  $GrokProxyLog = [IO.File]::ReadAllText($ProxyCommandLog).Replace("`r", '')
+  if ($GrokProxyLog -notmatch 'grok auth status') {
+    throw "Grok proxy wrapper did not reach the grok subcommand: $GrokProxyLog"
+  }
+  Remove-Item Env:AIRLOCK_TEST_PROXY_LOG -ErrorAction SilentlyContinue
+
   $HybridGptConfig = $HybridConfig.Replace('AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=terra')
   [IO.File]::WriteAllText($InstalledConfig, $HybridGptConfig, (New-Object Text.UTF8Encoding($false)))
   $HybridGptLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
