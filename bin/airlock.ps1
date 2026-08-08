@@ -22,6 +22,21 @@ $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif 
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
 $SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol[1m]' }
 $ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW) { $env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
+# A window the user set themselves outranks Airlock's default. Record it before
+# any proxy cleanup removes it.
+$UserContextWin = if ($env:CLAUDE_CODE_AUTO_COMPACT_WINDOW) { $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW } else { '' }
+# Claude Code accepts 100000 to 1000000 and silently ignores everything else, so
+# an unchecked value here would look applied while doing nothing at all.
+# The shape check has to match the POSIX launcher exactly. TryParse alone would
+# accept a leading plus, surrounding whitespace, and leading zeros, all of which
+# are exported verbatim and then discarded by Claude Code.
+if ($ContextWin -ne 'auto') {
+  if ($ContextWin -notmatch '^[1-9][0-9]{5,6}$' -or
+      [int]$ContextWin -lt 100000 -or [int]$ContextWin -gt 1000000) {
+    Write-Error "airlock: AIRLOCK_CONTEXT_WINDOW must be 'auto' or a whole number from 100000 to 1000000."
+    exit 2
+  }
+}
 $DefaultProfile = if ($env:AIRLOCK_DEFAULT_PROFILE) { $env:AIRLOCK_DEFAULT_PROFILE } elseif ($ConfigValues.ContainsKey('AIRLOCK_DEFAULT_PROFILE')) { $ConfigValues['AIRLOCK_DEFAULT_PROFILE'] } else { 'openai' }
 $DefaultHybridModel = if ($env:AIRLOCK_HYBRID_MODEL) { $env:AIRLOCK_HYBRID_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_HYBRID_MODEL')) { $ConfigValues['AIRLOCK_HYBRID_MODEL'] } else { 'sonnet' }
 $DefaultGrokModel = if ($env:AIRLOCK_GROK_MODEL) { $env:AIRLOCK_GROK_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_GROK_MODEL')) { $ConfigValues['AIRLOCK_GROK_MODEL'] } else { 'grok' }
@@ -69,9 +84,13 @@ $HybridRoots = @{
   'sol'    = @('gpt-5.6-sol[1m]', 'GPT-5.6 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra[1m]', 'GPT-5.6 Terra', 'openai')
   'luna'   = @('gpt-5.6-luna[1m]', 'GPT-5.6 Luna', 'openai')
-  'opus'   = @('claude-opus-5', 'Claude Opus 5', 'anthropic')
-  'sonnet' = @('claude-sonnet-5', 'Claude Sonnet 5', 'anthropic')
-  'fable'  = @('claude-fable-5', 'Claude Fable 5', 'anthropic')
+  # Claude Code only grants these models their native 1M window when
+  # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
+  # always points it at the session router. The [1m] suffix is the one lever
+  # that survives that. Haiku 4.5 is a genuine 200000 model, so it stays bare.
+  'opus'   = @('claude-opus-5[1m]', 'Claude Opus 5', 'anthropic')
+  'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
+  'fable'  = @('claude-fable-5[1m]', 'Claude Fable 5', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
   'grok'     = @('grok-4.5', 'Grok 4.5', 'grok')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
@@ -360,7 +379,15 @@ function Set-OpenAIEnvironment {
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
   Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
-  $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
+  # Reached only by the OpenAI-only and Grok-only profiles, where Claude Code
+  # cannot recognise the proxy-routed model and has no tuned window of its own.
+  if ($UserContextWin) {
+    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $UserContextWin
+  } elseif ($ContextWin -eq 'auto') {
+    Remove-Item Env:\CLAUDE_CODE_AUTO_COMPACT_WINDOW -ErrorAction SilentlyContinue
+  } else {
+    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
+  }
   if (-not $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT) { $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1' }
   $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
   $env:CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = '1'
@@ -429,7 +456,9 @@ function Add-DefaultEffort {
 
 function Get-SessionFastMode {
   param([string]$RootModel)
-  if ($RootModel -ne 'claude-opus-5' -or $AnthropicFast -ne 'on') { return 'off' }
+  # The root model carries a [1m] suffix on the models that need it, so this
+  # gate has to compare the base name rather than the whole string.
+  if (($RootModel -replace '\[1m\]$', '') -ne 'claude-opus-5' -or $AnthropicFast -ne 'on') { return 'off' }
   switch ($ExtraUsagePolicy) {
     'allow' { return 'on' }
     'never' {
@@ -551,12 +580,12 @@ function Select-HybridRoot {
     exit 2
   }
   Write-Host 'Choose the Airlock hybrid orchestrator:'
-  Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5)'
+  Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5[1m])'
   Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])'
   Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])'
   Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])'
-  Write-Host '  5) Claude Opus 5 (claude-opus-5)'
-  Write-Host '  6) Claude Fable 5 (claude-fable-5; may use extra usage)'
+  Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'
+  Write-Host '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
   Write-Host '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)'
   Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
@@ -864,7 +893,8 @@ if ($Arguments.Count -gt 0) {
       Write-Host "Main effort: $MainEffort"
       Write-Host "Background command: airlock bg -> $($Models[$DefaultBgModel][1]) ($($Models[$DefaultBgModel][0])) / $BgEffort effort"
       Write-Host "Utility model: $SmallFast"
-      Write-Host "Context window: $ContextWin"
+      $contextWinDisplay = if ($ContextWin -eq 'auto') { 'auto (Claude Code decides)' } else { "$ContextWin (OpenAI and Grok roots only)" }
+      Write-Host "Context window: $contextWinDisplay"
       Write-Host "Proxy URL: $ProxyUrl"
       $proxyStorageDisplay = if ($ProxyConfigDir -or $ProxyStateHome) { 'configured proxy directories' } else { 'upstream defaults' }
       Write-Host "Proxy storage: $proxyStorageDisplay"

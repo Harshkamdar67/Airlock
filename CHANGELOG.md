@@ -23,11 +23,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Fixed
 
+- Claude Opus 5, Sonnet 5, and Fable 5 ran at 200000 tokens instead of their native 1000000. Claude Code grants those models their full window only while `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`, and Airlock always points it at the session router, so every Claude root and Claude worker silently lost four fifths of its context and compacted far more often than the same model outside Airlock. All three are now requested as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`, which Claude Code honours from behind the router. Claude Haiku 4.5 is genuinely a 200000 token model and is unchanged.
+- The router allow-list derived a suffix-free wire ID for OpenAI models only, which was correct only while OpenAI was the only provider whose IDs carried `[1m]`. It now applies to every provider, so an Anthropic worker no longer fails closed against its own route.
 - `require_proxy_environment` hardcoded a `gpt-` root prefix, so the Windows launch path rejected every Grok-only session.
 - The Windows launcher had no `grok` command, no Grok hybrid roots, and never passed the Grok agent catalogs to the access helper.
 - `airlock.ps1` resolved every managed path from `$HOME\.config\airlock` while `install.ps1` honoured `AIRLOCK_CONFIG_DIR`, so a Windows install into a custom directory validated another installation's files.
 - The installers refused to update any agent catalog whose contents changed, because catalogs carried no managed marker. They now carry one, and a file whose hash matches the installed bundle's record for that component is recognised as Airlock's own. A file with neither is still refused.
 - `setup.sh` defaulted `AIRLOCK_HYBRID_MODEL` to `sol` while both launchers fall back to `sonnet`, so rewriting a config that never had the key silently moved the hybrid root. A new setup still recommends Sol.
+- Every profile forced `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to 272000, including Anthropic roots. Claude Code reads that variable ahead of its own per-model tuning and disables the auto-compact control in `/config` while it is set, so a Claude root lost the control and gained a window it already knew. The value is now applied only to the OpenAI and Grok roots that Claude Code genuinely cannot size, a window you set yourself always wins, and `AIRLOCK_CONTEXT_WINDOW=auto` leaves the decision to Claude Code.
+- `AIRLOCK_CONTEXT_WINDOW` accepted values Claude Code discards. Claude Code takes 100000 to 1000000 and ignores anything else without a word, so an out-of-range number looked applied while doing nothing. Both launchers now reject it before the session starts. The Windows launcher previously checked only that the value was a positive integer, and the POSIX launcher did not check at all.
+- Router diagnostics never reported token usage for Anthropic routes. Anthropic answers with `Content-Encoding: gzip`, and the observer read the compressed bytes, so it could never find a usage object. It now decodes a private copy of the response to read the counts. The bytes forwarded to the client are still passed through untouched, and a response in an encoding the standard library cannot read records no usage instead of guessing.
 
 ## 0.1.0-beta.1 - 2026-08-05
 

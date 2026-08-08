@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit
+import zlib
 
 MANAGED_BUNDLE_VERSION = "2026.08.05.5"
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
@@ -89,15 +90,49 @@ class UsageObserver:
         self.skipping = False
         self.disabled = False
         self.seen = False
+        self.decoder: Any = None
+
+    def configure(self, content_type: str, content_encoding: str) -> None:
+        """Decide how to read a response that has already been forwarded.
+
+        Anthropic answers with ``Content-Encoding: gzip``, so a byte-level
+        observer sees compressed data and can never find a usage object. The
+        forwarded bytes are untouched either way; only this observer decodes a
+        copy so that it can read the token counts.
+        """
+        self.streaming = "event-stream" in content_type
+        encoding = content_encoding.strip().lower()
+        if not encoding or encoding == "identity":
+            return
+        if encoding in {"gzip", "x-gzip"}:
+            self.decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            return
+        if encoding == "deflate":
+            self.decoder = zlib.decompressobj()
+            return
+        # Brotli, zstd, or several encodings chained together. The standard
+        # library cannot read those, and a wrong guess is worse than reporting
+        # nothing, so the observer stands down and usage is recorded as absent.
+        self.disable()
 
     def disable(self) -> None:
         self.disabled = True
         self.buffer = bytearray()
+        self.decoder = None
 
     def observe(self, chunk: bytes) -> None:
         if self.disabled:
             return
         try:
+            if self.decoder is not None:
+                # Bound the output so a hostile or broken upstream cannot make
+                # the observer allocate without limit.
+                chunk = self.decoder.decompress(chunk, MAX_USAGE_BODY_BYTES)
+                if self.decoder.unconsumed_tail:
+                    self.disable()
+                    return
+                if not chunk:
+                    return
             if not self.streaming:
                 if len(self.buffer) + len(chunk) > MAX_USAGE_BODY_BYTES:
                     self.disable()
@@ -125,6 +160,15 @@ class UsageObserver:
         if self.disabled:
             return
         try:
+            if self.decoder is not None:
+                # Clearing the decoder first means this re-entry takes the
+                # already-decoded path instead of decompressing twice.
+                tail = self.decoder.flush()
+                self.decoder = None
+                if tail:
+                    self.observe(tail)
+                    if self.disabled:
+                        return
             if self.streaming:
                 if self.buffer and not self.skipping:
                     self.consume_line(bytes(self.buffer))
@@ -400,7 +444,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             set_stream_timeout(connection, response)
             expected_length = response.getheader("content-length")
             content_type = (response.getheader("content-type") or "").lower()
-            observer.streaming = "event-stream" in content_type
+            observer.configure(
+                content_type, response.getheader("content-encoding") or ""
+            )
             self.send_response(status, response.reason)
             for name, value in response.getheaders():
                 lowered = name.lower()

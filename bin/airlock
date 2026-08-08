@@ -138,6 +138,18 @@ if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$defaul
 fi
 background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol[1m]}}}"
 default_context_window="${AIRLOCK_CONTEXT_WINDOW:-${config_context_window:-272000}}"
+# A window the user set themselves outranks Airlock's default. Record it before
+# any proxy cleanup unsets it.
+user_context_window="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}"
+# Claude Code accepts 100000 to 1000000 and silently ignores everything else, so
+# an unchecked value here would look applied while doing nothing at all.
+if [[ "$default_context_window" != 'auto' ]]; then
+  if [[ ! "$default_context_window" =~ ^[1-9][0-9]{5,6}$ ]] \
+    || (( default_context_window < 100000 || default_context_window > 1000000 )); then
+    printf "airlock: AIRLOCK_CONTEXT_WINDOW must be 'auto' or a whole number from 100000 to 1000000.\n" >&2
+    exit 2
+  fi
+fi
 gpt_effort_capabilities="${AIRLOCK_GPT_EFFORT_CAPABILITIES:-${config_gpt_effort_capabilities:-effort,xhigh_effort,max_effort}}"
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
@@ -303,7 +315,7 @@ OpenAI root: $openai_display
 Main effort: ${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}
 Background command: airlock bg -> $(openai_model_display "$default_bg_model") / ${AIRLOCK_BG_EFFORT:-${AIRLOCK_BACKGROUND_EFFORT:-${config_bg_effort:-medium}}} effort
 Utility model: $background_model
-Context window: $default_context_window
+Context window: $([[ "$default_context_window" == 'auto' ]] && printf 'auto (Claude Code decides)' || printf '%s (OpenAI and Grok roots only)' "$default_context_window")
 Proxy URL: $proxy_url
 Proxy storage: $proxy_storage_display
 OpenAI direct agents: $openai_direct_agents_file
@@ -430,9 +442,15 @@ resolve_hybrid_alias() {
     sol) root_model='gpt-5.6-sol[1m]'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
     terra) root_model='gpt-5.6-terra[1m]'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
     luna) root_model='gpt-5.6-luna[1m]'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
-    opus) root_model='claude-opus-5'; root_name='Claude Opus 5'; root_provider='anthropic' ;;
-    sonnet) root_model='claude-sonnet-5'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
-    fable) root_model='claude-fable-5'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
+    # Claude Code only grants these models their native 1M window when
+    # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
+    # always points it at the session router. The [1m] suffix is the one lever
+    # that survives that, so it keeps the window these models have natively
+    # instead of silently dropping them to 200000. Haiku 4.5 is a genuine
+    # 200000 model and must not carry the suffix.
+    opus) root_model='claude-opus-5[1m]'; root_name='Claude Opus 5'; root_provider='anthropic' ;;
+    sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
+    fable) root_model='claude-fable-5[1m]'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
     grok) root_model='grok-4.5'; root_name='Grok 4.5'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
@@ -555,6 +573,24 @@ declare_gpt_effort_capabilities() {
   export "${variable}_SUPPORTED_CAPABILITIES=$gpt_effort_capabilities"
 }
 
+# Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
+# tuning, and refuses to let /config change the window while the variable is set.
+# Anthropic models already carry accurate windows, so setting it there only costs
+# tokens and takes the control away. A proxy-routed OpenAI or Grok model is the
+# case Claude Code genuinely cannot recognise, so that is where it still applies.
+apply_context_window() {
+  local root_provider="$1"
+  if [[ -n "$user_context_window" ]]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$user_context_window"
+    return 0
+  fi
+  if [[ "$default_context_window" == 'auto' || "$root_provider" == 'anthropic' ]]; then
+    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    return 0
+  fi
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+}
+
 set_openai_environment() {
   ensure_openai_proxy || exit $?
   export ANTHROPIC_BASE_URL="$proxy_url"
@@ -570,7 +606,8 @@ set_openai_environment() {
   declare_gpt_effort_capabilities ANTHROPIC_DEFAULT_SONNET_MODEL "$1"
   declare_gpt_effort_capabilities ANTHROPIC_DEFAULT_HAIKU_MODEL "$background_model"
   declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$1"
-  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+  # Reached only by the OpenAI-only and Grok-only profiles.
+  apply_context_window 'openai'
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
   export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
@@ -612,7 +649,13 @@ set_hybrid_environment() {
   local root_model="$1"
   local root_name="$2"
   local routes_json="$3"
-  local router_url router_owner_pid
+  local root_profile="$4"
+  local router_url router_owner_pid root_provider
+  case "$root_profile" in
+    hybrid-anthropic-root) root_provider='anthropic' ;;
+    hybrid-grok-root) root_provider='grok' ;;
+    *) root_provider='openai' ;;
+  esac
   if [[ -n "${ANTHROPIC_API_KEY:-}" || ( -n "${ANTHROPIC_AUTH_TOKEN:-}" && "${ANTHROPIC_AUTH_TOKEN}" != 'unused' ) ]]; then
     printf 'airlock: hybrid native routing requires saved Claude subscription login without ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.\n' >&2
     return 1
@@ -639,7 +682,7 @@ set_hybrid_environment() {
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
   declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
-  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+  apply_context_window "$root_provider"
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
   export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
@@ -774,10 +817,12 @@ launch_session() {
         exit 2
         ;;
     esac
-    set_hybrid_environment "$session_model" "$session_name" "$routes_json" || exit $?
+    set_hybrid_environment "$session_model" "$session_name" "$routes_json" "$profile" || exit $?
   fi
   fast_mode='off'
-  if [[ "$session_model" == 'claude-opus-5' && "$anthropic_fast_policy" == 'on' ]]; then
+  # The root model carries a [1m] suffix on the models that need it, so this
+  # gate has to compare the base name rather than the whole string.
+  if [[ "${session_model%\[1m\]}" == 'claude-opus-5' && "$anthropic_fast_policy" == 'on' ]]; then
     confirm_anthropic_fast || exit $?
     fast_mode='on'
   fi
@@ -804,12 +849,12 @@ select_hybrid_root() {
   fi
   printf '%s\n' \
     'Choose the Airlock hybrid orchestrator:' \
-    '  1) Claude Sonnet 5 (claude-sonnet-5)' \
+    '  1) Claude Sonnet 5 (claude-sonnet-5[1m])' \
     '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])' \
     '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' \
     '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' \
-    '  5) Claude Opus 5 (claude-opus-5)' \
-    '  6) Claude Fable 5 (claude-fable-5; may use extra usage)' \
+    '  5) Claude Opus 5 (claude-opus-5[1m])' \
+    '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
     '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)' \
     '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'

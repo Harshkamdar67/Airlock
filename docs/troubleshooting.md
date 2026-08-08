@@ -161,7 +161,7 @@ The router rejects IDs outside the active allowlist.
 
 ## Hybrid says `Model is not enabled for this session`
 
-Claude Code removes the `[1m]` context suffix before sending a GPT request. A current installation registers both the exact enabled full ID and that deterministic wire form. It does not register other aliases.
+Claude Code removes the `[1m]` context suffix before sending a request, for Claude IDs as well as GPT ones. A current installation registers both the exact enabled full ID and that deterministic wire form. It does not register other aliases.
 
 Run `airlock bundle`, reinstall Airlock if the bundle is stale, exit the failed session, and start a fresh `airlock hybrid MODEL` session.
 
@@ -172,6 +172,18 @@ Every hybrid model still uses one local router endpoint. The router can cross pr
 Not every GPT ID appears in the menu, and Anthropic does not officially support non-Claude models behind a Claude Code gateway. Starting a fresh session with `airlock hybrid MODEL` is the reliable way to select the main model.
 
 Remote Control is unavailable behind a non-Anthropic base URL.
+
+## The auto-compact setting in `/config` is greyed out
+
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set in the environment, and Airlock sets it for OpenAI and Grok roots so Claude Code stops guessing their context window.
+
+To take the control back for a session, start it with:
+
+```bash
+AIRLOCK_CONTEXT_WINDOW=auto airlock hybrid sol
+```
+
+To change the number instead of removing it, set `AIRLOCK_CONTEXT_WINDOW` to a whole number from 100000 to 1000000, in your config file or on the command line. Anthropic roots never set the variable, so the control stays available there. See [Context window and auto-compaction](models-and-usage.md#context-window-and-auto-compaction).
 
 ## The launcher says managed files are stale or incomplete
 

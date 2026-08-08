@@ -133,19 +133,24 @@ CATALOG_EXPECTED_AGENTS = {
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
 MAX_RENDERED_AGENTS_BYTES = 24 * 1024
 MODEL_PROFILES = {
+    # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
+    # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com,
+    # and Airlock always points it at the session router. The [1m] suffix is
+    # the one lever that still reaches 1M from behind the router. Haiku 4.5 is
+    # a genuine 200000 model and must not carry the suffix.
     "anthropic": {
         "opus": {
-            "agent": "airlock-opus", "model": "claude-opus-5", "effort": "xhigh",
+            "agent": "airlock-opus", "model": "claude-opus-5[1m]", "effort": "xhigh",
             "capability": "frontier", "cost": "premium",
             "strength": "difficult architecture, UI/UX design and visual direction, product-flow and design-system work, long-horizon planning, complex debugging, security reasoning, high-impact review, and synthesis",
         },
         "sonnet": {
-            "agent": "airlock-sonnet", "model": "claude-sonnet-5", "effort": "high",
+            "agent": "airlock-sonnet", "model": "claude-sonnet-5[1m]", "effort": "high",
             "capability": "general", "cost": "standard",
             "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
         },
         "fable": {
-            "agent": "airlock-fable", "model": "claude-fable-5", "effort": "high",
+            "agent": "airlock-fable", "model": "claude-fable-5[1m]", "effort": "high",
             "capability": "frontier-efficient", "cost": "metered",
             "strength": "efficient frontier implementation, orchestration, and analysis when the route is enabled or explicitly selected",
         },
@@ -1907,8 +1912,17 @@ def enabled_profile_workers(policy: dict[str, Any], profile: str) -> list[dict[s
     return workers
 
 
-def wire_model_id(model: str, provider: str) -> str:
-    if provider == "openai" and model.endswith("[1m]"):
+def wire_model_id(model: str) -> str:
+    """Return the model id that actually reaches the provider.
+
+    The [1m] suffix is a Claude Code instruction, not part of any provider's
+    model name. Claude Code strips it and moves the request for a 1M window
+    into the context-1m beta header, so the router only ever sees the base
+    name and the allow-list has to carry both forms. This used to apply to
+    OpenAI alone, which was correct only while OpenAI was the only provider
+    whose ids carried the suffix.
+    """
+    if model.endswith("[1m]"):
         return model.removesuffix("[1m]")
     return model
 
@@ -1925,7 +1939,7 @@ def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, obje
         model = worker["model"]
         provider = worker["provider"]
         model_ids.append(model)
-        for routed_model in {model, wire_model_id(model, provider)}:
+        for routed_model in {model, wire_model_id(model)}:
             if routed_model in routes and routes[routed_model] != provider:
                 raise AccessError(f"model route is ambiguous: {routed_model}")
             routes[routed_model] = provider

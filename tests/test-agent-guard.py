@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,20 @@ SECRET_GUARD_SH = GUARD.parent / "secret-guard.sh"
 
 
 class AgentGuardTests(unittest.TestCase):
+    @staticmethod
+    def load_module(name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def load_access_module(self):
+        return self.load_module("airlock_access_guard_test", ROOT / "bin" / "airlock-access.py")
+
+    def guard_constant(self, name: str) -> set[str]:
+        return getattr(self.load_module("airlock_agent_guard_test", GUARD), name)
+
     def invoke(
         self,
         profile: str | None,
@@ -67,6 +82,58 @@ class AgentGuardTests(unittest.TestCase):
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
 
+    def test_guard_baseline_matches_the_models_the_launcher_actually_enables(self) -> None:
+        # The guard validates the launcher's model list against its own baseline
+        # and treats any unrecognised value as a corrupt permission set, which
+        # denies every Agent call in the session rather than just that model. So
+        # the two lists drifting apart is not a cosmetic mismatch, and reading
+        # both from the same source is the only way to keep them honest.
+        access = self.load_access_module()
+        for provider, models in (
+            ("anthropic", "ANTHROPIC_MODELS"),
+            ("openai", "OPENAI_MODELS"),
+            ("grok", "GROK_MODELS"),
+        ):
+            with self.subTest(provider=provider):
+                expected = {
+                    profile["model"]
+                    for profile in access.MODEL_PROFILES[provider].values()
+                }
+                self.assertEqual(self.guard_constant(models), expected)
+
+    def test_a_full_session_permission_set_is_accepted_end_to_end(self) -> None:
+        # The drift above was invisible to every other test here because they all
+        # supply their own model lists. This one sends exactly what the launcher
+        # sends, including the extra-usage list that made the guard reject the
+        # whole permission set.
+        access = self.load_access_module()
+        anthropic = access.MODEL_PROFILES["anthropic"]
+        openai = access.MODEL_PROFILES["openai"]
+        allowed = ",".join(sorted({
+            anthropic["opus"]["model"], anthropic["sonnet"]["model"],
+            openai["sol"]["model"], openai["luna"]["model"],
+        }))
+        decision = self.invoke(
+            "hybrid-anthropic-root",
+            {"subagent_type": "airlock-opus", "prompt": "work"},
+            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
+            allowed_models=allowed,
+            extra_models=anthropic["fable"]["model"],
+        )
+        self.assertIsNone(decision)
+        override = self.invoke(
+            "hybrid-anthropic-root",
+            {
+                "subagent_type": "Explore",
+                "model": anthropic["opus"]["model"],
+                "prompt": "research",
+            },
+            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
+            allowed_models=allowed,
+            extra_models=anthropic["fable"]["model"],
+        )
+        self.assertIsNone(override)
+
     def test_allows_exact_profile_worker(self) -> None:
         self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-terra", "prompt": "ignored"}))
         self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-luna-fast"}))
@@ -87,7 +154,7 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_builtins_accept_exact_enabled_models_and_inherit_by_default(self) -> None:
         openai_models = "gpt-5.6-luna[1m],gpt-5.6-sol[1m]"
-        hybrid_models = openai_models + ",claude-opus-5,claude-sonnet-5"
+        hybrid_models = openai_models + ",claude-opus-5[1m],claude-sonnet-5[1m]"
         for name in ("Explore", "Plan", "general-purpose"):
             with self.subTest(name=name, mode="inherit"):
                 self.assertIsNone(self.invoke("openai-pure", {"subagent_type": name}))
@@ -100,7 +167,7 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(name=name, mode="hybrid-claude"):
                 self.assertIsNone(self.invoke(
                     "hybrid-openai-root",
-                    {"subagent_type": name, "model": "claude-sonnet-5"},
+                    {"subagent_type": name, "model": "claude-sonnet-5[1m]"},
                     allowed_models=hybrid_models,
                 ))
 
@@ -109,7 +176,7 @@ class AgentGuardTests(unittest.TestCase):
         for model, models in (
             ("gpt-5.6-luna[1m]", None),
             ("gpt-5.6-luna-fast[1m]", allowed),
-            ("claude-opus-5", allowed),
+            ("claude-opus-5[1m]", allowed),
             ("inherit", allowed),
             ("sonnet", allowed),
             (None, allowed),
@@ -138,18 +205,18 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_extra_usage_models_and_agents_require_exact_confirmation(self) -> None:
         marker = "Extra usage authorized: yes"
-        models = "claude-fable-5,claude-opus-5"
+        models = "claude-fable-5[1m],claude-opus-5[1m]"
         self.assert_denied(self.invoke(
             "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5", "prompt": "research"},
+            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": "research"},
             allowed_models=models,
-            extra_models="claude-fable-5",
+            extra_models="claude-fable-5[1m]",
         ))
         self.assertIsNone(self.invoke(
             "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5", "prompt": marker},
+            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": marker},
             allowed_models=models,
-            extra_models="claude-fable-5",
+            extra_models="claude-fable-5[1m]",
         ))
         self.assert_denied(self.invoke(
             "hybrid-openai-root",
@@ -265,9 +332,9 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(self.invoke("hybrid-grok-root", {"subagent_type": name}))
         every_model = (
-            "grok-4.5,grok-composer-2.5-fast,gpt-5.6-sol[1m],claude-opus-5"
+            "grok-4.5,grok-composer-2.5-fast,gpt-5.6-sol[1m],claude-opus-5[1m]"
         )
-        for model in ("grok-4.5", "gpt-5.6-sol[1m]", "claude-opus-5"):
+        for model in ("grok-4.5", "gpt-5.6-sol[1m]", "claude-opus-5[1m]"):
             with self.subTest(model=model):
                 self.assertIsNone(self.invoke(
                     "hybrid-grok-root",

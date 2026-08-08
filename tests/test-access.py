@@ -459,6 +459,27 @@ for line in sys.stdin:
             policy["providers"]["openai"]["detected_plan"] = "unknown"
             self.assertIsNone(ACCESS.fast_route_status(policy)["selected_route"])
 
+    def test_natively_1m_anthropic_models_keep_their_window_behind_the_router(self) -> None:
+        # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
+        # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com.
+        # Airlock always points it at the session router, which silently drops
+        # every one of them to 200000. The [1m] suffix is the only lever that
+        # still reaches 1M from behind the router, so dropping it here would
+        # cost four fifths of the window without any visible failure.
+        anthropic = ACCESS.MODEL_PROFILES["anthropic"]
+        for route in ("opus", "sonnet", "fable"):
+            with self.subTest(route=route):
+                self.assertTrue(anthropic[route]["model"].endswith("[1m]"))
+        # Haiku 4.5 has no native 1M window, so claiming one would let the
+        # session grow past what the model actually accepts.
+        self.assertFalse(anthropic["haiku"]["model"].endswith("[1m]"))
+        # The suffix is a Claude Code instruction. Claude Code strips it and
+        # moves the request into the context-1m beta header, so the allow-list
+        # has to admit the base name for every provider, not just OpenAI.
+        self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
+        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-sol[1m]"), "gpt-5.6-sol")
+        self.assertEqual(ACCESS.wire_model_id("grok-4.5"), "grok-4.5")
+
     def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
         policy = ACCESS.default_policy()
         policy["policies"]["openai_fast"] = "on"
@@ -476,14 +497,18 @@ for line in sys.stdin:
             self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
+            # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
+            # native 1M window from behind the router, and Claude Code strips
+            # that suffix before the request leaves. Both forms have to route.
+            self.assertEqual(hybrid["routes"]["claude-opus-5[1m]"], "anthropic")
             self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
             self.assertNotIn("gpt-5.6-sol", hybrid["model_ids"])
-            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
             self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
 
             policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertIn("claude-fable-5", hybrid["extra_model_ids"])
+            self.assertIn("claude-fable-5[1m]", hybrid["extra_model_ids"])
             self.assertIn("airlock-fable", hybrid["extra_agent_names"])
 
             policy["providers"]["openai"]["detected_plan"] = "pro"
@@ -495,7 +520,7 @@ for line in sys.stdin:
 
             policy["policies"]["extra_usage"] = "never"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
 
     def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
         policy = ACCESS.default_policy()
@@ -705,7 +730,7 @@ for line in sys.stdin:
                     self.assertIn("useful non-overlapping batch before waiting", luna_description)
                     self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])
                     self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol[1m]")
-                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5")
+                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5[1m]")
                     for agent in rendered.values():
                         self.assertNotIn("tools", agent)
                         self.assertNotIn("permissionMode", agent)

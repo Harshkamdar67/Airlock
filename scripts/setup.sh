@@ -357,9 +357,9 @@ utility_alias_from_wire() {
 
 set_model_info() {
   case "$1" in
-    sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
-    opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
-    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
+    sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
+    opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
+    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol[1m]'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast[1m]'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
@@ -1260,11 +1260,11 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
     hybrid_options=(
       'sol|GPT-5.6 Sol|gpt-5.6-sol[1m]|Difficult implementation and integration. Premium usage.'
-      'sonnet|Claude Sonnet 5|claude-sonnet-5|Balanced engineering and repository work. Standard usage.'
+      'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
       'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.'
       'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.'
-      'opus|Claude Opus 5|claude-opus-5|Architecture, security, and visual direction. Premium usage.'
-      'fable|Claude Fable 5|claude-fable-5|Efficient frontier work. May require extra usage.'
+      'opus|Claude Opus 5|claude-opus-5[1m]|Architecture, security, and visual direction. Premium usage.'
+      'fable|Claude Fable 5|claude-fable-5[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
@@ -1312,7 +1312,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
   choose_rich_option "$current_preset" balanced \
     'balanced|Balanced pool||Claude Opus 5 and Claude Sonnet 5 plus GPT Sol, Terra, and Luna. The router picks one only when it helps.' \
     'economy|Economical pool||Claude Sonnet 5 and GPT Luna. Lower relative usage with broad basic coverage.' \
-    'frontier|Balanced pool plus Claude Fable 5||Everything in the balanced pool and Claude Fable 5 (claude-fable-5). Fable can use extra usage, so it is not on by default.' \
+    'frontier|Balanced pool plus Claude Fable 5||Everything in the balanced pool and Claude Fable 5 (claude-fable-5[1m]). Fable can use extra usage, so it is not on by default.' \
     'custom|Choose models individually||Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.'
   worker_preset="$CHOICE"
   anthropic_models_was_decided=1
@@ -1815,6 +1815,7 @@ AIRLOCK_OPENAI_MODELS=$openai_models
 AIRLOCK_GROK_MODELS=$grok_models
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=$anthropic_extra_models
 AIRLOCK_OPENAI_EXTRA_MODELS=$openai_extra_models
+# Applies to OpenAI and Grok roots only. Use auto to let Claude Code decide.
 AIRLOCK_CONTEXT_WINDOW=272000
 AIRLOCK_GPT_EFFORT_CAPABILITIES=$gpt_effort_capabilities
 AIRLOCK_PROXY_URL=http://127.0.0.1:18765

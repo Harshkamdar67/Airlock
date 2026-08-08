@@ -6,7 +6,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "claude-opus-5",
+    "model": "claude-opus-5[1m]",
     "effort": "xhigh"
   },
   "airlock-sonnet": {
@@ -15,7 +15,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "claude-sonnet-5",
+    "model": "claude-sonnet-5[1m]",
     "effort": "high"
   },
   "airlock-fable": {
@@ -24,7 +24,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "claude-fable-5",
+    "model": "claude-fable-5[1m]",
     "effort": "high"
   },
   "airlock-haiku": {

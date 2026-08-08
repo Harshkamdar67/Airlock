@@ -27,6 +27,7 @@ printf 'MAX_SUBAGENTS=%s\n' "${CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS:-unset}"
 printf 'SUBAGENT_MODEL=%s\n' "${CLAUDE_CODE_SUBAGENT_MODEL:-unset}"
 printf 'SPAWN_DEPTH=%s\n' "${CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH:-unset}"
 printf 'PYTHON_BIN=%s\n' "${AIRLOCK_PYTHON:-unset}"
+printf 'COMPACT_WINDOW=%s\n' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}"
 if [[ "${AIRLOCK_STUB_INSPECT_ROUTER:-0}" == '1' ]]; then
   python - <<'PY'
 import http.client

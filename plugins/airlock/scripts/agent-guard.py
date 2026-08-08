@@ -29,10 +29,15 @@ OPENAI_MODELS = {
     "gpt-5.6-luna[1m]",
     "gpt-5.6-luna-fast[1m]",
 }
+# These have to be the exact IDs the launcher enables, because a value the
+# launcher sends that is missing here invalidates the whole permission set and
+# denies every Agent call. Opus 5, Sonnet 5, and Fable 5 carry the [1m] suffix
+# so Claude Code keeps their native 1M window from behind the session router.
+# Haiku 4.5 is a genuine 200000 token model and carries no suffix.
 ANTHROPIC_MODELS = {
-    "claude-opus-5",
-    "claude-sonnet-5",
-    "claude-fable-5",
+    "claude-opus-5[1m]",
+    "claude-sonnet-5[1m]",
+    "claude-fable-5[1m]",
     "claude-haiku-4-5-20251001",
 }
 GROK_MODELS = {

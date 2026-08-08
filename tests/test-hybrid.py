@@ -71,6 +71,94 @@ class HybridLauncherTests(unittest.TestCase):
             "airlock-luna,airlock-opus,airlock-sol",
         )
 
+    def build(
+        self,
+        profile: str,
+        root_model: str,
+        *,
+        context_window: str = "272000",
+        preset_environment: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Build a child environment for one profile with the shared defaults."""
+        base = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:18765"}
+        if preset_environment:
+            base.update(preset_environment)
+        with patch.dict(os.environ, base, clear=True):
+            return HYBRID.build_child_environment(
+                profile,
+                "3",
+                proxy_url="http://127.0.0.1:18765",
+                root_model=root_model,
+                root_name="Root",
+                context_window=context_window,
+                route_policy=ROUTE_POLICY,
+                router_url="http://127.0.0.1:28471",
+            )
+
+    def test_anthropic_root_keeps_claude_codes_own_auto_compact_window(self) -> None:
+        # Claude Code resolves this variable ahead of its own per-model tuning and
+        # locks the /config control while it is set, so an Anthropic root must not
+        # receive it at all.
+        environment = self.build("hybrid-anthropic-root", "claude-opus-5")
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
+
+    def test_proxy_routed_roots_still_receive_the_auto_compact_window(self) -> None:
+        for profile, root_model in (
+            ("hybrid-openai-root", "gpt-5.6-sol[1m]"),
+            ("hybrid-grok-root", "grok-4.5"),
+        ):
+            with self.subTest(profile=profile):
+                environment = self.build(profile, root_model)
+                self.assertEqual(
+                    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000"
+                )
+
+    def test_auto_context_window_never_sets_the_variable(self) -> None:
+        environment = self.build(
+            "hybrid-openai-root", "gpt-5.6-sol[1m]", context_window="auto"
+        )
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
+
+    def test_a_window_the_user_set_is_preserved_on_every_root(self) -> None:
+        for profile, root_model in (
+            ("hybrid-anthropic-root", "claude-opus-5"),
+            ("hybrid-openai-root", "gpt-5.6-sol[1m]"),
+        ):
+            with self.subTest(profile=profile):
+                environment = self.build(
+                    profile,
+                    root_model,
+                    preset_environment={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000"},
+                )
+                self.assertEqual(
+                    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000"
+                )
+
+    def test_only_windows_claude_code_honours_are_accepted(self) -> None:
+        # The bridge is a second gate behind two launchers, so its shape rule has
+        # to match theirs exactly rather than merely being close.
+        for accepted in ("auto", "100000", "272000", "999999", "1000000"):
+            with self.subTest(accepted=accepted):
+                self.assertTrue(HYBRID.context_window_is_valid(accepted))
+        for rejected in (
+            "",
+            "auto ",
+            "99999",
+            "1000001",
+            "2000000",
+            "0272000",
+            "+272000",
+            " 272000 ",
+            "272000\n",
+            "notanumber",
+            # str.isdigit is true here, but int() raises on it.
+            "²²²²²²",
+            # Arabic-Indic digits parse as 272000 but are not what anyone typed.
+            "٢٧٢٠٠٠",
+        ):
+            with self.subTest(rejected=rejected):
+                self.assertFalse(HYBRID.context_window_is_valid(rejected))
+
     def test_effort_capabilities_are_declared_for_gpt_roots_only(self) -> None:
         with patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",

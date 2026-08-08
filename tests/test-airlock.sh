@@ -6,6 +6,10 @@ launcher="$repo_root/bin/airlock"
 stub="$repo_root/tests/stub-claude.sh"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-launcher-test.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
+# The launcher keeps a window the user set themselves, so a suite that runs
+# inside an Airlock session would otherwise inherit that session's window and
+# read it back as the launcher's own choice.
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW
 # Build a legacy config without the saved-profile keys to verify that existing
 # installations keep their original OpenAI-only bare command.
 while IFS= read -r line; do
@@ -323,6 +327,9 @@ configured_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$
 grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$configured_output"
 grep -q '^SMALL_FAST=gpt-5.4-mini\[1m\]$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
+# The fixture sets AIRLOCK_CONTEXT_WINDOW=200000, so the config file has to reach
+# the child rather than the launcher's own default.
+grep -q '^COMPACT_WINDOW=200000$' <<<"$configured_output"
 
 configured_bg_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
 grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$configured_bg_output"
@@ -331,7 +338,7 @@ grep -q '^ARG=low$' <<<"$configured_bg_output"
 config_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" config)"
 grep -q '^Default profile: openai$' <<<"$config_output"
 grep -q '^Default command: airlock -> GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
-grep -q '^Hybrid root: Claude Sonnet 5 (claude-sonnet-5)$' <<<"$config_output"
+grep -q '^Hybrid root: Claude Sonnet 5 (claude-sonnet-5\[1m\])$' <<<"$config_output"
 grep -q '^OpenAI root: GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
 grep -q '^Background command: airlock bg -> GPT-5.6 Luna (gpt-5.6-luna\[1m\]) / low effort$' <<<"$config_output"
 config_alias_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" --config)"
@@ -474,8 +481,8 @@ grep -q '^DEFAULT_OPUS=unset$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_SONNET=unset$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5,claude-sonnet-5,gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\],gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^ROUTER_MODELS=claude-opus-5,claude-sonnet-5,gpt-5.6-luna,gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-sol\[1m\],gpt-5.6-terra,gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\],gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^ROUTER_MODELS=claude-opus-5,claude-opus-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-sol\[1m\],gpt-5.6-terra,gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
 hybrid_profile="$hybrid_openai_output" python - <<'PY'
 import json
 import os
@@ -490,7 +497,7 @@ assert "exact built-in Explore, Plan, and general-purpose" in trust_context
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}
-assert agents["airlock-opus"]["model"] == "claude-opus-5"
+assert agents["airlock-opus"]["model"] == "claude-opus-5[1m]"
 assert all("effort" not in agent for agent in agents.values())
 assert "tools" not in agents["airlock-opus"] and "permissionMode" not in agents["airlock-opus"]
 assert "airlock-delegate" not in agents["airlock-opus"]["prompt"]
@@ -590,7 +597,7 @@ grep -q '^DEFAULT_OPUS=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5,claude-sonnet-5,gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\],gpt-5.6-terra\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\],gpt-5.6-terra\[1m\]$' <<<"$hybrid_anthropic_output"
 hybrid_profile="$hybrid_anthropic_output" python - <<'PY'
 import json
 import os
@@ -608,7 +615,7 @@ assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-
 assert agents["airlock-sol"]["model"] == "gpt-5.6-sol[1m]"
 assert "tools" not in agents["airlock-sol"] and "permissionMode" not in agents["airlock-sol"]
 assert "airlock-delegate" not in agents["airlock-sol"]["prompt"]
-assert agents["airlock-sonnet"]["model"] == "claude-sonnet-5"
+assert agents["airlock-sonnet"]["model"] == "claude-sonnet-5[1m]"
 assert all("effort" not in agent for agent in agents.values())
 assert "tools" not in agents["airlock-sonnet"] and "permissionMode" not in agents["airlock-sonnet"]
 assert "airlock-delegate" not in agents["airlock-sonnet"]["prompt"]
@@ -623,7 +630,7 @@ expected_allowed = ["Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)", *
 assert allowed == expected_allowed, (allowed, expected_allowed)
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
 assert "Skill(claude-api)" in args
-assert args[args.index("--model") + 1] == "claude-sonnet-5"
+assert args[args.index("--model") + 1] == "claude-sonnet-5[1m]"
 PY
 
 if ANTHROPIC_AUTH_TOKEN=synthetic AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test >/dev/null 2>&1; then
@@ -664,9 +671,9 @@ for disabled in ("Agent(airlock-terra)", "Agent(airlock-opus)", "Agent(airlock-f
     assert disabled not in allowed
 PY
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-sonnet$' <<<"$reduced_output"
-grep -q '^ALLOWED_MODELS=claude-sonnet-5,gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\]$' <<<"$reduced_output"
+grep -q '^ALLOWED_MODELS=claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\]$' <<<"$reduced_output"
 
-for root_spec in 'sol:gpt-5.6-sol[1m]:openai' 'luna:gpt-5.6-luna[1m]:openai' 'opus:claude-opus-5:anthropic'; do
+for root_spec in 'sol:gpt-5.6-sol[1m]:openai' 'luna:gpt-5.6-luna[1m]:openai' 'opus:claude-opus-5[1m]:anthropic'; do
   IFS=':' read -r root_alias expected_model expected_provider <<<"$root_spec"
   root_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid "$root_alias" -p test)"
   grep -Fq "ARG=$expected_model" <<<"$root_output"
@@ -682,7 +689,7 @@ done
 # The bash that macOS ships as /bin/bash rejects a bare expansion of an empty
 # array under set -u, so both entry points need a no-argument run here.
 bare_hybrid_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus)"
-grep -Fq '"--effort", "high", "--model", "claude-opus-5", "--append-system-prompt"' <<<"$bare_hybrid_output"
+grep -Fq '"--effort", "high", "--model", "claude-opus-5[1m]", "--append-system-prompt"' <<<"$bare_hybrid_output"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$bare_hybrid_output"
 # Claude Code detects effort support for real Claude IDs on its own. Declaring
 # capabilities here would disable everything left off the list.
@@ -690,9 +697,30 @@ grep -q '^CUSTOM_CAPS=unset$' <<<"$bare_hybrid_output"
 
 hybrid_gpt_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
 grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$hybrid_gpt_output"
+
+# Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
+# tuning and locks the /config control while it is set, so only a root it cannot
+# recognise should receive it.
+grep -q '^COMPACT_WINDOW=272000$' <<<"$hybrid_gpt_output"
+grep -q '^COMPACT_WINDOW=unset$' <<<"$hybrid_anthropic_output"
+auto_window_output="$(AIRLOCK_CONTEXT_WINDOW=auto AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
+grep -q '^COMPACT_WINDOW=unset$' <<<"$auto_window_output"
+user_window_output="$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=450000 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test)"
+grep -q '^COMPACT_WINDOW=450000$' <<<"$user_window_output"
+# Claude Code accepts 100000 to 1000000 and silently ignores anything else.
+for rejected_window in 50000 99999 1000001 2000000 0272000 +272000 ' 272000 ' notanumber; do
+  if AIRLOCK_CONTEXT_WINDOW="$rejected_window" AIRLOCK_REAL_CLAUDE="$stub" \
+    AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test >/dev/null 2>&1; then
+    printf 'test: launcher accepted out-of-range context window %s\n' "$rejected_window" >&2
+    exit 1
+  fi
+done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
 grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
+# The OpenAI-only profile routes every model through the proxy, so its root is
+# always one Claude Code cannot size on its own.
+grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_openai_output"
 
 # Configs without AIRLOCK_DEFAULT_PROFILE preserve the original OpenAI-only
 # bare command. New configs can save a hybrid root without changing explicit

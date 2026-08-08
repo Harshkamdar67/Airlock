@@ -97,6 +97,7 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "unset"));
     Console.WriteLine("CUSTOM_MODEL=" + (Environment.GetEnvironmentVariable("ANTHROPIC_CUSTOM_MODEL_OPTION") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
+    Console.WriteLine("COMPACT_WINDOW=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW") ?? "unset"));
     for (int index = 0; index < args.Length; index++) {
       Console.WriteLine("ARG=" + args[index]);
       if (args[index] == "--settings" && index + 1 < args.Length) {
@@ -112,7 +113,12 @@ public static class ClaudeLaunchStub {
 '@
 Add-Type -TypeDefinition $ClaudeStubSource -Language CSharp -OutputAssembly $ClaudeStub -OutputType ConsoleApplication
 
-function Invoke-LauncherProcess([string]$Launcher, [string[]]$LauncherArguments, [bool]$ExpectSuccess = $true) {
+function Invoke-LauncherProcess(
+  [string]$Launcher,
+  [string[]]$LauncherArguments,
+  [bool]$ExpectSuccess = $true,
+  [hashtable]$ExtraEnvironment = $null
+) {
   $quotedLauncher = '"' + $Launcher.Replace('"', '\"') + '"'
   $quotedArguments = @()
   foreach ($argument in $LauncherArguments) {
@@ -133,6 +139,16 @@ function Invoke-LauncherProcess([string]$Launcher, [string[]]$LauncherArguments,
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_ANTHROPIC_FAST')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_ANTHROPIC_FAST_AUTHORIZED')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_EXTRA_USAGE_POLICY')
+  # The launcher keeps a window the user set themselves, so a suite that runs
+  # inside an Airlock session would otherwise read that session's window back as
+  # the launcher's own choice.
+  [void]$processInfo.EnvironmentVariables.Remove('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONTEXT_WINDOW')
+  if ($ExtraEnvironment) {
+    foreach ($name in $ExtraEnvironment.Keys) {
+      $processInfo.EnvironmentVariables[$name] = [string]$ExtraEnvironment[$name]
+    }
+  }
   $process = [Diagnostics.Process]::Start($processInfo)
   $standardOutput = $process.StandardOutput.ReadToEnd()
   $standardError = $process.StandardError.ReadToEnd()
@@ -312,13 +328,43 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
   }
 
+  # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
+  # tuning and locks the /config control while it is set, so it belongs only on a
+  # root Claude Code cannot size on its own.
+  if ($LegacyLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=272000$') {
+    throw "Windows OpenAI-only root did not receive the context window: $($LegacyLaunch.Output)"
+  }
+  $AutoWindowLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $true `
+    @{ AIRLOCK_CONTEXT_WINDOW = 'auto' }
+  if ($AutoWindowLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=unset$') {
+    throw "Windows auto context window still set the variable: $($AutoWindowLaunch.Output)"
+  }
+  $UserWindowLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $true `
+    @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '450000' }
+  if ($UserWindowLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=450000$') {
+    throw "Windows launcher discarded a window the user set: $($UserWindowLaunch.Output)"
+  }
+  # Claude Code accepts 100000 to 1000000 and silently ignores anything else.
+  # A leading zero, a leading plus, and surrounding whitespace all parse as an
+  # integer, so the Windows launcher has to reject them on shape the way the
+  # POSIX launcher does rather than trusting a parse.
+  foreach ($RejectedWindow in @(
+    '50000', '99999', '1000001', '2000000', '0272000', '+272000', ' 272000 ', 'notanumber'
+  )) {
+    $RejectedLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $false `
+      @{ AIRLOCK_CONTEXT_WINDOW = $RejectedWindow }
+    if ($RejectedLaunch.Error -notmatch 'AIRLOCK_CONTEXT_WINDOW must be') {
+      throw "Windows launcher accepted out-of-range context window ${RejectedWindow}: $($RejectedLaunch.Error)"
+    }
+  }
+
   $HybridConfig = "AIRLOCK_DEFAULT_PROFILE=hybrid`nAIRLOCK_HYBRID_MODEL=sonnet`n$LegacyConfig"
   [IO.File]::WriteAllText($InstalledConfig, $HybridConfig, (New-Object Text.UTF8Encoding($false)))
   $HybridLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
-  if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5$' -or
+  if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5\[1m\]$' -or
       $HybridLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-anthropic-root$' -or
       $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
-      $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5$') {
+      $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
     throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
   }
   $AnthropicFastConfig = $HybridConfig.Replace(
@@ -330,7 +376,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   )
   [IO.File]::WriteAllText($InstalledConfig, $AnthropicFastConfig, (New-Object Text.UTF8Encoding($false)))
   $AnthropicFastLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
-  if ($AnthropicFastLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-opus-5$' -or
+  if ($AnthropicFastLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-opus-5\[1m\]$' -or
       $AnthropicFastLaunch.Output -notmatch '(?m)^FAST_MODE=on$') {
     throw "Authorized Anthropic Fast did not reach Claude Code: $($AnthropicFastLaunch.Output)"
   }

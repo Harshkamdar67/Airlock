@@ -170,7 +170,7 @@ AIRLOCK_CONFIG_DIR="$hybrid_dir" "$repo_root/scripts/setup.sh" \
   --no-service \
   --config-only \
   --yes >"$tmp_dir/hybrid-summary.out"
-grep -q '^  Default command:    airlock -> Claude Opus 5 (claude-opus-5)$' "$tmp_dir/hybrid-summary.out"
+grep -q '^  Default command:    airlock -> Claude Opus 5 (claude-opus-5\[1m\])$' "$tmp_dir/hybrid-summary.out"
 grep -q '^  Session profile:    hybrid: Claude and GPT workers$' "$tmp_dir/hybrid-summary.out"
 grep -q '^  Worker effort:      follow session; per-model pins: luna=max$' "$tmp_dir/hybrid-summary.out"
 grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$hybrid_dir/config"

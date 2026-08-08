@@ -50,6 +50,10 @@ AIRLOCK_ANTHROPIC_MODELS=opus,sonnet
 AIRLOCK_OPENAI_MODELS=sol,terra,luna
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable
 AIRLOCK_OPENAI_EXTRA_MODELS=
+# Auto-compact window for roots Claude Code cannot recognize, which means the
+# OpenAI and Grok models reaching it through the proxy. Anthropic roots are left
+# alone so Claude Code keeps its own tuned window and the /config control stays
+# usable. Accepts auto, which never sets the window, or 100000 to 1000000.
 AIRLOCK_CONTEXT_WINDOW=272000
 # Effort levels Claude Code should offer when the root is a GPT model. Claude
 # Code recognizes Anthropic model IDs on its own, so this only applies to GPT

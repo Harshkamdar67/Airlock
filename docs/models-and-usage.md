@@ -293,6 +293,40 @@ Anthropic shows personal subscription bars inside that screen. Anthropic does no
 
 Airlock does not read login files, decode tokens, scrape the screen, or guess a percentage.
 
+## Context window and auto-compaction
+
+Claude Code decides when to compact a session from the context window it believes the model has. It knows the real window for Claude model IDs. It cannot know it for a GPT or Grok model reached through the proxy, because those arrive as a custom model ID it has never seen, so it falls back to a generic default.
+
+Airlock fills that gap with `AIRLOCK_CONTEXT_WINDOW`, which defaults to `272000`. The value is applied only where Claude Code is actually guessing:
+
+| Root model | What Airlock sets |
+| --- | --- |
+| Anthropic (`hybrid-anthropic-root`) | Nothing. Claude Code uses its own per-model window. |
+| OpenAI (`openai-pure`, `hybrid-openai-root`) | `AIRLOCK_CONTEXT_WINDOW` |
+| Grok (`grok-pure`, `hybrid-grok-root`) | `AIRLOCK_CONTEXT_WINDOW` |
+
+Three rules go with it:
+
+- A window you set yourself in `CLAUDE_CODE_AUTO_COMPACT_WINDOW` always wins, on every profile.
+- `AIRLOCK_CONTEXT_WINDOW=auto` tells Airlock to set nothing at all and let Claude Code decide.
+- The value has to be `auto` or a whole number from 100000 to 1000000. Claude Code ignores anything outside that range without a word, so Airlock refuses it up front instead of letting a silently discarded number look applied.
+
+A larger window means fewer compactions, later, each one summarizing more history. That is usually what you want on a long session, but it also means more tokens per request once the session grows, and Claude Code's own warning is worth repeating: overriding the window can raise token usage, especially when resuming a long session. Lower the number or use `auto` if that matters more to you than compaction frequency.
+
+While the variable is set, Claude Code disables the auto-compact control in `/config`. That is why Anthropic roots are left alone: their window is already correct, so taking the control away would cost you something and buy nothing.
+
+### Why the Claude model IDs carry a `[1m]` suffix
+
+Opus 5, Sonnet 5, and Fable 5 have a one million token context window. Claude Code grants it automatically, but only when `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`. Airlock always points that variable at its own session router, so Claude Code stops treating the connection as first party and drops all three models to 200000 tokens.
+
+Nothing reports this. The session simply compacts four times as often as the same model would outside Airlock, which costs more usage rather than less.
+
+Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honours regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allow-list accepts both spellings for that reason.
+
+Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
+
+Two limits still apply. `AIRLOCK_CONTEXT_WINDOW` cannot raise the window, only lower it, because Claude Code takes the smaller of your value and the model's real maximum. And a one million token window is not free on every plan. When an account cannot use it, Claude Code caps the session back to 200000 on its own.
+
 ## Native usage display
 
 Because named workers are real Claude Code Agents, Claude Code owns their cards, state, cancellation, and usage display. Airlock no longer needs a transport wrapper to estimate worker tokens in normal sessions.

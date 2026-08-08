@@ -56,7 +56,7 @@ The setup wizard saves what bare `airlock` starts. New setups recommend the hybr
 
 Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`.
 
-The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before an OpenAI request, so the router registers that one deterministic wire form alongside each enabled full GPT ID. Claude Code still owns every Agent call and tool event.
+The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before a request goes out, so the router registers that one deterministic wire form alongside each enabled full ID that carries the suffix. Claude Code still owns every Agent call and tool event.
 
 The router never sends Claude authorization headers to the OpenAI proxy. It forwards saved Claude login authorization opaquely only to Anthropic. It does not read credential files or log prompts, responses, or headers. Its local diagnostics endpoint keeps only a bounded in-memory list of model, provider, status, byte-count, duration, outcome, and token-count metadata.
 

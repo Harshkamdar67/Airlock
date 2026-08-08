@@ -314,6 +314,9 @@ def build_child_environment(
     router_url: str | None,
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    # A window the user set themselves outranks Airlock's default. Read it before
+    # the proxy cleanup below removes it.
+    user_context_window = environment.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "")
     environment["AIRLOCK_ACTIVE_PROFILE"] = profile
     environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = "1"
     environment.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
@@ -375,7 +378,15 @@ def build_child_environment(
     declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
-    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+    # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
+    # tuning, and refuses to let /config change the window while the variable is
+    # set. Anthropic models already carry accurate windows, so setting it there
+    # only costs tokens and takes the control away. A proxy-routed OpenAI or Grok
+    # model is the case Claude Code genuinely cannot recognise.
+    if user_context_window:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
+    elif context_window != "auto" and profile != "hybrid-anthropic-root":
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
@@ -400,6 +411,22 @@ def validate_max_agents(raw: object) -> str:
     ):
         fail("max_agents must be off or an integer from 1 to 20", 2)
     return raw
+
+
+def context_window_is_valid(value: str) -> bool:
+    """Report whether Claude Code would actually honour this window.
+
+    Claude Code accepts 100000 to 1000000 and silently ignores anything else, so
+    a value outside that range would look applied while doing nothing. The shape
+    rule has to match both launchers exactly: str.isdigit is true for characters
+    int() then refuses, such as a superscript two, and it also accepts leading
+    zeros and a leading plus that the POSIX launcher rejects.
+    """
+    if value == "auto":
+        return True
+    if not re.fullmatch(r"[1-9][0-9]{5,6}", value):
+        return False
+    return 100000 <= int(value) <= 1000000
 
 
 def validate_launch_marker(profile: str) -> None:
@@ -447,8 +474,8 @@ def main() -> int:
     fast_mode = required_request_string(request, "fast_mode", "Fast mode")
     if fast_mode not in {"inherit", "on", "off"}:
         fail("session Fast mode is invalid")
-    if not context_window.isdigit() or int(context_window) <= 0:
-        fail("context window is invalid")
+    if not context_window_is_valid(context_window):
+        fail("context window must be 'auto' or a whole number from 100000 to 1000000")
 
     raw_claude = request.get("claude")
     if not isinstance(raw_claude, str) or not raw_claude:
