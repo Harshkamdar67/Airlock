@@ -169,7 +169,7 @@ The router rejects IDs outside the active allowlist.
 
 ## Hybrid says `Model is not enabled for this session`
 
-Claude Code removes the `[1m]` context suffix before sending a request, for Claude IDs as well as GPT ones. A current installation registers both the exact enabled full ID and that deterministic wire form. It does not register other aliases.
+Claude Code removes the `[1m]` context suffix before sending a request for supported native Claude IDs. Legacy suffixed GPT IDs are normalized to bare IDs at launcher and setup boundaries, so a current installation registers only canonical bare OpenAI IDs plus any deterministic Claude wire form.
 
 Run `airlock bundle`, reinstall Airlock if the bundle is stale, exit the failed session, and start a fresh `airlock hybrid MODEL` session.
 

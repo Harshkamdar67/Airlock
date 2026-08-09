@@ -345,20 +345,20 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
 '@
   [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
   $LegacyLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
-  if ($LegacyLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
+  if ($LegacyLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra$' -or
       $LegacyLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
     throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
   }
-  if ($LegacyLaunch.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra\[1m\]$' -or
-      $LegacyLaunch.Output -notmatch '(?m)^DISCOVERY_MODEL=gpt-5\.6-luna\[1m\]$' -or
+  if ($LegacyLaunch.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^DISCOVERY_MODEL=gpt-5\.6-luna$' -or
       $LegacyLaunch.Output -notmatch '(?m)^SESSION_ROUTER=unset$') {
     throw "Windows session did not pin economical Explore discovery: $($LegacyLaunch.Output)"
   }
   foreach ($ExpectedPickerLine in @(
     'DEFAULT_FABLE=gpt-5.6-sol',
     'DEFAULT_OPUS=gpt-5.6-sol',
-    'DEFAULT_SONNET=gpt-5.6-terra[1m]',
-    'DEFAULT_HAIKU=gpt-5.6-luna[1m]',
+    'DEFAULT_SONNET=gpt-5.6-terra',
+    'DEFAULT_HAIKU=gpt-5.6-luna',
     'FABLE_NAME=gpt-5.6-sol'
   )) {
     if ($LegacyLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedPickerLine))$") {
@@ -447,20 +447,32 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   }
   [IO.File]::WriteAllText($InstalledConfig, $HybridConfig, (New-Object Text.UTF8Encoding($false)))
   $ExplicitOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '-p', 'test')
-  if ($ExplicitOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra\[1m\]$' -or
+  if ($ExplicitOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra$' -or
       $ExplicitOpenAI.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
     throw "Explicit OpenAI profile did not override the hybrid default: $($ExplicitOpenAI.Output)"
   }
   $ExactOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', 'gpt-5.6-luna[1m]', '-p', 'test')
-  if ($ExactOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna\[1m\]$') {
+  if ($ExactOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna$') {
     throw "Exact OpenAI model ID did not launch: $($ExactOpenAI.Output)"
+  }
+  $LegacyHybridPositional = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'gpt-5.6-terra[1m]', '-p', 'test')
+  if ($LegacyHybridPositional.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra$' -or
+      $LegacyHybridPositional.Output -notmatch '(?m)^ARG=gpt-5\.6-terra$' -or
+      $LegacyHybridPositional.Output -match '(?m)^ARG=gpt-5\.6-terra\[1m\]$') {
+    throw "Legacy positional hybrid model was not normalized before launch: $($LegacyHybridPositional.Output)"
+  }
+  $LegacyHybridFlag = Invoke-LauncherProcess $InstalledLauncher @('hybrid', '--model', 'gpt-5.6-luna[1m]', '-p', 'test')
+  if ($LegacyHybridFlag.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-luna$' -or
+      $LegacyHybridFlag.Output -notmatch '(?m)^ARG=gpt-5\.6-luna$' -or
+      $LegacyHybridFlag.Output -match '(?m)^ARG=gpt-5\.6-luna\[1m\]$') {
+    throw "Legacy hybrid --model value was not normalized before launch: $($LegacyHybridFlag.Output)"
   }
   $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-5.6-sol', '-p', 'test')
   if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-sol$') {
     throw "OpenAI --model= form did not launch: $($EqualsOpenAI.Output)"
   }
   $BackgroundLaunch = Invoke-LauncherProcess $InstalledLauncher @('background', '-p', 'test')
-  if ($BackgroundLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna\[1m\]$' -or
+  if ($BackgroundLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna$' -or
       $BackgroundLaunch.Output -notmatch '(?m)^ARG=low$') {
     throw "Background alias did not use the saved background route: $($BackgroundLaunch.Output)"
   }
@@ -620,7 +632,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $HybridGptConfig = $HybridConfig.Replace('AIRLOCK_HYBRID_MODEL=sonnet', 'AIRLOCK_HYBRID_MODEL=terra')
   [IO.File]::WriteAllText($InstalledConfig, $HybridGptConfig, (New-Object Text.UTF8Encoding($false)))
   $HybridGptLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
-  if ($HybridGptLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=gpt-5\.6-terra\[1m\]$' -or
+  if ($HybridGptLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=gpt-5\.6-terra$' -or
       $HybridGptLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-openai-root$') {
     throw "Saved GPT hybrid root did not launch: $($HybridGptLaunch.Output)"
   }

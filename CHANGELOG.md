@@ -19,7 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Grok routes are opt-in. A hybrid session gains Grok workers only when the saved configuration enables them or the root is itself a Grok model. Earlier work in this cycle enabled Grok for every hybrid session, which advertised workers to accounts without a Grok login.
 - Hybrid provider-boundary guidance now names only the providers a session actually enabled, instead of always describing all three.
 - A session that confirms the proxy is signed out of Grok disables the Grok routes rather than offering workers whose first request would fail. An unknown login state leaves the configured routes alone.
-
+- Every canonical OpenAI/GPT model ID is now bare. Legacy GPT IDs ending in `[1m]` remain accepted at launcher, setup, and saved-config input boundaries and normalize immediately; native Claude Opus 5, Sonnet 5, and Fable 5 retain `[1m]`.
 - Session guidance now names only the providers and workers a session actually enabled. A Grok-only session previously spent most of its guidance describing Luna armies and Anthropic workers it could not call.
 - Routine Explore now uses an economical exact discovery model instead of silently inheriting a different premium root. Explore, Plan, and general-purpose still accept any exact model enabled for the active session, and explicit exact choices always win.
 - Native Anthropic roots now leave Claude Code's process-wide auto-compact override unset. The authorized Sol proof above 300,000 tokens did not pass, so Sol now uses the honest bare ID `gpt-5.6-sol` and OpenAI/Grok roots retain the saved conservative fallback. An explicitly exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `AIRLOCK_CONTEXT_WINDOW` still wins for the whole process.

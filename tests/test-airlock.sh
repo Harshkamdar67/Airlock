@@ -300,7 +300,7 @@ fi
 
 normal_output="$(CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$normal_output"
-grep -q '^SMALL_FAST=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
+grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
 grep -q '^ARG=high$' <<<"$normal_output"
 grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
@@ -320,27 +320,27 @@ fi
 grep -q '^ARG=high$' <<<"$override_output"
 
 terra_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" terra -p test)"
-grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$terra_output"
+grep -q '^MODEL=gpt-5.6-terra$' <<<"$terra_output"
 
 custom_config="$repo_root/tests/fixtures/custom.conf"
 configured_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
-grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$configured_output"
-grep -q '^SMALL_FAST=gpt-5.4-mini\[1m\]$' <<<"$configured_output"
+grep -q '^MODEL=gpt-5.6-terra$' <<<"$configured_output"
+grep -q '^SMALL_FAST=gpt-5.4-mini$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
 # The saved OpenAI fallback remains conservative until a >300k proof passes.
 grep -q '^COMPACT_WINDOW=200000$' <<<"$configured_output"
 
 configured_bg_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
-grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$configured_bg_output"
+grep -q '^MODEL=gpt-5.6-luna$' <<<"$configured_bg_output"
 grep -q '^ARG=low$' <<<"$configured_bg_output"
 
 config_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" config)"
 grep -q '^Default profile: openai$' <<<"$config_output"
 grep -q '^Context window: 200000 (saved fallback for OpenAI and Grok roots)$' <<<"$config_output"
-grep -q '^Default command: airlock -> GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
+grep -q '^Default command: airlock -> GPT-5.6 Terra (gpt-5.6-terra)$' <<<"$config_output"
 grep -q '^Hybrid root: Claude Sonnet 5 (claude-sonnet-5\[1m\])$' <<<"$config_output"
-grep -q '^OpenAI root: GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
-grep -q '^Background command: airlock bg -> GPT-5.6 Luna (gpt-5.6-luna\[1m\]) / low effort$' <<<"$config_output"
+grep -q '^OpenAI root: GPT-5.6 Terra (gpt-5.6-terra)$' <<<"$config_output"
+grep -q '^Background command: airlock bg -> GPT-5.6 Luna (gpt-5.6-luna) / low effort$' <<<"$config_output"
 config_alias_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" --config)"
 grep -q '^Default profile: openai$' <<<"$config_alias_output"
 if grep -q '^Worker descendants:' <<<"$config_output"; then
@@ -363,8 +363,8 @@ assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna"}
 assert agents["airlock-sol"]["model"] == "gpt-5.6-sol"
-assert agents["airlock-terra"]["model"] == "gpt-5.6-terra[1m]"
-assert agents["airlock-luna"]["model"] == "gpt-5.6-luna[1m]"
+assert agents["airlock-terra"]["model"] == "gpt-5.6-terra"
+assert agents["airlock-luna"]["model"] == "gpt-5.6-luna"
 assert all("effort" not in agent for agent in agents.values())
 assert all("inherits the session level" in agent["description"] for agent in agents.values())
 assert all(agent["disallowedTools"] == ["Agent"] for agent in agents.values())
@@ -396,7 +396,7 @@ assert "Skill(claude-api *)" in args
 guidance = args[args.index("--append-system-prompt") + 1]
 assert "claude-api skill is blocked" in guidance
 assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose may receive any exact full model ID" in guidance
-assert "pass `model=gpt-5.6-luna[1m]`" in guidance and "Omit `model` only when inheriting the orchestrator is deliberate" in guidance
+assert "pass `model=gpt-5.6-luna`" in guidance and "Omit `model` only when inheriting the orchestrator is deliberate" in guidance
 assert "Use exact Plan" in guidance
 assert "Use exact general-purpose" in guidance and "For an automatic army, launch multiple exact airlock-luna" in guidance
 assert "Agent calls with `run_in_background: true`" in guidance
@@ -414,21 +414,21 @@ grep -q '^OPENAI_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ACTIVE_PROFILE=openai-pure$' <<<"$normal_output"
 grep -q '^ROOT_MODEL=gpt-5.6-sol$' <<<"$normal_output"
-grep -q '^DISCOVERY_MODEL=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
+grep -q '^DISCOVERY_MODEL=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^SESSION_ROUTER=unset$' <<<"$normal_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-terra$' <<<"$normal_output"
-grep -q '^ALLOWED_MODELS=gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-terra\[1m\]$' <<<"$normal_output"
+grep -q '^ALLOWED_MODELS=gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$normal_output"
 grep -q '^EXTRA_AGENTS=$' <<<"$normal_output"
 grep -q '^EXTRA_MODELS=$' <<<"$normal_output"
 grep -q '^AUTH_TOKEN_SET=yes$' <<<"$normal_output"
 grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$normal_output"
 grep -q '^DEFAULT_OPUS=gpt-5.6-sol$' <<<"$normal_output"
-grep -q '^DEFAULT_SONNET=gpt-5.6-terra\[1m\]$' <<<"$normal_output"
-grep -q '^DEFAULT_HAIKU=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
+grep -q '^DEFAULT_SONNET=gpt-5.6-terra$' <<<"$normal_output"
+grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^FABLE_NAME=gpt-5.6-sol$' <<<"$normal_output"
 grep -q '^OPUS_NAME=gpt-5.6-sol$' <<<"$normal_output"
-grep -q '^SONNET_NAME=gpt-5.6-terra\[1m\]$' <<<"$normal_output"
-grep -q '^HAIKU_NAME=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
+grep -q '^SONNET_NAME=gpt-5.6-terra$' <<<"$normal_output"
+grep -q '^HAIKU_NAME=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^FABLE_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^MAX_SUBAGENTS=unset$' <<<"$normal_output"
 grep -q '^SUBAGENT_MODEL=unset$' <<<"$normal_output"
@@ -499,8 +499,8 @@ grep -q '^SONNET_NAME=unset$' <<<"$hybrid_openai_output"
 grep -q '^HAIKU_NAME=unset$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^ROUTER_MODELS=claude-opus-5,claude-opus-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-terra\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
+grep -q '^ROUTER_MODELS=claude-opus-5,claude-opus-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
 hybrid_profile="$hybrid_openai_output" python - <<'PY'
 import json
 import os
@@ -615,7 +615,7 @@ grep -q '^DEFAULT_OPUS=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol,gpt-5.6-terra\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_anthropic_output"
 hybrid_profile="$hybrid_anthropic_output" python - <<'PY'
 import json
 import os
@@ -689,9 +689,9 @@ for disabled in ("Agent(airlock-terra)", "Agent(airlock-opus)", "Agent(airlock-f
     assert disabled not in allowed
 PY
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-sonnet$' <<<"$reduced_output"
-grep -q '^ALLOWED_MODELS=claude-sonnet-5\[1m\],gpt-5.6-luna\[1m\],gpt-5.6-sol$' <<<"$reduced_output"
+grep -q '^ALLOWED_MODELS=claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol$' <<<"$reduced_output"
 
-for root_spec in 'sol:gpt-5.6-sol:openai' 'luna:gpt-5.6-luna[1m]:openai' 'opus:claude-opus-5[1m]:anthropic'; do
+for root_spec in 'sol:gpt-5.6-sol:openai' 'luna:gpt-5.6-luna:openai' 'opus:claude-opus-5[1m]:anthropic'; do
   IFS=':' read -r root_alias expected_model expected_provider <<<"$root_spec"
   root_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid "$root_alias" -p test)"
   grep -Fq "ARG=$expected_model" <<<"$root_output"
@@ -737,7 +737,7 @@ done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
 grep -Fq '"--model", "gpt-5.6-sol", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
-# The unproven OpenAI [1m] path keeps the conservative fallback.
+# OpenAI roots keep the conservative fallback because no long-context proof passed.
 grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_openai_output"
 bare_unknown_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" spark -p test)"
 grep -q '^MODEL=gpt-5.3-codex-spark$' <<<"$bare_unknown_output"
@@ -757,17 +757,31 @@ saved_hybrid_command_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOC
 grep -q '^OPENAI_BRIDGE=1$' <<<"$saved_hybrid_command_output"
 grep -Fq 'ARG=claude-sonnet-5' <<<"$saved_hybrid_command_output"
 saved_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai -p test)"
-grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$saved_openai_output"
+grep -q '^MODEL=gpt-5.6-terra$' <<<"$saved_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$saved_openai_output"
 saved_exact_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai 'gpt-5.6-luna[1m]' -p test)"
-grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_exact_openai_output"
+grep -q '^MODEL=gpt-5.6-luna$' <<<"$saved_exact_openai_output"
+legacy_hybrid_positional_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid 'gpt-5.6-terra[1m]' -p test)"
+grep -q '^ROOT_MODEL=gpt-5.6-terra$' <<<"$legacy_hybrid_positional_output"
+grep -Fq 'ARG=gpt-5.6-terra' <<<"$legacy_hybrid_positional_output"
+if grep -Fq 'ARG=gpt-5.6-terra[1m]' <<<"$legacy_hybrid_positional_output"; then
+  printf 'test: legacy positional hybrid model reached Claude Code without normalization\n' >&2
+  exit 1
+fi
+legacy_hybrid_flag_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid --model 'gpt-5.6-luna[1m]' -p test)"
+grep -q '^ROOT_MODEL=gpt-5.6-luna$' <<<"$legacy_hybrid_flag_output"
+grep -Fq 'ARG=gpt-5.6-luna' <<<"$legacy_hybrid_flag_output"
+if grep -Fq 'ARG=gpt-5.6-luna[1m]' <<<"$legacy_hybrid_flag_output"; then
+  printf 'test: legacy hybrid --model value reached Claude Code without normalization\n' >&2
+  exit 1
+fi
 saved_equals_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai '--model=gpt-5.6-sol' -p test)"
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$saved_equals_openai_output"
 saved_background_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" background -p test)"
-grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_background_output"
+grep -q '^MODEL=gpt-5.6-luna$' <<<"$saved_background_output"
 grep -q '^ARG=low$' <<<"$saved_background_output"
 saved_alias_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" luna -p test)"
-grep -q '^MODEL=gpt-5.6-luna\[1m\]$' <<<"$saved_alias_output"
+grep -q '^MODEL=gpt-5.6-luna$' <<<"$saved_alias_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$saved_alias_output"
 
 anthropic_fast_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_ANTHROPIC_FAST=on AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test)"
@@ -782,7 +796,7 @@ cp "$custom_config" "$saved_gpt_config"
 printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=hybrid' 'AIRLOCK_HYBRID_MODEL=terra' >> "$saved_gpt_config"
 saved_gpt_output="$(AIRLOCK_CONFIG_FILE="$saved_gpt_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$saved_gpt_output"
-grep -Fq 'ARG=gpt-5.6-terra[1m]' <<<"$saved_gpt_output"
+grep -Fq 'ARG=gpt-5.6-terra' <<<"$saved_gpt_output"
 
 invalid_profile_config="$tmp_dir/invalid-profile.conf"
 printf '%s\n' 'AIRLOCK_DEFAULT_PROFILE=invalid' > "$invalid_profile_config"
@@ -823,7 +837,7 @@ value["providers"]["openai"]["detected_plan"] = "pro"
 Path(sys.argv[2]).write_text(json.dumps(value), encoding="utf-8")
 PY
 fast_root_output="$(AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_OPENAI_FAST=on AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test)"
-grep -q '^MODEL=gpt-5.6-sol-fast\[1m\]$' <<<"$fast_root_output"
+grep -q '^MODEL=gpt-5.6-sol-fast$' <<<"$fast_root_output"
 
 skill_opt_in_output="$(AIRLOCK_ALLOW_CLAUDE_API_SKILL=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol -p test)"
 if grep -Fq 'ARG=Skill(claude-api)' <<<"$skill_opt_in_output"; then

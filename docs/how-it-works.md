@@ -31,7 +31,7 @@ A hybrid session starts one temporary router on an unused `127.0.0.1` port. Clau
 The router reads only the top-level model ID needed for routing:
 
 - exact enabled `gpt-*` IDs go to the local OpenAI proxy
-- Claude Code's deterministic wire form also routes to the same provider, such as `gpt-5.6-terra[1m]` becoming `gpt-5.6-terra` or `claude-opus-5[1m]` becoming `claude-opus-5`
+- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5[1m]` becoming `claude-opus-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
 - exact enabled `claude-*` IDs go to `https://api.anthropic.com`
 - exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - unknown or disabled IDs fail closed
@@ -90,7 +90,7 @@ Plan and general-purpose inherit the orchestrator when the call omits `model`. R
 For one call, the main model may pass an exact full model ID:
 
 ```text
-Agent(subagent_type="Explore", model="gpt-5.6-luna[1m]", ...)
+Agent(subagent_type="Explore", model="gpt-5.6-luna", ...)
 Agent(subagent_type="Plan", model="claude-opus-5[1m]", ...)
 ```
 

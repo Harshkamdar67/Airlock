@@ -49,7 +49,7 @@ Each hybrid session also starts a router on a temporary `127.0.0.1` port.
 
 Do not expose either service to a LAN, VPN, container bridge, tunnel, or the public internet. The OpenAI proxy does not require an incoming client password.
 
-The hybrid router accepts only exact enabled model IDs, the deterministic wire form Claude Code creates by removing `[1m]` from any enabled ID that carries it, and a small set of Claude Code API paths. It rejects redirects and exits when its owning launcher exits.
+The hybrid router accepts only exact enabled model IDs, the deterministic wire form Claude Code creates by removing `[1m]` from an enabled native Claude ID that carries it, and a small set of Claude Code API paths. Legacy suffixed GPT IDs are normalized before they can enter the router policy. It rejects redirects and exits when its owning launcher exits.
 
 ## Protect provider credentials
 

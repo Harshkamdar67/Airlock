@@ -22,19 +22,19 @@ SPEC.loader.exec_module(HYBRID)
 ROUTE_POLICY = {
     "routes": {
         "claude-opus-5": "anthropic",
-        "gpt-5.6-luna[1m]": "openai",
+        "gpt-5.6-luna": "openai",
         "gpt-5.6-sol": "openai",
     },
-    "model_ids": ["claude-opus-5", "gpt-5.6-luna[1m]", "gpt-5.6-sol"],
+    "model_ids": ["claude-opus-5", "gpt-5.6-luna", "gpt-5.6-sol"],
     "agent_names": ["airlock-luna", "airlock-opus", "airlock-sol"],
     "extra_model_ids": [],
     "extra_agent_names": [],
-    "discovery_model": "gpt-5.6-luna[1m]",
+    "discovery_model": "gpt-5.6-luna",
     "picker_models": {
         "fable": "gpt-5.6-sol",
         "opus": "gpt-5.6-sol",
         "sonnet": "gpt-5.6-sol",
-        "haiku": "gpt-5.6-luna[1m]",
+        "haiku": "gpt-5.6-luna",
     },
 }
 
@@ -77,12 +77,12 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "hybrid-anthropic-root")
         self.assertEqual(environment["AIRLOCK_SESSION_ROUTER_URL"], "http://127.0.0.1:28471")
         self.assertEqual(environment["AIRLOCK_ROOT_MODEL"], "claude-opus-5")
-        self.assertEqual(environment["AIRLOCK_DISCOVERY_MODEL"], "gpt-5.6-luna[1m]")
+        self.assertEqual(environment["AIRLOCK_DISCOVERY_MODEL"], "gpt-5.6-luna")
         self.assertEqual(environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"], "3")
         self.assertEqual(environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"], "1")
         self.assertEqual(
             environment["AIRLOCK_ALLOWED_AGENT_MODELS"],
-            "claude-opus-5,gpt-5.6-luna[1m],gpt-5.6-sol",
+            "claude-opus-5,gpt-5.6-luna,gpt-5.6-sol",
         )
         self.assertEqual(
             environment["AIRLOCK_ALLOWED_AGENT_NAMES"],
@@ -289,8 +289,8 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna[1m]")
-        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna[1m]")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna")
+        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna")
         for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
             variable = f"ANTHROPIC_DEFAULT_{family}_MODEL"
             self.assertEqual(environment[f"{variable}_NAME"], environment[variable])

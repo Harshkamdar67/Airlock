@@ -363,7 +363,7 @@ for line in sys.stdin:
                 guidance = ACCESS.profile_guidance(policy, profile)
                 self.assertIn("Orchestration: choose the smallest effective path", guidance)
                 self.assertIn("Built-in Explore, Plan, and general-purpose may receive any exact full model ID", guidance)
-                self.assertIn("pass `model=gpt-5.6-luna[1m]`", guidance)
+                self.assertIn("pass `model=gpt-5.6-luna`", guidance)
                 self.assertIn("Omit `model` only when inheriting the orchestrator is deliberate", guidance)
                 self.assertIn("Use exact Plan for read-only technical design", guidance)
                 self.assertIn("Use exact general-purpose for multi-step work", guidance)
@@ -485,11 +485,11 @@ for line in sys.stdin:
         policy["policies"]["extra_usage"] = "ask"
         picker = ACCESS.proxy_picker_models(policy, "openai-pure")
         self.assertEqual(picker["sonnet"], "gpt-5.6-sol")
-        self.assertNotIn("gpt-5.6-terra[1m]", picker.values())
+        self.assertNotIn("gpt-5.6-terra", picker.values())
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
             ACCESS.proxy_picker_models(policy, "openai-pure")["sonnet"],
-            "gpt-5.6-terra[1m]",
+            "gpt-5.6-terra",
         )
 
         policy = ACCESS.default_policy()
@@ -497,15 +497,21 @@ for line in sys.stdin:
         policy["policies"]["extra_usage"] = "ask"
         self.assertEqual(
             ACCESS.discovery_model(policy, "openai-pure"),
-            "gpt-5.6-terra[1m]",
+            "gpt-5.6-terra",
         )
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
             ACCESS.discovery_model(policy, "openai-pure"),
-            "gpt-5.6-luna[1m]",
+            "gpt-5.6-luna",
         )
 
-    def test_natively_1m_anthropic_models_keep_their_window_behind_the_router(self) -> None:
+    def test_openai_catalog_is_bare_and_claude_window_suffixes_remain(self) -> None:
+        openai_models = [profile["model"] for profile in ACCESS.MODEL_PROFILES["openai"].values()]
+        self.assertTrue(openai_models)
+        self.assertTrue(all(model.startswith("gpt-") and not model.endswith("[1m]") for model in openai_models))
+        for route in ("opus", "sonnet", "fable"):
+            self.assertTrue(ACCESS.MODEL_PROFILES["anthropic"][route]["model"].endswith("[1m]"))
+
         # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
         # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com.
         # Airlock always points it at the session router, which silently drops
@@ -519,10 +525,10 @@ for line in sys.stdin:
         # Haiku 4.5 has no native 1M window, so claiming one would let the
         # session grow past what the model actually accepts.
         self.assertFalse(anthropic["haiku"]["model"].endswith("[1m]"))
-        # The suffix is a Claude Code instruction. Claude Code strips it and
-        # moves the request into the context-1m beta header, so the allow-list
-        # has to admit the base name for every provider, not just OpenAI.
+        # Native Claude models use the suffix to request their larger context
+        # window, while legacy GPT suffixes normalize defensively to bare IDs.
         self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
+        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra[1m]"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("grok-4.5"), "grok-4.5")
 
@@ -538,27 +544,27 @@ for line in sys.stdin:
             self.assertEqual(pure["routes"]["gpt-5.6-terra"], "openai")
             self.assertEqual(
                 set(pure["model_ids"]),
-                {"gpt-5.6-sol", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
+                {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
             )
             self.assertIn("gpt-5.6-sol", pure["model_ids"])
-            self.assertEqual(pure["discovery_model"], "gpt-5.6-luna[1m]")
+            self.assertEqual(pure["discovery_model"], "gpt-5.6-luna")
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "discovery-model"),
-                "gpt-5.6-luna[1m]",
+                "gpt-5.6-luna",
             )
             self.assertEqual(pure["picker_models"], {
                 "fable": "gpt-5.6-sol",
                 "opus": "gpt-5.6-sol",
-                "sonnet": "gpt-5.6-terra[1m]",
-                "haiku": "gpt-5.6-luna[1m]",
+                "sonnet": "gpt-5.6-terra",
+                "haiku": "gpt-5.6-luna",
             })
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "picker-models"),
-                "fable=gpt-5.6-sol\nhaiku=gpt-5.6-luna[1m]\n"
-                "opus=gpt-5.6-sol\nsonnet=gpt-5.6-terra[1m]",
+                "fable=gpt-5.6-sol\nhaiku=gpt-5.6-luna\n"
+                "opus=gpt-5.6-sol\nsonnet=gpt-5.6-terra",
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna[1m]")
+            self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
             self.assertEqual(hybrid["picker_models"], {})
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
             # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
@@ -568,7 +574,7 @@ for line in sys.stdin:
             self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
             self.assertIn("gpt-5.6-sol", hybrid["model_ids"])
             self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
-            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
             policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
@@ -577,10 +583,10 @@ for line in sys.stdin:
 
             policy["providers"]["openai"]["detected_plan"] = "pro"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertIn("gpt-5.6-luna-fast", hybrid["model_ids"])
             policy["policies"]["swarm_fast"] = "off"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
             policy["policies"]["extra_usage"] = "never"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")

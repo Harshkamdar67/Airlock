@@ -22,7 +22,7 @@ AIRLOCK_MAIN_EFFORT=high
 AIRLOCK_BG_MODEL=sol
 AIRLOCK_BG_EFFORT=medium
 # Advanced: model for lightweight Claude Code requests such as titles.
-AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna[1m]
+AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna
 # Effort for every airlock-* worker. "inherit" means a worker follows the
 # session level, so /effort moves the root and its workers together, including
 # mid-session. Any named level pins workers and /effort no longer reaches them.

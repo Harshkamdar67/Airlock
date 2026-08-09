@@ -178,17 +178,17 @@ MODEL_PROFILES = {
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },
         "terra": {
-            "agent": "airlock-terra", "model": "gpt-5.6-terra[1m]", "effort": "high",
+            "agent": "airlock-terra", "model": "gpt-5.6-terra", "effort": "high",
             "capability": "general", "cost": "standard",
             "strength": "independent second opinions, adversarial review, competing designs, and debugging hypotheses",
         },
         "luna": {
-            "agent": "airlock-luna", "model": "gpt-5.6-luna[1m]", "effort": "max",
+            "agent": "airlock-luna", "model": "gpt-5.6-luna", "effort": "max",
             "capability": "utility", "cost": "economical",
             "strength": "high-volume discovery, webpage reading, extraction, lookup, summarization, test or log triage, and small mechanical work",
         },
         "luna-fast": {
-            "agent": "airlock-luna-fast", "model": "gpt-5.6-luna-fast[1m]", "effort": "max",
+            "agent": "airlock-luna-fast", "model": "gpt-5.6-luna-fast", "effort": "max",
             "capability": "utility", "cost": "economical-fast",
             "strength": "priority-processed high-volume discovery, reading, extraction, lookup, summarization, and triage on eligible OpenAI plans",
         },
@@ -1924,14 +1924,13 @@ def enabled_profile_workers(policy: dict[str, Any], profile: str) -> list[dict[s
 
 
 def wire_model_id(model: str) -> str:
-    """Return the model id that actually reaches the provider.
+    """Return the model ID that reaches the provider.
 
-    The [1m] suffix is a Claude Code instruction, not part of any provider's
-    model name. Claude Code strips it and moves the request for a 1M window
-    into the context-1m beta header, so the router only ever sees the base
-    name and the allow-list has to carry both forms. This used to apply to
-    OpenAI alone, which was correct only while OpenAI was the only provider
-    whose ids carried the suffix.
+    Claude Code uses ``[1m]`` only for the supported native Claude models;
+    it strips that instruction before sending the request. Legacy GPT IDs
+    carrying the old suffix are normalized to their bare ID as a defensive
+    compatibility measure, but every canonical OpenAI catalog and route is
+    bare.
     """
     if model.endswith("[1m]"):
         return model.removesuffix("[1m]")

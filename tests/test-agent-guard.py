@@ -161,7 +161,7 @@ class AgentGuardTests(unittest.TestCase):
                 self.assert_denied(self.invoke("openai-pure", {"subagent_type": name}))
 
     def test_builtins_accept_exact_enabled_models_and_inherit_by_default(self) -> None:
-        openai_models = "gpt-5.6-luna[1m],gpt-5.6-sol"
+        openai_models = "gpt-5.6-luna,gpt-5.6-sol"
         hybrid_models = openai_models + ",claude-opus-5[1m],claude-sonnet-5[1m]"
         for name in ("Explore", "Plan", "general-purpose"):
             with self.subTest(name=name, mode="inherit"):
@@ -169,7 +169,7 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(name=name, mode="openai"):
                 self.assertIsNone(self.invoke(
                     "openai-pure",
-                    {"subagent_type": name, "model": "gpt-5.6-luna[1m]"},
+                    {"subagent_type": name, "model": "gpt-5.6-luna"},
                     allowed_models=openai_models,
                 ))
             with self.subTest(name=name, mode="hybrid-claude"):
@@ -180,17 +180,17 @@ class AgentGuardTests(unittest.TestCase):
                 ))
 
     def test_explore_avoids_accidental_premium_inheritance_but_keeps_exact_choice(self) -> None:
-        models = "gpt-5.6-luna[1m],gpt-5.6-sol"
+        models = "gpt-5.6-luna,gpt-5.6-sol"
         denied = self.invoke(
             "openai-pure",
             {"subagent_type": "Explore", "prompt": "trace"},
             allowed_models=models,
-            discovery_model="gpt-5.6-luna[1m]",
+            discovery_model="gpt-5.6-luna",
             root_model="gpt-5.6-sol",
         )
         self.assert_denied(denied)
         self.assertIn(
-            "gpt-5.6-luna[1m]",
+            "gpt-5.6-luna",
             denied["hookSpecificOutput"]["permissionDecisionReason"],
         )
         self.assertIsNone(self.invoke(
@@ -201,15 +201,15 @@ class AgentGuardTests(unittest.TestCase):
                 "prompt": "deep trace",
             },
             allowed_models=models,
-            discovery_model="gpt-5.6-luna[1m]",
+            discovery_model="gpt-5.6-luna",
             root_model="gpt-5.6-sol",
         ))
         self.assertIsNone(self.invoke(
             "openai-pure",
             {"subagent_type": "Explore", "prompt": "trace"},
             allowed_models=models,
-            discovery_model="gpt-5.6-luna[1m]",
-            root_model="gpt-5.6-luna[1m]",
+            discovery_model="gpt-5.6-luna",
+            root_model="gpt-5.6-luna",
         ))
         for name in ("Plan", "general-purpose"):
             with self.subTest(name=name):
@@ -217,22 +217,23 @@ class AgentGuardTests(unittest.TestCase):
                     "openai-pure",
                     {"subagent_type": name},
                     allowed_models=models,
-                    discovery_model="gpt-5.6-luna[1m]",
+                    discovery_model="gpt-5.6-luna",
                     root_model="gpt-5.6-sol",
                 ))
         self.assert_denied(self.invoke(
             "openai-pure",
             {"subagent_type": "Explore"},
             allowed_models=models,
-            discovery_model="gpt-5.6-terra[1m]",
+            discovery_model="gpt-5.6-terra",
             root_model="gpt-5.6-sol",
         ))
 
     def test_builtins_reject_missing_disabled_cross_profile_and_alias_models(self) -> None:
-        allowed = "gpt-5.6-luna[1m],gpt-5.6-sol"
+        allowed = "gpt-5.6-luna,gpt-5.6-sol"
         for model, models in (
-            ("gpt-5.6-luna[1m]", None),
-            ("gpt-5.6-luna-fast[1m]", allowed),
+            ("gpt-5.6-luna", None),
+            ("gpt-5.6-luna[1m]", allowed),
+            ("gpt-5.6-luna-fast", allowed),
             ("claude-opus-5[1m]", allowed),
             ("inherit", allowed),
             ("sonnet", allowed),

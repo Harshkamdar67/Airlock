@@ -21,8 +21,6 @@ $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
 $SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol' }
-# Canonicalize configs written before Sol's unverified [1m] label was removed.
-if (($SmallFast -replace '\[1m\]$', '') -eq 'gpt-5.6-sol') { $SmallFast = 'gpt-5.6-sol' }
 $ExplicitContextWin = Test-Path Env:\AIRLOCK_CONTEXT_WINDOW
 $ContextWin = if ($ExplicitContextWin) { [string]$env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 # A window the user set themselves outranks Airlock's default. Record it before
@@ -50,6 +48,21 @@ $OpenAIFast = if ($env:AIRLOCK_OPENAI_FAST) { $env:AIRLOCK_OPENAI_FAST } elseif 
 $AnthropicFast = if ($env:AIRLOCK_ANTHROPIC_FAST) { $env:AIRLOCK_ANTHROPIC_FAST } elseif ($ConfigValues.ContainsKey('AIRLOCK_ANTHROPIC_FAST')) { $ConfigValues['AIRLOCK_ANTHROPIC_FAST'] } else { 'off' }
 $ExtraUsagePolicy = if ($env:AIRLOCK_EXTRA_USAGE_POLICY) { $env:AIRLOCK_EXTRA_USAGE_POLICY } elseif ($ConfigValues.ContainsKey('AIRLOCK_EXTRA_USAGE_POLICY')) { $ConfigValues['AIRLOCK_EXTRA_USAGE_POLICY'] } else { 'ask' }
 $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOCK_GPT_EFFORT_CAPABILITIES } elseif ($ConfigValues.ContainsKey('AIRLOCK_GPT_EFFORT_CAPABILITIES')) { $ConfigValues['AIRLOCK_GPT_EFFORT_CAPABILITIES'] } else { 'effort,xhigh_effort,max_effort' }
+
+function Normalize-OpenAIModelId {
+  param([string]$Model)
+  if ($Model -and $Model.StartsWith('gpt-') -and $Model.EndsWith('[1m]')) {
+    return $Model.Substring(0, $Model.Length - 4)
+  }
+  return $Model
+}
+
+$SmallFast = Normalize-OpenAIModelId $SmallFast
+$DefaultHybridModel = Normalize-OpenAIModelId $DefaultHybridModel
+$DefaultOpenAIModel = Normalize-OpenAIModelId $DefaultOpenAIModel
+$DefaultBgModel = Normalize-OpenAIModelId $DefaultBgModel
+# Legacy GPT [1m] values remain accepted at launcher boundaries, but all
+# resolved OpenAI IDs are bare before they reach the session policy.
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
 $env:AIRLOCK_GPT_EFFORT_CAPABILITIES = $GptEffortCapabilities
@@ -67,15 +80,15 @@ $ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGE
 
 $Models = @{
   'sol'      = @('gpt-5.6-sol',        'GPT-5.6 Sol')
-  'sol-fast' = @('gpt-5.6-sol-fast[1m]',   'GPT-5.6 Sol Fast')
-  'terra'    = @('gpt-5.6-terra[1m]',      'GPT-5.6 Terra')
-  'luna'     = @('gpt-5.6-luna[1m]',       'GPT-5.6 Luna')
-  '5.5'      = @('gpt-5.5[1m]',            'GPT-5.5')
-  '5.4'      = @('gpt-5.4[1m]',            'GPT-5.4')
-  'mini'     = @('gpt-5.4-mini[1m]',       'GPT-5.4 Mini')
-  '5.3'      = @('gpt-5.3-codex[1m]',      'GPT-5.3 Codex')
+  'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
+  'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
+  'luna'     = @('gpt-5.6-luna',       'GPT-5.6 Luna')
+  '5.5'      = @('gpt-5.5',            'GPT-5.5')
+  '5.4'      = @('gpt-5.4',            'GPT-5.4')
+  'mini'     = @('gpt-5.4-mini',       'GPT-5.4 Mini')
+  '5.3'      = @('gpt-5.3-codex',      'GPT-5.3 Codex')
   'spark'    = @('gpt-5.3-codex-spark',    'GPT-5.3 Codex Spark')
-  '5.2'      = @('gpt-5.2[1m]',            'GPT-5.2')
+  '5.2'      = @('gpt-5.2',            'GPT-5.2')
 }
 
 $GrokModels = @{
@@ -85,8 +98,8 @@ $GrokModels = @{
 
 $HybridRoots = @{
   'sol'    = @('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai')
-  'terra'  = @('gpt-5.6-terra[1m]', 'GPT-5.6 Terra', 'openai')
-  'luna'   = @('gpt-5.6-luna[1m]', 'GPT-5.6 Luna', 'openai')
+  'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
+  'luna'   = @('gpt-5.6-luna', 'GPT-5.6 Luna', 'openai')
   # Claude Code only grants these models their native 1M window when
   # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
   # always points it at the session router. The [1m] suffix is the one lever
@@ -257,9 +270,9 @@ function Invoke-AccessPolicy {
 
 function Test-FastRootModel {
   param([string]$Model)
-  $route = if ($Model -in @('gpt-5.6-sol-fast', 'gpt-5.6-sol-fast[1m]')) {
+  $route = if ($Model -eq 'gpt-5.6-sol-fast') {
     'sol-fast'
-  } elseif ($Model -in @('gpt-5.6-luna-fast', 'gpt-5.6-luna-fast[1m]')) {
+  } elseif ($Model -eq 'gpt-5.6-luna-fast') {
     'luna-fast'
   } else {
     return
@@ -458,10 +471,11 @@ function Get-ModelProvider {
 
 function Resolve-OpenAIAlias {
   param([string]$Model)
+  $Model = Normalize-OpenAIModelId $Model
   if ($Models.ContainsKey($Model)) { return $Model }
   foreach ($alias in $Models.Keys) {
     $exact = [string]$Models[$alias][0]
-    if ($Model -eq $exact -or $Model -eq $exact.Replace('[1m]', '')) { return $alias }
+    if ($Model -eq $exact) { return $alias }
   }
   return $null
 }
@@ -603,8 +617,8 @@ function Select-HybridRoot {
   Write-Host 'Choose the Airlock hybrid orchestrator:'
   Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5[1m])'
   Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol)'
-  Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])'
-  Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])'
+  Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra)'
+  Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna)'
   Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'
   Write-Host '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
@@ -645,10 +659,12 @@ if (-not $DefaultOpenAIAlias) {
   exit 2
 }
 $DefaultOpenAIModel = $DefaultOpenAIAlias
-if (-not $HybridRoots.ContainsKey($DefaultHybridModel)) {
+$hybridOpenAIAlias = Resolve-OpenAIAlias $DefaultHybridModel
+if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
   [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
   exit 2
 }
+if ($hybridOpenAIAlias -in @('sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 $DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
 if (-not $DefaultBgAlias) {
   [Console]::Error.WriteLine("airlock: unsupported saved background model '$DefaultBgModel'")
@@ -848,11 +864,26 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   }
 
   $rootAlias = $null
-  if ($hybridArgs.Count -gt 0 -and $HybridRoots.ContainsKey($hybridArgs[0])) {
-    $rootAlias = $hybridArgs[0]
-    if ($hybridArgs.Count -gt 1) { $hybridArgs = @($hybridArgs[1..($hybridArgs.Count - 1)]) } else { $hybridArgs = @() }
+  if ($hybridArgs.Count -gt 0) {
+    $hybridCandidate = Normalize-OpenAIModelId $hybridArgs[0]
+    if ($HybridRoots.ContainsKey($hybridCandidate)) {
+      $rootAlias = $hybridCandidate
+    } else {
+      $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
+      if ($hybridCandidateAlias -in @('sol', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
+    }
+    if ($rootAlias) {
+      if ($hybridArgs.Count -gt 1) { $hybridArgs = @($hybridArgs[1..($hybridArgs.Count - 1)]) } else { $hybridArgs = @() }
+    }
   }
 
+  for ($i = 0; $i -lt $hybridArgs.Count; $i++) {
+    if ($hybridArgs[$i] -eq '--model' -or $hybridArgs[$i] -eq '-m') {
+      if ($i + 1 -lt $hybridArgs.Count) { $hybridArgs[$i + 1] = Normalize-OpenAIModelId $hybridArgs[$i + 1] }
+    } elseif ($hybridArgs[$i] -like '--model=*') {
+      $hybridArgs[$i] = '--model=' + (Normalize-OpenAIModelId $hybridArgs[$i].Substring('--model='.Length))
+    }
+  }
   $explicitModel = Get-ExplicitModel $hybridArgs
   if (-not $rootAlias -and -not $explicitModel) {
     $rootAlias = if ($chooseRoot) { Select-HybridRoot } else { $DefaultHybridModel }

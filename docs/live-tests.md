@@ -156,7 +156,7 @@ Repeat with Sonnet only if Opus is disabled and Sonnet has separate authorizatio
 
 Authorize OpenAI, exact Luna Fast, harmless task content, Fast state, extra-usage state, and exact worker count.
 
-Verify that the sanitized plan is `prolite` or `pro`, proxy support is verified, the route is `luna-fast`, and the model is `gpt-5.6-luna-fast[1m]`.
+Verify that the sanitized plan is `prolite` or `pro`, proxy support is verified, the route is `luna-fast`, and the model is `gpt-5.6-luna-fast`.
 
 An ineligible `on` request must fail without substitution. Do not test Sol Fast unless it has separate explicit root authorization.
 

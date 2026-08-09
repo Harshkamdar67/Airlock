@@ -122,6 +122,19 @@ if [[ -f "$config_file" ]]; then
   done < "$config_file"
 fi
 
+normalize_openai_model_id() {
+  local model="$1"
+  if [[ "$model" == gpt-* && "$model" == *'[1m]' ]]; then
+    model="${model%\[1m\]}"
+  fi
+  printf '%s' "$model"
+}
+
+config_model="$(normalize_openai_model_id "$config_model")"
+config_hybrid_model="$(normalize_openai_model_id "$config_hybrid_model")"
+config_bg_model="$(normalize_openai_model_id "$config_bg_model")"
+config_small_fast_model="$(normalize_openai_model_id "$config_small_fast_model")"
+
 proxy_url="${AIRLOCK_PROXY_URL:-${config_proxy_url:-http://127.0.0.1:18765}}"
 proxy_config_dir="${CCP_CONFIG_DIR:-${AIRLOCK_PROXY_CONFIG_DIR:-$config_proxy_config_dir}}"
 proxy_state_home="${XDG_STATE_HOME:-${AIRLOCK_PROXY_STATE_HOME:-$config_proxy_state_home}}"
@@ -137,10 +150,9 @@ if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$defaul
   proxy_state_home="$config_root/proxy-state"
 fi
 background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol}}}"
-# Canonicalize configs written before Sol's unverified [1m] label was removed.
-if [[ "${background_model%\[1m\]}" == 'gpt-5.6-sol' ]]; then
-  background_model='gpt-5.6-sol'
-fi
+background_model="$(normalize_openai_model_id "$background_model")"
+# Legacy GPT [1m] values remain accepted at launcher boundaries, but all
+# resolved OpenAI IDs are bare before they reach the session policy.
 explicit_context_window=0
 if [[ -n "${AIRLOCK_CONTEXT_WINDOW+x}" ]]; then
   explicit_context_window=1
@@ -167,6 +179,9 @@ default_hybrid_model="${AIRLOCK_HYBRID_MODEL:-${config_hybrid_model:-sonnet}}"
 default_openai_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
 default_grok_model="${AIRLOCK_GROK_MODEL:-${config_grok_model:-grok}}"
 default_bg_model="${AIRLOCK_BG_MODEL:-${config_bg_model:-sol}}"
+default_hybrid_model="$(normalize_openai_model_id "$default_hybrid_model")"
+default_openai_model="$(normalize_openai_model_id "$default_openai_model")"
+default_bg_model="$(normalize_openai_model_id "$default_bg_model")"
 openai_fast_policy="${AIRLOCK_OPENAI_FAST:-${config_openai_fast:-off}}"
 anthropic_fast_policy="${AIRLOCK_ANTHROPIC_FAST:-${config_anthropic_fast:-off}}"
 extra_usage_policy="${AIRLOCK_EXTRA_USAGE_POLICY:-${config_extra_usage:-ask}}"
@@ -418,17 +433,19 @@ confirm_anthropic_fast() {
 }
 
 resolve_model() {
-  case "$1" in
+  local requested_model
+  requested_model="$(normalize_openai_model_id "$1")"
+  case "$requested_model" in
     sol|gpt-5.6-sol) selected_model='gpt-5.6-sol'; model_name='GPT-5.6 Sol' ;;
-    sol-fast|gpt-5.6-sol-fast|'gpt-5.6-sol-fast[1m]') selected_model='gpt-5.6-sol-fast[1m]'; model_name='GPT-5.6 Sol Fast' ;;
-    terra|gpt-5.6-terra|'gpt-5.6-terra[1m]') selected_model='gpt-5.6-terra[1m]'; model_name='GPT-5.6 Terra' ;;
-    luna|gpt-5.6-luna|'gpt-5.6-luna[1m]') selected_model='gpt-5.6-luna[1m]'; model_name='GPT-5.6 Luna' ;;
-    5.5|gpt-5.5|'gpt-5.5[1m]') selected_model='gpt-5.5[1m]'; model_name='GPT-5.5' ;;
-    5.4|gpt-5.4|'gpt-5.4[1m]') selected_model='gpt-5.4[1m]'; model_name='GPT-5.4' ;;
-    mini|5.4-mini|gpt-5.4-mini|'gpt-5.4-mini[1m]') selected_model='gpt-5.4-mini[1m]'; model_name='GPT-5.4 Mini' ;;
-    5.3|gpt-5.3-codex|'gpt-5.3-codex[1m]') selected_model='gpt-5.3-codex[1m]'; model_name='GPT-5.3 Codex' ;;
+    sol-fast|gpt-5.6-sol-fast) selected_model='gpt-5.6-sol-fast'; model_name='GPT-5.6 Sol Fast' ;;
+    terra|gpt-5.6-terra) selected_model='gpt-5.6-terra'; model_name='GPT-5.6 Terra' ;;
+    luna|gpt-5.6-luna) selected_model='gpt-5.6-luna'; model_name='GPT-5.6 Luna' ;;
+    5.5|gpt-5.5) selected_model='gpt-5.5'; model_name='GPT-5.5' ;;
+    5.4|gpt-5.4) selected_model='gpt-5.4'; model_name='GPT-5.4' ;;
+    mini|5.4-mini|gpt-5.4-mini) selected_model='gpt-5.4-mini'; model_name='GPT-5.4 Mini' ;;
+    5.3|gpt-5.3-codex) selected_model='gpt-5.3-codex'; model_name='GPT-5.3 Codex' ;;
     spark|5.3-spark|gpt-5.3-codex-spark) selected_model='gpt-5.3-codex-spark'; model_name='GPT-5.3 Codex Spark' ;;
-    5.2|gpt-5.2|'gpt-5.2[1m]') selected_model='gpt-5.2[1m]'; model_name='GPT-5.2' ;;
+    5.2|gpt-5.2) selected_model='gpt-5.2'; model_name='GPT-5.2' ;;
     *)
       printf "airlock: unsupported model '%s'\n" "$1" >&2
       print_models >&2
@@ -438,9 +455,9 @@ resolve_model() {
 }
 
 validate_fast_root_model() {
-  case "$1" in
-    gpt-5.6-sol-fast|'gpt-5.6-sol-fast[1m]') run_access fast-check --route sol-fast >/dev/null ;;
-    gpt-5.6-luna-fast|'gpt-5.6-luna-fast[1m]') run_access fast-check --route luna-fast >/dev/null ;;
+  case "$(normalize_openai_model_id "$1")" in
+    gpt-5.6-sol-fast) run_access fast-check --route sol-fast >/dev/null ;;
+    gpt-5.6-luna-fast) run_access fast-check --route luna-fast >/dev/null ;;
   esac
 }
 
@@ -455,9 +472,9 @@ model_provider() {
 
 resolve_hybrid_alias() {
   case "$1" in
-    sol) root_model='gpt-5.6-sol'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
-    terra) root_model='gpt-5.6-terra[1m]'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
-    luna) root_model='gpt-5.6-luna[1m]'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
+    sol|gpt-5.6-sol) root_model='gpt-5.6-sol'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
+    terra|gpt-5.6-terra) root_model='gpt-5.6-terra'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
+    luna|gpt-5.6-luna) root_model='gpt-5.6-luna'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
     # Claude Code only grants these models their native 1M window when
     # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
     # always points it at the session router. The [1m] suffix is the one lever
@@ -949,8 +966,8 @@ select_hybrid_root() {
     'Choose the Airlock hybrid orchestrator:' \
     '  1) Claude Sonnet 5 (claude-sonnet-5[1m])' \
     '  2) GPT-5.6 Sol (gpt-5.6-sol)' \
-    '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' \
-    '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' \
+    '  3) GPT-5.6 Terra (gpt-5.6-terra)' \
+    '  4) GPT-5.6 Luna (gpt-5.6-luna)' \
     '  5) Claude Opus 5 (claude-opus-5[1m])' \
     '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
@@ -1061,8 +1078,9 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     shift
   fi
   root_alias=''
-  if resolve_hybrid_alias "${1:-}" 2>/dev/null; then
-    root_alias="$1"
+  hybrid_candidate="$(normalize_openai_model_id "${1:-}")"
+  if resolve_hybrid_alias "$hybrid_candidate" 2>/dev/null; then
+    root_alias="$hybrid_candidate"
     shift
   fi
 
@@ -1075,10 +1093,12 @@ if [[ "${1:-}" == 'hybrid' ]]; then
         printf 'airlock: --model requires a value.\n' >&2
         exit 2
       fi
-      explicit_model="${hybrid_args[$((index + 1))]}"
+      explicit_model="$(normalize_openai_model_id "${hybrid_args[$((index + 1))]}")"
+      hybrid_args[$((index + 1))]="$explicit_model"
       break
     elif [[ "$argument" == --model=* ]]; then
-      explicit_model="${argument#--model=}"
+      explicit_model="$(normalize_openai_model_id "${argument#--model=}")"
+      hybrid_args[$index]="--model=$explicit_model"
       break
     fi
   done

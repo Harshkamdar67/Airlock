@@ -272,7 +272,7 @@ read_config_value AIRLOCK_BG_MODEL sol
 default_bg_model="$CONFIG_VALUE"
 read_config_value AIRLOCK_BG_EFFORT medium
 default_bg_effort="$CONFIG_VALUE"
-read_config_value AIRLOCK_SMALL_FAST_MODEL 'gpt-5.6-luna[1m]'
+read_config_value AIRLOCK_SMALL_FAST_MODEL 'gpt-5.6-luna'
 default_utility_wire="$CONFIG_VALUE"
 read_config_value AIRLOCK_WORKER_EFFORT inherit
 default_worker_effort="$CONFIG_VALUE"
@@ -340,17 +340,45 @@ if [[ "$default_claude_plan" == 'unknown' ]]; then
   fi
 fi
 
+normalize_openai_model_id() {
+  local model="$1"
+  if [[ "$model" == gpt-* && "$model" == *'[1m]' ]]; then
+    model="${model%\[1m\]}"
+  fi
+  printf '%s' "$model"
+}
+
+setup_model_alias() {
+  local model
+  model="$(normalize_openai_model_id "$1")"
+  case "$model" in
+    gpt-5.6-sol) printf 'sol' ;;
+    gpt-5.6-sol-fast) printf 'sol-fast' ;;
+    gpt-5.6-terra) printf 'terra' ;;
+    gpt-5.6-luna) printf 'luna' ;;
+    gpt-5.5) printf '5.5' ;;
+    gpt-5.4) printf '5.4' ;;
+    gpt-5.4-mini) printf 'mini' ;;
+    gpt-5.3-codex) printf '5.3' ;;
+    gpt-5.3-codex-spark) printf 'spark' ;;
+    gpt-5.2) printf '5.2' ;;
+    *) printf '%s' "$model" ;;
+  esac
+}
+
 utility_alias_from_wire() {
-  case "$1" in
+  local wire_model
+  wire_model="$(normalize_openai_model_id "$1")"
+  case "$wire_model" in
     gpt-5.6-sol) UTILITY_ALIAS='sol' ;;
-    'gpt-5.6-terra[1m]'|gpt-5.6-terra) UTILITY_ALIAS='terra' ;;
-    'gpt-5.6-luna[1m]'|gpt-5.6-luna) UTILITY_ALIAS='luna' ;;
-    'gpt-5.5[1m]'|gpt-5.5) UTILITY_ALIAS='5.5' ;;
-    'gpt-5.4[1m]'|gpt-5.4) UTILITY_ALIAS='5.4' ;;
-    'gpt-5.4-mini[1m]'|gpt-5.4-mini) UTILITY_ALIAS='mini' ;;
-    'gpt-5.3-codex[1m]'|gpt-5.3-codex) UTILITY_ALIAS='5.3' ;;
+    gpt-5.6-terra) UTILITY_ALIAS='terra' ;;
+    gpt-5.6-luna) UTILITY_ALIAS='luna' ;;
+    gpt-5.5) UTILITY_ALIAS='5.5' ;;
+    gpt-5.4) UTILITY_ALIAS='5.4' ;;
+    gpt-5.4-mini) UTILITY_ALIAS='mini' ;;
+    gpt-5.3-codex) UTILITY_ALIAS='5.3' ;;
     gpt-5.3-codex-spark) UTILITY_ALIAS='spark' ;;
-    'gpt-5.2[1m]'|gpt-5.2) UTILITY_ALIAS='5.2' ;;
+    gpt-5.2) UTILITY_ALIAS='5.2' ;;
     *) UTILITY_ALIAS='sol' ;;
   esac
 }
@@ -362,15 +390,15 @@ set_model_info() {
     fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
-    sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast[1m]'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
-    terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra[1m]'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
-    luna) MODEL_TITLE='GPT-5.6 Luna'; MODEL_ID='gpt-5.6-luna[1m]'; MODEL_DETAIL='Discovery, triage, and bounded work. Economical usage.' ;;
-    5.5) MODEL_TITLE='GPT-5.5'; MODEL_ID='gpt-5.5[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
-    5.4) MODEL_TITLE='GPT-5.4'; MODEL_ID='gpt-5.4[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
-    mini) MODEL_TITLE='GPT-5.4 Mini'; MODEL_ID='gpt-5.4-mini[1m]'; MODEL_DETAIL='Small OpenAI root.' ;;
-    5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex[1m]'; MODEL_DETAIL='Supported Codex root.' ;;
+    sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
+    terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
+    luna) MODEL_TITLE='GPT-5.6 Luna'; MODEL_ID='gpt-5.6-luna'; MODEL_DETAIL='Discovery, triage, and bounded work. Economical usage.' ;;
+    5.5) MODEL_TITLE='GPT-5.5'; MODEL_ID='gpt-5.5'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    5.4) MODEL_TITLE='GPT-5.4'; MODEL_ID='gpt-5.4'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    mini) MODEL_TITLE='GPT-5.4 Mini'; MODEL_ID='gpt-5.4-mini'; MODEL_DETAIL='Small OpenAI root.' ;;
+    5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex'; MODEL_DETAIL='Supported Codex root.' ;;
     spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
-    5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2[1m]'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2'; MODEL_DETAIL='Supported OpenAI root.' ;;
     grok) MODEL_TITLE='Grok 4.5'; MODEL_ID='grok-4.5'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
     composer) MODEL_TITLE='Grok Composer 2.5 Fast'; MODEL_ID='grok-composer-2.5-fast'; MODEL_DETAIL='Discovery, triage, and bounded mechanical work. Economical usage.' ;;
     *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
@@ -385,15 +413,15 @@ model_summary() {
 wire_model_from_alias() {
   case "$1" in
     sol) WIRE_MODEL='gpt-5.6-sol' ;;
-    sol-fast) WIRE_MODEL='gpt-5.6-sol-fast[1m]' ;;
-    terra) WIRE_MODEL='gpt-5.6-terra[1m]' ;;
-    luna) WIRE_MODEL='gpt-5.6-luna[1m]' ;;
-    5.5) WIRE_MODEL='gpt-5.5[1m]' ;;
-    5.4) WIRE_MODEL='gpt-5.4[1m]' ;;
-    mini) WIRE_MODEL='gpt-5.4-mini[1m]' ;;
-    5.3) WIRE_MODEL='gpt-5.3-codex[1m]' ;;
+    sol-fast) WIRE_MODEL='gpt-5.6-sol-fast' ;;
+    terra) WIRE_MODEL='gpt-5.6-terra' ;;
+    luna) WIRE_MODEL='gpt-5.6-luna' ;;
+    5.5) WIRE_MODEL='gpt-5.5' ;;
+    5.4) WIRE_MODEL='gpt-5.4' ;;
+    mini) WIRE_MODEL='gpt-5.4-mini' ;;
+    5.3) WIRE_MODEL='gpt-5.3-codex' ;;
     spark) WIRE_MODEL='gpt-5.3-codex-spark' ;;
-    5.2) WIRE_MODEL='gpt-5.2[1m]' ;;
+    5.2) WIRE_MODEL='gpt-5.2' ;;
     *) return 1 ;;
   esac
 }
@@ -1184,6 +1212,10 @@ render_worker_pin_lines() {
   done
 }
 
+default_main_model="$(setup_model_alias "$default_main_model")"
+default_hybrid_model="$(setup_model_alias "$default_hybrid_model")"
+default_bg_model="$(setup_model_alias "$default_bg_model")"
+
 utility_alias_from_wire "$default_utility_wire"
 default_utility_model="$UTILITY_ALIAS"
 
@@ -1194,6 +1226,10 @@ fi
 
 if [[ -z "$default_profile" ]]; then default_profile="$default_default_profile"; fi
 if [[ -z "$hybrid_model" ]]; then hybrid_model="$default_hybrid_model"; fi
+main_model="$(setup_model_alias "$main_model")"
+hybrid_model="$(setup_model_alias "$hybrid_model")"
+bg_model="$(setup_model_alias "$bg_model")"
+utility_model="$(setup_model_alias "$utility_model")"
 
 # Keep --main-model backward compatible. Without an explicit profile it still
 # selects the OpenAI-only default, except that a Claude alias necessarily means
@@ -1261,8 +1297,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
     hybrid_options=(
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.'
       'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.'
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.'
+      'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
+      'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.'
       'opus|Claude Opus 5|claude-opus-5[1m]|Architecture, security, and visual direction. Premium usage.'
       'fable|Claude Fable 5|claude-fable-5[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
@@ -1280,15 +1316,15 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_question 'Default orchestrator' 'OpenAI-only sessions can still use exact GPT workers.'
     choose_rich_option "${main_model:-$default_main_model}" sol \
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning. Standard usage.' \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Discovery, triage, and bounded work. Economical usage.' \
-      'sol-fast|GPT-5.6 Sol Fast|gpt-5.6-sol-fast[1m]|Priority processing on eligible plans only.' \
-      '5.5|GPT-5.5|gpt-5.5[1m]|Supported OpenAI root.' \
-      '5.4|GPT-5.4|gpt-5.4[1m]|Supported OpenAI root.' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.' \
-      '5.3|GPT-5.3 Codex|gpt-5.3-codex[1m]|Supported Codex root.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.' \
+      'sol-fast|GPT-5.6 Sol Fast|gpt-5.6-sol-fast|Priority processing on eligible plans only.' \
+      '5.5|GPT-5.5|gpt-5.5|Supported OpenAI root.' \
+      '5.4|GPT-5.4|gpt-5.4|Supported OpenAI root.' \
+      'mini|GPT-5.4 Mini|gpt-5.4-mini|Small OpenAI root.' \
+      '5.3|GPT-5.3 Codex|gpt-5.3-codex|Supported Codex root.' \
       'spark|GPT-5.3 Codex Spark|gpt-5.3-codex-spark|Fast supported Codex root.' \
-      '5.2|GPT-5.2|gpt-5.2[1m]|Supported OpenAI root.'
+      '5.2|GPT-5.2|gpt-5.2|Supported OpenAI root.'
     main_model="$CHOICE"
   fi
 
@@ -1480,9 +1516,9 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_question 'Model for the separate `airlock bg` command' '`airlock bg` is a separate convenience command. It does not power normal Agents.'
     choose_rich_option "${bg_model:-$default_bg_model}" sol \
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Background command default.' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Review and alternative reasoning.' \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Economical background work.' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.'
+      'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna|Economical background work.' \
+      'mini|GPT-5.4 Mini|gpt-5.4-mini|Small OpenAI root.'
     bg_model="$CHOICE"
     print_question 'Effort for the separate `airlock bg` command'
     choose_rich_option "${bg_effort:-$default_bg_effort}" medium \
@@ -1492,10 +1528,10 @@ if [[ "$assume_yes" -eq 0 ]]; then
     bg_effort="$CHOICE"
     print_question 'Utility model' 'The utility model handles lightweight Claude Code requests such as titles.'
     choose_rich_option "${utility_model:-$default_utility_model}" luna \
-      'luna|GPT-5.6 Luna|gpt-5.6-luna[1m]|Recommended economical utility route.' \
-      'terra|GPT-5.6 Terra|gpt-5.6-terra[1m]|Standard usage.' \
+      'luna|GPT-5.6 Luna|gpt-5.6-luna|Recommended economical utility route.' \
+      'terra|GPT-5.6 Terra|gpt-5.6-terra|Standard usage.' \
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Premium usage.' \
-      'mini|GPT-5.4 Mini|gpt-5.4-mini[1m]|Small OpenAI root.'
+      'mini|GPT-5.4 Mini|gpt-5.4-mini|Small OpenAI root.'
     utility_model="$CHOICE"
     print_question 'Luna swarm Fast processing'
     choose_rich_option "${swarm_fast:-$default_swarm_fast}" auto \

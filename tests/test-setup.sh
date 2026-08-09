@@ -40,7 +40,7 @@ grep -q '^AIRLOCK_EFFORT_LUNA=max$' "$config_file"
 grep -q '^AIRLOCK_EFFORT_SONNET=high$' "$config_file"
 grep -q '^AIRLOCK_BG_MODEL=sol$' "$config_file"
 grep -q '^AIRLOCK_BG_EFFORT=medium$' "$config_file"
-grep -q '^AIRLOCK_SMALL_FAST_MODEL=gpt-5.4-mini\[1m\]$' "$config_file"
+grep -q '^AIRLOCK_SMALL_FAST_MODEL=gpt-5.4-mini$' "$config_file"
 grep -q '^AIRLOCK_SUBAGENT_EFFORT=xhigh$' "$config_file"
 grep -q '^AIRLOCK_EXTRA_USAGE_POLICY=never$' "$config_file"
 grep -q '^AIRLOCK_ROUTING_POLICY=quality$' "$config_file"
@@ -73,20 +73,20 @@ configured_output="$(
   AIRLOCK_SKIP_HEALTH_CHECK=1 \
     "$repo_root/bin/airlock" -p test
 )"
-grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$configured_output"
-grep -q '^SMALL_FAST=gpt-5.4-mini\[1m\]$' <<<"$configured_output"
+grep -q '^MODEL=gpt-5.6-terra$' <<<"$configured_output"
+grep -q '^SMALL_FAST=gpt-5.4-mini$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
 grep -q '^MAX_SUBAGENTS=4$' <<<"$configured_output"
 grep -q '^SPAWN_DEPTH=1$' <<<"$configured_output"
 
 AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
-  --main-model luna \
+  --main-model 'gpt-5.6-luna[1m]' \
   --main-effort xhigh \
   --worker-effort high \
   --worker-pins '' \
-  --bg-model sol \
+  --bg-model 'gpt-5.6-sol[1m]' \
   --bg-effort medium \
-  --utility-model sol \
+  --utility-model 'gpt-5.4-mini[1m]' \
   --subagent-effort high \
   --without-agent \
   --no-login \

@@ -15,7 +15,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "gpt-5.6-terra[1m]",
+    "model": "gpt-5.6-terra",
     "effort": "high"
   },
   "airlock-luna": {
@@ -24,7 +24,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "gpt-5.6-luna[1m]",
+    "model": "gpt-5.6-luna",
     "effort": "max"
   },
   "airlock-luna-fast": {
@@ -33,7 +33,7 @@
     "disallowedTools": [
       "Agent"
     ],
-    "model": "gpt-5.6-luna-fast[1m]",
+    "model": "gpt-5.6-luna-fast",
     "effort": "max"
   }
 }
