@@ -421,6 +421,8 @@ install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.sh" "$plugi
 install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.py" "$plugin_target/scripts/agent-guard.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/secret-guard.sh" "$plugin_target/scripts/secret-guard.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/secret-guard.py" "$plugin_target/scripts/secret-guard.py" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/update-notice.sh" "$plugin_target/scripts/update-notice.sh" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/update-notice.py" "$plugin_target/scripts/update-notice.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/file_safety.py" "$plugin_target/scripts/file_safety.py" 0644
 install_managed_file "$repo_root/plugins/airlock/scripts/worktree.py" "$plugin_target/scripts/worktree.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/worktree-create.sh" "$plugin_target/scripts/worktree-create.sh" 0755

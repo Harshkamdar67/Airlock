@@ -46,6 +46,10 @@ directory_is_writable_or_creatable() {
 }
 
 config_root="$(resolve_airlock_config_root)"
+case "$config_root" in
+  /*|[A-Za-z]:[\\/]*) ;;
+  *) config_root="$(pwd)/$config_root" ;;
+esac
 config_file="${AIRLOCK_CONFIG_FILE:-$config_root/config}"
 openai_direct_agents_file="${AIRLOCK_OPENAI_DIRECT_AGENTS_FILE:-$config_root/openai-direct-agents.json}"
 anthropic_direct_agents_file="${AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE:-$config_root/anthropic-direct-agents.json}"
@@ -59,6 +63,7 @@ update_helper="${AIRLOCK_UPDATE_HELPER:-$(dirname "$access_helper")/airlock-upda
 managed_bin_dir="${AIRLOCK_MANAGED_BIN_DIR:-$(dirname "$access_helper")}"
 bundle_file="${AIRLOCK_MANAGED_BUNDLE_FILE:-$config_root/managed-bundle.json}"
 plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_root/plugins/airlock}"
+update_notice_file="$config_root/update-notice.json"
 python_bin="${AIRLOCK_PYTHON:-}"
 python_is_usable() {
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' >/dev/null 2>&1
@@ -310,6 +315,8 @@ validate_managed_bundle() {
     --component "plugins/airlock/scripts/agent-guard.py=$plugin_dir/scripts/agent-guard.py"
     --component "plugins/airlock/scripts/secret-guard.sh=$plugin_dir/scripts/secret-guard.sh"
     --component "plugins/airlock/scripts/secret-guard.py=$plugin_dir/scripts/secret-guard.py"
+    --component "plugins/airlock/scripts/update-notice.sh=$plugin_dir/scripts/update-notice.sh"
+    --component "plugins/airlock/scripts/update-notice.py=$plugin_dir/scripts/update-notice.py"
     --component "plugins/airlock/scripts/file_safety.py=$plugin_dir/scripts/file_safety.py"
     --component "plugins/airlock/scripts/worktree.py=$plugin_dir/scripts/worktree.py"
     --component "plugins/airlock/scripts/worktree-create.sh=$plugin_dir/scripts/worktree-create.sh"
@@ -884,6 +891,7 @@ launch_session() {
   unset CLAUDE_CODE_SUBAGENT_MODEL
   export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH='1'
   export AIRLOCK_ACTIVE_PROFILE="$profile"
+  export AIRLOCK_UPDATE_NOTICE_FILE="$update_notice_file"
   local agents_json guidance claude_bin managed_agent_output agent_name session_settings fast_mode
   local route_agent_names allowed_model_ids extra_agent_names extra_model_ids routes_json picker_models discovery_model
   local -a skill_guard=() allowed_tools=('Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)') enabled_agents=()
@@ -1085,7 +1093,7 @@ if [[ "${1:-}" == 'update' ]]; then
     exit 2
   fi
   validate_managed_bundle || exit $?
-  run_update update --manifest "$plugin_dir/.claude-plugin/plugin.json" "$@"
+  run_update update --manifest "$plugin_dir/.claude-plugin/plugin.json" --notice-file "$update_notice_file" "$@"
   exit $?
 fi
 

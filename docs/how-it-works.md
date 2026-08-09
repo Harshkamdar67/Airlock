@@ -221,6 +221,12 @@ It returns a key-only projection for an exact env read. It blocks known credenti
 
 This is a practical safety layer, not a full shell sandbox. A model with Bash can run repository code. A tracked secret may already exist in shared Git history. Do not commit credentials and use stronger operating-system isolation for untrusted repositories.
 
+## Cached update notices
+
+Only `airlock update --check` queries GitHub for an update notice. When it finds a newer release, the updater atomically writes a bounded JSON record under the Airlock config root. The record contains only the check time, installed and available versions, and the canonical Airlock release page.
+
+A managed SessionStart hook reads that file on a new, resumed, or cleared Airlock session. It validates the file type, size, schema, versions, release URL, installed-version match, and seven-day lifetime before returning Claude Code's user-only `systemMessage` field. It never returns `additionalContext`, so the notice is not added to the model context. Missing, unsafe, stale, or malformed state produces no output. No network request occurs during startup.
+
 ## Context sizing
 
 Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI and Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. That fallback also affects named workers in the same process.

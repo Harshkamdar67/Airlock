@@ -152,8 +152,8 @@ done
 # The hook scripts are launched directly by Claude Code, so the executable bit
 # is part of a working install rather than a detail of the file mode.
 for relative in scripts/agent-guard.sh scripts/agent-guard.py scripts/secret-guard.sh \
-  scripts/secret-guard.py scripts/worktree.py scripts/worktree-create.sh \
-  scripts/worktree-remove.sh; do
+  scripts/secret-guard.py scripts/update-notice.sh scripts/update-notice.py \
+  scripts/worktree.py scripts/worktree-create.sh scripts/worktree-remove.sh; do
   if [[ ! -x "$plugin_dir/$relative" ]]; then
     printf 'test: installer did not place an executable plugin script %s\n' "$relative" >&2
     exit 1

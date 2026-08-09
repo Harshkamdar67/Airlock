@@ -77,6 +77,7 @@ $RouterHelper = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } e
 $UpdateHelper = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $PSScriptRoot 'airlock-update.py' }
 $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DIR } else { $PSScriptRoot }
 $ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $ConfigDir 'managed-bundle.json' }
+$UpdateNoticeFile = Join-Path $ConfigDir 'update-notice.json'
 
 $Models = @{
   'sol'      = @('gpt-5.6-sol',        'GPT-5.6 Sol')
@@ -308,6 +309,8 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/scripts/agent-guard.py=$(Join-Path $PluginDir 'scripts\agent-guard.py')",
     '--component', "plugins/airlock/scripts/secret-guard.sh=$(Join-Path $PluginDir 'scripts\secret-guard.sh')",
     '--component', "plugins/airlock/scripts/secret-guard.py=$(Join-Path $PluginDir 'scripts\secret-guard.py')",
+    '--component', "plugins/airlock/scripts/update-notice.sh=$(Join-Path $PluginDir 'scripts\update-notice.sh')",
+    '--component', "plugins/airlock/scripts/update-notice.py=$(Join-Path $PluginDir 'scripts\update-notice.py')",
     '--component', "plugins/airlock/scripts/file_safety.py=$(Join-Path $PluginDir 'scripts\file_safety.py')",
     '--component', "plugins/airlock/scripts/worktree.py=$(Join-Path $PluginDir 'scripts\worktree.py')",
     '--component', "plugins/airlock/scripts/worktree-create.sh=$(Join-Path $PluginDir 'scripts\worktree-create.sh')",
@@ -544,6 +547,7 @@ function Invoke-AirlockSession {
     exit 1
   }
   Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SUBAGENT_MODEL' -ErrorAction SilentlyContinue
+  $env:AIRLOCK_UPDATE_NOTICE_FILE = [IO.Path]::GetFullPath($UpdateNoticeFile)
   if ($env:AIRLOCK_ALLOW_CLAUDE_API_SKILL -ne '1') {
     $ChildArguments = @('--disallowedTools', 'Skill(claude-api)', 'Skill(claude-api *)') + $ChildArguments
   }
@@ -766,7 +770,10 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'update') {
     [Console]::Error.WriteLine('airlock: Python is required for release updates.')
     exit 1
   }
-  $updateArguments = @('update', '--manifest', (Join-Path $PluginDir '.claude-plugin\plugin.json'))
+  $updateArguments = @(
+    'update', '--manifest', (Join-Path $PluginDir '.claude-plugin\plugin.json'),
+    '--notice-file', $UpdateNoticeFile
+  )
   if ($updateOption) { $updateArguments += $updateOption }
   & $python $UpdateHelper @updateArguments
   exit $LASTEXITCODE

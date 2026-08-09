@@ -93,8 +93,13 @@ class WorktreeHookTests(unittest.TestCase):
             "worktree_path": str(worktree.resolve()),
         }, check=check)
 
-    def test_session_plugin_registers_unmatched_worktree_hooks(self) -> None:
+    def test_session_plugin_registers_notice_and_unmatched_worktree_hooks(self) -> None:
         hooks = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "startup|resume|clear")
+        notice_hook = hooks["SessionStart"][0]["hooks"][0]
+        self.assertEqual(notice_hook["type"], "command")
+        self.assertEqual(notice_hook["timeout"], 5)
+        self.assertIn("update-notice.sh", notice_hook["command"])
         for event, script in (
             ("WorktreeCreate", "worktree-create.sh"),
             ("WorktreeRemove", "worktree-remove.sh"),

@@ -8,6 +8,7 @@ The normal suite uses local stubs and fake HTTP servers. It does not call OpenAI
 bash -n bin/airlock \
   scripts/setup.sh scripts/install.sh scripts/doctor.sh \
   plugins/airlock/scripts/agent-guard.sh \
+  plugins/airlock/scripts/update-notice.sh \
   plugins/airlock/scripts/secret-guard.sh \
   plugins/airlock/scripts/worktree-create.sh \
   plugins/airlock/scripts/worktree-remove.sh \
@@ -18,6 +19,7 @@ bash -n bin/airlock \
 python -m py_compile \
   bin/airlock-access.py bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
   plugins/airlock/scripts/agent-guard.py \
+  plugins/airlock/scripts/update-notice.py \
   plugins/airlock/scripts/secret-guard.py \
   plugins/airlock/scripts/file_safety.py \
   plugins/airlock/scripts/worktree.py \
@@ -38,10 +40,13 @@ python tests/test-worktree.py
 python tests/test-platform.py
 python tests/test-release.py
 python tests/test-update.py
+python tests/test-update-notice.py
 python tests/test-docs.py
 ```
 
-`tests/test-update.py` uses only loopback fake release servers and temporary archives. It never contacts GitHub. It covers release channels, exact checksums, optional attestations, network failures, archive traversal and links, active-session refusal, confirmation, installation, Doctor, and cleanup.
+`tests/test-update.py` uses only loopback fake release servers and temporary archives. It never contacts GitHub. It covers release channels, exact checksums, optional attestations, network failures, archive traversal and links, active-session refusal, confirmation, installation, Doctor, cleanup, and update-notice cache lifecycle.
+
+`tests/test-update-notice.py` validates the network-free SessionStart reader. It covers exact user-only output, missing and unsafe files, the size and age limits, duplicate or malformed JSON, installed-version and release-channel checks, canonical release URLs, SemVer precedence, interpreter failures, and silence on every invalid path.
 
 The native tests cover:
 
@@ -65,7 +70,8 @@ The native tests cover:
 - ignored, credential, private-key, link, reparse, size, and unstable-file blocking
 - changed-worktree preservation
 - managed bundle hashes and stale-install failure
-- offline release selection, checksum, attestation, archive safety, confirmation, and updater installation flows
+- offline release selection, checksum, attestation, archive safety, confirmation, updater installation, and cached notice flows
+- user-only SessionStart update notices with no network or model-context output
 - line endings, release metadata, documentation links, and writing rules
 
 ## Bash launcher tests

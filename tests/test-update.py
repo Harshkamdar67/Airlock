@@ -344,6 +344,96 @@ class NetworkTests(unittest.TestCase):
                     updater.check_for_release(updater.SemVer.parse("1.0.0"))
 
 
+class UpdateNoticeCacheTests(unittest.TestCase):
+    def test_update_parser_accepts_internal_notice_path(self) -> None:
+        parsed = updater.build_parser().parse_args(
+            [
+                "update",
+                "--manifest",
+                "plugin.json",
+                "--notice-file",
+                "update-notice.json",
+                "--check",
+            ]
+        )
+        self.assertEqual(parsed.manifest, Path("plugin.json"))
+        self.assertEqual(parsed.notice_file, Path("update-notice.json"))
+        self.assertTrue(parsed.check)
+
+    def test_notice_write_is_atomic_bounded_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_text:
+            temporary = Path(temporary_text)
+            target = temporary / "nested" / "update-notice.json"
+            current = updater.SemVer.parse("0.1.0-beta.1")
+            release = updater.Release(updater.SemVer.parse("0.1.0-beta.2"), "v0.1.0-beta.2", ())
+            with mock.patch.object(updater.time, "time", return_value=1_786_000_000):
+                updater.write_update_notice(target, current, release)
+            raw = target.read_bytes()
+            self.assertLessEqual(len(raw), updater.NOTICE_LIMIT)
+            self.assertEqual(
+                json.loads(raw),
+                {
+                    "schema_version": 1,
+                    "kind": "airlock-update-notice",
+                    "checked_at": 1_786_000_000,
+                    "current_version": "0.1.0-beta.1",
+                    "available_version": "0.1.0-beta.2",
+                    "release_url": "https://github.com/Harshkamdar67/Airlock/releases/tag/v0.1.0-beta.2",
+                },
+            )
+            if os.name != "nt":
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(target.parent.glob(f".{target.name}.*")), [])
+
+    def test_failed_replace_preserves_existing_notice_and_removes_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_text:
+            temporary = Path(temporary_text)
+            target = temporary / "update-notice.json"
+            target.write_bytes(b"existing\n")
+            current = updater.SemVer.parse("0.1.0-beta.1")
+            release = updater.Release(updater.SemVer.parse("0.1.0-beta.2"), "v0.1.0-beta.2", ())
+            with mock.patch.object(updater.os, "replace", side_effect=OSError("blocked")):
+                with self.assertRaisesRegex(updater.UpdateError, "could not write update notice"):
+                    updater.write_update_notice(target, current, release)
+            self.assertEqual(target.read_bytes(), b"existing\n")
+            self.assertEqual(list(temporary.glob(f".{target.name}.*")), [])
+
+    def test_windows_replace_retries_a_short_read_collision(self) -> None:
+        error = PermissionError("sharing violation")
+        error.winerror = 32
+        with mock.patch.object(updater.os, "name", "nt"), mock.patch.object(
+            updater.os, "replace", side_effect=[error, None]
+        ) as replace, mock.patch.object(updater.time, "sleep") as sleep:
+            updater.replace_update_notice(Path("temporary"), Path("notice"))
+        self.assertEqual(replace.call_count, 2)
+        sleep.assert_called_once_with(0.05)
+
+    def test_unsafe_notice_targets_are_never_replaced_or_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_text:
+            temporary = Path(temporary_text)
+            target = temporary / "update-notice.json"
+            target.mkdir()
+            current = updater.SemVer.parse("0.1.0-beta.1")
+            release = updater.Release(updater.SemVer.parse("0.1.0-beta.2"), "v0.1.0-beta.2", ())
+            with self.assertRaisesRegex(updater.UpdateError, "unsafe"):
+                updater.write_update_notice(target, current, release)
+            updater.clear_update_notice(target)
+            self.assertTrue(target.is_dir())
+
+            source = temporary / "source.json"
+            source.write_text("preserve", encoding="utf-8")
+            link = temporary / "link.json"
+            try:
+                link.symlink_to(source)
+            except OSError:
+                return
+            with self.assertRaisesRegex(updater.UpdateError, "unsafe"):
+                updater.write_update_notice(link, current, release)
+            updater.clear_update_notice(link)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(source.read_text(encoding="utf-8"), "preserve")
+
+
 class UpdateFlowTests(unittest.TestCase):
     def prepare_server(self, server: RouteServer, version: str, archive: bytes, checksum: str | None = None) -> None:
         archive_name = f"airlock-{version}.tar.gz"
@@ -357,22 +447,53 @@ class UpdateFlowTests(unittest.TestCase):
             temporary = Path(temporary_text)
             server.add("/releases", release_payload(server, "0.1.0-beta.2"))
             output = io.StringIO()
+            notice = temporary / "update-notice.json"
             with update_environment(server), redirect_stdout(output):
-                result = updater.run_update(manifest(temporary / "plugin.json"), True, False)
+                result = updater.run_update(
+                    manifest(temporary / "plugin.json"), True, False, notice
+                )
             self.assertEqual(result, 0)
             self.assertEqual(server.requests, ["/releases"])
             self.assertTrue(all("Authorization" not in headers for headers in server.headers_seen))
             self.assertTrue(all("0.1.0-beta.1" not in headers.get("User-Agent", "") for headers in server.headers_seen))
+            self.assertEqual(json.loads(notice.read_bytes())["available_version"], "0.1.0-beta.2")
             self.assertIn("Available version: 0.1.0-beta.2", output.getvalue())
+
+    def test_notice_write_failure_does_not_hide_an_available_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_text, RouteServer() as server:
+            temporary = Path(temporary_text)
+            server.add("/releases", release_payload(server, "0.1.0-beta.2"))
+            output = io.StringIO()
+            errors = io.StringIO()
+            with update_environment(server), mock.patch.object(
+                updater,
+                "write_update_notice",
+                side_effect=updater.UpdateError("could not save update notice"),
+            ), redirect_stdout(output), redirect_stderr(errors):
+                result = updater.run_update(
+                    manifest(temporary / "plugin.json"),
+                    True,
+                    False,
+                    temporary / "update-notice.json",
+                )
+            self.assertEqual(result, 0)
+            self.assertEqual(server.requests, ["/releases"])
+            self.assertIn("Available version: 0.1.0-beta.2", output.getvalue())
+            self.assertIn("Future sessions will not show this update notice", errors.getvalue())
 
     def test_no_update_reports_current_channel(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_text, RouteServer() as server:
             temporary = Path(temporary_text)
             server.add("/releases", b"[]")
             output = io.StringIO()
+            notice = temporary / "update-notice.json"
+            notice.write_text("stale", encoding="utf-8")
             with update_environment(server), redirect_stdout(output):
-                result = updater.run_update(manifest(temporary / "plugin.json"), True, False)
+                result = updater.run_update(
+                    manifest(temporary / "plugin.json"), True, False, notice
+                )
             self.assertEqual(result, 0)
+            self.assertFalse(notice.exists())
             self.assertIn("is up to date", output.getvalue())
 
     def test_confirmed_update_installs_and_runs_doctor(self) -> None:
@@ -383,9 +504,14 @@ class UpdateFlowTests(unittest.TestCase):
             archive = tar_bytes("0.1.0-beta.2")
             self.prepare_server(server, "0.1.0-beta.2", archive)
             output = io.StringIO()
+            notice = temporary / "update-notice.json"
+            notice.write_text("pending", encoding="utf-8")
             with update_environment(server, AIRLOCK_UPDATE_TEST_RESULT=str(result_dir)), redirect_stdout(output):
-                result = updater.run_update(manifest(temporary / "plugin.json"), False, True)
+                result = updater.run_update(
+                    manifest(temporary / "plugin.json"), False, True, notice
+                )
             self.assertEqual(result, 0)
+            self.assertFalse(notice.exists())
             self.assertEqual((result_dir / "install").read_text(), "installed")
             self.assertEqual((result_dir / "doctor").read_text(), "checked")
             self.assertIn("SHA-256: verified", output.getvalue())
@@ -398,9 +524,14 @@ class UpdateFlowTests(unittest.TestCase):
             result_dir.mkdir()
             archive = tar_bytes("0.1.0-beta.2")
             self.prepare_server(server, "0.1.0-beta.2", archive, checksum="0" * 64)
+            notice = temporary / "update-notice.json"
+            notice.write_text("pending", encoding="utf-8")
             with update_environment(server, AIRLOCK_UPDATE_TEST_RESULT=str(result_dir)):
                 with self.assertRaisesRegex(updater.UpdateError, "SHA-256 verification failed"):
-                    updater.run_update(manifest(temporary / "plugin.json"), False, True)
+                    updater.run_update(
+                        manifest(temporary / "plugin.json"), False, True, notice
+                    )
+            self.assertEqual(notice.read_text(encoding="utf-8"), "pending")
             self.assertEqual(list(result_dir.iterdir()), [])
 
     def test_confirmation_decline_changes_no_installed_files(self) -> None:
@@ -410,10 +541,15 @@ class UpdateFlowTests(unittest.TestCase):
             result_dir.mkdir()
             archive = tar_bytes("0.1.0-beta.2")
             self.prepare_server(server, "0.1.0-beta.2", archive)
+            notice = temporary / "update-notice.json"
+            notice.write_text("pending", encoding="utf-8")
             with update_environment(server, AIRLOCK_UPDATE_TEST_RESULT=str(result_dir)):
                 with mock.patch.object(updater, "confirm_install", return_value=False):
-                    result = updater.run_update(manifest(temporary / "plugin.json"), False, False)
+                    result = updater.run_update(
+                        manifest(temporary / "plugin.json"), False, False, notice
+                    )
             self.assertEqual(result, 0)
+            self.assertEqual(notice.read_text(encoding="utf-8"), "pending")
             self.assertEqual(list(result_dir.iterdir()), [])
 
     def test_active_session_refuses_install_before_network(self) -> None:

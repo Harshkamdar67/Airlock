@@ -9,7 +9,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 # The launcher keeps a window the user set themselves, so a suite that runs
 # inside an Airlock session would otherwise inherit that session's window and
 # read it back as the launcher's own choice.
-unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL \
+  AIRLOCK_UPDATE_NOTICE_FILE
 # Build a legacy config without the saved-profile keys to verify that existing
 # installations keep their original OpenAI-only bare command.
 while IFS= read -r line; do
@@ -299,6 +300,11 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
 fi
 
 normal_output="$(CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+notice_config_root="$tmp_dir/notice-config"
+notice_output="$(AIRLOCK_CONFIG_DIR="$notice_config_root" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+grep -q "^UPDATE_NOTICE=$notice_config_root/update-notice.json$" <<<"$notice_output"
+relative_notice_output="$(AIRLOCK_CONFIG_DIR='relative-notice-config' AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+grep -q "^UPDATE_NOTICE=$PWD/relative-notice-config/update-notice.json$" <<<"$relative_notice_output"
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$normal_output"
 grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"

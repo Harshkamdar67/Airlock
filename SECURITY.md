@@ -163,6 +163,14 @@ Provider billing and spending settings are final. If paid credits or extra usage
 
 Use native Claude Code's `/usage` screen for Anthropic subscription bars. Airlock does not read Claude login files or scrape that screen.
 
+## Cached update notices
+
+Only `airlock update --check` contacts GitHub for an update notice. A later Airlock startup, resume, or clear reads the bounded local cache and performs no update network request.
+
+The managed reader rejects links, non-regular or oversized files, malformed or unexpected JSON, invalid versions, the wrong release channel or repository URL, an installed-version mismatch, and data older than seven days. A valid notice uses Claude Code's user-only `systemMessage` field and is not added to model context. Invalid state exits silently and never blocks startup.
+
+The notice does not install code or weaken updater verification. Exit the active session and run `airlock update` to download, verify, confirm, and install the release.
+
 ## What installation changes
 
 The installer changes only recognized Airlock managed files and the optional managed worker. It refuses unknown files and links. It writes the managed bundle marker after all protected launchers, helpers, catalogs, and plugin files are copied. Startup rejects a stale, changed, missing, or incomplete bundle.

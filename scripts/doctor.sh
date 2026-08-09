@@ -211,6 +211,8 @@ if [[ -d "$plugin_dir" && ! -L "$plugin_dir" \
   && -f "$plugin_dir/hooks/hooks.json" \
   && -f "$plugin_dir/scripts/agent-guard.py" \
   && -f "$plugin_dir/scripts/secret-guard.py" \
+  && -f "$plugin_dir/scripts/update-notice.sh" \
+  && -f "$plugin_dir/scripts/update-notice.py" \
   && -f "$plugin_dir/scripts/file_safety.py" \
   && -f "$plugin_dir/scripts/worktree.py" \
   && -f "$plugin_dir/scripts/worktree-create.sh" \

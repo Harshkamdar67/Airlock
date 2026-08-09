@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.2
+0.1.0-beta.3
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
@@ -58,6 +58,7 @@ python tests/test-worktree.py
 python tests/test-platform.py
 python tests/test-release.py
 python tests/test-update.py
+python tests/test-update-notice.py
 python tests/test-docs.py
 bash tests/test-airlock.sh
 bash tests/test-setup.sh
@@ -145,8 +146,8 @@ After the release commit is merged into protected `main` and every required chec
 ```bash
 git switch main
 git pull --ff-only origin main
-git tag -a v0.1.0-beta.2 -m "Airlock v0.1.0-beta.2"
-git push origin v0.1.0-beta.2
+git tag -a v0.1.0-beta.3 -m "Airlock v0.1.0-beta.3"
+git push origin v0.1.0-beta.3
 ```
 
 Pushing the tag is an outward action. Confirm it immediately before running the command.
@@ -170,6 +171,8 @@ The workflow does not publish to npm, PyPI, Homebrew, or Scoop. Users run `airlo
 - Install from an archive on one clean macOS or Linux machine.
 - Install from an archive on one clean Windows machine.
 - Run the matching doctor script.
+- Run `airlock update --check` from the previous release, confirm it reports the new release, then start a fresh Airlock session and confirm the cached notice is user-visible without appearing in model context.
+- Confirm startup made no GitHub request and malformed or stale notice state is silent.
 - Check README links from the public repository page.
 - Open a test issue only if the issue template and security instructions are correct.
 - Announce only after the release page and install paths work.
