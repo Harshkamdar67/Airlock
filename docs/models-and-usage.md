@@ -295,7 +295,7 @@ Airlock does not read login files, decode tokens, scrape the screen, or guess a 
 
 Claude Code decides when to compact from the context window assigned to the root process. Native Anthropic roots already have model-aware sizing, so Airlock leaves the process-wide override unset for them.
 
-The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI and Grok roots instead of treating their `[1m]` IDs as proof. The fallback defaults to `272000`.
+The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI and Grok roots. The fallback defaults to `272000`.
 
 | Root profile | Default behavior |
 | --- | --- |
@@ -321,7 +321,7 @@ Nothing reports this. The session simply compacts four times as often as the sam
 
 Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
 
-The enabled GPT-5.6 Sol, Terra, and Luna routes retain their exact `[1m]` IDs for Claude Code routing compatibility, but the suffix is not treated as proof of usable provider context. The guarded helper in `scripts/test-sol-long-context.py` attempts a separate Sol proof with one synthetic root-only request. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
+GPT-5.6 Sol now uses the bare exact ID `gpt-5.6-sol`; Airlock does not label it `[1m]` after the failed proof. Terra and Luna retain their existing exact `[1m]` IDs for Claude Code routing compatibility, but those suffixes are not treated as proof of usable provider context. The guarded helper in `scripts/test-sol-long-context.py` can test Sol separately with one synthetic root-only request when a new exact authorization is granted. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
 
 Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
 

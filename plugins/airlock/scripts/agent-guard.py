@@ -24,7 +24,7 @@ PROFILE_AGENTS = {
     "hybrid-grok-root": OPENAI_AGENTS | ANTHROPIC_AGENTS | GROK_AGENTS,
 }
 OPENAI_MODELS = {
-    "gpt-5.6-sol[1m]",
+    "gpt-5.6-sol",
     "gpt-5.6-terra[1m]",
     "gpt-5.6-luna[1m]",
     "gpt-5.6-luna-fast[1m]",

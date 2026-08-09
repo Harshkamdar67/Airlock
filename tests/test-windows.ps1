@@ -355,11 +355,11 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     throw "Windows session did not pin economical Explore discovery: $($LegacyLaunch.Output)"
   }
   foreach ($ExpectedPickerLine in @(
-    'DEFAULT_FABLE=gpt-5.6-sol[1m]',
-    'DEFAULT_OPUS=gpt-5.6-sol[1m]',
+    'DEFAULT_FABLE=gpt-5.6-sol',
+    'DEFAULT_OPUS=gpt-5.6-sol',
     'DEFAULT_SONNET=gpt-5.6-terra[1m]',
     'DEFAULT_HAIKU=gpt-5.6-luna[1m]',
-    'FABLE_NAME=gpt-5.6-sol[1m]'
+    'FABLE_NAME=gpt-5.6-sol'
   )) {
     if ($LegacyLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedPickerLine))$") {
       throw "Windows OpenAI picker did not keep distinct enabled models: $($LegacyLaunch.Output)"
@@ -455,8 +455,8 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   if ($ExactOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-luna\[1m\]$') {
     throw "Exact OpenAI model ID did not launch: $($ExactOpenAI.Output)"
   }
-  $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-5.6-sol[1m]', '-p', 'test')
-  if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-sol\[1m\]$') {
+  $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-5.6-sol', '-p', 'test')
+  if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-5\.6-sol$') {
     throw "OpenAI --model= form did not launch: $($EqualsOpenAI.Output)"
   }
   $BackgroundLaunch = Invoke-LauncherProcess $InstalledLauncher @('background', '-p', 'test')

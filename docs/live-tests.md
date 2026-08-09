@@ -162,13 +162,13 @@ An ineligible `on` request must fail without substitution. Do not test Sol Fast 
 
 ### 12. Sol context above 300k
 
-This check has a dedicated helper and needs its own approval. The fixed scope is OpenAI, exact `gpt-5.6-sol[1m]`, no repository files, no public web, no extra usage, Fast off, and zero workers.
+This check has a dedicated helper and needs its own approval. The fixed scope is OpenAI, exact `gpt-5.6-sol`, no repository files, no public web, no extra usage, Fast off, and zero workers.
 
 After installing the candidate, run:
 
 ```bash
 python scripts/test-sol-long-context.py \
-  --authorized-scope 'provider=openai;model=gpt-5.6-sol[1m];repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
+  --authorized-scope 'provider=openai;model=gpt-5.6-sol;repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
 ```
 
 The helper runs from an empty temporary directory, disables tools and MCP, sends one generated prompt through standard input, and never writes or prints the prompt. It passes only when Claude Code identifies the Sol route, the response contains markers from both ends of the synthetic input, and provider-reported input plus cache usage exceeds 300,000 tokens.
@@ -177,7 +177,7 @@ Record only the helper's sanitized JSON result. If the provider rejects the requ
 
 #### 2026-08-09 result
 
-Approved scope: OpenAI, exact `gpt-5.6-sol[1m]`, no repository files, no public web, extra usage off, Fast off, and zero workers.
+Approved scope: OpenAI, exact `gpt-5.6-sol`, no repository files, no public web, extra usage off, Fast off, and zero workers.
 
 The first launcher attempt made no model request because the Windows batch path contained a space and the helper invoked it incorrectly. The helper was fixed and its no-request `--help` path passed. The authorized request then reached the installed launcher but exited with status 1 before producing a valid marker or usage result. The >300k proof failed. Airlock retained the conservative OpenAI context fallback and does not claim a usable 1M Sol path from this test.
 

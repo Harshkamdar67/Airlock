@@ -484,7 +484,7 @@ for line in sys.stdin:
         policy["providers"]["openai"]["models"]["terra"]["access"] = "extra"
         policy["policies"]["extra_usage"] = "ask"
         picker = ACCESS.proxy_picker_models(policy, "openai-pure")
-        self.assertEqual(picker["sonnet"], "gpt-5.6-sol[1m]")
+        self.assertEqual(picker["sonnet"], "gpt-5.6-sol")
         self.assertNotIn("gpt-5.6-terra[1m]", picker.values())
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
@@ -523,7 +523,7 @@ for line in sys.stdin:
         # moves the request into the context-1m beta header, so the allow-list
         # has to admit the base name for every provider, not just OpenAI.
         self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
-        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-sol[1m]"), "gpt-5.6-sol")
+        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra[1m]"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("grok-4.5"), "grok-4.5")
 
     def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
@@ -534,28 +534,28 @@ for line in sys.stdin:
         }):
             pure = ACCESS.session_route_policy(policy, "openai-pure")
             self.assertEqual(set(pure["routes"].values()), {"openai"})
-            self.assertEqual(pure["routes"]["gpt-5.6-sol[1m]"], "openai")
             self.assertEqual(pure["routes"]["gpt-5.6-sol"], "openai")
+            self.assertEqual(pure["routes"]["gpt-5.6-terra"], "openai")
             self.assertEqual(
                 set(pure["model_ids"]),
-                {"gpt-5.6-sol[1m]", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
+                {"gpt-5.6-sol", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
             )
-            self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
+            self.assertIn("gpt-5.6-sol", pure["model_ids"])
             self.assertEqual(pure["discovery_model"], "gpt-5.6-luna[1m]")
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "discovery-model"),
                 "gpt-5.6-luna[1m]",
             )
             self.assertEqual(pure["picker_models"], {
-                "fable": "gpt-5.6-sol[1m]",
-                "opus": "gpt-5.6-sol[1m]",
+                "fable": "gpt-5.6-sol",
+                "opus": "gpt-5.6-sol",
                 "sonnet": "gpt-5.6-terra[1m]",
                 "haiku": "gpt-5.6-luna[1m]",
             })
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "picker-models"),
-                "fable=gpt-5.6-sol[1m]\nhaiku=gpt-5.6-luna[1m]\n"
-                "opus=gpt-5.6-sol[1m]\nsonnet=gpt-5.6-terra[1m]",
+                "fable=gpt-5.6-sol\nhaiku=gpt-5.6-luna[1m]\n"
+                "opus=gpt-5.6-sol\nsonnet=gpt-5.6-terra[1m]",
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
             self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna[1m]")
@@ -566,7 +566,7 @@ for line in sys.stdin:
             # that suffix before the request leaves. Both forms have to route.
             self.assertEqual(hybrid["routes"]["claude-opus-5[1m]"], "anthropic")
             self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
-            self.assertNotIn("gpt-5.6-sol", hybrid["model_ids"])
+            self.assertIn("gpt-5.6-sol", hybrid["model_ids"])
             self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
             self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
 
@@ -793,7 +793,7 @@ for line in sys.stdin:
                     self.assertIn("use run_in_background=true", luna_description)
                     self.assertIn("useful non-overlapping batch before waiting", luna_description)
                     self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])
-                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol[1m]")
+                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol")
                     self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5[1m]")
                     for agent in rendered.values():
                         self.assertNotIn("tools", agent)
@@ -929,7 +929,7 @@ class SessionUsageTests(unittest.TestCase):
             "events": [
                 {
                     "provider": "openai",
-                    "model": "gpt-5.6-sol[1m]",
+                    "model": "gpt-5.6-sol",
                     "prompt": "must-not-leak",
                     "authorization": "must-not-leak-either",
                 }
@@ -937,7 +937,7 @@ class SessionUsageTests(unittest.TestCase):
             "summary": [
                 {
                     "provider": "openai",
-                    "model": "gpt-5.6-sol[1m]",
+                    "model": "gpt-5.6-sol",
                     "requests": 2,
                     "completed": 1,
                     "errors": 1,

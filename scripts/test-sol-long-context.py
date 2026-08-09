@@ -14,10 +14,10 @@ import sys
 import tempfile
 from typing import Any
 
-MODEL = "gpt-5.6-sol[1m]"
+MODEL = "gpt-5.6-sol"
 WIRE_MODEL = "gpt-5.6-sol"
 AUTHORIZATION = (
-    "provider=openai;model=gpt-5.6-sol[1m];repository-files=none;"
+    "provider=openai;model=gpt-5.6-sol;repository-files=none;"
     "public-web=off;extra-usage=off;fast=off;workers=0"
 )
 EARLY_MARKER = "AIRLOCK_EARLY_4B1F6D28"

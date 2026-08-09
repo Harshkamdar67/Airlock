@@ -173,7 +173,7 @@ MODEL_PROFILES = {
     },
     "openai": {
         "sol": {
-            "agent": "airlock-sol", "model": "gpt-5.6-sol[1m]", "effort": "xhigh",
+            "agent": "airlock-sol", "model": "gpt-5.6-sol", "effort": "xhigh",
             "capability": "frontier", "cost": "premium",
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },

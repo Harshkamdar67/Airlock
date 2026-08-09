@@ -412,7 +412,7 @@ CHOICE_PRESENTATION = (
     "Claude Haiku 4.5",
     "claude-haiku-4-5-20251001",
     "GPT-5.6 Sol",
-    "gpt-5.6-sol[1m]",
+    "gpt-5.6-sol",
     "GPT-5.6 Terra",
     "gpt-5.6-terra[1m]",
     "GPT-5.6 Luna",
@@ -538,7 +538,7 @@ try:
         "plain run",
         output,
         (
-            "  Default command:    airlock -> GPT-5.6 Sol (gpt-5.6-sol[1m])",
+            "  Default command:    airlock -> GPT-5.6 Sol (gpt-5.6-sol)",
             "  Session profile:    hybrid: Claude and GPT workers",
             "  Worker effort:      follow session /effort",
             # A long unbreakable path, of the kind macOS hands out for a

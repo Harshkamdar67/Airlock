@@ -20,7 +20,9 @@ $ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:
 $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
-$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol[1m]' }
+$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol' }
+# Canonicalize configs written before Sol's unverified [1m] label was removed.
+if (($SmallFast -replace '\[1m\]$', '') -eq 'gpt-5.6-sol') { $SmallFast = 'gpt-5.6-sol' }
 $ExplicitContextWin = Test-Path Env:\AIRLOCK_CONTEXT_WINDOW
 $ContextWin = if ($ExplicitContextWin) { [string]$env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 # A window the user set themselves outranks Airlock's default. Record it before
@@ -64,7 +66,7 @@ $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DI
 $ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $ConfigDir 'managed-bundle.json' }
 
 $Models = @{
-  'sol'      = @('gpt-5.6-sol[1m]',        'GPT-5.6 Sol')
+  'sol'      = @('gpt-5.6-sol',        'GPT-5.6 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast[1m]',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra[1m]',      'GPT-5.6 Terra')
   'luna'     = @('gpt-5.6-luna[1m]',       'GPT-5.6 Luna')
@@ -82,7 +84,7 @@ $GrokModels = @{
 }
 
 $HybridRoots = @{
-  'sol'    = @('gpt-5.6-sol[1m]', 'GPT-5.6 Sol', 'openai')
+  'sol'    = @('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra[1m]', 'GPT-5.6 Terra', 'openai')
   'luna'   = @('gpt-5.6-luna[1m]', 'GPT-5.6 Luna', 'openai')
   # Claude Code only grants these models their native 1M window when
@@ -600,7 +602,7 @@ function Select-HybridRoot {
   }
   Write-Host 'Choose the Airlock hybrid orchestrator:'
   Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5[1m])'
-  Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])'
+  Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol)'
   Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])'
   Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])'
   Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'

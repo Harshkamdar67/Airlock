@@ -23,17 +23,17 @@ ROUTE_POLICY = {
     "routes": {
         "claude-opus-5": "anthropic",
         "gpt-5.6-luna[1m]": "openai",
-        "gpt-5.6-sol[1m]": "openai",
+        "gpt-5.6-sol": "openai",
     },
-    "model_ids": ["claude-opus-5", "gpt-5.6-luna[1m]", "gpt-5.6-sol[1m]"],
+    "model_ids": ["claude-opus-5", "gpt-5.6-luna[1m]", "gpt-5.6-sol"],
     "agent_names": ["airlock-luna", "airlock-opus", "airlock-sol"],
     "extra_model_ids": [],
     "extra_agent_names": [],
     "discovery_model": "gpt-5.6-luna[1m]",
     "picker_models": {
-        "fable": "gpt-5.6-sol[1m]",
-        "opus": "gpt-5.6-sol[1m]",
-        "sonnet": "gpt-5.6-sol[1m]",
+        "fable": "gpt-5.6-sol",
+        "opus": "gpt-5.6-sol",
+        "sonnet": "gpt-5.6-sol",
         "haiku": "gpt-5.6-luna[1m]",
     },
 }
@@ -43,10 +43,10 @@ class HybridLauncherTests(unittest.TestCase):
     def test_hybrid_environment_uses_router_profile_depth_cap_and_allowlists(self) -> None:
         with patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
-            "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_MODEL": "gpt-5.6-sol",
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5",
             "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
-            "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-5.6-sol",
             "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "wrong inherited label",
             "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION": "wrong inherited description",
             "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES": "effort",
@@ -82,7 +82,7 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"], "1")
         self.assertEqual(
             environment["AIRLOCK_ALLOWED_AGENT_MODELS"],
-            "claude-opus-5,gpt-5.6-luna[1m],gpt-5.6-sol[1m]",
+            "claude-opus-5,gpt-5.6-luna[1m],gpt-5.6-sol",
         )
         self.assertEqual(
             environment["AIRLOCK_ALLOWED_AGENT_NAMES"],
@@ -122,14 +122,14 @@ class HybridLauncherTests(unittest.TestCase):
         environment = self.build("hybrid-anthropic-root", "claude-opus-5")
         self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
 
-    def test_unproven_1m_proxy_root_keeps_the_conservative_window(self) -> None:
-        environment = self.build("hybrid-openai-root", "gpt-5.6-sol[1m]")
+    def test_bare_sol_root_keeps_the_conservative_window(self) -> None:
+        environment = self.build("hybrid-openai-root", "gpt-5.6-sol")
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
-    def test_explicit_airlock_window_can_override_a_1m_root(self) -> None:
+    def test_explicit_airlock_window_can_override_a_bare_sol_root(self) -> None:
         environment = self.build(
             "hybrid-openai-root",
-            "gpt-5.6-sol[1m]",
+            "gpt-5.6-sol",
             context_window="450000",
             force_context_window=True,
         )
@@ -141,14 +141,14 @@ class HybridLauncherTests(unittest.TestCase):
 
     def test_auto_context_window_never_sets_the_variable(self) -> None:
         environment = self.build(
-            "hybrid-openai-root", "gpt-5.6-sol[1m]", context_window="auto"
+            "hybrid-openai-root", "gpt-5.6-sol", context_window="auto"
         )
         self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
 
     def test_a_window_the_user_set_is_preserved_on_every_root(self) -> None:
         for profile, root_model in (
             ("hybrid-anthropic-root", "claude-opus-5"),
-            ("hybrid-openai-root", "gpt-5.6-sol[1m]"),
+            ("hybrid-openai-root", "gpt-5.6-sol"),
         ):
             with self.subTest(profile=profile):
                 environment = self.build(
@@ -188,13 +188,13 @@ class HybridLauncherTests(unittest.TestCase):
     def test_effort_capabilities_are_declared_for_gpt_roots_only(self) -> None:
         with patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
-            "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_MODEL": "gpt-5.6-sol",
         }, clear=True):
             direct = HYBRID.build_child_environment(
                 "openai-pure",
                 "off",
                 proxy_url="http://127.0.0.1:18765",
-                root_model="gpt-5.6-sol[1m]",
+                root_model="gpt-5.6-sol",
                 root_name="GPT-5.6 Sol",
                 context_window="272000",
                 route_policy=ROUTE_POLICY,
@@ -216,7 +216,7 @@ class HybridLauncherTests(unittest.TestCase):
                 "hybrid-openai-root",
                 "off",
                 proxy_url="http://127.0.0.1:18765",
-                root_model="gpt-5.6-sol[1m]",
+                root_model="gpt-5.6-sol",
                 root_name="GPT-5.6 Sol",
                 context_window="272000",
                 route_policy=ROUTE_POLICY,
@@ -251,7 +251,7 @@ class HybridLauncherTests(unittest.TestCase):
                     "hybrid-openai-root",
                     "off",
                     proxy_url="http://127.0.0.1:18765",
-                    root_model="gpt-5.6-sol[1m]",
+                    root_model="gpt-5.6-sol",
                     root_name="GPT-5.6 Sol",
                     context_window="272000",
                     route_policy=ROUTE_POLICY,
@@ -262,7 +262,7 @@ class HybridLauncherTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
             "ANTHROPIC_AUTH_TOKEN": "unused",
-            "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+            "ANTHROPIC_MODEL": "gpt-5.6-sol",
             "AIRLOCK_SESSION_ROUTER_URL": "http://127.0.0.1:9999",
             "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5",
             "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "wrong inherited label",
@@ -274,7 +274,7 @@ class HybridLauncherTests(unittest.TestCase):
                 "openai-pure",
                 "off",
                 proxy_url="http://127.0.0.1:18765",
-                root_model="gpt-5.6-sol[1m]",
+                root_model="gpt-5.6-sol",
                 root_name="GPT-5.6 Sol",
                 context_window="272000",
                 route_policy=ROUTE_POLICY,
@@ -286,9 +286,9 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
         self.assertNotIn("AIRLOCK_SESSION_ROUTER_URL", environment)
         self.assertEqual(environment["ANTHROPIC_AUTH_TOKEN"], "unused")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol[1m]")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol[1m]")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol[1m]")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna[1m]")
         self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna[1m]")
         for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
@@ -396,12 +396,12 @@ class GrokProfileTests(unittest.TestCase):
     ROUTE_POLICY = {
         "routes": {
             "claude-opus-5": "anthropic",
-            "gpt-5.6-sol[1m]": "openai",
+            "gpt-5.6-sol": "openai",
             "grok-4.5": "grok",
             "grok-composer-2.5-fast": "grok",
         },
         "model_ids": [
-            "claude-opus-5", "gpt-5.6-sol[1m]", "grok-4.5", "grok-composer-2.5-fast",
+            "claude-opus-5", "gpt-5.6-sol", "grok-4.5", "grok-composer-2.5-fast",
         ],
         "agent_names": [
             "airlock-composer", "airlock-grok", "airlock-opus", "airlock-sol",
@@ -435,7 +435,7 @@ class GrokProfileTests(unittest.TestCase):
             ANTHROPIC_BASE_URL="http://127.0.0.1:18765",
             ANTHROPIC_MODEL="grok-4.5",
             ANTHROPIC_DEFAULT_FABLE_MODEL="claude-fable-5",
-            ANTHROPIC_SMALL_FAST_MODEL="gpt-5.6-sol[1m]",
+            ANTHROPIC_SMALL_FAST_MODEL="gpt-5.6-sol",
         )
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "grok-4.5")

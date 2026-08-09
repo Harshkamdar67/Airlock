@@ -198,7 +198,7 @@ The guarded Sol context helper is not called by any offline test, setup, Doctor,
 
 ```bash
 python scripts/test-sol-long-context.py \
-  --authorized-scope 'provider=openai;model=gpt-5.6-sol[1m];repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
+  --authorized-scope 'provider=openai;model=gpt-5.6-sol;repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
 ```
 
 It makes one root-only request from an empty temporary directory, sends an in-memory synthetic prompt through standard input, and prints only sanitized usage and marker booleans. Provider-reported input plus cache usage must exceed 300,000 tokens or the helper fails.

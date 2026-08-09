@@ -136,7 +136,11 @@ fi
 if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_proxy_state_home"; then
   proxy_state_home="$config_root/proxy-state"
 fi
-background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol[1m]}}}"
+background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol}}}"
+# Canonicalize configs written before Sol's unverified [1m] label was removed.
+if [[ "${background_model%\[1m\]}" == 'gpt-5.6-sol' ]]; then
+  background_model='gpt-5.6-sol'
+fi
 explicit_context_window=0
 if [[ -n "${AIRLOCK_CONTEXT_WINDOW+x}" ]]; then
   explicit_context_window=1
@@ -415,7 +419,7 @@ confirm_anthropic_fast() {
 
 resolve_model() {
   case "$1" in
-    sol|gpt-5.6-sol|'gpt-5.6-sol[1m]') selected_model='gpt-5.6-sol[1m]'; model_name='GPT-5.6 Sol' ;;
+    sol|gpt-5.6-sol) selected_model='gpt-5.6-sol'; model_name='GPT-5.6 Sol' ;;
     sol-fast|gpt-5.6-sol-fast|'gpt-5.6-sol-fast[1m]') selected_model='gpt-5.6-sol-fast[1m]'; model_name='GPT-5.6 Sol Fast' ;;
     terra|gpt-5.6-terra|'gpt-5.6-terra[1m]') selected_model='gpt-5.6-terra[1m]'; model_name='GPT-5.6 Terra' ;;
     luna|gpt-5.6-luna|'gpt-5.6-luna[1m]') selected_model='gpt-5.6-luna[1m]'; model_name='GPT-5.6 Luna' ;;
@@ -451,7 +455,7 @@ model_provider() {
 
 resolve_hybrid_alias() {
   case "$1" in
-    sol) root_model='gpt-5.6-sol[1m]'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
+    sol) root_model='gpt-5.6-sol'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
     terra) root_model='gpt-5.6-terra[1m]'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
     luna) root_model='gpt-5.6-luna[1m]'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
     # Claude Code only grants these models their native 1M window when
@@ -944,7 +948,7 @@ select_hybrid_root() {
   printf '%s\n' \
     'Choose the Airlock hybrid orchestrator:' \
     '  1) Claude Sonnet 5 (claude-sonnet-5[1m])' \
-    '  2) GPT-5.6 Sol (gpt-5.6-sol[1m])' \
+    '  2) GPT-5.6 Sol (gpt-5.6-sol)' \
     '  3) GPT-5.6 Terra (gpt-5.6-terra[1m])' \
     '  4) GPT-5.6 Luna (gpt-5.6-luna[1m])' \
     '  5) Claude Opus 5 (claude-opus-5[1m])' \
