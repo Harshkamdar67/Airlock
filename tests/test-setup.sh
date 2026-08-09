@@ -40,7 +40,7 @@ grep -q '^AIRLOCK_EFFORT_LUNA=max$' "$config_file"
 grep -q '^AIRLOCK_EFFORT_SONNET=high$' "$config_file"
 grep -q '^AIRLOCK_BG_MODEL=sol$' "$config_file"
 grep -q '^AIRLOCK_BG_EFFORT=medium$' "$config_file"
-grep -q '^AIRLOCK_SMALL_FAST_MODEL=gpt-5.4-mini\[1m\]$' "$config_file"
+grep -q '^AIRLOCK_SMALL_FAST_MODEL=gpt-5.4-mini$' "$config_file"
 grep -q '^AIRLOCK_SUBAGENT_EFFORT=xhigh$' "$config_file"
 grep -q '^AIRLOCK_EXTRA_USAGE_POLICY=never$' "$config_file"
 grep -q '^AIRLOCK_ROUTING_POLICY=quality$' "$config_file"
@@ -66,26 +66,27 @@ configured_output="$(
   AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE="$repo_root/config/anthropic-direct-agents.json" \
   AIRLOCK_HYBRID_AGENTS_FILE="$repo_root/config/hybrid-agents.json" \
   AIRLOCK_CLAUDE_AGENTS_FILE="$repo_root/config/claude-agents.json" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_PLUGIN_DIR="$repo_root/plugins/airlock" \
   AIRLOCK_MANAGED_BUNDLE_FILE="$repo_root/config/managed-bundle.json" \
   AIRLOCK_REAL_CLAUDE="$repo_root/tests/stub-claude.sh" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 \
     "$repo_root/bin/airlock" -p test
 )"
-grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$configured_output"
-grep -q '^SMALL_FAST=gpt-5.4-mini\[1m\]$' <<<"$configured_output"
+grep -q '^MODEL=gpt-5.6-terra$' <<<"$configured_output"
+grep -q '^SMALL_FAST=gpt-5.4-mini$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
 grep -q '^MAX_SUBAGENTS=4$' <<<"$configured_output"
 grep -q '^SPAWN_DEPTH=1$' <<<"$configured_output"
 
 AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
-  --main-model luna \
+  --main-model 'gpt-5.6-luna[1m]' \
   --main-effort xhigh \
   --worker-effort high \
   --worker-pins '' \
-  --bg-model sol \
+  --bg-model 'gpt-5.6-sol[1m]' \
   --bg-effort medium \
-  --utility-model sol \
+  --utility-model 'gpt-5.4-mini[1m]' \
   --subagent-effort high \
   --without-agent \
   --no-login \
@@ -169,7 +170,7 @@ AIRLOCK_CONFIG_DIR="$hybrid_dir" "$repo_root/scripts/setup.sh" \
   --no-service \
   --config-only \
   --yes >"$tmp_dir/hybrid-summary.out"
-grep -q '^  Default command:    airlock -> Claude Opus 5 (claude-opus-5)$' "$tmp_dir/hybrid-summary.out"
+grep -q '^  Default command:    airlock -> Claude Opus 5 (claude-opus-5\[1m\])$' "$tmp_dir/hybrid-summary.out"
 grep -q '^  Session profile:    hybrid: Claude and GPT workers$' "$tmp_dir/hybrid-summary.out"
 grep -q '^  Worker effort:      follow session; per-model pins: luna=max$' "$tmp_dir/hybrid-summary.out"
 grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$hybrid_dir/config"
@@ -270,5 +271,57 @@ grep -q '^  Proxy storage:      private writable Airlock fallback$' "$tmp_dir/fa
 grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$fallback_home/.airlock/config"
 grep -q "^AIRLOCK_PROXY_CONFIG_DIR=$fallback_home/.airlock/claude-code-proxy$" "$fallback_home/.airlock/config"
 grep -q '^AIRLOCK_PROXY_STATE_HOME=$' "$fallback_home/.airlock/config"
+
+# An existing config that never had AIRLOCK_HYBRID_MODEL must keep the value
+# both launchers already fall back to. Writing anything else would silently
+# move the hybrid root the first time setup rewrote the file.
+drift_dir="$tmp_dir/hybrid-default-drift"
+mkdir -p "$drift_dir"
+printf 'AIRLOCK_MODEL=sol\n' > "$drift_dir/config"
+AIRLOCK_CONFIG_DIR="$drift_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes >/dev/null
+grep -q '^AIRLOCK_HYBRID_MODEL=sonnet$' "$drift_dir/config"
+launcher_default="$(sed -n 's/.*config_hybrid_model:-\([a-z]*\).*/\1/p' "$repo_root/bin/airlock" | head -1)"
+if [[ "$launcher_default" != 'sonnet' ]]; then
+  printf 'test: bin/airlock hybrid fallback drifted from setup.sh: %s\n' "$launcher_default" >&2
+  exit 1
+fi
+
+# Grok is opt-in everywhere except an explicit Grok profile.
+grok_off_dir="$tmp_dir/grok-off"
+AIRLOCK_CONFIG_DIR="$grok_off_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes --default-profile hybrid >/dev/null
+grep -q '^AIRLOCK_GROK_MODELS=$' "$grok_off_dir/config"
+
+grok_profile_dir="$tmp_dir/grok-profile"
+AIRLOCK_CONFIG_DIR="$grok_profile_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes --default-profile grok >/dev/null
+grep -q '^AIRLOCK_DEFAULT_PROFILE=grok$' "$grok_profile_dir/config"
+grep -q '^AIRLOCK_GROK_MODEL=grok$' "$grok_profile_dir/config"
+grep -q '^AIRLOCK_GROK_MODELS=grok,composer$' "$grok_profile_dir/config"
+
+grok_workers_dir="$tmp_dir/grok-workers"
+AIRLOCK_CONFIG_DIR="$grok_workers_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes \
+  --default-profile hybrid --grok-workers grok,composer >/dev/null
+grep -q '^AIRLOCK_GROK_MODELS=grok,composer$' "$grok_workers_dir/config"
+
+# A saved Grok root that the worker pool omits could not start, so setup keeps
+# the root inside the pool rather than writing an unlaunchable config.
+grok_coerce_dir="$tmp_dir/grok-coerce"
+AIRLOCK_CONFIG_DIR="$grok_coerce_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes \
+  --default-profile grok --grok-model composer --grok-workers grok >/dev/null
+grep -q '^AIRLOCK_GROK_MODEL=composer$' "$grok_coerce_dir/config"
+grep -q '^AIRLOCK_GROK_MODELS=grok,composer$' "$grok_coerce_dir/config"
+
+for invalid in '--grok-model bogus' '--grok-workers sonnet'; do
+  # shellcheck disable=SC2086
+  if AIRLOCK_CONFIG_DIR="$tmp_dir/grok-invalid" "$repo_root/scripts/setup.sh" \
+    --config-only --no-login --no-service --yes $invalid >/dev/null 2>&1; then
+    printf 'test: setup accepted invalid option: %s\n' "$invalid" >&2
+    exit 1
+  fi
+done
 
 printf 'All setup wizard tests passed.\n'

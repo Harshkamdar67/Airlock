@@ -21,8 +21,9 @@ import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit
+import zlib
 
-MANAGED_BUNDLE_VERSION = "2026.08.05.5"
+MANAGED_BUNDLE_VERSION = "2026.08.09.1"
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 CONNECT_TIMEOUT_SECONDS = 10
 RESPONSE_HEADER_TIMEOUT_SECONDS = 10 * 60
@@ -89,15 +90,49 @@ class UsageObserver:
         self.skipping = False
         self.disabled = False
         self.seen = False
+        self.decoder: Any = None
+
+    def configure(self, content_type: str, content_encoding: str) -> None:
+        """Decide how to read a response that has already been forwarded.
+
+        Anthropic answers with ``Content-Encoding: gzip``, so a byte-level
+        observer sees compressed data and can never find a usage object. The
+        forwarded bytes are untouched either way; only this observer decodes a
+        copy so that it can read the token counts.
+        """
+        self.streaming = "event-stream" in content_type
+        encoding = content_encoding.strip().lower()
+        if not encoding or encoding == "identity":
+            return
+        if encoding in {"gzip", "x-gzip"}:
+            self.decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            return
+        if encoding == "deflate":
+            self.decoder = zlib.decompressobj()
+            return
+        # Brotli, zstd, or several encodings chained together. The standard
+        # library cannot read those, and a wrong guess is worse than reporting
+        # nothing, so the observer stands down and usage is recorded as absent.
+        self.disable()
 
     def disable(self) -> None:
         self.disabled = True
         self.buffer = bytearray()
+        self.decoder = None
 
     def observe(self, chunk: bytes) -> None:
         if self.disabled:
             return
         try:
+            if self.decoder is not None:
+                # Bound the output so a hostile or broken upstream cannot make
+                # the observer allocate without limit.
+                chunk = self.decoder.decompress(chunk, MAX_USAGE_BODY_BYTES)
+                if self.decoder.unconsumed_tail:
+                    self.disable()
+                    return
+                if not chunk:
+                    return
             if not self.streaming:
                 if len(self.buffer) + len(chunk) > MAX_USAGE_BODY_BYTES:
                     self.disable()
@@ -125,6 +160,15 @@ class UsageObserver:
         if self.disabled:
             return
         try:
+            if self.decoder is not None:
+                # Clearing the decoder first means this re-entry takes the
+                # already-decoded path instead of decompressing twice.
+                tail = self.decoder.flush()
+                self.decoder = None
+                if tail:
+                    self.observe(tail)
+                    if self.disabled:
+                        return
             if self.streaming:
                 if self.buffer and not self.skipping:
                     self.consume_line(bytes(self.buffer))
@@ -188,11 +232,13 @@ class RouterConfig:
         if not routes or any(
             not isinstance(model, str)
             or not model
-            or provider not in {"openai", "anthropic"}
+            or provider not in {"openai", "anthropic", "grok"}
             for model, provider in routes.items()
         ):
             raise RouterError("router model routes are invalid")
         self.routes = dict(routes)
+        # GPT (Codex) and Grok subscription models share the loopback proxy;
+        # the proxy selects the upstream from the model ID and its own OAuth store.
         self.openai = parse_upstream(openai_url, "openai", production=production)
         self.anthropic = parse_upstream(
             anthropic_url, "anthropic", production=production
@@ -210,6 +256,7 @@ class RouterServer(ThreadingHTTPServer):
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
+        self.usage_summary: dict[tuple[str, str], dict[str, object]] = {}
         self.diagnostics_lock = threading.Lock()
 
     def server_bind(self) -> None:
@@ -228,10 +275,43 @@ class RouterServer(ThreadingHTTPServer):
     def record_diagnostic(self, event: dict[str, object]) -> None:
         with self.diagnostics_lock:
             self.diagnostics.append(dict(event))
+            provider = event.get("provider")
+            model = event.get("model")
+            if not isinstance(provider, str) or not isinstance(model, str):
+                return
+            key = (provider, model)
+            summary = self.usage_summary.setdefault(key, {
+                "provider": provider,
+                "model": model,
+                "requests": 0,
+                "completed": 0,
+                "errors": 0,
+                "usage_events": 0,
+                **{field: 0 for field in USAGE_FIELDS},
+            })
+            summary["requests"] += 1
+            if event.get("outcome") == "completed":
+                summary["completed"] += 1
+            else:
+                summary["errors"] += 1
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                summary["usage_events"] += 1
+                for field in USAGE_FIELDS:
+                    value = usage.get(field)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        summary[field] += value
 
-    def diagnostic_snapshot(self) -> list[dict[str, object]]:
+    def diagnostic_report(self) -> dict[str, object]:
         with self.diagnostics_lock:
-            return [dict(event) for event in self.diagnostics]
+            return {
+                "instance_id": self.instance_id,
+                "events": [dict(event) for event in self.diagnostics],
+                "summary": [
+                    dict(self.usage_summary[key])
+                    for key in sorted(self.usage_summary)
+                ],
+            }
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -271,10 +351,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"data": models, "has_more": False})
             return
         if path == "/diagnostics":
-            self.send_json(200, {
-                "instance_id": self.router.instance_id,
-                "events": self.router.diagnostic_snapshot(),
-            })
+            self.send_json(200, self.router.diagnostic_report())
             return
         self.send_error_response(404, "not_found", "Route not found")
 
@@ -374,11 +451,10 @@ class RouterHandler(BaseHTTPRequestHandler):
     def forward(
         self, provider: str, body: bytes
     ) -> tuple[int, int, str, dict[str, int] | None]:
-        upstream = (
-            self.router.config.openai
-            if provider == "openai"
-            else self.router.config.anthropic
-        )
+        if provider in {"openai", "grok"}:
+            upstream = self.router.config.openai
+        else:
+            upstream = self.router.config.anthropic
         connection = make_connection(upstream)
         headers = forwarded_headers(self.headers.items(), provider, len(body))
         target = upstream_path(upstream, self.path)
@@ -399,7 +475,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             set_stream_timeout(connection, response)
             expected_length = response.getheader("content-length")
             content_type = (response.getheader("content-type") or "").lower()
-            observer.streaming = "event-stream" in content_type
+            observer.configure(
+                content_type, response.getheader("content-encoding") or ""
+            )
             self.send_response(status, response.reason)
             for name, value in response.getheaders():
                 lowered = name.lower()
@@ -515,14 +593,14 @@ def forwarded_headers(
         lowered = name.lower()
         if lowered in HOP_BY_HOP_HEADERS or lowered in {"host", "content-length"}:
             continue
-        if provider == "openai" and (
+        if provider in {"openai", "grok"} and (
             lowered in OPENAI_PRIVATE_HEADERS or lowered == "anthropic-beta"
         ):
             continue
         result[name] = value
     result["content-length"] = str(content_length)
     result["connection"] = "close"
-    if provider == "openai":
+    if provider in {"openai", "grok"}:
         result["authorization"] = "Bearer unused"
     return result
 

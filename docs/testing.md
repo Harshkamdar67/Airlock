@@ -21,7 +21,8 @@ python -m py_compile \
   plugins/airlock/scripts/secret-guard.py \
   plugins/airlock/scripts/file_safety.py \
   plugins/airlock/scripts/worktree.py \
-  scripts/update-bundle.py tests/test-setup-pty.py
+  scripts/test-sol-long-context.py scripts/update-bundle.py \
+  tests/test-live-context.py tests/test-setup-pty.py
 ```
 
 ## Python tests
@@ -31,6 +32,7 @@ python tests/test-access.py
 python tests/test-agent-guard.py
 python tests/test-router.py
 python tests/test-hybrid.py
+python tests/test-live-context.py
 python tests/test-secret-guard.py
 python tests/test-worktree.py
 python tests/test-platform.py
@@ -45,7 +47,7 @@ The native tests cover:
 
 - exact Agent models, effort inheritance, and pinned efforts
 - built-in Explore, Plan, and general-purpose inheritance
-- allowed exact per-call model IDs for built-ins
+- schema-valid family aliases and exact resolved targets for built-in Agent calls
 - profile, Fast, and extra-usage model guards
 - plain OpenAI routing without the hybrid router
 - both hybrid root directions through one loopback router
@@ -191,3 +193,12 @@ Do not use `git reset`, `git clean`, or automatic staging to fix a test. Preserv
 Live tests use subscription quota and can send repository content to a provider. They are never part of CI, setup, or the doctor.
 
 Read [Live tests](live-tests.md) and get exact permission before running one. The permission must name provider, exact model, repository files, public web state, extra-usage state, Fast state, and worker count.
+
+The guarded Sol context helper is not called by any offline test, setup, Doctor, or CI path. After installing the exact candidate and recording matching approval, run it manually:
+
+```bash
+python scripts/test-sol-long-context.py \
+  --authorized-scope 'provider=openai;model=gpt-5.6-sol;repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
+```
+
+It makes one root-only request from an empty temporary directory, sends an in-memory synthetic prompt through standard input, and prints only sanitized usage and marker booleans. Provider-reported input plus cache usage must exceed 300,000 tokens or the helper fails.

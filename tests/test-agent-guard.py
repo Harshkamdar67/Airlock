@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,20 @@ SECRET_GUARD_SH = GUARD.parent / "secret-guard.sh"
 
 
 class AgentGuardTests(unittest.TestCase):
+    @staticmethod
+    def load_module(name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def load_access_module(self):
+        return self.load_module("airlock_access_guard_test", ROOT / "bin" / "airlock-access.py")
+
+    def guard_constant(self, name: str) -> set[str]:
+        return getattr(self.load_module("airlock_agent_guard_test", GUARD), name)
+
     def invoke(
         self,
         profile: str | None,
@@ -28,23 +43,79 @@ class AgentGuardTests(unittest.TestCase):
         allowed_models: str | None = None,
         extra_agents: str | None = None,
         extra_models: str | None = None,
+        discovery_model: str | None = None,
+        root_model: str | None = None,
+        family_models: dict[str, str] | None = None,
     ) -> dict | None:
         environment = os.environ.copy()
+        family_variables = {
+            "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        }
         for variable in (
             "AIRLOCK_ALLOWED_AGENT_NAMES",
             "AIRLOCK_ALLOWED_AGENT_MODELS",
             "AIRLOCK_EXTRA_USAGE_AGENT_NAMES",
             "AIRLOCK_EXTRA_USAGE_AGENT_MODELS",
+            "AIRLOCK_DISCOVERY_MODEL",
+            "AIRLOCK_ROOT_MODEL",
+            *family_variables.values(),
         ):
             environment.pop(variable, None)
         if allowed_agents is not None:
             environment["AIRLOCK_ALLOWED_AGENT_NAMES"] = allowed_agents
+        builtin = isinstance(tool_input, dict) and tool_input.get("subagent_type") in {
+            "Explore", "Plan", "general-purpose",
+        }
+        if builtin and allowed_models is None and family_models is None:
+            if profile == "openai-pure":
+                allowed_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
+            elif profile == "grok-pure":
+                allowed_models = "grok-4.5,grok-composer-2.5-fast"
+            elif profile in {
+                "hybrid-openai-root", "hybrid-anthropic-root", "hybrid-grok-root",
+            }:
+                allowed_models = (
+                    "claude-opus-5[1m],claude-sonnet-5[1m],"
+                    "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,"
+                    "grok-4.5,grok-composer-2.5-fast"
+                )
         if allowed_models is not None:
             environment["AIRLOCK_ALLOWED_AGENT_MODELS"] = allowed_models
         if extra_agents is not None:
             environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"] = extra_agents
         if extra_models is not None:
             environment["AIRLOCK_EXTRA_USAGE_AGENT_MODELS"] = extra_models
+        if discovery_model is not None:
+            environment["AIRLOCK_DISCOVERY_MODEL"] = discovery_model
+        if root_model is not None:
+            environment["AIRLOCK_ROOT_MODEL"] = root_model
+        if builtin and family_models is None:
+            configured = set((allowed_models or "").split(","))
+            extra = set((extra_models or "").split(",")) - {""}
+            eligible = configured - extra - {""}
+
+            def first(*models: str) -> str:
+                return next((model for model in models if model in eligible), "invalid")
+
+            family_models = {
+                "fable": first("gpt-5.6-sol", "claude-opus-5[1m]", "grok-4.5"),
+                "opus": first("claude-opus-5[1m]", "gpt-5.6-sol", "grok-4.5"),
+                "sonnet": first(
+                    "claude-sonnet-5[1m]", "gpt-5.6-terra",
+                    "grok-composer-2.5-fast", "gpt-5.6-sol",
+                    "claude-opus-5[1m]", "grok-4.5",
+                ),
+                "haiku": discovery_model or first(
+                    "gpt-5.6-luna", "grok-composer-2.5-fast", "gpt-5.6-terra",
+                    "claude-sonnet-5[1m]", "gpt-5.6-sol", "claude-opus-5[1m]",
+                    "grok-4.5",
+                ),
+            }
+        for family, model in (family_models or {}).items():
+            environment[family_variables[family]] = model
         if profile is None:
             environment.pop("AIRLOCK_ACTIVE_PROFILE", None)
         else:
@@ -67,6 +138,58 @@ class AgentGuardTests(unittest.TestCase):
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
 
+    def test_guard_baseline_matches_the_models_the_launcher_actually_enables(self) -> None:
+        # The guard validates the launcher's model list against its own baseline
+        # and treats any unrecognised value as a corrupt permission set, which
+        # denies every Agent call in the session rather than just that model. So
+        # the two lists drifting apart is not a cosmetic mismatch, and reading
+        # both from the same source is the only way to keep them honest.
+        access = self.load_access_module()
+        for provider, models in (
+            ("anthropic", "ANTHROPIC_MODELS"),
+            ("openai", "OPENAI_MODELS"),
+            ("grok", "GROK_MODELS"),
+        ):
+            with self.subTest(provider=provider):
+                expected = {
+                    profile["model"]
+                    for profile in access.MODEL_PROFILES[provider].values()
+                }
+                self.assertEqual(self.guard_constant(models), expected)
+
+    def test_a_full_session_permission_set_is_accepted_end_to_end(self) -> None:
+        # The drift above was invisible to every other test here because they all
+        # supply their own model lists. This one sends exactly what the launcher
+        # sends, including the extra-usage list that made the guard reject the
+        # whole permission set.
+        access = self.load_access_module()
+        anthropic = access.MODEL_PROFILES["anthropic"]
+        openai = access.MODEL_PROFILES["openai"]
+        allowed = ",".join(sorted({
+            anthropic["opus"]["model"], anthropic["sonnet"]["model"],
+            openai["sol"]["model"], openai["luna"]["model"],
+        }))
+        decision = self.invoke(
+            "hybrid-anthropic-root",
+            {"subagent_type": "airlock-opus", "prompt": "work"},
+            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
+            allowed_models=allowed,
+            extra_models=anthropic["fable"]["model"],
+        )
+        self.assertIsNone(decision)
+        override = self.invoke(
+            "hybrid-anthropic-root",
+            {
+                "subagent_type": "Explore",
+                "model": anthropic["opus"]["model"],
+                "prompt": "research",
+            },
+            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
+            allowed_models=allowed,
+            extra_models=anthropic["fable"]["model"],
+        )
+        self.assertIsNone(override)
+
     def test_allows_exact_profile_worker(self) -> None:
         self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-terra", "prompt": "ignored"}))
         self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-luna-fast"}))
@@ -85,33 +208,88 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_denied(self.invoke("openai-pure", {"subagent_type": name}))
 
-    def test_builtins_accept_exact_enabled_models_and_inherit_by_default(self) -> None:
-        openai_models = "gpt-5.6-luna[1m],gpt-5.6-sol[1m]"
-        hybrid_models = openai_models + ",claude-opus-5,claude-sonnet-5"
+    def test_builtins_accept_schema_family_aliases_and_exact_ids_defensively(self) -> None:
+        openai_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
+        hybrid_models = openai_models + ",claude-opus-5[1m],claude-sonnet-5[1m]"
         for name in ("Explore", "Plan", "general-purpose"):
             with self.subTest(name=name, mode="inherit"):
                 self.assertIsNone(self.invoke("openai-pure", {"subagent_type": name}))
-            with self.subTest(name=name, mode="openai"):
-                self.assertIsNone(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": name, "model": "gpt-5.6-luna[1m]"},
-                    allowed_models=openai_models,
-                ))
-            with self.subTest(name=name, mode="hybrid-claude"):
+            for family in ("fable", "opus", "sonnet", "haiku"):
+                with self.subTest(name=name, family=family):
+                    self.assertIsNone(self.invoke(
+                        "openai-pure",
+                        {"subagent_type": name, "model": family},
+                        allowed_models=openai_models,
+                    ))
+            # Keep exact IDs defensive in case a future Agent schema permits them.
+            with self.subTest(name=name, mode="exact"):
                 self.assertIsNone(self.invoke(
                     "hybrid-openai-root",
-                    {"subagent_type": name, "model": "claude-sonnet-5"},
+                    {"subagent_type": name, "model": "claude-sonnet-5[1m]"},
                     allowed_models=hybrid_models,
                 ))
 
-    def test_builtins_reject_missing_disabled_cross_profile_and_alias_models(self) -> None:
-        allowed = "gpt-5.6-luna[1m],gpt-5.6-sol[1m]"
+    def test_explore_avoids_accidental_premium_inheritance_but_keeps_exact_choice(self) -> None:
+        models = "gpt-5.6-luna,gpt-5.6-sol"
+        denied = self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore", "prompt": "trace"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna",
+            root_model="gpt-5.6-sol",
+        )
+        self.assert_denied(denied)
+        self.assertIn(
+            'model: "haiku"',
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+        self.assertIn(
+            "gpt-5.6-luna",
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+        self.assertIsNone(self.invoke(
+            "openai-pure",
+            {
+                "subagent_type": "Explore",
+                "model": "haiku",
+                "prompt": "routine trace",
+            },
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna",
+            root_model="gpt-5.6-sol",
+        ))
+        self.assertIsNone(self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore", "prompt": "trace"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna",
+            root_model="gpt-5.6-luna",
+        ))
+        for name in ("Plan", "general-purpose"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.invoke(
+                    "openai-pure",
+                    {"subagent_type": name},
+                    allowed_models=models,
+                    discovery_model="gpt-5.6-luna",
+                    root_model="gpt-5.6-sol",
+                ))
+        self.assert_denied(self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-terra",
+            root_model="gpt-5.6-sol",
+        ))
+
+    def test_builtins_reject_invalid_routes_and_family_maps(self) -> None:
+        allowed = "gpt-5.6-luna,gpt-5.6-sol"
         for model, models in (
-            ("gpt-5.6-luna[1m]", None),
-            ("gpt-5.6-luna-fast[1m]", allowed),
-            ("claude-opus-5", allowed),
+            ("gpt-5.6-luna", ""),
+            ("gpt-5.6-luna[1m]", allowed),
+            ("gpt-5.6-luna-fast", allowed),
+            ("claude-opus-5[1m]", allowed),
             ("inherit", allowed),
-            ("sonnet", allowed),
             (None, allowed),
         ):
             with self.subTest(model=model, models=models):
@@ -120,17 +298,36 @@ class AgentGuardTests(unittest.TestCase):
                     {"subagent_type": "Explore", "model": model},
                     allowed_models=models,
                 ))
-        for invalid in ("", "gpt-5.6-sol[1m],gpt-5.6-sol[1m]", "unknown-model"):
+        for invalid in ("", "gpt-5.6-sol,gpt-5.6-sol", "unknown-model"):
             with self.subTest(invalid=invalid):
                 self.assert_denied(self.invoke(
                     "openai-pure",
-                    {"subagent_type": "Plan", "model": "gpt-5.6-sol[1m]"},
+                    {"subagent_type": "Plan", "model": "opus"},
                     allowed_models=invalid,
+                ))
+        valid_map = {
+            "fable": "gpt-5.6-sol",
+            "opus": "gpt-5.6-sol",
+            "sonnet": "gpt-5.6-sol",
+            "haiku": "gpt-5.6-luna",
+        }
+        for invalid_map in (
+            {},
+            {**valid_map, "haiku": "gpt-5.6-luna-fast"},
+            {**valid_map, "haiku": "gpt-5.6-sol"},
+        ):
+            with self.subTest(invalid_map=invalid_map):
+                self.assert_denied(self.invoke(
+                    "openai-pure",
+                    {"subagent_type": "Explore", "model": "haiku"},
+                    allowed_models=allowed,
+                    discovery_model="gpt-5.6-luna",
+                    family_models=invalid_map,
                 ))
 
     def test_named_agents_reject_every_caller_model_override(self) -> None:
         self.assert_denied(self.invoke("openai-pure", {
-            "subagent_type": "airlock-sol", "model": "gpt-5.6-sol[1m]",
+            "subagent_type": "airlock-sol", "model": "gpt-5.6-sol",
         }))
         self.assert_denied(self.invoke("openai-pure", {
             "subagent_type": "airlock-sol", "model": None,
@@ -138,18 +335,18 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_extra_usage_models_and_agents_require_exact_confirmation(self) -> None:
         marker = "Extra usage authorized: yes"
-        models = "claude-fable-5,claude-opus-5"
+        models = "claude-fable-5[1m],claude-opus-5[1m]"
         self.assert_denied(self.invoke(
             "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5", "prompt": "research"},
+            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": "research"},
             allowed_models=models,
-            extra_models="claude-fable-5",
+            extra_models="claude-fable-5[1m]",
         ))
         self.assertIsNone(self.invoke(
             "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5", "prompt": marker},
+            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": marker},
             allowed_models=models,
-            extra_models="claude-fable-5",
+            extra_models="claude-fable-5[1m]",
         ))
         self.assert_denied(self.invoke(
             "hybrid-openai-root",
@@ -230,6 +427,71 @@ class AgentGuardTests(unittest.TestCase):
         self.assert_denied(self.invoke("not-a-profile", {"subagent_type": "airlock-sol"}))
         self.assert_denied(self.invoke("openai-pure", None))
         self.assert_denied(self.invoke("openai-pure", {"subagent_type": "airlock-sol"}, "Read"))
+
+    def test_grok_pure_allows_only_grok_workers(self) -> None:
+        for name in ("airlock-grok", "airlock-composer"):
+            with self.subTest(name=name, allowed=True):
+                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
+        for name in ("airlock-sol", "airlock-opus", "airlock-luna-fast", "airlock-sonnet"):
+            with self.subTest(name=name, allowed=False):
+                self.assert_denied(self.invoke("grok-pure", {"subagent_type": name}))
+
+    def test_grok_pure_builtins_take_only_grok_model_overrides(self) -> None:
+        grok_models = "grok-4.5,grok-composer-2.5-fast"
+        for name in ("Explore", "Plan", "general-purpose"):
+            with self.subTest(name=name, mode="inherit"):
+                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
+            with self.subTest(name=name, mode="grok"):
+                self.assertIsNone(self.invoke(
+                    "grok-pure",
+                    {"subagent_type": name, "model": "grok-4.5"},
+                    allowed_models=grok_models,
+                ))
+            for model in ("gpt-5.6-sol", "claude-opus-5", "grok", "grok-4.5-latest"):
+                with self.subTest(name=name, model=model):
+                    self.assert_denied(self.invoke(
+                        "grok-pure",
+                        {"subagent_type": name, "model": model},
+                        allowed_models=grok_models,
+                    ))
+
+    def test_hybrid_grok_root_reaches_every_provider(self) -> None:
+        for name in (
+            "airlock-grok", "airlock-composer", "airlock-sol", "airlock-opus",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(self.invoke("hybrid-grok-root", {"subagent_type": name}))
+        every_model = (
+            "grok-4.5,grok-composer-2.5-fast,gpt-5.6-sol,claude-opus-5[1m]"
+        )
+        for model in ("grok-4.5", "gpt-5.6-sol", "claude-opus-5[1m]"):
+            with self.subTest(model=model):
+                self.assertIsNone(self.invoke(
+                    "hybrid-grok-root",
+                    {"subagent_type": "Explore", "model": model},
+                    allowed_models=every_model,
+                ))
+
+    def test_named_grok_workers_reject_caller_model_overrides(self) -> None:
+        # A named worker's identity binds its model, so a caller override would
+        # let the card name and the billed model disagree.
+        for profile in ("grok-pure", "hybrid-grok-root"):
+            with self.subTest(profile=profile):
+                self.assert_denied(self.invoke(profile, {
+                    "subagent_type": "airlock-grok", "model": "grok-composer-2.5-fast",
+                }))
+
+    def test_grok_session_can_narrow_its_own_worker_set(self) -> None:
+        # A config that enables only one Grok route must not leave the other one
+        # reachable through the guard.
+        self.assertIsNone(self.invoke(
+            "grok-pure", {"subagent_type": "airlock-grok"},
+            allowed_agents="airlock-grok",
+        ))
+        self.assert_denied(self.invoke(
+            "grok-pure", {"subagent_type": "airlock-composer"},
+            allowed_agents="airlock-grok",
+        ))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ Airlock is a launch and policy layer around Claude Code. Claude Code still owns 
 ```bash
 airlock                 # saved default profile
 airlock openai          # saved OpenAI-only root
+airlock grok            # saved Grok-only root
 airlock hybrid          # saved hybrid root
 ```
 
@@ -15,6 +16,8 @@ The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each pr
 The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
 An explicit OpenAI alias such as `airlock terra` always starts this profile. `airlock hybrid MODEL` always starts the mixed-provider profile.
+
+The Grok-only profile works the same way. It points Claude Code at the same local proxy, which selects the Grok upstream from the model ID and its own Grok login. Codex and Grok never share a login even though they share the proxy.
 
 ## Hybrid routing
 
@@ -28,17 +31,18 @@ A hybrid session starts one temporary router on an unused `127.0.0.1` port. Clau
 The router reads only the top-level model ID needed for routing:
 
 - exact enabled `gpt-*` IDs go to the local OpenAI proxy
-- Claude Code's deterministic GPT wire form also goes to OpenAI, such as `gpt-5.6-sol[1m]` becoming `gpt-5.6-sol`
+- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5[1m]` becoming `claude-opus-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
 - exact enabled `claude-*` IDs go to `https://api.anthropic.com`
+- exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - unknown or disabled IDs fail closed
 
-The router registers a wire form only for an enabled full GPT ID. It does not accept arbitrary aliases. The request body is forwarded without rewriting it. Streaming responses are sent to Claude Code as they arrive.
+The router registers a wire form only for an enabled full model ID. It does not accept arbitrary aliases. The request body is forwarded without rewriting it. Streaming responses are sent to Claude Code as they arrive.
 
 On an Anthropic route, the router preserves Claude Code capability and Agent attribution headers. It forwards saved Claude login authorization opaquely to Anthropic.
 
 On an OpenAI route, it removes incoming Claude authorization, API-key, cookie, proxy authorization, and OAuth capability headers before calling the local proxy. Claude credentials are never sent to OpenAI.
 
-The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes only a bounded in-memory list of provider, exact enabled model, status, byte-count, duration, outcome, and token-count metadata for parity checks. Token counts are read from the response that was already forwarded, so they never change, delay, or buffer the stream. When an upstream sends no usage at all, the event simply has no token counts rather than a made-up zero.
+The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes a bounded in-memory event list plus cumulative per-provider/model request and token totals for the current session. Token counts are read from the response that was already forwarded, so observation never changes, delays, or buffers the stream. When an upstream sends no usage, the event has no token counts and the summary records that usage was absent rather than inventing a zero.
 
 ## Native Agents
 
@@ -55,6 +59,8 @@ airlock-opus
 airlock-sonnet
 airlock-fable
 airlock-haiku
+airlock-grok
+airlock-composer
 ```
 
 Each name has:
@@ -79,25 +85,37 @@ Airlock keeps the exact built-in Agent types:
 - Plan for read-only technical design
 - general-purpose for multi-step work
 
-By default, they inherit the orchestrator model. This includes Explore.
+Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the `haiku` family slot from the generated session guidance. Airlock resolves that slot to the economical discovery model. If an unpinned Explore would inherit a different premium root, the guard blocks it and gives a schema-valid retry.
 
-For one call, the main model may pass an exact full model ID:
+For one built-in call, the main model may pass a Claude Code family alias:
 
 ```text
-Agent(subagent_type="Explore", model="gpt-5.6-luna[1m]", ...)
-Agent(subagent_type="Plan", model="claude-opus-5", ...)
+Agent(subagent_type="Explore", model="haiku", ...)
+Agent(subagent_type="Plan", model="opus", ...)
 ```
 
-The session guard checks the ID before Claude Code starts the Agent.
+The session guard resolves the alias and checks its exact target before Claude Code starts the Agent.
 
-- The OpenAI-only profile allows only enabled OpenAI IDs.
-- Hybrid allows enabled OpenAI and Anthropic IDs.
-- Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
-- Omitting `model` keeps normal inheritance.
+- Every profile defines all four schema-valid aliases: `fable`, `opus`, `sonnet`, and `haiku`.
+- Every alias points to an exact model already enabled in that session.
+- The `haiku` alias always points to the session's economical discovery model.
+- Disabled, cross-profile, confirmation-required, and ineligible Fast routes cannot appear behind an alias.
+- Omitting `model` keeps normal inheritance for Plan and general-purpose. Explore also inherits when the root is already the economical discovery route; otherwise routine unpinned Explore is rejected with `model="haiku"` and the exact resolved target.
+- Named `airlock-*` Agents remain the exact-model interface.
 
 A named Agent has no per-call effort field. It follows the session effort by default, and `/effort` can move it in the middle of a session. A configured pin stays fixed until the config changes.
 
 ## Model selection and `/model`
+
+Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact models in the active policy. This prevents inherited shell values from sending a built-in Agent to a disabled or cross-provider route:
+
+- OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna. A missing route falls back to the closest enabled OpenAI model.
+- Grok Fable and Opus use Grok 4.5, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
+- Hybrid profiles use the strongest eligible route for Fable, Opus, and Sonnet, while Haiku always uses the economical discovery route.
+- A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
+- The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
+
+These are Claude Code family slots, not claims that GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 
@@ -105,7 +123,7 @@ Use these reliable paths:
 
 - start the saved root with `airlock`, the OpenAI-only root with `airlock openai`, or an exact root with `airlock terra` or `airlock hybrid MODEL`
 - use an exact named `airlock-*` Agent
-- pass an allowed exact model ID to Explore, Plan, or general-purpose
+- pass a schema-valid `fable`, `opus`, `sonnet`, or `haiku` family alias to Explore, Plan, or general-purpose
 
 A model ID that the router does not allow cannot be used even if Claude Code accepts the text.
 
@@ -138,6 +156,7 @@ Automatic armies may use only:
 
 - `airlock-luna`
 - `airlock-luna-fast` when plan and proxy checks allow it
+- `airlock-composer` when Grok is enabled
 
 Both run at the session effort. Pin them with `AIRLOCK_EFFORT_LUNA=max` if you want armies to think harder than the rest of the session.
 
@@ -150,7 +169,9 @@ Luna can also implement code when each shard has:
 - no dependency on another shard
 - acceptance checks
 
-A stronger Sol, Opus, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, and Haiku are not multiplied automatically.
+A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, Haiku, and Grok 4.5 are not multiplied automatically.
+
+A session is only told about the routes it actually enabled. A Grok-only session is not given Luna army instructions, and a session with no economical high-volume route is told plainly that it has no automatic swarm route.
 
 ## Concurrency
 
@@ -200,9 +221,21 @@ It returns a key-only projection for an exact env read. It blocks known credenti
 
 This is a practical safety layer, not a full shell sandbox. A model with Bash can run repository code. A tracked secret may already exist in shared Git history. Do not commit credentials and use stronger operating-system isolation for untrusted repositories.
 
+## Context sizing
+
+Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI and Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. That fallback also affects named workers in the same process.
+
+A user-exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` has highest priority. An explicitly exported numeric `AIRLOCK_CONTEXT_WINDOW` also wins, while `AIRLOCK_CONTEXT_WINDOW=auto` removes the override. Any explicit numeric value applies to the root and every worker because Claude Code has no per-Agent compaction variable.
+
 ## Usage and failure handling
 
 `airlock usage` reads OpenAI plan windows through the documented Codex app-server method. It does not send a model request.
+
+Inside a hybrid session, `airlock session-usage` reads only the active loopback router's cumulative summary. It reports per-provider/model requests, completed and failed outcomes, observed-usage events, input, cache-write, cache-read, and output totals. The command rejects non-loopback and deceptive URLs, never emits diagnostic event bodies, and labels the result as provider-reported session usage rather than a bill. Provider-pure profiles have no session router, so the command fails clearly instead of guessing.
+
+Claude Code's native Agent card can still show zero tokens for custom OpenAI or Grok IDs. Airlock does not spoof a Claude ID or rewrite provider bytes to change that closed-source display. `airlock session-usage` is the accurate Airlock-owned view when the provider returned usage.
+
+Grok has no equivalent readable plan window, so Airlock reports Grok headroom as unknown rather than guessing. It does record whether the proxy holds a Grok login, and a session that confirms it is signed out disables the Grok routes instead of advertising workers that would fail on their first request.
 
 Use native Claude Code's `/usage` screen for Anthropic subscription bars. Airlock does not read Claude login files or guess Anthropic percentages.
 

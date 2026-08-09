@@ -51,7 +51,8 @@ jobs:
             tests/test-access.py tests/test-agent-guard.py \
             tests/test-router.py tests/test-hybrid.py tests/test-worktree.py \
             tests/test-secret-guard.py tests/test-platform.py tests/test-release.py \
-            tests/test-update.py tests/test-docs.py tests/test-setup-pty.py
+            tests/test-update.py tests/test-docs.py tests/test-live-context.py \
+            tests/test-setup-pty.py scripts/test-sol-long-context.py
           for catalog in config/*-agents.json; do
             python -m json.tool "$catalog" >/dev/null
           done
@@ -73,6 +74,7 @@ jobs:
           python tests/test-release.py
           python tests/test-update.py
           python tests/test-docs.py
+          python tests/test-live-context.py
 
       - name: Run Bash launcher tests
         shell: bash

@@ -1,0 +1,21 @@
+{
+  "_comment": "Managed by https://github.com/Harshkamdar67/Airlock",
+  "airlock-grok": {
+    "description": "Grok 4.5 native worker via the local subscription proxy. Configured strength: long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution. Independent reporting places it first on agentic tool use and strong on terminal and SWE benchmarks, with a very large context window. Limitation: it sits below the top of general intelligence indexes, so it is not automatically the best choice for the hardest architecture or novel reasoning work, and access depends on the grok.com account and proxy catalog. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect the relevant code before changing it, preserve unrelated work, and keep edits within the requested scope. For bugs, establish a reproducer and causal explanation. For performance work, provide before-and-after measurements. Run the stated acceptance checks and report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "grok-4.5",
+    "effort": "xhigh"
+  },
+  "airlock-composer": {
+    "description": "Grok Composer 2.5 Fast native worker via the local subscription proxy. Configured strength: fast low-latency agentic coding loops, automated debugging, web implementation, and bounded multi-step edits where speed matters more than depth. It is trained for agentic coding rather than summarization, so prefer it for real edit-and-check loops and for high-volume shards that still involve code. Limitation: not the sole authority for architecture, security judgment, coupled integration, or final synthesis. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions and return complete evidence and exact outcomes. Prefer a real edit, run, and check loop over describing what should change. For discovery, search only the assigned area and summarize the useful result instead of dumping files. For implementation, proceed only when the task gives explicit file ownership, no-touch boundaries, and acceptance checks; keep edits inside those boundaries and preserve unrelated work. Run the assigned checks and report failures or skipped checks plainly. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "grok-composer-2.5-fast",
+    "effort": "high"
+  }
+}

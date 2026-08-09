@@ -49,7 +49,7 @@ Each hybrid session also starts a router on a temporary `127.0.0.1` port.
 
 Do not expose either service to a LAN, VPN, container bridge, tunnel, or the public internet. The OpenAI proxy does not require an incoming client password.
 
-The hybrid router accepts only exact enabled model IDs, the deterministic wire form Claude Code creates by removing `[1m]` from enabled GPT IDs, and a small set of Claude Code API paths. It rejects redirects and exits when its owning launcher exits.
+The hybrid router accepts only exact enabled model IDs, the deterministic wire form Claude Code creates by removing `[1m]` from an enabled native Claude ID that carries it, and a small set of Claude Code API paths. Legacy suffixed GPT IDs are normalized before they can enter the router policy. It rejects redirects and exits when its owning launcher exits.
 
 ## Protect provider credentials
 
@@ -90,12 +90,12 @@ Named `airlock-*` workers are real Claude Code Agents with exact fixed model IDs
 
 Normal sessions allow:
 
-- exact enabled named `airlock-*` Agents
-- exact built-in Explore, Plan, and general-purpose Agents
+- enabled named `airlock-*` Agents with exact model identities
+- built-in Explore, Plan, and general-purpose Agent types with policy-owned family slots
 
-Built-in Agents inherit the main model when no model field is supplied. They may receive one exact full model ID only when that ID is enabled for the active profile. The OpenAI-only profile accepts only enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Bare `airlock` starts whichever profile setup saved.
+Built-in Plan and general-purpose inherit the main model when no model field is supplied. Explore also inherits when the root is already the economical discovery route. Otherwise the guard requires the schema-valid `haiku` family alias. A built-in call may use only Claude Code's `fable`, `opus`, `sonnet`, or `haiku` alias, and Airlock validates the exact enabled model behind that slot. Bare `airlock` starts whichever profile setup saved.
 
-The guard rejects unknown Agent names, aliases, malformed or disabled model IDs, cross-profile IDs, blocked extra-usage routes, ineligible Fast routes, and model overrides on named Agents.
+The guard rejects unknown Agent names or model values, malformed or stale family maps, disabled exact targets, cross-profile routes, blocked extra-usage routes, ineligible Fast routes, and model overrides on named Agents.
 
 Named Agents disallow Agent and the session spawn depth is one. Fan-out stays at the root.
 

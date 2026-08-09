@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -46,6 +49,9 @@ class AccessUsageTests(unittest.TestCase):
             "AIRLOCK_ACCESS_FILE": str(self.access),
             "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
             "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+            # Pin the Grok probe so no test shells out to a real proxy that may
+            # or may not be installed on the machine running the suite.
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
         }, clear=False)
         self.environment.start()
 
@@ -333,8 +339,8 @@ for line in sys.stdin:
         self.assertIn("prefer airlock-opus for difficult architecture, UI/UX design", guidance)
         self.assertIn("prefer airlock-sol for difficult implementation", guidance)
         self.assertIn("use airlock-luna for high-volume discovery", guidance)
-        self.assertIn("Automatic armies start the full background native Agent batch of exact Luna workers", guidance)
-        self.assertIn("One stronger root or native Sol or Opus Agent performs final synthesis", guidance)
+        self.assertIn("Automatic armies start the full background native Agent batch of airlock-luna workers", guidance)
+        self.assertIn("One stronger airlock-sol or airlock-opus Agent, or the root, reviews", guidance)
         self.assertIn("use airlock-terra for adversarial review", guidance)
         self.assertIn("soft routing preferences, not provider stereotypes", guidance)
         self.assertIn("explicit user choice wins", guidance)
@@ -356,17 +362,18 @@ for line in sys.stdin:
             with self.subTest(profile=profile):
                 guidance = ACCESS.profile_guidance(policy, profile)
                 self.assertIn("Orchestration: choose the smallest effective path", guidance)
-                self.assertIn("Use exact Explore for bounded read-only", guidance)
-                self.assertIn("without a model field it inherits the orchestrator model", guidance)
-                self.assertIn("Use exact Plan for read-only technical design", guidance)
-                self.assertIn("Use exact general-purpose for multi-step work", guidance)
-                self.assertIn("For a Luna army, launch multiple exact airlock-luna", guidance)
+                self.assertIn("Built-in Explore, Plan, and general-purpose accept Claude Code's", guidance)
+                self.assertIn("pass `model=haiku` (resolved to gpt-5.6-luna)", guidance)
+                self.assertIn("Omit `model` only when inheriting the orchestrator", guidance)
+                self.assertIn("Use built-in Plan for read-only technical design", guidance)
+                self.assertIn("Use built-in general-purpose for multi-step work", guidance)
+                self.assertIn("For an automatic army, launch multiple exact airlock-luna", guidance)
                 self.assertIn("Agent calls with `run_in_background: true`", guidance)
                 self.assertIn("useful non-overlapping batch before waiting", guidance)
-                self.assertIn("Luna and eligible Luna Fast Agents run at the session effort unless they are pinned", guidance)
+                self.assertIn("They run at the session effort unless they are pinned", guidance)
                 self.assertIn("Use Claude Code Workflow only when the user explicitly requests", guidance)
                 self.assertIn("Do not overlap direct Agent fan-out with Workflow", guidance)
-                self.assertIn("Automatic high-volume swarms remain Luna-only", guidance)
+                self.assertIn("Automatic high-volume swarms are limited to airlock-luna", guidance)
                 self.assertIn("Claude Code's Agent card, model identity, usage", guidance)
                 self.assertIn("Difficult implementation shards must have explicit file ownership", guidance)
                 self.assertIn("Named airlock-* Agents already bind their exact model", guidance)
@@ -381,7 +388,7 @@ for line in sys.stdin:
                 # This guard is about context cost, not a hard limit. A real
                 # session carries longer plan, headroom, and Fast eligibility
                 # strings than the defaults used here, so leave room for them.
-                self.assertLess(len(guidance), 13_000)
+                self.assertLess(len(guidance), 14_000)
         pure = ACCESS.profile_guidance(policy, "openai-pure")
         self.assertIn("this OpenAI-only profile has no Anthropic worker", pure)
         # Handoff wording is per provider, so a profile only carries the rules
@@ -455,6 +462,87 @@ for line in sys.stdin:
             policy["providers"]["openai"]["detected_plan"] = "unknown"
             self.assertIsNone(ACCESS.fast_route_status(policy)["selected_route"])
 
+    def test_family_slots_stay_in_session_and_exclude_unconfirmed_extra_usage(self) -> None:
+        policy = ACCESS.default_policy()
+        for model in policy["providers"]["grok"]["models"].values():
+            model["access"] = "unknown"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "grok-pure"),
+            "grok-composer-2.5-fast",
+        )
+        self.assertEqual(ACCESS.proxy_picker_models(policy, "grok-pure"), {
+            "fable": "grok-4.5",
+            "opus": "grok-4.5",
+            "sonnet": "grok-composer-2.5-fast",
+            "haiku": "grok-composer-2.5-fast",
+        })
+        hybrid = ACCESS.session_route_policy(policy, "hybrid-grok-root")
+        self.assertEqual(set(hybrid["picker_models"]), {"fable", "opus", "sonnet", "haiku"})
+        self.assertEqual(hybrid["picker_models"]["haiku"], hybrid["discovery_model"])
+        self.assertTrue(set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"]))
+
+        # An Agent family alias cannot carry Airlock's explicit extra-usage
+        # marker. If Terra requires confirmation, its Sonnet slot must fall
+        # back to an ordinary enabled model instead of bypassing the policy.
+        policy["providers"]["openai"]["models"]["terra"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "ask"
+        picker = ACCESS.proxy_picker_models(policy, "openai-pure")
+        self.assertEqual(picker["sonnet"], "gpt-5.6-sol")
+        self.assertNotIn("gpt-5.6-terra", picker.values())
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["sonnet"],
+            "gpt-5.6-terra",
+        )
+
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["models"]["luna"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "ask"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "openai-pure"),
+            "gpt-5.6-terra",
+        )
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["haiku"],
+            "gpt-5.6-terra",
+        )
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "openai-pure"),
+            "gpt-5.6-luna",
+        )
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["haiku"],
+            "gpt-5.6-luna",
+        )
+
+    def test_openai_catalog_is_bare_and_claude_window_suffixes_remain(self) -> None:
+        openai_models = [profile["model"] for profile in ACCESS.MODEL_PROFILES["openai"].values()]
+        self.assertTrue(openai_models)
+        self.assertTrue(all(model.startswith("gpt-") and not model.endswith("[1m]") for model in openai_models))
+        for route in ("opus", "sonnet", "fable"):
+            self.assertTrue(ACCESS.MODEL_PROFILES["anthropic"][route]["model"].endswith("[1m]"))
+
+        # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
+        # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com.
+        # Airlock always points it at the session router, which silently drops
+        # every one of them to 200000. The [1m] suffix is the only lever that
+        # still reaches 1M from behind the router, so dropping it here would
+        # cost four fifths of the window without any visible failure.
+        anthropic = ACCESS.MODEL_PROFILES["anthropic"]
+        for route in ("opus", "sonnet", "fable"):
+            with self.subTest(route=route):
+                self.assertTrue(anthropic[route]["model"].endswith("[1m]"))
+        # Haiku 4.5 has no native 1M window, so claiming one would let the
+        # session grow past what the model actually accepts.
+        self.assertFalse(anthropic["haiku"]["model"].endswith("[1m]"))
+        # Native Claude models use the suffix to request their larger context
+        # window, while legacy GPT suffixes normalize defensively to bare IDs.
+        self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
+        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra"), "gpt-5.6-terra")
+        self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra[1m]"), "gpt-5.6-terra")
+        self.assertEqual(ACCESS.wire_model_id("grok-4.5"), "grok-4.5")
+
     def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
         policy = ACCESS.default_policy()
         policy["policies"]["openai_fast"] = "on"
@@ -463,35 +551,65 @@ for line in sys.stdin:
         }):
             pure = ACCESS.session_route_policy(policy, "openai-pure")
             self.assertEqual(set(pure["routes"].values()), {"openai"})
-            self.assertEqual(pure["routes"]["gpt-5.6-sol[1m]"], "openai")
             self.assertEqual(pure["routes"]["gpt-5.6-sol"], "openai")
+            self.assertEqual(pure["routes"]["gpt-5.6-terra"], "openai")
             self.assertEqual(
                 set(pure["model_ids"]),
-                {"gpt-5.6-sol[1m]", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
+                {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
             )
-            self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
+            self.assertIn("gpt-5.6-sol", pure["model_ids"])
+            self.assertEqual(pure["discovery_model"], "gpt-5.6-luna")
+            self.assertEqual(
+                ACCESS.session_route_field(policy, "openai-pure", "discovery-model"),
+                "gpt-5.6-luna",
+            )
+            self.assertEqual(pure["picker_models"], {
+                "fable": "gpt-5.6-sol",
+                "opus": "gpt-5.6-sol",
+                "sonnet": "gpt-5.6-terra",
+                "haiku": "gpt-5.6-luna",
+            })
+            self.assertEqual(
+                ACCESS.session_route_field(policy, "openai-pure", "picker-models"),
+                "fable=gpt-5.6-sol\nhaiku=gpt-5.6-luna\n"
+                "opus=gpt-5.6-sol\nsonnet=gpt-5.6-terra",
+            )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
+            self.assertEqual(hybrid["picker_models"], {
+                "fable": "gpt-5.6-sol",
+                "opus": "claude-opus-5[1m]",
+                "sonnet": "claude-sonnet-5[1m]",
+                "haiku": "gpt-5.6-luna",
+            })
+            self.assertTrue(
+                set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"])
+            )
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
+            # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
+            # native 1M window from behind the router, and Claude Code strips
+            # that suffix before the request leaves. Both forms have to route.
+            self.assertEqual(hybrid["routes"]["claude-opus-5[1m]"], "anthropic")
             self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
-            self.assertNotIn("gpt-5.6-sol", hybrid["model_ids"])
-            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
-            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertIn("gpt-5.6-sol", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
+            self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
             policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertIn("claude-fable-5", hybrid["extra_model_ids"])
+            self.assertIn("claude-fable-5[1m]", hybrid["extra_model_ids"])
             self.assertIn("airlock-fable", hybrid["extra_agent_names"])
 
             policy["providers"]["openai"]["detected_plan"] = "pro"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertIn("gpt-5.6-luna-fast", hybrid["model_ids"])
             policy["policies"]["swarm_fast"] = "off"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertNotIn("gpt-5.6-luna-fast[1m]", hybrid["model_ids"])
+            self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
             policy["policies"]["extra_usage"] = "never"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertNotIn("claude-fable-5", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
 
     def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
         policy = ACCESS.default_policy()
@@ -545,8 +663,22 @@ for line in sys.stdin:
             "anthropic-direct-agents.json",
             "hybrid-agents.json",
             "claude-agents.json",
+            "grok-agents.json",
         ):
             catalog = json.loads((ROOT / "config" / catalog_name).read_text(encoding="utf-8"))
+            # Underscore keys carry file metadata such as the managed marker
+            # that lets the installer recognise its own file, not Agent
+            # definitions. The loader drops them and so does this check.
+            self.assertEqual(
+                catalog.get("_comment"),
+                "Managed by https://github.com/Harshkamdar67/Airlock",
+                f"{catalog_name} must carry the managed marker or the installer "
+                "will refuse to update it",
+            )
+            catalog = {
+                key: value for key, value in catalog.items()
+                if not key.startswith("_")
+            }
             with self.subTest(catalog=catalog_name):
                 self.assertTrue(catalog)
                 for name, agent in catalog.items():
@@ -664,23 +796,30 @@ for line in sys.stdin:
             "openai_wrappers": json.loads((ROOT / "config" / "hybrid-agents.json").read_text(encoding="utf-8")),
             "anthropic_direct": json.loads((ROOT / "config" / "anthropic-direct-agents.json").read_text(encoding="utf-8")),
             "anthropic_wrappers": json.loads((ROOT / "config" / "claude-agents.json").read_text(encoding="utf-8")),
+            "grok_direct": json.loads((ROOT / "config" / "grok-agents.json").read_text(encoding="utf-8")),
+            "grok_wrappers": json.loads((ROOT / "config" / "grok-agents.json").read_text(encoding="utf-8")),
         }
         with patch.object(ACCESS, "proxy_fast_capability", return_value={
             "supported": True, "source": "test", "version": "0.1.22",
         }):
-            for profile in ("hybrid-openai-root", "hybrid-anthropic-root"):
+            for profile in ("hybrid-openai-root", "hybrid-anthropic-root", "hybrid-grok-root"):
                 with self.subTest(profile=profile):
+                    if profile == "hybrid-grok-root":
+                        for model in policy["providers"]["grok"]["models"].values():
+                            model["access"] = "unknown"
                     rendered = ACCESS.render_profile(policy, profile, catalogs)
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
-                    self.assertEqual(len(rendered), 8)
+                    # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
+                    expected = 10 if profile == "hybrid-grok-root" else 8
+                    self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
                     self.assertIn("native effort: inherits the session level", luna_description)
                     self.assertIn("use run_in_background=true", luna_description)
                     self.assertIn("useful non-overlapping batch before waiting", luna_description)
                     self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])
-                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol[1m]")
-                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5")
+                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol")
+                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5[1m]")
                     for agent in rendered.values():
                         self.assertNotIn("tools", agent)
                         self.assertNotIn("permissionMode", agent)
@@ -698,9 +837,9 @@ for line in sys.stdin:
         self.assertNotIn("Anthropic Claude", environment[1])
         self.assertIn("airlock-luna, airlock-sol", environment[1])
         self.assertIn("eligible non-ignored untracked regular files", environment[1])
-        self.assertIn("exact built-in Explore, Plan, and general-purpose", environment[1])
+        self.assertIn("built-in Explore, Plan, and general-purpose Agent types", environment[1])
         self.assertIn("inherit the orchestrator model", environment[1])
-        self.assertIn("exact session-allowed model", environment[1])
+        self.assertIn("schema-valid family alias", environment[1])
         self.assertIn("Git-ignored or unsafe paths", environment[1])
         self.assertNotIn("airlock-delegate", environment[1])
 
@@ -722,6 +861,217 @@ for line in sys.stdin:
         self.assertIs(fast_off["fastMode"], False)
         with self.assertRaises(ACCESS.AccessError):
             ACCESS.managed_session_settings_json(json.dumps({"airlock-opus": {}}), "maybe")
+
+
+class GrokAuthenticationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.root / "config"),
+            "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
+            "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+        }, clear=False)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def grok_access(self, authenticated: object, **environment: str) -> dict[str, str]:
+        # Gating reads the cached login state rather than probing, so a launch
+        # never pays for a subprocess. refresh_usage is what fills the cache.
+        policy = ACCESS.default_policy()
+        policy["providers"]["grok"]["authenticated"] = authenticated
+        with patch.dict(os.environ, environment, clear=False):
+            policy = ACCESS.apply_runtime_overrides(policy)
+        return {
+            route: state["access"]
+            for route, state in policy["providers"]["grok"]["models"].items()
+        }
+
+    def test_environment_override_reports_both_answers(self) -> None:
+        for value, expected in (("1", True), ("yes", True), ("0", False), ("no", False)):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {"AIRLOCK_ACCESS_GROK_AUTH": value}, clear=False):
+                    status = ACCESS.grok_auth_status()
+                self.assertIs(status["authenticated"], expected)
+                self.assertEqual(status["source"], "environment")
+
+    def test_missing_proxy_reports_unknown_rather_than_logged_out(self) -> None:
+        # "Not installed" must stay distinguishable from "installed and logged
+        # out", because only the latter is allowed to disable configured routes.
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_GROK_AUTH": ""}, clear=False):
+            with patch.object(ACCESS.shutil, "which", return_value=None):
+                status = ACCESS.grok_auth_status()
+        self.assertIsNone(status["authenticated"])
+        self.assertEqual(status["source"], "not_found")
+
+    def test_nonzero_proxy_status_reads_as_logged_out(self) -> None:
+        completed = subprocess.CompletedProcess(["proxy"], 1, "", "not logged in")
+        with patch.dict(os.environ, {
+            "AIRLOCK_ACCESS_GROK_AUTH": "", "AIRLOCK_ACCESS_PROXY": "proxy",
+        }, clear=False):
+            with patch.object(ACCESS, "_run_status", return_value=completed):
+                status = ACCESS.grok_auth_status()
+        self.assertIs(status["authenticated"], False)
+        self.assertEqual(status["source"], "proxy_status")
+
+    def test_confirmed_logged_out_grok_overrides_configured_routes(self) -> None:
+        access = self.grok_access(False, AIRLOCK_GROK_MODELS="grok,composer")
+        self.assertEqual(access, {"grok": "unavailable", "composer": "unavailable"})
+
+    def test_unknown_grok_auth_keeps_configured_routes(self) -> None:
+        # A machine that has never run a refresh must keep whatever the config
+        # asked for. Silently dropping workers on an unknown answer would make
+        # the enable look like it failed.
+        access = self.grok_access(None, AIRLOCK_GROK_MODELS="grok,composer")
+        self.assertEqual(access, {"grok": "unknown", "composer": "unknown"})
+
+    def test_grok_routes_stay_off_without_an_explicit_enable(self) -> None:
+        access = self.grok_access(True)
+        self.assertEqual(access, {"grok": "unavailable", "composer": "unavailable"})
+
+    def test_grok_probe_is_not_a_usage_refresh(self) -> None:
+        # Grok login state is account state. Counting it as a usage refresh
+        # would restart the shared fifteen-minute window on every launch.
+        ACCESS._write_policy(ACCESS.default_policy(), self.root / "access.json")
+        with patch.dict(os.environ, {
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
+            "AIRLOCK_ACCESS_CODEX": str(self.root / "missing-codex"),
+        }, clear=False):
+            _, refreshed = ACCESS.refresh_usage()
+        self.assertFalse(refreshed)
+        cached = json.loads((self.root / "access.json").read_text(encoding="utf-8"))
+        self.assertIs(cached["providers"]["grok"]["authenticated"], True)
+
+
+class SessionUsageTests(unittest.TestCase):
+    def payload(self) -> dict[str, object]:
+        return {
+            "instance_id": "0123456789abcdef",
+            "events": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol",
+                    "prompt": "must-not-leak",
+                    "authorization": "must-not-leak-either",
+                }
+            ],
+            "summary": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol",
+                    "requests": 2,
+                    "completed": 1,
+                    "errors": 1,
+                    "usage_events": 1,
+                    "input_tokens": 0,
+                    "cache_creation_input_tokens": 11,
+                    "cache_read_input_tokens": 320000,
+                    "output_tokens": 7,
+                }
+            ],
+        }
+
+    def test_session_usage_keeps_only_valid_cumulative_counts(self) -> None:
+        report = ACCESS.session_usage_report(self.payload())
+        self.assertEqual(report["source"], "airlock-router")
+        self.assertFalse(report["billing"])
+        self.assertEqual(report["bounded_event_window"], 1)
+        self.assertEqual(report["groups"][0]["cache_read_input_tokens"], 320000)
+        rendered = json.dumps(report)
+        self.assertNotIn("must-not-leak", rendered)
+        lines = "\n".join(ACCESS.session_usage_lines(report))
+        self.assertIn("provider-reported, not a bill", lines)
+        self.assertIn("cache-read=320000", lines)
+        self.assertIn("Claude Code may still show zero", lines)
+        self.assertNotIn("must-not-leak", lines)
+
+    def test_session_usage_rejects_non_loopback_and_deceptive_urls(self) -> None:
+        self.assertEqual(
+            ACCESS.validate_session_router_url("http://127.0.0.1:28471"),
+            ("127.0.0.1", 28471),
+        )
+        for rejected in (
+            "https://127.0.0.1:28471",
+            "http://localhost:28471",
+            "http://127.0.0.1:28471/diagnostics",
+            "http://127.0.0.1:28471?target=evil",
+            "http://user@127.0.0.1:28471",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:28471.evil.test",
+        ):
+            with self.subTest(rejected=rejected), self.assertRaises(ACCESS.AccessError):
+                ACCESS.validate_session_router_url(rejected)
+
+    def test_session_usage_rejects_invented_or_inconsistent_counts(self) -> None:
+        for field, value in (
+            ("input_tokens", -1),
+            ("output_tokens", True),
+            ("requests", 3),
+            ("usage_events", 3),
+        ):
+            payload = self.payload()
+            payload["summary"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ACCESS.AccessError):
+                ACCESS.session_usage_report(payload)
+
+    def test_session_usage_cli_fetches_only_the_loopback_diagnostics_path(self) -> None:
+        body = json.dumps(self.payload(), separators=(",", ":")).encode("utf-8")
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/diagnostics":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "bin" / "airlock-access.py"),
+                    "session-usage",
+                    "--router-url",
+                    f"http://127.0.0.1:{server.server_address[1]}",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["groups"][0]["output_tokens"], 7)
+        self.assertNotIn("must-not-leak", completed.stdout)
+
+    def test_session_usage_rejects_unbounded_or_unexpected_diagnostics(self) -> None:
+        payload = self.payload()
+        payload["events"] = [{}] * (ACCESS.MAX_SESSION_DIAGNOSTIC_EVENTS + 1)
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.session_usage_report(payload)
+        payload = self.payload()
+        payload["raw_response"] = "must-not-be-accepted"
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.session_usage_report(payload)
 
 
 if __name__ == "__main__":

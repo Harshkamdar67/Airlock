@@ -69,6 +69,12 @@ After Airlock is installed, use its wrapper for later status checks or reauthent
 ```bash
 airlock proxy auth status
 airlock proxy auth login
+```
+
+Grok is optional and signs in separately. Skip this unless you want the Grok routes:
+
+```bash
+airlock proxy grok auth login
 airlock proxy auth device
 ```
 
@@ -148,6 +154,9 @@ Direct choices:
 
 ```bash
 airlock terra
+airlock grok
+airlock grok composer
+airlock hybrid grok
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
@@ -161,7 +170,7 @@ An OpenAI alias such as `airlock terra` always means an explicit OpenAI-only lau
 
 The OpenAI-only profile uses native Claude Code Agents with enabled OpenAI model IDs. Hybrid starts one temporary loopback router so native Agents can use enabled OpenAI and Anthropic IDs in the same session.
 
-Explore, Plan, and general-purpose inherit the main model when no model is supplied. The main model may give one of those built-ins an exact full model ID for one call when the active session policy allows it. Named `airlock-*` Agents already have a fixed model. Their effort follows the session unless the config pins it.
+Explore, Plan, and general-purpose use Claude Code's `fable`, `opus`, `sonnet`, and `haiku` family aliases. Plan and general-purpose inherit the main model when no model is supplied. Routine Explore uses `model="haiku"`, which Airlock maps to the exact economical discovery model enabled for that session. Named `airlock-*` Agents already have a fixed model. Their effort follows the session unless the config pins it.
 
 GPT IDs may not appear in Claude Code's `/model` discovery list behind a gateway. Use the launch commands above or an exact named Agent instead of relying on discovery.
 

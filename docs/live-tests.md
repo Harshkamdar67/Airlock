@@ -50,8 +50,8 @@ Verify:
 
 - the root uses the exact selected GPT model
 - Claude Code tools work normally
-- inherited Explore uses the root model
-- Explore with an exact allowed OpenAI model ID uses that ID
+- unpinned routine Explore is blocked from silently inheriting a different premium root and recommends the `haiku` family slot with its exact economical target
+- Explore with `model="haiku"` uses the exact Luna target shown in the session guidance
 - an exact Luna implementation Agent can edit only a disposable fixture in an isolated worktree
 - no Anthropic route is available
 
@@ -67,7 +67,7 @@ Verify in the same session:
 
 - an exact GPT Agent
 - an exact Claude Agent
-- cross-provider Explore with an allowed exact Claude ID
+- cross-provider Explore with a schema-valid family alias that resolves to the expected exact Claude target
 - native Agent cards name the exact models
 - tools, background execution, cancellation, and native usage work
 
@@ -83,7 +83,7 @@ Verify in the same session:
 
 - an exact Claude Agent
 - an exact GPT Agent
-- cross-provider Explore with an allowed exact GPT ID
+- cross-provider Explore with the `haiku` family alias resolving to the expected exact GPT target
 - native Agent cards name the exact models
 - tools, background execution, cancellation, and native usage work
 
@@ -156,9 +156,30 @@ Repeat with Sonnet only if Opus is disabled and Sonnet has separate authorizatio
 
 Authorize OpenAI, exact Luna Fast, harmless task content, Fast state, extra-usage state, and exact worker count.
 
-Verify that the sanitized plan is `prolite` or `pro`, proxy support is verified, the route is `luna-fast`, and the model is `gpt-5.6-luna-fast[1m]`.
+Verify that the sanitized plan is `prolite` or `pro`, proxy support is verified, the route is `luna-fast`, and the model is `gpt-5.6-luna-fast`.
 
 An ineligible `on` request must fail without substitution. Do not test Sol Fast unless it has separate explicit root authorization.
+
+### 12. Sol context above 300k
+
+This check has a dedicated helper and needs its own approval. The fixed scope is OpenAI, exact `gpt-5.6-sol`, no repository files, no public web, no extra usage, Fast off, and zero workers.
+
+After installing the candidate, run:
+
+```bash
+python scripts/test-sol-long-context.py \
+  --authorized-scope 'provider=openai;model=gpt-5.6-sol;repository-files=none;public-web=off;extra-usage=off;fast=off;workers=0'
+```
+
+The helper runs from an empty temporary directory, disables tools and MCP, sends one generated prompt through standard input, and never writes or prints the prompt. It passes only when Claude Code identifies the Sol route, the response contains markers from both ends of the synthetic input, and provider-reported input plus cache usage exceeds 300,000 tokens.
+
+Record only the helper's sanitized JSON result. If the provider rejects the request, the marker check fails, or observed usage is too small, record the failure and do not claim a 1M Sol path.
+
+#### 2026-08-09 result
+
+Approved scope: OpenAI, exact `gpt-5.6-sol`, no repository files, no public web, extra usage off, Fast off, and zero workers.
+
+The first launcher attempt made no model request because the Windows batch path contained a space and the helper invoked it incorrectly. The helper was fixed and its no-request `--help` path passed. The authorized request then reached the installed launcher but exited with status 1 before producing a valid marker or usage result. The >300k proof failed. Airlock retained the conservative OpenAI context fallback and does not claim a usable 1M Sol path from this test.
 
 ## Gateway limits to record
 

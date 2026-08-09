@@ -6,13 +6,23 @@ AIRLOCK_DEFAULT_PROFILE=hybrid
 AIRLOCK_HYBRID_MODEL=sol
 # Saved OpenAI-only root, also used by `airlock openai`.
 AIRLOCK_MODEL=sol
+# Saved Grok-only root, also used by `airlock grok`. Requires Grok OAuth on the
+# local subscription proxy (`airlock proxy grok auth login`).
+AIRLOCK_GROK_MODEL=grok
+# Enabled Grok workers. Empty or absent keeps Grok off, which is the default,
+# because Grok signs in separately from Codex. `airlock grok` and
+# `airlock hybrid grok` enable grok,composer themselves, since naming a Grok
+# root is an explicit request for that provider.
+# AIRLOCK_GROK_MODELS=grok,composer
+# AIRLOCK_EFFORT_GROK=inherit
+# AIRLOCK_EFFORT_COMPOSER=inherit
 # Starting effort for the root session. Change it live with /effort.
 AIRLOCK_MAIN_EFFORT=high
 # Advanced: separate convenience command. Normal Agents do not use this lane.
 AIRLOCK_BG_MODEL=sol
 AIRLOCK_BG_EFFORT=medium
 # Advanced: model for lightweight Claude Code requests such as titles.
-AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna[1m]
+AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna
 # Effort for every airlock-* worker. "inherit" means a worker follows the
 # session level, so /effort moves the root and its workers together, including
 # mid-session. Any named level pins workers and /effort no longer reaches them.
@@ -40,6 +50,10 @@ AIRLOCK_ANTHROPIC_MODELS=opus,sonnet
 AIRLOCK_OPENAI_MODELS=sol,terra,luna
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable
 AIRLOCK_OPENAI_EXTRA_MODELS=
+# Auto-compact window for roots Claude Code cannot recognize, which means the
+# OpenAI and Grok models reaching it through the proxy. Anthropic roots are left
+# alone so Claude Code keeps its own tuned window and the /config control stays
+# usable. Accepts auto, which never sets the window, or 100000 to 1000000.
 AIRLOCK_CONTEXT_WINDOW=272000
 # Effort levels Claude Code should offer when the root is a GPT model. Claude
 # Code recognizes Anthropic model IDs on its own, so this only applies to GPT

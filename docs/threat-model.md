@@ -2,6 +2,12 @@
 
 This document explains what Airlock tries to protect and where that protection ends.
 
+## Shared local proxy, separate logins
+
+Codex and Grok both reach their providers through the same loopback proxy, and the proxy picks the upstream from the model ID using its own stored login for that provider. Airlock never reads, copies, or forwards either login. The router strips Claude authorization, API-key, cookie, proxy authorization, and OAuth capability headers before any request reaches the loopback proxy, so a Claude credential cannot cross onto a Codex or Grok route.
+
+Sharing one proxy process does mean Codex and Grok share its trust boundary. A compromised or malicious proxy build would see both. That risk already existed for Codex and is unchanged by adding Grok, but it is the reason Airlock keeps the proxy on loopback and pins the managed bundle it launches.
+
 ## What matters
 
 The main things to protect are:
@@ -64,12 +70,12 @@ A malicious local process running as the same user can still connect to a loopba
 
 The session guard allows:
 
-- exact enabled named `airlock-*` Agents
-- exact built-in Explore, Plan, and general-purpose Agents
+- enabled named `airlock-*` Agents with exact model identities
+- built-in Explore, Plan, and general-purpose Agent types with validated family slots
 
-Built-ins inherit the orchestrator model unless one exact enabled full model ID is supplied for that call.
+Plan and general-purpose inherit the orchestrator unless a schema-valid `fable`, `opus`, `sonnet`, or `haiku` alias is supplied. Routine Explore uses the `haiku` slot when it would otherwise spend a different premium root.
 
-The guard blocks unknown names, aliases, malformed or disabled model IDs, cross-profile routes, ineligible Fast models, blocked extra-usage routes, and caller model overrides on named Agents.
+The guard blocks unknown names or model values, malformed or stale family maps, disabled exact targets, cross-profile routes, ineligible Fast models, blocked extra-usage routes, and caller model overrides on named Agents.
 
 Named Agents disallow Agent and spawn depth is one. Fan-out stays with the main model.
 

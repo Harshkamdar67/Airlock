@@ -35,6 +35,26 @@ If the first installation stopped before copying the launcher, rerun it with log
 
 Then run the doctor again. Never paste a token into Airlock, an issue, or a support message.
 
+## Grok workers are missing
+
+Grok is off unless you enable it, so an empty Grok pool is usually the intended state.
+
+Check the saved configuration and the login:
+
+```bash
+airlock config
+airlock proxy grok auth status
+```
+
+Enable the routes by rerunning setup and answering the Grok question, or by passing the workers directly:
+
+```bash
+./scripts/setup.sh --yes --grok-workers grok,composer
+airlock proxy grok auth login
+```
+
+A session that confirms the proxy is signed out of Grok disables the Grok routes on purpose, so that the main model is never offered a worker whose first request would fail. `airlock grok` and `airlock hybrid grok` enable the routes themselves, because naming a Grok root is an explicit request for that provider.
+
 ## Claude login is missing
 
 Run the official Claude Code login:
@@ -92,11 +112,11 @@ The router chooses an unused `127.0.0.1` port and exits with its launcher. It is
 
 Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpose` Agent types.
 
-Without a model field, each one inherits the orchestrator model.
+Plan and general-purpose inherit the orchestrator when the model field is omitted. Explore inherits only when the root is already the economical discovery route. If routine unpinned Explore would spend a different premium root, Airlock blocks the call and recommends `model="haiku"`, followed by the exact model behind that slot.
 
-With a model field, the value must be one exact full model ID enabled for the active session. The OpenAI-only profile allows OpenAI IDs only. Hybrid can allow both providers. Bare `airlock` starts the profile saved by setup.
+With a model field, use one of Claude Code's schema-valid `fable`, `opus`, `sonnet`, or `haiku` family aliases. Airlock resolves the alias to an exact enabled session model before the Agent starts. Bare `airlock` starts the profile saved by setup.
 
-Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage models, and ineligible Fast models fail closed.
+Unknown values, `inherit`, malformed or stale family maps, disabled routes, blocked extra-usage models, and ineligible Fast models fail closed. Use a named `airlock-*` Agent when exact model identity matters.
 
 If a built-in is still blocked after a valid call, reinstall the managed files, close the old session, and start a new one. Existing sessions keep the guard and allowlists they started with.
 
@@ -124,6 +144,14 @@ Do not retry the same failing search. Use one of these paths:
 
 The error does not mean that Opus, the public website, or provider login failed. It is an effort mismatch at the Web Search helper boundary.
 
+## `/model` shows provider models under Claude family slots
+
+Claude Code always presents Fable, Opus, Sonnet, and Haiku slots. In an OpenAI-only or Grok-only Airlock session, leaving those slots on native Claude IDs would send unsupported IDs to the subscription proxy. Airlock maps them to distinct enabled models from the active provider and labels each entry with its exact model ID. The launch command's exact root also stays available as the custom option.
+
+If every slot shows the same root or Fable still shows a native Claude model, the installation is stale. Run `airlock bundle`, reinstall the current branch or release, and start a new session. Existing sessions keep the environment they started with.
+
+A hybrid session behaves differently. Each family slot prefers the matching native Claude route when it is eligible, falls back only to another enabled session model, and labels the slot with the exact target. A GPT or Grok root appears as the custom hybrid option.
+
 ## A GPT model is missing from `/model`
 
 Claude Code gateway discovery can ignore non-Claude model IDs. This is a discovery limit, not proof that the router cannot use the ID.
@@ -135,13 +163,13 @@ airlock terra
 airlock hybrid sol
 ```
 
-Or use a named Agent such as `airlock-luna`. Explore, Plan, and general-purpose may receive an exact allowed GPT ID for one call.
+Or use a named Agent such as `airlock-luna`. Built-in Explore, Plan, and general-purpose accept only Claude Code's schema-valid family aliases; Airlock resolves each alias to an exact allowed session model.
 
 The router rejects IDs outside the active allowlist.
 
 ## Hybrid says `Model is not enabled for this session`
 
-Claude Code removes the `[1m]` context suffix before sending a GPT request. A current installation registers both the exact enabled full ID and that deterministic wire form. It does not register other aliases.
+Claude Code removes the `[1m]` context suffix before sending a request for supported native Claude IDs. Legacy suffixed GPT IDs are normalized to bare IDs at launcher and setup boundaries, so a current installation registers only canonical bare OpenAI IDs plus any deterministic Claude wire form.
 
 Run `airlock bundle`, reinstall Airlock if the bundle is stale, exit the failed session, and start a fresh `airlock hybrid MODEL` session.
 
@@ -152,6 +180,20 @@ Every hybrid model still uses one local router endpoint. The router can cross pr
 Not every GPT ID appears in the menu, and Anthropic does not officially support non-Claude models behind a Claude Code gateway. Starting a fresh session with `airlock hybrid MODEL` is the reliable way to select the main model.
 
 Remote Control is unavailable behind a non-Anthropic base URL.
+
+## The auto-compact setting in `/config` is greyed out
+
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09.
+
+To take the control back for a session, start it with:
+
+```bash
+AIRLOCK_CONTEXT_WINDOW=auto airlock hybrid sol
+```
+
+If you explicitly export a numeric `AIRLOCK_CONTEXT_WINDOW` or `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, that value wins even on a `[1m]` root and applies to every worker in the process.
+
+To change the number instead of removing it, set `AIRLOCK_CONTEXT_WINDOW` to a whole number from 100000 to 1000000, in your config file or on the command line. Anthropic roots never set the variable, so the control stays available there. See [Context window and auto-compaction](models-and-usage.md#context-window-and-auto-compaction).
 
 ## The launcher says managed files are stale or incomplete
 
@@ -257,21 +299,22 @@ For Anthropic plan bars, use native Claude Code:
 /usage
 ```
 
-## An OpenAI Agent card reports zero tokens
+## An OpenAI or Grok Agent card reports zero tokens
 
-A native OpenAI worker can finish correctly and still show zero subagent tokens on its Agent card, while an Anthropic worker in the same session reports real numbers.
+A native OpenAI or Grok worker can finish correctly and still show zero subagent tokens on its Agent card while an Anthropic worker in the same session reports real numbers.
 
-Claude Code reads that number from usage fields associated with the response. The router forwards responses byte for byte and never edits them, so it cannot repair a missing or ignored count. Airlock records the integer token fields that were present in the response so you can tell where the gap begins.
+The router forwards provider responses byte for byte. Airlock does not spoof Claude IDs or edit usage fields to influence Claude Code's closed-source card accounting. The work itself is unaffected.
 
-The work itself is not affected. Only the reported count is.
-
-To see what actually arrived, read the router diagnostics for the session:
+Inside the active hybrid session, run:
 
 ```bash
-curl -s "$ANTHROPIC_BASE_URL/diagnostics"
+airlock session-usage
+airlock session-usage --json
 ```
 
-Each event carries a `usage` object when the response contained token counts. If an OpenAI event has no `usage` object, the counts were missing from the response produced by the translation step. If the event has nonzero usage but the Agent card still shows zero, the display gap is inside Claude Code's accounting. The router reports what arrived and does not invent a number to fill either gap.
+The command reads only the active `127.0.0.1` router's cumulative sanitized summary. It reports how many requests contained upstream usage and shows per-provider/model input, cache-write, cache-read, and output totals. It never prints prompts, headers, bodies, or raw responses, and it labels the numbers as provider-reported session usage rather than a bill.
+
+If `usage-observed` is lower than `requests`, some upstream responses carried no usage. If usage is nonzero here but the Agent card still shows zero, the display gap is inside Claude Code. A provider-pure session has no router, so `airlock session-usage` fails clearly rather than guessing.
 
 ## Shell scripts fail with `\r`
 

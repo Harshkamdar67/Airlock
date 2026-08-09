@@ -63,11 +63,23 @@ function Assert-PlainDirectory {
 }
 
 function Test-ManagedTarget {
-  param([Parameter(Mandatory)][string]$Path)
+  param([Parameter(Mandatory)][string]$Path, [string]$Component)
   foreach ($marker in $ManagedMarkers) {
     if (Select-String -LiteralPath $Path -SimpleMatch $marker -Quiet -ErrorAction SilentlyContinue) {
       return $true
     }
+  }
+  # A file whose hash matches what the installed bundle recorded for the same
+  # component was written by a previous Airlock release, even if it carries no
+  # marker string. JSON catalogs never carried one.
+  if ($Component -and (Test-Path -LiteralPath $BundleTarget -PathType Leaf)) {
+    try {
+      $recorded = (Get-Content -LiteralPath $BundleTarget -Raw | ConvertFrom-Json).components.$Component
+      if ($recorded) {
+        $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        if ($actual -and $actual.ToLower() -eq ([string]$recorded).ToLower()) { return $true }
+      }
+    } catch { }
   }
   return $false
 }
@@ -89,7 +101,11 @@ function Install-ManagedFile {
     }
     $same = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -eq
       (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash
-    if (-not $same -and -not (Test-ManagedTarget $Target)) {
+    $component = $null
+    if ($Source.StartsWith($RepoRoot)) {
+      $component = $Source.Substring($RepoRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    }
+    if (-not $same -and -not (Test-ManagedTarget -Path $Target -Component $component)) {
       throw "install: refusing to overwrite an unmanaged file: $Target"
     }
   }
@@ -142,6 +158,7 @@ $managedFiles = [ordered]@{
   'config\anthropic-direct-agents.json' = (Join-Path $ConfigDir 'anthropic-direct-agents.json')
   'config\hybrid-agents.json' = (Join-Path $ConfigDir 'hybrid-agents.json')
   'config\claude-agents.json' = (Join-Path $ConfigDir 'claude-agents.json')
+  'config\grok-agents.json' = (Join-Path $ConfigDir 'grok-agents.json')
   'plugins\airlock\.claude-plugin\plugin.json' = (Join-Path $PluginTarget '.claude-plugin\plugin.json')
   'plugins\airlock\hooks\hooks.json' = (Join-Path $PluginTarget 'hooks\hooks.json')
   'plugins\airlock\skills\usage\SKILL.md' = (Join-Path $PluginTarget 'skills\usage\SKILL.md')

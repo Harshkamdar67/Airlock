@@ -59,6 +59,55 @@ if ($Proxy) {
   }
 }
 
+# Grok is optional, so a missing Grok login is only a failure once the saved
+# configuration actually enables Grok routes.
+$ConfigTarget = if ($env:AIRLOCK_CONFIG_FILE) {
+  $env:AIRLOCK_CONFIG_FILE
+} else {
+  Join-Path $HOME '.config\airlock\config'
+}
+$ConfigGrokModels = ''
+$ConfigDefaultProfile = ''
+if (Test-Path -LiteralPath $ConfigTarget) {
+  foreach ($line in Get-Content -LiteralPath $ConfigTarget) {
+    $pair = $line -split '=', 2
+    if ($pair.Count -ne 2) { continue }
+    switch ($pair[0].Trim()) {
+      'AIRLOCK_GROK_MODELS' { $ConfigGrokModels = $pair[1].Trim() }
+      'AIRLOCK_DEFAULT_PROFILE' { $ConfigDefaultProfile = $pair[1].Trim() }
+    }
+  }
+}
+$GrokModels = if ($env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS } else { $ConfigGrokModels }
+$DefaultProfile = if ($env:AIRLOCK_DEFAULT_PROFILE) { $env:AIRLOCK_DEFAULT_PROFILE } else { $ConfigDefaultProfile }
+if ($GrokModels -or $DefaultProfile -eq 'grok') {
+  if ($Proxy) {
+    if ($Launcher) {
+      & $Launcher proxy grok auth status *> $null
+    } else {
+      & $Proxy grok auth status *> $null
+    }
+    if ($LASTEXITCODE -eq 0) {
+      Pass 'Grok OAuth is configured'
+      # The access token is short lived, but the proxy renews it from the stored
+      # refresh token about five minutes before expiry. This is informational,
+      # so do not advise a re-login just because the number looks small.
+      $grokStatus = (& $Proxy grok auth status 2>$null | Out-String)
+      if ($grokStatus -match 'Expires in (\d+)s') {
+        $seconds = [int]$Matches[1]
+        Info "Grok access token expires in $([int]($seconds / 3600))h $([int](($seconds % 3600) / 60))m; the proxy renews it automatically"
+      }
+    } else {
+      Fail 'Grok OAuth is missing or expired'
+      if ($Launcher) { Info 'Run: airlock proxy grok auth login' } else { Info 'Run: claude-code-proxy grok auth login' }
+    }
+  } else {
+    Fail 'Grok routes are enabled but claude-code-proxy is not on PATH'
+  }
+} else {
+  Info 'Grok workers are not enabled in the saved configuration'
+}
+
 $ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } else { 'http://127.0.0.1:18765' }
 try {
   Invoke-WebRequest -Uri "$ProxyUrl/healthz" -TimeoutSec 2 -UseBasicParsing | Out-Null

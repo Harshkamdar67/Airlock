@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTER = ROOT / "bin" / "airlock-router.py"
@@ -98,6 +99,59 @@ class RecordingHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"partial":true}')
             self.wfile.flush()
+            self.close_connection = True
+            return
+        if self.recorder.mode in {
+            "gzip_usage_stream",
+            "gzip_usage_json",
+            "unreadable_encoding_stream",
+        }:
+            # Anthropic answers real traffic with Content-Encoding: gzip, so a
+            # byte-level observer sees compressed data and can never find a
+            # usage object unless it decodes a copy first.
+            if self.recorder.mode == "gzip_usage_json":
+                body = json.dumps({
+                    "id": "msg_test",
+                    "content": [{"type": "text", "text": "hello"}],
+                    "usage": {"input_tokens": 31, "output_tokens": 42},
+                }, separators=(",", ":")).encode("utf-8")
+                content_type = "application/json"
+            else:
+                start = json.dumps({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_test",
+                        "content": [],
+                        "usage": {"input_tokens": 900, "output_tokens": 1},
+                    },
+                }, separators=(",", ":"))
+                delta = json.dumps({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 250},
+                }, separators=(",", ":"))
+                body = (
+                    "event: message_start\ndata: " + start + "\n\n"
+                    "event: message_delta\ndata: " + delta + "\n\n"
+                    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                ).encode("utf-8")
+                content_type = "text/event-stream"
+            if self.recorder.mode == "unreadable_encoding_stream":
+                encoded = b"encoding the standard library cannot read"
+                encoding = "br"
+            else:
+                compressor = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+                encoded = compressor.compress(body) + compressor.flush()
+                encoding = "gzip"
+            self.send_response(200)
+            self.send_header("content-type", content_type)
+            self.send_header("content-encoding", encoding)
+            self.send_header("content-length", str(len(encoded)))
+            self.send_header("connection", "close")
+            self.end_headers()
+            for index in range(0, len(encoded), 7):
+                self.wfile.write(encoded[index : index + 7])
+                self.wfile.flush()
             self.close_connection = True
             return
         if self.recorder.mode in {"usage_stream", "no_usage_stream"}:
@@ -190,6 +244,7 @@ class RouterProtocolTests(unittest.TestCase):
             {
                 "gpt-test": "openai",
                 "claude-test": "anthropic",
+                "grok-test": "grok",
             },
             f"http://127.0.0.1:{self.openai.server_address[1]}",
             f"http://127.0.0.1:{self.anthropic.server_address[1]}",
@@ -292,6 +347,32 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertNotIn("anthropic-beta", headers)
         self.assertEqual(headers["x-claude-code-session-id"], "session-test")
         self.assertEqual(headers["x-claude-code-agent-id"], "agent-test")
+
+    def test_grok_route_uses_the_loopback_proxy_without_claude_credentials(self) -> None:
+        # Grok shares the loopback proxy with Codex, so it must inherit the same
+        # credential stripping. A Claude token reaching this hop would cross the
+        # boundary the whole project exists to hold.
+        status, response, _elapsed = self.request("grok-test")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(response)["ok"])
+        self.assertEqual(self.anthropic.requests, [])
+        self.assertEqual(len(self.openai.requests), 1)
+        headers = self.openai.requests[0]["headers"]
+        self.assertEqual(headers["authorization"], "Bearer unused")
+        self.assertNotIn("x-api-key", headers)
+        self.assertNotIn("anthropic-beta", headers)
+        self.assertNotIn("cookie", headers)
+        self.assertEqual(headers["x-claude-code-session-id"], "session-test")
+
+    def test_grok_route_is_recorded_with_its_own_provider_label(self) -> None:
+        # Grok and Codex share an upstream, so the diagnostics label is the only
+        # way a parity check can tell the two apart.
+        status, _response, _elapsed = self.request("grok-test")
+        self.assertEqual(status, 200)
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["provider"], "grok")
+        self.assertEqual(event["model"], "grok-test")
 
     def test_count_tokens_uses_the_model_route(self) -> None:
         status, _response, _elapsed = self.request(
@@ -464,6 +545,14 @@ class RouterProtocolTests(unittest.TestCase):
                 "cache_read_input_tokens": 64,
             },
         )
+        summary = diagnostics["summary"][-1]
+        self.assertEqual(summary["requests"], 1)
+        self.assertEqual(summary["completed"], 1)
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["usage_events"], 1)
+        self.assertEqual(summary["input_tokens"], 1200)
+        self.assertEqual(summary["cache_read_input_tokens"], 64)
+        self.assertEqual(summary["output_tokens"], 350)
 
     def test_usage_is_observed_from_a_json_response(self) -> None:
         self.anthropic.mode = "usage_json"
@@ -472,6 +561,54 @@ class RouterProtocolTests(unittest.TestCase):
         _diagnostics_status, diagnostics = self.get_json("/diagnostics")
         event = diagnostics["events"][-1]
         self.assertEqual(event["usage"], {"input_tokens": 11, "output_tokens": 22})
+
+    def test_usage_is_observed_from_a_compressed_streaming_response(self) -> None:
+        self.anthropic.mode = "gzip_usage_stream"
+        status, payload, _elapsed = self.request("claude-test")
+        self.assertEqual(status, 200)
+        # The client still receives the untouched compressed bytes. Only the
+        # observer decodes a copy.
+        self.assertNotIn(b'"message_stop"', payload)
+        self.assertIn(b'"message_stop"', zlib.decompress(payload, 16 + zlib.MAX_WBITS))
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["provider"], "anthropic")
+        self.assertEqual(event["usage"], {"input_tokens": 900, "output_tokens": 250})
+
+    def test_usage_is_observed_from_a_compressed_json_response(self) -> None:
+        self.anthropic.mode = "gzip_usage_json"
+        status, _payload, _elapsed = self.request("claude-test")
+        self.assertEqual(status, 200)
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["usage"], {"input_tokens": 31, "output_tokens": 42})
+
+    def test_unreadable_content_encoding_records_no_usage(self) -> None:
+        self.anthropic.mode = "unreadable_encoding_stream"
+        status, payload, _elapsed = self.request("claude-test")
+        self.assertEqual(status, 200)
+        # Forwarding must be unaffected even when usage cannot be read.
+        self.assertEqual(payload, b"encoding the standard library cannot read")
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["outcome"], "completed")
+        self.assertNotIn("usage", event)
+
+    def test_usage_is_observed_for_the_grok_route(self) -> None:
+        self.openai.mode = "usage_stream"
+        status, _payload, _elapsed = self.request("grok-test")
+        self.assertEqual(status, 200)
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        event = diagnostics["events"][-1]
+        self.assertEqual(event["provider"], "grok")
+        self.assertEqual(
+            event["usage"],
+            {
+                "input_tokens": 1200,
+                "output_tokens": 350,
+                "cache_read_input_tokens": 64,
+            },
+        )
 
     def test_missing_upstream_usage_is_recorded_as_absent(self) -> None:
         self.openai.mode = "no_usage_stream"
@@ -482,6 +619,36 @@ class RouterProtocolTests(unittest.TestCase):
         event = diagnostics["events"][-1]
         self.assertEqual(event["outcome"], "completed")
         self.assertNotIn("usage", event)
+
+    def test_cumulative_usage_outlives_the_bounded_event_window(self) -> None:
+        def record(_index: int) -> None:
+            self.gateway.record_diagnostic({
+                "provider": "openai",
+                "model": "gpt-test",
+                "status": 200,
+                "outcome": "completed",
+                "usage": {
+                    "input_tokens": 1,
+                    "cache_creation_input_tokens": 2,
+                    "cache_read_input_tokens": 3,
+                    "output_tokens": 4,
+                },
+            })
+
+        request_count = router.MAX_DIAGNOSTIC_EVENTS + 44
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(record, range(request_count)))
+        report = self.gateway.diagnostic_report()
+        self.assertEqual(len(report["events"]), router.MAX_DIAGNOSTIC_EVENTS)
+        summary = report["summary"][0]
+        self.assertEqual(summary["requests"], request_count)
+        self.assertEqual(summary["completed"], request_count)
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["usage_events"], request_count)
+        self.assertEqual(summary["input_tokens"], request_count)
+        self.assertEqual(summary["cache_creation_input_tokens"], request_count * 2)
+        self.assertEqual(summary["cache_read_input_tokens"], request_count * 3)
+        self.assertEqual(summary["output_tokens"], request_count * 4)
 
     def test_usage_observer_ignores_content_and_malformed_events(self) -> None:
         observer = router.UsageObserver()
@@ -549,7 +716,7 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(models.status, 200)
         self.assertEqual(
             {entry["id"] for entry in json.loads(models.read())["data"]},
-            {"gpt-test", "claude-test"},
+            {"gpt-test", "claude-test", "grok-test"},
         )
         connection.close()
 

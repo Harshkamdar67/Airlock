@@ -6,6 +6,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+## 0.1.0-beta.2 - 2026-08-09
+
+### Added
+
+- Grok subscription path (Phase 1 of multi-provider work): `airlock grok`, hybrid roots `grok` / `composer`, workers `airlock-grok` and `airlock-composer`, router provider label `grok` (shared loopback proxy with Codex), and `airlock proxy grok auth` for Grok OAuth. Available on macOS, Linux, and Windows.
+- Setup wizard support for Grok: a `grok` default profile, a Grok subscription question in hybrid, a Grok worker pool question, and `--grok-model` / `--grok-workers` flags.
+- Doctor reports Grok OAuth on both platforms, and treats a missing Grok login as a failure only when the saved configuration enables Grok routes.
+- `airlock session-usage` reports cumulative provider-reported request and token totals from the active hybrid router without rewriting responses or inventing missing counts.
+- An opt-in Sol long-context helper sends one synthetic root-only request through standard input and fails unless provider-reported input plus cache usage exceeds 300,000 tokens and both distant markers return.
+
+### Changed
+
+- Grok routes are opt-in. A hybrid session gains Grok workers only when the saved configuration enables them or the root is itself a Grok model. Earlier work in this cycle enabled Grok for every hybrid session, which advertised workers to accounts without a Grok login.
+- Hybrid provider-boundary guidance now names only the providers a session actually enabled, instead of always describing all three.
+- A session that confirms the proxy is signed out of Grok disables the Grok routes rather than offering workers whose first request would fail. An unknown login state leaves the configured routes alone.
+- Every canonical OpenAI/GPT model ID is now bare. Legacy GPT IDs ending in `[1m]` remain accepted at launcher, setup, and saved-config input boundaries and normalize immediately; native Claude Opus 5, Sonnet 5, and Fable 5 retain `[1m]`.
+- Session guidance now names only the providers and workers a session actually enabled. A Grok-only session previously spent most of its guidance describing Luna armies and Anthropic workers it could not call.
+- Routine Explore now uses the schema-valid `haiku` family slot instead of silently inheriting a different premium root. Airlock resolves all four built-in Agent family slots to exact models enabled for the active session, and named `airlock-*` Agents remain the exact-model interface.
+- Native Anthropic roots now leave Claude Code's process-wide auto-compact override unset. The authorized Sol proof above 300,000 tokens did not pass, so Sol now uses the honest bare ID `gpt-5.6-sol` and OpenAI/Grok roots retain the saved conservative fallback. An explicitly exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `AIRLOCK_CONTEXT_WINDOW` still wins for the whole process.
+- Grok and Composer now have explicit routing rules rather than only a descriptive role-map entry, so the orchestrator can positively select them. Composer is described as the agentic coding worker it is instead of a summarizer, and is eligible for automatic fan-out.
+
+### Fixed
+
+- Claude Code's Agent input accepts only the `fable`, `opus`, `sonnet`, and `haiku` family values, while Airlock previously told built-in Explore to retry with an exact GPT ID that the tool schema rejected. Every pure and hybrid profile now owns all four family slots, validates each exact target against the active policy, reserves Haiku for economical discovery, and labels each slot with the model it will call.
+- The setup PTY tests now include the Grok subscription question in the recommended hybrid path, so Linux and macOS CI reaches and applies the final review instead of running out of keystrokes.
+- Git Bash on Windows no longer lets the hybrid router lose its owner when the launcher starts Claude. The launcher stays alive, forwards terminal signals, returns Claude's exact status, and shuts the router down after Claude exits.
+- Grok-only sessions inherited the global OpenAI utility model as `ANTHROPIC_SMALL_FAST_MODEL`, so Claude Code could silently send background work to GPT from a profile that promised to stay on Grok. The utility slot is now Composer or the enabled Grok fallback.
+- The Windows `airlock models` help omitted the Grok-only command and both Grok root aliases even though the launch paths were installed and working.
+- Claude Opus 5, Sonnet 5, and Fable 5 ran at 200000 tokens instead of their native 1000000. Claude Code grants those models their full window only while `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`, and Airlock always points it at the session router, so every Claude root and Claude worker silently lost four fifths of its context and compacted far more often than the same model outside Airlock. All three are now requested as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`, which Claude Code honours from behind the router. Claude Haiku 4.5 is genuinely a 200000 token model and is unchanged.
+- The router allow-list derived a suffix-free wire ID for OpenAI models only, which was correct only while OpenAI was the only provider whose IDs carried `[1m]`. It now applies to every provider, so an Anthropic worker no longer fails closed against its own route.
+- `require_proxy_environment` hardcoded a `gpt-` root prefix, so the Windows launch path rejected every Grok-only session.
+- The Windows launcher had no `grok` command, no Grok hybrid roots, and never passed the Grok agent catalogs to the access helper.
+- `airlock.ps1` resolved every managed path from `$HOME\.config\airlock` while `install.ps1` honoured `AIRLOCK_CONFIG_DIR`, so a Windows install into a custom directory validated another installation's files.
+- The installers refused to update any agent catalog whose contents changed, because catalogs carried no managed marker. They now carry one, and a file whose hash matches the installed bundle's record for that component is recognised as Airlock's own. A file with neither is still refused.
+- `setup.sh` defaulted `AIRLOCK_HYBRID_MODEL` to `sol` while both launchers fall back to `sonnet`, so rewriting a config that never had the key silently moved the hybrid root. A new setup still recommends Sol.
+- Earlier context handling applied the saved 272000 fallback to every root, including native Anthropic roots that Claude Code could size itself. Native Anthropic roots now stay model-aware. OpenAI and Grok roots keep the fallback because the guarded Sol request above 300,000 tokens exited with status 1 and did not produce a valid proof.
+- `AIRLOCK_CONTEXT_WINDOW` accepted values Claude Code discards. Claude Code takes 100000 to 1000000 and ignores anything else without a word, so an out-of-range number looked applied while doing nothing. Both launchers now reject it before the session starts. The Windows launcher previously checked only that the value was a positive integer, and the POSIX launcher did not check at all.
+- Router diagnostics never reported token usage for Anthropic routes. Anthropic answers with `Content-Encoding: gzip`, and the observer read the compressed bytes, so it could never find a usage object. It now decodes a private copy of the response to read the counts. The bytes forwarded to the client are still passed through untouched, and a response in an encoding the standard library cannot read records no usage instead of guessing.
+
 ## 0.1.0-beta.1 - 2026-08-05
 
 First public beta of Airlock, built from the MIT-licensed Claudex project.
