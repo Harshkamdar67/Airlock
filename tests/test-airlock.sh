@@ -193,7 +193,7 @@ bundle_output="$("$launcher" bundle)"
 grep -q '^Managed bundle is current and complete\.$' <<<"$bundle_output"
 
 version_output="$("$launcher" version)"
-grep -q '^Airlock 0\.1\.0-beta\.1$' <<<"$version_output"
+grep -q '^Airlock 0\.1\.0-beta\.2$' <<<"$version_output"
 update_help_output="$("$launcher" update --help)"
 grep -q '^usage: airlock update' <<<"$update_help_output"
 if "$launcher" version unexpected >/dev/null 2>&1; then
