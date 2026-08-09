@@ -304,7 +304,9 @@ try {
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
 
   $VersionCommand = Invoke-LauncherProcess $InstalledLauncher @('version')
-  if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.2$') {
+  $ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Root 'VERSION') -Raw).Trim()
+  $ExpectedVersionPattern = '(?m)^Airlock ' + [regex]::Escape($ExpectedVersion) + '$'
+  if ($VersionCommand.Output -notmatch $ExpectedVersionPattern) {
     throw "Windows version command returned unexpected output: $($VersionCommand.Output)"
   }
   $ModelsCommand = Invoke-LauncherProcess $InstalledLauncher @('models')
