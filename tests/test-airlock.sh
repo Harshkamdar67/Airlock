@@ -194,7 +194,12 @@ bundle_output="$("$launcher" bundle)"
 grep -q '^Managed bundle is current and complete\.$' <<<"$bundle_output"
 
 version_output="$("$launcher" version)"
-grep -q '^Airlock 0\.1\.0-beta\.2$' <<<"$version_output"
+IFS= read -r expected_version < "$repo_root/VERSION"
+expected_version="${expected_version%$'\r'}"
+if [[ "$version_output" != "Airlock $expected_version" ]]; then
+  printf 'test: version output did not match VERSION\n' >&2
+  exit 1
+fi
 update_help_output="$("$launcher" update --help)"
 grep -q '^usage: airlock update' <<<"$update_help_output"
 if "$launcher" version unexpected >/dev/null 2>&1; then
