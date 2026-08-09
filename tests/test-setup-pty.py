@@ -395,11 +395,11 @@ CHOICE_PRESENTATION = (
     "[recommended]",
     "Press Enter to accept 1) Hybrid: Claude and GPT together",
     "Press Enter to accept 1) GPT-5.6 Sol",
-    "Choice [1-2, name, or ?]:",
+    "Choice [1-3, name, or ?]:",
     "Choice [1-4, name, or ?]:",
     # Claude Fable 5 has to be reachable without hunting through Advanced.
     "Balanced pool plus Claude Fable 5",
-    "Everything in the balanced pool and Claude Fable 5 (claude-fable-5). Fable "
+    "Everything in the balanced pool and Claude Fable 5 (claude-fable-5[1m]). Fable "
     "can use extra usage, so it is not on by default.",
     "Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.",
     "Efficient frontier work. May require extra usage.",
@@ -724,7 +724,7 @@ try:
             "  Extra usage:        allow",
             "  Routing preference: quality",
             # Typing an exact number still selects, even in keystroke mode.
-            "  Default command:    airlock -> Claude Opus 5 (claude-opus-5)",
+            "  Default command:    airlock -> Claude Opus 5 (claude-opus-5[1m])",
         ),
     )
     check_config_lines(
