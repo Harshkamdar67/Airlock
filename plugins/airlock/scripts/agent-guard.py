@@ -9,10 +9,16 @@ import os
 import sys
 
 MAX_EVENT_BYTES = 1024 * 1024
-MANAGED_BUNDLE_VERSION = "2026.08.05.5"
+MANAGED_BUNDLE_VERSION = "2026.08.09.1"
 MANAGED_PROTOCOL_VERSION = 3
 EXTRA_USAGE_MARKER = "Extra usage authorized: yes"
 BUILTIN_AGENT_TYPES = {"Explore", "Plan", "general-purpose"}
+FAMILY_MODEL_VARIABLES = {
+    "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
 GROK_AGENTS = {"airlock-grok", "airlock-composer"}
 OPENAI_AGENTS = {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"}
 ANTHROPIC_AGENTS = {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"}
@@ -111,6 +117,24 @@ def configured_extra_models(profile: str | None) -> set[str] | None:
     )
 
 
+def configured_family_models(
+    allowed_models: set[str] | None,
+    extra_models: set[str] | None,
+) -> dict[str, str] | None:
+    if allowed_models is None or extra_models is None:
+        return None
+    family_models: dict[str, str] = {}
+    for family, variable in FAMILY_MODEL_VARIABLES.items():
+        model = os.environ.get(variable)
+        if not model or model not in allowed_models or model in extra_models:
+            return None
+        family_models[family] = model
+    discovery_model = os.environ.get("AIRLOCK_DISCOVERY_MODEL")
+    if discovery_model and family_models["haiku"] != discovery_model:
+        return None
+    return family_models
+
+
 def has_extra_usage_marker(tool_input: dict[str, object]) -> bool:
     prompt = tool_input.get("prompt")
     return isinstance(prompt, str) and EXTRA_USAGE_MARKER in prompt
@@ -152,18 +176,15 @@ def main() -> int:
         return 0
     subagent_type = tool_input.get("subagent_type")
     if subagent_type in BUILTIN_AGENT_TYPES:
+        allowed_models = configured_models(profile)
+        family_models = configured_family_models(allowed_models, extra_models)
+        if family_models is None:
+            deny("Airlock blocked Agent because the built-in family model map is invalid.")
+            return 0
         if "model" not in tool_input:
             discovery_model = os.environ.get("AIRLOCK_DISCOVERY_MODEL")
             root_model = os.environ.get("AIRLOCK_ROOT_MODEL")
             if discovery_model is None:
-                return 0
-            allowed_models = configured_models(profile)
-            if (
-                allowed_models is None
-                or discovery_model not in allowed_models
-                or discovery_model in extra_models
-            ):
-                deny("Airlock blocked Agent because the discovery model is invalid.")
                 return 0
             if (
                 subagent_type == "Explore"
@@ -173,22 +194,23 @@ def main() -> int:
             ):
                 deny(
                     "Airlock blocked unpinned Explore to avoid spending the orchestrator on routine discovery. "
-                    f"Retry with the exact enabled model: {discovery_model}"
+                    f'Retry with model: "haiku" ({discovery_model}).'
                 )
                 return 0
             return 0
-        allowed_models = configured_models(profile)
         model = tool_input.get("model")
-        if (
-            allowed_models is None
-            or not isinstance(model, str)
-            or model not in allowed_models
-        ):
+        if not isinstance(model, str):
             deny(
-                "Airlock allows built-in Agent model overrides only for exact model IDs enabled in this session."
+                "Airlock allows built-in Agent model overrides only through a configured family alias."
             )
             return 0
-        if model in extra_models and not has_extra_usage_marker(tool_input):
+        resolved_model = family_models.get(model, model)
+        if allowed_models is None or resolved_model not in allowed_models:
+            deny(
+                "Airlock allows built-in Agent model overrides only through a configured family alias."
+            )
+            return 0
+        if resolved_model in extra_models and not has_extra_usage_marker(tool_input):
             deny(
                 "Airlock requires explicit extra-usage confirmation for this model."
             )

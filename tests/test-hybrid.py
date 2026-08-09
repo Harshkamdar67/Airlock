@@ -67,12 +67,22 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", environment)
         self.assertNotIn("ANTHROPIC_API_KEY", environment)
         self.assertNotIn("ANTHROPIC_MODEL", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION", environment)
-        self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES", environment)
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna")
+        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna")
+        for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
+            variable = f"ANTHROPIC_DEFAULT_{family}_MODEL"
+            self.assertEqual(environment[f"{variable}_NAME"], environment[variable])
+            self.assertIn("Airlock exact route", environment[f"{variable}_DESCRIPTION"])
+            self.assertEqual(
+                environment[f"{variable}_SUPPORTED_CAPABILITIES"],
+                "effort,xhigh_effort,max_effort",
+            )
+        self.assertNotEqual(
+            environment["ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"], "wrong inherited label"
+        )
         self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", environment)
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "hybrid-anthropic-root")
         self.assertEqual(environment["AIRLOCK_SESSION_ROUTER_URL"], "http://127.0.0.1:28471")
@@ -294,7 +304,7 @@ class HybridLauncherTests(unittest.TestCase):
         for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
             variable = f"ANTHROPIC_DEFAULT_{family}_MODEL"
             self.assertEqual(environment[f"{variable}_NAME"], environment[variable])
-            self.assertIn("Airlock OpenAI route", environment[f"{variable}_DESCRIPTION"])
+            self.assertIn("Airlock exact route", environment[f"{variable}_DESCRIPTION"])
             self.assertEqual(
                 environment[f"{variable}_SUPPORTED_CAPABILITIES"],
                 "effort,xhigh_effort,max_effort",
@@ -345,7 +355,7 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertIn("OpenAI models", context)
         self.assertIn("Anthropic Claude", context)
         self.assertIn("eligible non-ignored untracked regular files", context)
-        self.assertIn("exact built-in Explore, Plan, and general-purpose", context)
+        self.assertIn("built-in Explore, Plan, and general-purpose Agent types", context)
         self.assertIn("Git-ignored or unsafe paths", context)
         self.assertTrue(
             json.loads(HYBRID.managed_session_settings(access, agents_json, "on"))[

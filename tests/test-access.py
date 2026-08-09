@@ -362,11 +362,11 @@ for line in sys.stdin:
             with self.subTest(profile=profile):
                 guidance = ACCESS.profile_guidance(policy, profile)
                 self.assertIn("Orchestration: choose the smallest effective path", guidance)
-                self.assertIn("Built-in Explore, Plan, and general-purpose may receive any exact full model ID", guidance)
-                self.assertIn("pass `model=gpt-5.6-luna`", guidance)
-                self.assertIn("Omit `model` only when inheriting the orchestrator is deliberate", guidance)
-                self.assertIn("Use exact Plan for read-only technical design", guidance)
-                self.assertIn("Use exact general-purpose for multi-step work", guidance)
+                self.assertIn("Built-in Explore, Plan, and general-purpose accept Claude Code's", guidance)
+                self.assertIn("pass `model=haiku` (resolved to gpt-5.6-luna)", guidance)
+                self.assertIn("Omit `model` only when inheriting the orchestrator", guidance)
+                self.assertIn("Use built-in Plan for read-only technical design", guidance)
+                self.assertIn("Use built-in general-purpose for multi-step work", guidance)
                 self.assertIn("For an automatic army, launch multiple exact airlock-luna", guidance)
                 self.assertIn("Agent calls with `run_in_background: true`", guidance)
                 self.assertIn("useful non-overlapping batch before waiting", guidance)
@@ -462,7 +462,7 @@ for line in sys.stdin:
             policy["providers"]["openai"]["detected_plan"] = "unknown"
             self.assertIsNone(ACCESS.fast_route_status(policy)["selected_route"])
 
-    def test_proxy_picker_stays_in_provider_and_excludes_unconfirmed_extra_usage(self) -> None:
+    def test_family_slots_stay_in_session_and_exclude_unconfirmed_extra_usage(self) -> None:
         policy = ACCESS.default_policy()
         for model in policy["providers"]["grok"]["models"].values():
             model["access"] = "unknown"
@@ -476,11 +476,14 @@ for line in sys.stdin:
             "sonnet": "grok-composer-2.5-fast",
             "haiku": "grok-composer-2.5-fast",
         })
-        self.assertEqual(ACCESS.proxy_picker_models(policy, "hybrid-grok-root"), {})
+        hybrid = ACCESS.session_route_policy(policy, "hybrid-grok-root")
+        self.assertEqual(set(hybrid["picker_models"]), {"fable", "opus", "sonnet", "haiku"})
+        self.assertEqual(hybrid["picker_models"]["haiku"], hybrid["discovery_model"])
+        self.assertTrue(set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"]))
 
-        # /model cannot carry Airlock's explicit extra-usage marker. If Terra
-        # requires confirmation, its Sonnet slot must fall back to an ordinary
-        # enabled model instead of bypassing the billing policy.
+        # An Agent family alias cannot carry Airlock's explicit extra-usage
+        # marker. If Terra requires confirmation, its Sonnet slot must fall
+        # back to an ordinary enabled model instead of bypassing the policy.
         policy["providers"]["openai"]["models"]["terra"]["access"] = "extra"
         policy["policies"]["extra_usage"] = "ask"
         picker = ACCESS.proxy_picker_models(policy, "openai-pure")
@@ -499,9 +502,17 @@ for line in sys.stdin:
             ACCESS.discovery_model(policy, "openai-pure"),
             "gpt-5.6-terra",
         )
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["haiku"],
+            "gpt-5.6-terra",
+        )
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
             ACCESS.discovery_model(policy, "openai-pure"),
+            "gpt-5.6-luna",
+        )
+        self.assertEqual(
+            ACCESS.proxy_picker_models(policy, "openai-pure")["haiku"],
             "gpt-5.6-luna",
         )
 
@@ -565,7 +576,15 @@ for line in sys.stdin:
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
             self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
-            self.assertEqual(hybrid["picker_models"], {})
+            self.assertEqual(hybrid["picker_models"], {
+                "fable": "gpt-5.6-sol",
+                "opus": "claude-opus-5[1m]",
+                "sonnet": "claude-sonnet-5[1m]",
+                "haiku": "gpt-5.6-luna",
+            })
+            self.assertTrue(
+                set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"])
+            )
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
             # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
             # native 1M window from behind the router, and Claude Code strips
@@ -818,9 +837,9 @@ for line in sys.stdin:
         self.assertNotIn("Anthropic Claude", environment[1])
         self.assertIn("airlock-luna, airlock-sol", environment[1])
         self.assertIn("eligible non-ignored untracked regular files", environment[1])
-        self.assertIn("exact built-in Explore, Plan, and general-purpose", environment[1])
+        self.assertIn("built-in Explore, Plan, and general-purpose Agent types", environment[1])
         self.assertIn("inherit the orchestrator model", environment[1])
-        self.assertIn("exact session-allowed model", environment[1])
+        self.assertIn("schema-valid family alias", environment[1])
         self.assertIn("Git-ignored or unsafe paths", environment[1])
         self.assertNotIn("airlock-delegate", environment[1])
 

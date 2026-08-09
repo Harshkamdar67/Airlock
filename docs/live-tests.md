@@ -50,8 +50,8 @@ Verify:
 
 - the root uses the exact selected GPT model
 - Claude Code tools work normally
-- unpinned routine Explore is blocked from silently inheriting a different premium root and names the exact economical retry model
-- Explore with an exact allowed OpenAI model ID uses that ID
+- unpinned routine Explore is blocked from silently inheriting a different premium root and recommends the `haiku` family slot with its exact economical target
+- Explore with `model="haiku"` uses the exact Luna target shown in the session guidance
 - an exact Luna implementation Agent can edit only a disposable fixture in an isolated worktree
 - no Anthropic route is available
 
@@ -67,7 +67,7 @@ Verify in the same session:
 
 - an exact GPT Agent
 - an exact Claude Agent
-- cross-provider Explore with an allowed exact Claude ID
+- cross-provider Explore with a schema-valid family alias that resolves to the expected exact Claude target
 - native Agent cards name the exact models
 - tools, background execution, cancellation, and native usage work
 
@@ -83,7 +83,7 @@ Verify in the same session:
 
 - an exact Claude Agent
 - an exact GPT Agent
-- cross-provider Explore with an allowed exact GPT ID
+- cross-provider Explore with the `haiku` family alias resolving to the expected exact GPT target
 - native Agent cards name the exact models
 - tools, background execution, cancellation, and native usage work
 

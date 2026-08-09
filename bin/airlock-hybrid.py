@@ -106,18 +106,15 @@ declare_gpt_effort_capabilities = declare_non_claude_effort_capabilities
 def configure_proxy_model_picker(
     environment: dict[str, str], profile: str, picker_models: object
 ) -> None:
-    """Keep every Claude Code family slot inside the active pure provider.
+    """Bind Claude Code's four family slots to exact models in this session.
 
-    Claude Code 2.1.226 added a Fable family override alongside Opus, Sonnet,
-    and Haiku. Leaving any one unset exposes a native Claude ID through the
-    subscription proxy. Give the four slots distinct enabled provider models
-    where the pool permits it, and set the label metadata ourselves so values
-    inherited from a parent shell cannot misdescribe the selected model.
+    The Agent tool accepts only family aliases, not arbitrary exact model IDs.
+    Airlock owns every slot so built-in Agents stay inside the active policy and
+    inherited shell metadata cannot misroute or mislabel them.
     """
     families = ("fable", "opus", "sonnet", "haiku")
     if not isinstance(picker_models, dict) or set(picker_models) != set(families):
         fail(f"{profile} model picker map is invalid")
-    provider = "OpenAI" if profile == "openai-pure" else "Grok"
     for family in families:
         model = picker_models.get(family)
         if not isinstance(model, str) or not model:
@@ -126,12 +123,15 @@ def configure_proxy_model_picker(
         environment[variable] = model
         environment[f"{variable}_NAME"] = model
         environment[f"{variable}_DESCRIPTION"] = (
-            f"Airlock {provider} route for Claude Code's {family.title()} slot"
+            f"Airlock exact route for Claude Code's {family.title()} slot"
         )
+        environment.pop(f"{variable}_SUPPORTED_CAPABILITIES", None)
         declare_non_claude_effort_capabilities(environment, variable, model)
-    # OpenAI honours the user's explicit utility override. Grok-pure must not
-    # inherit a GPT utility model and cross the provider boundary silently.
-    if profile == "grok-pure" or not environment.get("ANTHROPIC_SMALL_FAST_MODEL"):
+    if (
+        profile == "grok-pure"
+        or profile in HYBRID_PROFILES
+        or not environment.get("ANTHROPIC_SMALL_FAST_MODEL")
+    ):
         environment["ANTHROPIC_SMALL_FAST_MODEL"] = picker_models["haiku"]
 
 
@@ -422,6 +422,9 @@ def build_child_environment(
         environment.pop(variable, None)
     environment["ANTHROPIC_BASE_URL"] = router_url
     environment["AIRLOCK_SESSION_ROUTER_URL"] = router_url
+    configure_proxy_model_picker(
+        environment, profile, route_policy.get("picker_models")
+    )
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
         f"{root_name} (native hybrid route)"

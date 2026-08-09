@@ -13,7 +13,7 @@ body:
     attributes:
       label: Airlock version
       description: Copy the value from the VERSION file or release tag.
-      placeholder: 0.1.0-beta.1
+      placeholder: 0.1.0-beta.2
     validations:
       required: true
   - type: dropdown

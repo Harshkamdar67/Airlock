@@ -70,12 +70,12 @@ A malicious local process running as the same user can still connect to a loopba
 
 The session guard allows:
 
-- exact enabled named `airlock-*` Agents
-- exact built-in Explore, Plan, and general-purpose Agents
+- enabled named `airlock-*` Agents with exact model identities
+- built-in Explore, Plan, and general-purpose Agent types with validated family slots
 
-Built-ins inherit the orchestrator model unless one exact enabled full model ID is supplied for that call.
+Plan and general-purpose inherit the orchestrator unless a schema-valid `fable`, `opus`, `sonnet`, or `haiku` alias is supplied. Routine Explore uses the `haiku` slot when it would otherwise spend a different premium root.
 
-The guard blocks unknown names, aliases, malformed or disabled model IDs, cross-profile routes, ineligible Fast models, blocked extra-usage routes, and caller model overrides on named Agents.
+The guard blocks unknown names or model values, malformed or stale family maps, disabled exact targets, cross-profile routes, ineligible Fast models, blocked extra-usage routes, and caller model overrides on named Agents.
 
 Named Agents disallow Agent and spawn depth is one. Fan-out stays with the main model.
 

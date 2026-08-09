@@ -45,8 +45,15 @@ class AgentGuardTests(unittest.TestCase):
         extra_models: str | None = None,
         discovery_model: str | None = None,
         root_model: str | None = None,
+        family_models: dict[str, str] | None = None,
     ) -> dict | None:
         environment = os.environ.copy()
+        family_variables = {
+            "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        }
         for variable in (
             "AIRLOCK_ALLOWED_AGENT_NAMES",
             "AIRLOCK_ALLOWED_AGENT_MODELS",
@@ -54,10 +61,27 @@ class AgentGuardTests(unittest.TestCase):
             "AIRLOCK_EXTRA_USAGE_AGENT_MODELS",
             "AIRLOCK_DISCOVERY_MODEL",
             "AIRLOCK_ROOT_MODEL",
+            *family_variables.values(),
         ):
             environment.pop(variable, None)
         if allowed_agents is not None:
             environment["AIRLOCK_ALLOWED_AGENT_NAMES"] = allowed_agents
+        builtin = isinstance(tool_input, dict) and tool_input.get("subagent_type") in {
+            "Explore", "Plan", "general-purpose",
+        }
+        if builtin and allowed_models is None and family_models is None:
+            if profile == "openai-pure":
+                allowed_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
+            elif profile == "grok-pure":
+                allowed_models = "grok-4.5,grok-composer-2.5-fast"
+            elif profile in {
+                "hybrid-openai-root", "hybrid-anthropic-root", "hybrid-grok-root",
+            }:
+                allowed_models = (
+                    "claude-opus-5[1m],claude-sonnet-5[1m],"
+                    "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,"
+                    "grok-4.5,grok-composer-2.5-fast"
+                )
         if allowed_models is not None:
             environment["AIRLOCK_ALLOWED_AGENT_MODELS"] = allowed_models
         if extra_agents is not None:
@@ -68,6 +92,30 @@ class AgentGuardTests(unittest.TestCase):
             environment["AIRLOCK_DISCOVERY_MODEL"] = discovery_model
         if root_model is not None:
             environment["AIRLOCK_ROOT_MODEL"] = root_model
+        if builtin and family_models is None:
+            configured = set((allowed_models or "").split(","))
+            extra = set((extra_models or "").split(",")) - {""}
+            eligible = configured - extra - {""}
+
+            def first(*models: str) -> str:
+                return next((model for model in models if model in eligible), "invalid")
+
+            family_models = {
+                "fable": first("gpt-5.6-sol", "claude-opus-5[1m]", "grok-4.5"),
+                "opus": first("claude-opus-5[1m]", "gpt-5.6-sol", "grok-4.5"),
+                "sonnet": first(
+                    "claude-sonnet-5[1m]", "gpt-5.6-terra",
+                    "grok-composer-2.5-fast", "gpt-5.6-sol",
+                    "claude-opus-5[1m]", "grok-4.5",
+                ),
+                "haiku": discovery_model or first(
+                    "gpt-5.6-luna", "grok-composer-2.5-fast", "gpt-5.6-terra",
+                    "claude-sonnet-5[1m]", "gpt-5.6-sol", "claude-opus-5[1m]",
+                    "grok-4.5",
+                ),
+            }
+        for family, model in (family_models or {}).items():
+            environment[family_variables[family]] = model
         if profile is None:
             environment.pop("AIRLOCK_ACTIVE_PROFILE", None)
         else:
@@ -160,19 +208,21 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_denied(self.invoke("openai-pure", {"subagent_type": name}))
 
-    def test_builtins_accept_exact_enabled_models_and_inherit_by_default(self) -> None:
-        openai_models = "gpt-5.6-luna,gpt-5.6-sol"
+    def test_builtins_accept_schema_family_aliases_and_exact_ids_defensively(self) -> None:
+        openai_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
         hybrid_models = openai_models + ",claude-opus-5[1m],claude-sonnet-5[1m]"
         for name in ("Explore", "Plan", "general-purpose"):
             with self.subTest(name=name, mode="inherit"):
                 self.assertIsNone(self.invoke("openai-pure", {"subagent_type": name}))
-            with self.subTest(name=name, mode="openai"):
-                self.assertIsNone(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": name, "model": "gpt-5.6-luna"},
-                    allowed_models=openai_models,
-                ))
-            with self.subTest(name=name, mode="hybrid-claude"):
+            for family in ("fable", "opus", "sonnet", "haiku"):
+                with self.subTest(name=name, family=family):
+                    self.assertIsNone(self.invoke(
+                        "openai-pure",
+                        {"subagent_type": name, "model": family},
+                        allowed_models=openai_models,
+                    ))
+            # Keep exact IDs defensive in case a future Agent schema permits them.
+            with self.subTest(name=name, mode="exact"):
                 self.assertIsNone(self.invoke(
                     "hybrid-openai-root",
                     {"subagent_type": name, "model": "claude-sonnet-5[1m]"},
@@ -190,6 +240,10 @@ class AgentGuardTests(unittest.TestCase):
         )
         self.assert_denied(denied)
         self.assertIn(
+            'model: "haiku"',
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+        self.assertIn(
             "gpt-5.6-luna",
             denied["hookSpecificOutput"]["permissionDecisionReason"],
         )
@@ -197,8 +251,8 @@ class AgentGuardTests(unittest.TestCase):
             "openai-pure",
             {
                 "subagent_type": "Explore",
-                "model": "gpt-5.6-sol",
-                "prompt": "deep trace",
+                "model": "haiku",
+                "prompt": "routine trace",
             },
             allowed_models=models,
             discovery_model="gpt-5.6-luna",
@@ -228,15 +282,14 @@ class AgentGuardTests(unittest.TestCase):
             root_model="gpt-5.6-sol",
         ))
 
-    def test_builtins_reject_missing_disabled_cross_profile_and_alias_models(self) -> None:
+    def test_builtins_reject_invalid_routes_and_family_maps(self) -> None:
         allowed = "gpt-5.6-luna,gpt-5.6-sol"
         for model, models in (
-            ("gpt-5.6-luna", None),
+            ("gpt-5.6-luna", ""),
             ("gpt-5.6-luna[1m]", allowed),
             ("gpt-5.6-luna-fast", allowed),
             ("claude-opus-5[1m]", allowed),
             ("inherit", allowed),
-            ("sonnet", allowed),
             (None, allowed),
         ):
             with self.subTest(model=model, models=models):
@@ -249,8 +302,27 @@ class AgentGuardTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.assert_denied(self.invoke(
                     "openai-pure",
-                    {"subagent_type": "Plan", "model": "gpt-5.6-sol"},
+                    {"subagent_type": "Plan", "model": "opus"},
                     allowed_models=invalid,
+                ))
+        valid_map = {
+            "fable": "gpt-5.6-sol",
+            "opus": "gpt-5.6-sol",
+            "sonnet": "gpt-5.6-sol",
+            "haiku": "gpt-5.6-luna",
+        }
+        for invalid_map in (
+            {},
+            {**valid_map, "haiku": "gpt-5.6-luna-fast"},
+            {**valid_map, "haiku": "gpt-5.6-sol"},
+        ):
+            with self.subTest(invalid_map=invalid_map):
+                self.assert_denied(self.invoke(
+                    "openai-pure",
+                    {"subagent_type": "Explore", "model": "haiku"},
+                    allowed_models=allowed,
+                    discovery_model="gpt-5.6-luna",
+                    family_models=invalid_map,
                 ))
 
     def test_named_agents_reject_every_caller_model_override(self) -> None:

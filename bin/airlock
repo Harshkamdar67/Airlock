@@ -610,7 +610,7 @@ declare_gpt_effort_capabilities() {
 configure_proxy_model_picker() {
   local profile="$1"
   local raw_models="$2"
-  local family family_name model provider variable
+  local family family_name model variable
   local fable_model='' opus_model='' sonnet_model='' haiku_model='' count=0
   while IFS='=' read -r family model; do
     model="${model%$'\r'}"
@@ -631,7 +631,6 @@ configure_proxy_model_picker() {
   if (( count != 4 )) || [[ -z "$fable_model" || -z "$opus_model" || -z "$sonnet_model" || -z "$haiku_model" ]]; then
     return 1
   fi
-  [[ "$profile" == 'openai-pure' ]] && provider='OpenAI' || provider='Grok'
   for family in FABLE OPUS SONNET HAIKU; do
     case "$family" in
       FABLE) model="$fable_model"; family_name='Fable' ;;
@@ -642,12 +641,11 @@ configure_proxy_model_picker() {
     variable="ANTHROPIC_DEFAULT_${family}_MODEL"
     export "$variable=$model"
     export "${variable}_NAME=$model"
-    export "${variable}_DESCRIPTION=Airlock $provider route for Claude Code's $family_name slot"
+    export "${variable}_DESCRIPTION=Airlock exact route for Claude Code's $family_name slot"
+    unset "${variable}_SUPPORTED_CAPABILITIES"
     declare_gpt_effort_capabilities "$variable" "$model"
   done
-  # OpenAI honours the user's explicit utility override. Grok-pure must not
-  # inherit a GPT utility model and cross the provider boundary silently.
-  if [[ "$profile" == 'grok-pure' || -z "${ANTHROPIC_SMALL_FAST_MODEL:-}" ]]; then
+  if [[ "$profile" == 'grok-pure' || "$profile" == hybrid-* || -z "${ANTHROPIC_SMALL_FAST_MODEL:-}" ]]; then
     export ANTHROPIC_SMALL_FAST_MODEL="$haiku_model"
   fi
 }
@@ -829,6 +827,28 @@ compose_append_system_prompt() {
   AIRLOCK_COMPOSED_CLAUDE_ARGS+=(--append-system-prompt "$combined")
 }
 
+run_claude_with_stable_owner() {
+  local child_pid='' child_status=0
+  trap '[[ -z "$child_pid" ]] || kill -INT "$child_pid" 2>/dev/null || true' INT
+  trap '[[ -z "$child_pid" ]] || kill -TERM "$child_pid" 2>/dev/null || true' TERM
+  trap '[[ -z "$child_pid" ]] || kill -HUP "$child_pid" 2>/dev/null || true' HUP
+  "$@" &
+  child_pid=$!
+  while true; do
+    if wait "$child_pid"; then
+      child_status=0
+      break
+    else
+      child_status=$?
+    fi
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      break
+    fi
+  done
+  trap - INT TERM HUP
+  return "$child_status"
+}
+
 launch_session() {
   local profile="$1"
   local session_model="$2"
@@ -918,12 +938,6 @@ launch_session() {
   else
     unset AIRLOCK_DISCOVERY_MODEL
   fi
-  if [[ "$profile" == 'openai-pure' || "$profile" == 'grok-pure' ]]; then
-    if ! configure_proxy_model_picker "$profile" "$picker_models"; then
-      printf 'airlock: %s model picker map is invalid.\n' "$profile" >&2
-      exit 1
-    fi
-  fi
   if [[ "$profile" == hybrid-* ]]; then
     case ",$allowed_model_ids," in
       *",$session_model,"*) ;;
@@ -933,6 +947,10 @@ launch_session() {
         ;;
     esac
     set_hybrid_environment "$session_model" "$session_name" "$routes_json" "$profile" || exit $?
+  fi
+  if ! configure_proxy_model_picker "$profile" "$picker_models"; then
+    printf 'airlock: %s model picker map is invalid.\n' "$profile" >&2
+    exit 1
   fi
   fast_mode='off'
   # The root model carries a [1m] suffix on the models that need it, so this
@@ -954,7 +972,19 @@ launch_session() {
   # is what macOS still ships as /bin/bash, treats "${array[@]}" on an empty
   # array as an unbound variable under set -u, so every expansion that can be
   # empty uses the ${array[@]+...} form. Bash 4 and later behave identically.
-  exec "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir" --agents "$agents_json" --allowedTools "${allowed_tools[@]}" ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
+  local -a claude_command=(
+    "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir"
+    --agents "$agents_json" --allowedTools "${allowed_tools[@]}"
+    ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
+  )
+  if [[ "$profile" == hybrid-* && ( "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ) ]]; then
+    # The native Windows PID behind an MSYS/Cygwin Bash process can change when
+    # Bash execs a native program. Keep Bash alive as the router owner, forward
+    # terminal signals, and return Claude's exact status instead.
+    run_claude_with_stable_owner "${claude_command[@]}"
+    return $?
+  fi
+  exec "${claude_command[@]}"
 }
 
 select_hybrid_root() {
@@ -1166,6 +1196,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     export AIRLOCK_HYBRID='1'
     launch_session hybrid-anthropic-root "$root_model" "$root_name" ${hybrid_args[@]+"${hybrid_args[@]}"}
   fi
+  exit $?
 fi
 
 if [[ "${1:-}" == 'proxy' ]]; then

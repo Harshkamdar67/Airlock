@@ -47,7 +47,7 @@ The native tests cover:
 
 - exact Agent models, effort inheritance, and pinned efforts
 - built-in Explore, Plan, and general-purpose inheritance
-- allowed exact per-call model IDs for built-ins
+- schema-valid family aliases and exact resolved targets for built-in Agent calls
 - profile, Fast, and extra-usage model guards
 - plain OpenAI routing without the hybrid router
 - both hybrid root directions through one loopback router

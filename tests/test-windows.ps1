@@ -302,7 +302,7 @@ try {
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
 
   $VersionCommand = Invoke-LauncherProcess $InstalledLauncher @('version')
-  if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.1$') {
+  if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.2$') {
     throw "Windows version command returned unexpected output: $($VersionCommand.Output)"
   }
   $ModelsCommand = Invoke-LauncherProcess $InstalledLauncher @('models')
@@ -419,9 +419,15 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
     throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
   }
-  foreach ($Family in @('FABLE', 'OPUS', 'SONNET', 'HAIKU')) {
-    if ($HybridLaunch.Output -notmatch "(?m)^DEFAULT_${Family}=unset$") {
-      throw "Windows hybrid launch retained a proxy model picker override: $($HybridLaunch.Output)"
+  foreach ($ExpectedFamilyLine in @(
+    'DEFAULT_FABLE=gpt-5.6-sol',
+    'DEFAULT_OPUS=claude-opus-5[1m]',
+    'DEFAULT_SONNET=claude-sonnet-5[1m]',
+    'DEFAULT_HAIKU=gpt-5.6-luna',
+    'SMALL_FAST=gpt-5.6-luna'
+  )) {
+    if ($HybridLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedFamilyLine))$") {
+      throw "Windows hybrid launch did not bind a validated family model: $($HybridLaunch.Output)"
     }
   }
   $AnthropicFastConfig = $HybridConfig.Replace(

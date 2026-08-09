@@ -358,7 +358,7 @@ assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" not in trust_context
 assert "eligible non-ignored untracked regular files" in trust_context
-assert "exact built-in Explore, Plan, and general-purpose" in trust_context
+assert "built-in Explore, Plan, and general-purpose Agent types" in trust_context
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna"}
@@ -395,10 +395,10 @@ assert "Skill(claude-api)" in args
 assert "Skill(claude-api *)" in args
 guidance = args[args.index("--append-system-prompt") + 1]
 assert "claude-api skill is blocked" in guidance
-assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose may receive any exact full model ID" in guidance
-assert "pass `model=gpt-5.6-luna`" in guidance and "Omit `model` only when inheriting the orchestrator is deliberate" in guidance
-assert "Use exact Plan" in guidance
-assert "Use exact general-purpose" in guidance and "For an automatic army, launch multiple exact airlock-luna" in guidance
+assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose accept Claude Code's" in guidance
+assert "pass `model=haiku` (resolved to gpt-5.6-luna)" in guidance and "Omit `model` only when inheriting the orchestrator" in guidance
+assert "Use built-in Plan" in guidance
+assert "Use built-in general-purpose" in guidance and "For an automatic army, launch multiple exact airlock-luna" in guidance
 assert "Agent calls with `run_in_background: true`" in guidance
 assert "useful non-overlapping batch before waiting" in guidance
 assert "They run at the session effort unless they are pinned" in guidance
@@ -489,14 +489,15 @@ if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_openai_output"; th
 fi
 grep -q '^OPENAI_BRIDGE=unset$' <<<"$hybrid_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_FABLE=unset$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_OPUS=unset$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_SONNET=unset$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_HAIKU=unset$' <<<"$hybrid_openai_output"
-grep -q '^FABLE_NAME=unset$' <<<"$hybrid_openai_output"
-grep -q '^OPUS_NAME=unset$' <<<"$hybrid_openai_output"
-grep -q '^SONNET_NAME=unset$' <<<"$hybrid_openai_output"
-grep -q '^HAIKU_NAME=unset$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^FABLE_NAME=gpt-5.6-sol$' <<<"$hybrid_openai_output"
+grep -q '^OPUS_NAME=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^SONNET_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^HAIKU_NAME=gpt-5.6-luna$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
@@ -511,7 +512,7 @@ assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
 assert "eligible non-ignored untracked regular files" in trust_context
-assert "exact built-in Explore, Plan, and general-purpose" in trust_context
+assert "built-in Explore, Plan, and general-purpose Agent types" in trust_context
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}
@@ -602,6 +603,147 @@ else:
     raise AssertionError("hybrid router remained available after the stub session exited")
 PY
 
+# Keep the hybrid child alive beyond the router's one-second owner monitor and
+# probe it repeatedly. On Git Bash this proves the launcher does not exec away
+# the native Windows PID that owns the router. The child's status must survive.
+router_hold_output="$tmp_dir/router-hold.out"
+router_hold_error="$tmp_dir/router-hold.err"
+AIRLOCK_STUB_HOLD_SECONDS=3 AIRLOCK_STUB_EXIT_STATUS=37 \
+  AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+  "$launcher" hybrid terra -p test >"$router_hold_output" 2>"$router_hold_error" &
+router_hold_pid=$!
+router_hold_url=''
+for _ in $(seq 1 100); do
+  router_hold_url="$(python - "$router_hold_output" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+if path.exists():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("SESSION_ROUTER="):
+            print(line.removeprefix("SESSION_ROUTER="))
+            break
+PY
+)"
+  [[ -z "$router_hold_url" ]] || break
+  sleep 0.05
+done
+if [[ ! "$router_hold_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
+  kill "$router_hold_pid" 2>/dev/null || true
+  wait "$router_hold_pid" 2>/dev/null || true
+  printf 'test: held hybrid session did not publish its router: %s\n' "$(<"$router_hold_error")" >&2
+  exit 1
+fi
+HYBRID_ROUTER_URL="$router_hold_url" python - <<'PY'
+import http.client
+import os
+import time
+from urllib.parse import urlsplit
+
+parsed = urlsplit(os.environ["HYBRID_ROUTER_URL"])
+for _ in range(4):
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=1)
+    connection.request("GET", "/healthz")
+    response = connection.getresponse()
+    response.read()
+    connection.close()
+    if response.status != 200:
+        raise AssertionError(f"held hybrid router returned {response.status}")
+    time.sleep(0.55)
+PY
+if wait "$router_hold_pid"; then
+  printf 'test: held hybrid child status 37 was lost\n' >&2
+  exit 1
+else
+  router_hold_status=$?
+fi
+if (( router_hold_status != 37 )); then
+  printf 'test: held hybrid child returned %s instead of 37: %s\n' \
+    "$router_hold_status" "$(<"$router_hold_error")" >&2
+  exit 1
+fi
+HYBRID_ROUTER_URL="$router_hold_url" python - <<'PY'
+import http.client
+import os
+import time
+from urllib.parse import urlsplit
+
+parsed = urlsplit(os.environ["HYBRID_ROUTER_URL"])
+for _ in range(40):
+    try:
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=0.2)
+        connection.request("GET", "/healthz")
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+    except OSError:
+        break
+    time.sleep(0.1)
+else:
+    raise AssertionError("held hybrid router remained available after child exit")
+PY
+
+# Signals sent to the launcher must reach Claude when Git Bash keeps the owner
+# process alive instead of execing it.
+router_signal_output="$tmp_dir/router-signal.out"
+router_signal_error="$tmp_dir/router-signal.err"
+router_signal_file="$tmp_dir/router-signal.txt"
+AIRLOCK_STUB_HOLD_SECONDS=30 AIRLOCK_STUB_SIGNAL_FILE="$router_signal_file" \
+  AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+  "$launcher" hybrid terra -p test >"$router_signal_output" 2>"$router_signal_error" &
+router_signal_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$router_signal_output" ]] && grep -q '^SESSION_ROUTER=http://127\.0\.0\.1:' "$router_signal_output" && break
+  sleep 0.05
+done
+if ! grep -q '^SESSION_ROUTER=http://127\.0\.0\.1:' "$router_signal_output" 2>/dev/null; then
+  kill "$router_signal_pid" 2>/dev/null || true
+  wait "$router_signal_pid" 2>/dev/null || true
+  printf 'test: signal hybrid session did not start: %s\n' "$(<"$router_signal_error")" >&2
+  exit 1
+fi
+router_signal_url="$(python - "$router_signal_output" <<'PY'
+from pathlib import Path
+import sys
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line.startswith("SESSION_ROUTER="):
+        print(line.removeprefix("SESSION_ROUTER="))
+        break
+PY
+)"
+kill -TERM "$router_signal_pid"
+if wait "$router_signal_pid"; then
+  printf 'test: hybrid launcher swallowed TERM\n' >&2
+  exit 1
+else
+  router_signal_status=$?
+fi
+if (( router_signal_status != 143 )) || [[ "$(<"$router_signal_file")" != 'TERM' ]]; then
+  printf 'test: hybrid TERM forwarding failed with status %s: %s\n' \
+    "$router_signal_status" "$(<"$router_signal_error")" >&2
+  exit 1
+fi
+HYBRID_ROUTER_URL="$router_signal_url" python - <<'PY'
+import http.client
+import os
+import time
+from urllib.parse import urlsplit
+
+parsed = urlsplit(os.environ["HYBRID_ROUTER_URL"])
+for _ in range(40):
+    try:
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=0.2)
+        connection.request("GET", "/healthz")
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+    except OSError:
+        break
+    time.sleep(0.1)
+else:
+    raise AssertionError("signaled hybrid router remained available after child exit")
+PY
+
 hybrid_anthropic_output="$(ANTHROPIC_BASE_URL=leak ANTHROPIC_MODEL=leak AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sonnet -p test)"
 grep -q '^MODEL=unset$' <<<"$hybrid_anthropic_output"
 grep -Eq '^BASE_URL=http://127\.0\.0\.1:[1-9][0-9]*$' <<<"$hybrid_anthropic_output"
@@ -611,8 +753,11 @@ if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_anthropic_output";
 fi
 grep -q '^OPENAI_BRIDGE=1$' <<<"$hybrid_anthropic_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$hybrid_anthropic_output"
-grep -q '^DEFAULT_OPUS=unset$' <<<"$hybrid_anthropic_output"
-grep -q '^DEFAULT_SONNET=unset$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
+grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_anthropic_output"
@@ -626,7 +771,7 @@ assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
 assert "eligible non-ignored untracked regular files" in trust_context
-assert "exact built-in Explore, Plan, and general-purpose" in trust_context
+assert "built-in Explore, Plan, and general-purpose Agent types" in trust_context
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}

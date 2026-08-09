@@ -81,13 +81,13 @@ Both controls stay under Advanced in the setup wizard because they are optional 
 
 ## Built-in Agent model choice
 
-Plan and general-purpose inherit the orchestrator model when `model` is omitted. Routine Explore uses the exact economical discovery model named in the generated guidance. If an unpinned Explore would inherit a different premium root, the guard blocks it and names the exact enabled retry model.
+Plan and general-purpose inherit the orchestrator model when `model` is omitted. Routine Explore uses `model="haiku"`, which Airlock resolves to the economical discovery model. If an unpinned Explore would inherit a different premium root, the guard blocks it and gives that schema-valid retry plus the exact target.
 
-A main model can give Explore, Plan, or general-purpose any exact full model ID enabled for the active session. Explicit exact choices always win. The guard still rejects aliases, disabled routes, unknown IDs, and extra-usage models without confirmation.
+A main model can give Explore, Plan, or general-purpose one of Claude Code's `fable`, `opus`, `sonnet`, or `haiku` family aliases. Airlock maps every alias to an exact enabled model and rejects invalid, disabled, cross-profile, confirmation-required, and ineligible Fast targets.
 
-Named `airlock-*` Agents already have an exact model. They follow the session effort unless setup pins a level. Callers cannot override either value for one Agent call.
+Named `airlock-*` Agents already have an exact model. They follow the session effort unless setup pins a level. Callers cannot override either value for one Agent call. Use a named Agent when exact model identity matters.
 
-Claude Code may omit GPT IDs from `/model` discovery behind a gateway. Starting the exact root with `airlock` or `airlock hybrid`, using a named Agent, or passing an exact allowed Agent model ID is more reliable than depending on discovery.
+Claude Code may omit GPT IDs from `/model` discovery behind a gateway. Starting the exact root with `airlock` or `airlock hybrid`, or using a named Agent, is more reliable than depending on discovery.
 
 ## UI and UX routing
 

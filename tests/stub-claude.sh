@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+stub_hold_pid=''
+record_stub_signal() {
+  local signal="$1"
+  local status="$2"
+  if [[ -n "$stub_hold_pid" ]]; then
+    kill "$stub_hold_pid" 2>/dev/null || true
+    wait "$stub_hold_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${AIRLOCK_STUB_SIGNAL_FILE:-}" ]]; then
+    printf '%s\n' "$signal" > "$AIRLOCK_STUB_SIGNAL_FILE"
+  fi
+  exit "$status"
+}
+
+trap 'record_stub_signal INT 130' INT
+trap 'record_stub_signal TERM 143' TERM
+trap 'record_stub_signal HUP 129' HUP
+
 printf 'MODEL=%s\n' "${ANTHROPIC_MODEL:-unset}"
 printf 'BASE_URL=%s\n' "${ANTHROPIC_BASE_URL:-unset}"
 printf 'OPENAI_BRIDGE=%s\n' "${AIRLOCK_HYBRID:-unset}"
@@ -75,3 +93,21 @@ PY
 for argument in "$@"; do
   printf 'ARG=%s\n' "$argument"
 done
+
+stub_hold_seconds="${AIRLOCK_STUB_HOLD_SECONDS:-0}"
+stub_exit_status="${AIRLOCK_STUB_EXIT_STATUS:-0}"
+if [[ ! "$stub_hold_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'stub: AIRLOCK_STUB_HOLD_SECONDS must be a non-negative number\n' >&2
+  exit 2
+fi
+if [[ ! "$stub_exit_status" =~ ^[0-9]+$ ]] || (( stub_exit_status > 255 )); then
+  printf 'stub: AIRLOCK_STUB_EXIT_STATUS must be from 0 to 255\n' >&2
+  exit 2
+fi
+if [[ "$stub_hold_seconds" != '0' ]]; then
+  sleep "$stub_hold_seconds" &
+  stub_hold_pid=$!
+  wait "$stub_hold_pid"
+  stub_hold_pid=''
+fi
+exit "$stub_exit_status"

@@ -112,11 +112,11 @@ The router chooses an unused `127.0.0.1` port and exits with its launcher. It is
 
 Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpose` Agent types.
 
-Plan and general-purpose inherit the orchestrator when the model field is omitted. Explore inherits only when the root is already the economical discovery route. If routine unpinned Explore would spend a different premium root, Airlock blocks the call and names the exact enabled retry model.
+Plan and general-purpose inherit the orchestrator when the model field is omitted. Explore inherits only when the root is already the economical discovery route. If routine unpinned Explore would spend a different premium root, Airlock blocks the call and recommends `model="haiku"`, followed by the exact model behind that slot.
 
-With a model field, any of the three built-ins may use one exact full model ID enabled for the active session. Explicit exact choices always win. Bare `airlock` starts the profile saved by setup.
+With a model field, use one of Claude Code's schema-valid `fable`, `opus`, `sonnet`, or `haiku` family aliases. Airlock resolves the alias to an exact enabled session model before the Agent starts. Bare `airlock` starts the profile saved by setup.
 
-Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage models, and ineligible Fast models fail closed.
+Unknown values, `inherit`, malformed or stale family maps, disabled routes, blocked extra-usage models, and ineligible Fast models fail closed. Use a named `airlock-*` Agent when exact model identity matters.
 
 If a built-in is still blocked after a valid call, reinstall the managed files, close the old session, and start a new one. Existing sessions keep the guard and allowlists they started with.
 
@@ -150,7 +150,7 @@ Claude Code always presents Fable, Opus, Sonnet, and Haiku slots. In an OpenAI-o
 
 If every slot shows the same root or Fable still shows a native Claude model, the installation is stale. Run `airlock bundle`, reinstall the current branch or release, and start a new session. Existing sessions keep the environment they started with.
 
-A hybrid session behaves differently. Its Claude family slots keep their native Claude meanings, while a GPT or Grok root appears as the custom hybrid option.
+A hybrid session behaves differently. Each family slot prefers the matching native Claude route when it is eligible, falls back only to another enabled session model, and labels the slot with the exact target. A GPT or Grok root appears as the custom hybrid option.
 
 ## A GPT model is missing from `/model`
 
@@ -163,7 +163,7 @@ airlock terra
 airlock hybrid sol
 ```
 
-Or use a named Agent such as `airlock-luna`. Explore, Plan, and general-purpose may receive an exact allowed GPT ID for one call.
+Or use a named Agent such as `airlock-luna`. Built-in Explore, Plan, and general-purpose accept only Claude Code's schema-valid family aliases; Airlock resolves each alias to an exact allowed session model.
 
 The router rejects IDs outside the active allowlist.
 

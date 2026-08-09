@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.1
+0.1.0-beta.2
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
@@ -85,7 +85,7 @@ At minimum, complete the required native parity matrix in the live-test guide. I
 - plain OpenAI root and inherited Explore
 - both hybrid root directions
 - exact OpenAI and Anthropic Agents in one session
-- exact cross-provider Explore model overrides
+- schema-valid cross-provider Explore family aliases with verified exact targets
 - native model cards, tools, background overlap, cancellation, and usage
 - filtered native worktree isolation
 - a response longer than 120 seconds
@@ -145,8 +145,8 @@ After the release commit is merged into protected `main` and every required chec
 ```bash
 git switch main
 git pull --ff-only origin main
-git tag v0.1.0-beta.1
-git push origin v0.1.0-beta.1
+git tag -a v0.1.0-beta.2 -m "Airlock v0.1.0-beta.2"
+git push origin v0.1.0-beta.2
 ```
 
 Pushing the tag is an outward action. Confirm it immediately before running the command.

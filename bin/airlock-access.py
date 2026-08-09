@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.05.5"
+MANAGED_BUNDLE_VERSION = "2026.08.09.1"
 MANAGED_PROTOCOL_VERSION = 3
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -1108,7 +1108,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.1",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.2",
             }},
         }):
             return None
@@ -1973,17 +1973,14 @@ def discovery_model(policy: dict[str, Any], profile: str) -> str | None:
 
 
 def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
-    """Map Claude Code's four family slots to enabled models from one provider.
+    """Map Claude Code's four Agent/model family aliases to exact enabled models.
 
-    A proxy-pure session cannot leave a Claude family alias untouched: selecting
-    it would send a Claude ID to the OpenAI/Grok subscription proxy. Pointing all
-    four aliases at the root is safe but makes /model look like four copies of
-    one model. Use the enabled provider portfolio instead. Models gated behind
-    an explicit extra-usage confirmation are excluded because /model has no
-    place to carry that confirmation marker.
+    Claude Code's Agent tool accepts family aliases rather than arbitrary model
+    IDs. Every slot therefore has to resolve inside the active route policy, and
+    the Haiku slot is reserved for the economical discovery model. Routes gated
+    behind explicit extra-usage confirmation are excluded because a model alias
+    has no place to carry that confirmation marker.
     """
-    if profile not in {"openai-pure", "grok-pure"}:
-        return {}
     workers = [
         worker for worker in enabled_profile_workers(policy, profile)
         if not (
@@ -1998,20 +1995,34 @@ def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
             model = by_route.get(route)
             if model:
                 return model
-        raise AccessError(f"{profile} has no model eligible for the /model picker")
+        raise AccessError(f"{profile} has no model eligible for a Claude Code family slot")
 
     if profile == "openai-pure":
-        primary = first("sol", "terra", "luna", "luna-fast")
-        balanced = first("terra", "sol", "luna", "luna-fast")
-        utility = first("luna-fast", "luna", "terra", "sol")
+        fable = opus = first("sol", "terra", "luna", "luna-fast")
+        sonnet = first("terra", "sol", "luna", "luna-fast")
+    elif profile == "grok-pure":
+        fable = opus = first("grok", "composer")
+        sonnet = first("composer", "grok")
     else:
-        primary = first("grok", "composer")
-        balanced = first("composer", "grok")
-        utility = balanced
+        fable = first(
+            "fable", "sol", "opus", "grok", "sonnet", "terra",
+            "composer", "luna", "haiku", "luna-fast",
+        )
+        opus = first(
+            "opus", "sol", "grok", "fable", "sonnet", "terra",
+            "composer", "luna", "haiku", "luna-fast",
+        )
+        sonnet = first(
+            "sonnet", "terra", "fable", "sol", "opus", "composer",
+            "luna", "haiku", "grok", "luna-fast",
+        )
+    utility = discovery_model_from_workers(policy, workers)
+    if utility is None:
+        raise AccessError(f"{profile} has no model eligible for the discovery slot")
     return {
-        "fable": primary,
-        "opus": primary,
-        "sonnet": balanced,
+        "fable": fable,
+        "opus": opus,
+        "sonnet": sonnet,
         "haiku": utility,
     }
 
@@ -2345,23 +2356,24 @@ def root_orchestration_guidance(
     recommended_discovery = discovery_model_from_workers(policy, workers)
     if recommended_discovery:
         discovery_guidance = (
-            "Built-in Explore, Plan, and general-purpose may receive any exact full model ID enabled for this session. "
-            f"For routine Plan Mode and bounded read-only discovery, pass `model={recommended_discovery}` instead of "
-            "omitting the model and spending the orchestrator. Omit `model` only when inheriting the orchestrator is "
-            "deliberate; an explicit exact enabled model always wins. "
+            "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
+            "Airlock resolves every alias to an exact model enabled for this session. "
+            f"For routine Plan Mode and bounded read-only discovery, pass `model=haiku` (resolved to {recommended_discovery}) "
+            "instead of omitting the model and spending the orchestrator. Omit `model` only when inheriting the orchestrator "
+            "is deliberate. Named airlock-* Agents remain the exact-model interface. "
         )
     else:
         discovery_guidance = (
             "This session has no non-confirmation discovery model, so do not choose one automatically; built-in "
-            "Explore inherits the orchestrator unless the user authorizes an exact enabled model. "
+            "Explore inherits the orchestrator unless the user authorizes an enabled named airlock-* Agent. "
         )
     return (
         "Orchestration: choose the smallest effective path. Before working directly on a multi-part request, split it "
         "by skill and route independent parts. A coupled final result does not make every "
         "phase coupled. Work directly only for small single-role work, inseparable edits, integration, or synthesis. "
         + discovery_guidance
-        + "Use exact Plan for read-only technical design after context and do not duplicate "
-        "the same discovery in Explore and Plan. Use exact general-purpose for multi-step work in the native runtime. Start one native "
+        + "Use built-in Plan for read-only technical design after context and do not duplicate "
+        "the same discovery in Explore and Plan. Use built-in general-purpose for multi-step work in the native runtime. Start one native "
         "airlock-* Agent for a separable task that benefits from its exact model. "
         + plan["launch"]
         + " Use Claude Code Workflow only when the user explicitly requests "
@@ -2560,8 +2572,8 @@ def routing_guidance(policy: dict[str, Any], mode: str) -> str:
         f"{', '.join(efforts) or 'none'}. A worker set to inherit follows the session level, so /effort changes the root "
         "and every inheriting worker together, including mid-session. A worker pinned to a named level keeps that level "
         "regardless of /effort. Built-in Explore, "
-        "Plan, and general-purpose inherit the orchestrator model unless the Agent call supplies an exact model allowed "
-        "by the active session. For an enabled extra worker under ask policy, include exact `Extra usage authorized: yes` "
+        "Plan, and general-purpose inherit the orchestrator model unless the Agent call supplies a schema-valid "
+        "family alias owned by the active session. For an enabled extra worker under ask policy, include exact `Extra usage authorized: yes` "
         "only after confirmation; an explicit matching Agent request counts as confirmation. Send a natural, self-contained "
         "query without task classifications, selection markers, or a transport schema. The configured worker limit is a "
         "ceiling, not a fan-out target. When it is off, Claude Code's native default applies. Automatic high-volume armies "
@@ -2662,7 +2674,7 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
             "every enabled provider inside the same Claude Code process. "
             + " ".join(routes)
             + " Named airlock-* Agents use their exact model. Built-in Explore, Plan, and general-purpose inherit the "
-            "orchestrator model unless an exact model allowed by this profile is supplied."
+            "orchestrator model unless a schema-valid family alias owned by this profile is supplied."
         )
     metadata = (
         "Native Agent handoff: send the selected worker one natural, self-contained query. Do not add task kind, risk, "
@@ -2881,11 +2893,11 @@ def managed_session_settings_json(
         + " are trusted processors for tracked files and eligible non-ignored untracked regular files from the current "
         "working Git repository only when invoked through these exact native Agents: "
         + ", ".join(names)
-        + ". The current session root provider and exact built-in Explore, Plan, and general-purpose Agent types are "
-        "trusted processors for the same repository scope. Built-ins inherit the orchestrator model unless an exact "
-        "session-allowed model is supplied. Credentials, OAuth or token material, raw sensitive values, Git-ignored or "
-        "unsafe paths, files outside the working repository, unknown or bare Agent names, and every other external "
-        "destination remain outside the trusted boundary."
+        + ". The current session root provider and built-in Explore, Plan, and general-purpose Agent types are "
+        "trusted processors for the same repository scope. Built-ins inherit the orchestrator model unless a "
+        "schema-valid family alias owned by the active session is supplied. Credentials, OAuth or token material, "
+        "raw sensitive values, Git-ignored or unsafe paths, files outside the working repository, unknown or bare "
+        "Agent names, and every other external destination remain outside the trusted boundary."
     )
     settings: dict[str, object] = {"autoMode": {"environment": ["$defaults", context]}}
     if fast_mode != "inherit":

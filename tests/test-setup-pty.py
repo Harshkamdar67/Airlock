@@ -31,11 +31,11 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 
-# One Enter for each question in the recommended path: session profile,
-# orchestrator, worker pool, session effort, worker effort, extra usage,
-# Fast startup, routing, parallel workers, Advanced, Codex OAuth, proxy service,
-# and apply.
-ENTER_PRESSES = 13
+# One Enter for each question in the recommended path: session profile, Grok
+# subscription, orchestrator, worker pool, session effort, worker effort, extra
+# usage, Fast startup, routing, parallel workers, Advanced, Codex OAuth, proxy
+# service, and apply.
+ENTER_PRESSES = 14
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -428,6 +428,13 @@ CHOICE_PRESENTATION = (
     "Answer [y/N, Enter = no]:",
 )
 
+GROK_SUBSCRIPTION_AND_APPLY = (
+    "Grok subscription",
+    "Make Grok models available in hybrid sessions?",
+    "Answer [y/N, Enter = no]:",
+    "Apply this configuration? [Y/n/s]:",
+)
+
 # The installation section has to separate the Claude Code prerequisite from the
 # Codex OAuth that belongs to the local proxy.
 INSTALLATION_WORDING = (
@@ -481,6 +488,7 @@ EXPECTED_CONFIG = (
     "AIRLOCK_WORKER_EFFORT=inherit\n",
     "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n",
     "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n",
+    "AIRLOCK_GROK_MODELS=\n",
     "AIRLOCK_OPENAI_FAST=off\n",
     "AIRLOCK_ANTHROPIC_FAST=off\n",
     "AIRLOCK_PROXY_CONFIG_DIR=\n",
@@ -506,6 +514,7 @@ KEYBOARD_CONFIG = (
     "AIRLOCK_MAIN_EFFORT=xhigh\n",
     "AIRLOCK_EXTRA_USAGE_POLICY=allow\n",
     "AIRLOCK_ROUTING_POLICY=quality\n",
+    "AIRLOCK_GROK_MODELS=\n",
 )
 
 
@@ -532,6 +541,7 @@ try:
     require_phrases("plain run", output, BRANDING_AND_INTRODUCTION)
     require_phrases("plain run", output, SECTION_HIERARCHY)
     require_phrases("plain run", output, CHOICE_PRESENTATION)
+    require_phrases("plain run", output, GROK_SUBSCRIPTION_AND_APPLY)
     require_phrases("plain run", output, INSTALLATION_WORDING)
     require_phrases("plain run", output, REVIEW_SCREEN)
     require_lines(
@@ -565,6 +575,7 @@ try:
     require_width("color run", visible, 80)
     require_phrases("color run", visible, SECTION_HIERARCHY)
     require_phrases("color run", visible, CHOICE_PRESENTATION)
+    require_phrases("color run", visible, GROK_SUBSCRIPTION_AND_APPLY)
     require_phrases("color run", visible, INSTALLATION_WORDING)
     require_phrases("color run", visible, REVIEW_SCREEN)
     check_config("color run", color_dir)
@@ -579,6 +590,9 @@ try:
     require_exit("redirected run", exit_code, piped_output)
     require_no_ansi("redirected run", piped_output)
     require_phrases("redirected run", piped_output, SECTION_HIERARCHY)
+    require_phrases(
+        "redirected run", piped_output, GROK_SUBSCRIPTION_AND_APPLY
+    )
     require_phrases("redirected run", piped_output, REVIEW_SCREEN)
     check_config("redirected run", piped_dir)
 
@@ -602,6 +616,9 @@ try:
         ),
     )
     require_phrases("narrow run", narrow_output, INSTALLATION_WORDING)
+    require_phrases(
+        "narrow run", narrow_output, GROK_SUBSCRIPTION_AND_APPLY
+    )
     require_phrases("narrow run", narrow_output, REVIEW_SCREEN)
     refuse_phrases("narrow run", narrow_output, HIDDEN_OR_RETIRED)
     check_config("narrow run", narrow_dir)
@@ -611,6 +628,7 @@ try:
     # wizard has finished drawing the question it belongs to.
     keyboard_script = (
         [KEY_ENTER]  # session profile: hybrid
+        + [KEY_ENTER]  # Grok subscription: no
         + [KEY_ENTER]  # orchestrator: GPT-5.6 Sol
         + [KEY_ENTER]  # worker pool: balanced
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
@@ -618,7 +636,11 @@ try:
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
         + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
-        + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
+        + [KEY_ENTER]  # parallel workers: Claude Code default
+        + [KEY_ENTER]  # Advanced settings: no
+        + [KEY_ENTER]  # Codex OAuth: yes if login is missing
+        + [KEY_ENTER]  # proxy service: start automatically
+        + [KEY_ENTER]  # apply configuration
     )
     keyboard_dir = temp_root / "keyboard"
     exit_code, keyboard_output = run_wizard(
@@ -648,6 +670,9 @@ try:
     require_phrases("keyboard run", keyboard_visible, BRANDING_AND_INTRODUCTION)
     require_phrases("keyboard run", keyboard_visible, SECTION_HIERARCHY)
     require_phrases("keyboard run", keyboard_visible, KEYBOARD_SELECTION)
+    require_phrases(
+        "keyboard run", keyboard_visible, GROK_SUBSCRIPTION_AND_APPLY
+    )
     require_phrases("keyboard run", keyboard_visible, REVIEW_SCREEN)
     check_config_lines("keyboard run", keyboard_dir, KEYBOARD_CONFIG)
 
@@ -657,6 +682,7 @@ try:
     # keep working in the same mode.
     plain_keyboard_script = (
         [KEY_ENTER]  # session profile: hybrid
+        + [KEY_ENTER]  # Grok subscription: no
         + [b"?", b"\n", b"5", b"\n"]  # orchestrator: show the list, then pick 5
         + [KEY_ENTER]  # worker pool: balanced
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
@@ -664,7 +690,11 @@ try:
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
         + [KEY_ENTER]  # Fast startup: off for both providers
         + [KEY_DOWN] * 4 + [KEY_ENTER]  # routing: wrap down past 3) back to 2)
-        + [KEY_ENTER] * 5  # workers, Advanced, Codex OAuth, service, apply
+        + [KEY_ENTER]  # parallel workers: Claude Code default
+        + [KEY_ENTER]  # Advanced settings: no
+        + [KEY_ENTER]  # Codex OAuth: yes if login is missing
+        + [KEY_ENTER]  # proxy service: start automatically
+        + [KEY_ENTER]  # apply configuration
     )
     plain_keyboard_dir = temp_root / "plain-keyboard"
     exit_code, plain_keyboard_output = run_wizard(
@@ -677,6 +707,9 @@ try:
     require_exit("plain keyboard run", exit_code, plain_keyboard_output)
     require_no_ansi("plain keyboard run", plain_keyboard_output)
     require_width("plain keyboard run", plain_keyboard_output, 80)
+    require_phrases(
+        "plain keyboard run", plain_keyboard_output, GROK_SUBSCRIPTION_AND_APPLY
+    )
     require_phrases("plain keyboard run", plain_keyboard_output, KEYBOARD_SELECTION)
     require_lines(
         "plain keyboard run",

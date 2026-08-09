@@ -85,35 +85,37 @@ Airlock keeps the exact built-in Agent types:
 - Plan for read-only technical design
 - general-purpose for multi-step work
 
-Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the exact economical discovery model in the generated session guidance. If an unpinned Explore would inherit a different premium root, the guard blocks it and names the exact retry ID. An explicit exact enabled model remains valid for all three built-in types, including the orchestrator itself.
+Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the `haiku` family slot from the generated session guidance. Airlock resolves that slot to the economical discovery model. If an unpinned Explore would inherit a different premium root, the guard blocks it and gives a schema-valid retry.
 
-For one call, the main model may pass an exact full model ID:
+For one built-in call, the main model may pass a Claude Code family alias:
 
 ```text
-Agent(subagent_type="Explore", model="gpt-5.6-luna", ...)
-Agent(subagent_type="Plan", model="claude-opus-5[1m]", ...)
+Agent(subagent_type="Explore", model="haiku", ...)
+Agent(subagent_type="Plan", model="opus", ...)
 ```
 
-The session guard checks the ID before Claude Code starts the Agent.
+The session guard resolves the alias and checks its exact target before Claude Code starts the Agent.
 
-- The OpenAI-only profile allows only enabled OpenAI IDs.
-- The Grok-only profile allows only enabled Grok IDs.
-- Hybrid allows enabled OpenAI and Anthropic IDs, plus Grok IDs when Grok is enabled.
-- Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
-- Omitting `model` keeps normal inheritance for Plan and general-purpose. Explore also inherits when the root is already the economical discovery route; otherwise routine unpinned Explore is rejected with the exact safe retry ID.
+- Every profile defines all four schema-valid aliases: `fable`, `opus`, `sonnet`, and `haiku`.
+- Every alias points to an exact model already enabled in that session.
+- The `haiku` alias always points to the session's economical discovery model.
+- Disabled, cross-profile, confirmation-required, and ineligible Fast routes cannot appear behind an alias.
+- Omitting `model` keeps normal inheritance for Plan and general-purpose. Explore also inherits when the root is already the economical discovery route; otherwise routine unpinned Explore is rejected with `model="haiku"` and the exact resolved target.
+- Named `airlock-*` Agents remain the exact-model interface.
 
 A named Agent has no per-call effort field. It follows the session effort by default, and `/effort` can move it in the middle of a session. A configured pin stays fixed until the config changes.
 
 ## Model selection and `/model`
 
-A provider-pure profile cannot leave Claude Code's Fable, Opus, Sonnet, or Haiku slots pointing at native Claude IDs. Selecting one would send the wrong provider's model ID to the subscription proxy. Airlock fills all four slots from models that are enabled for that provider:
+Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact models in the active policy. This prevents inherited shell values from sending a built-in Agent to a disabled or cross-provider route:
 
-- OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna or eligible Luna Fast. A missing route falls back to the closest enabled OpenAI model.
+- OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna. A missing route falls back to the closest enabled OpenAI model.
 - Grok Fable and Opus use Grok 4.5, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
-- A route that still needs explicit extra-usage confirmation is not placed in `/model`, because the picker has no way to carry Airlock's confirmation marker.
-- The exact root named on the launch command remains available as the custom option, even when it is not one of those worker routes.
+- Hybrid profiles use the strongest eligible route for Fable, Opus, and Sonnet, while Haiku always uses the economical discovery route.
+- A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
+- The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
 
-These are Claude Code picker slots, not claims that GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact provider model ID so the menu reports what will actually receive the request. It also clears every proxy-specific slot before a hybrid session, where the Claude family names keep their native meanings.
+These are Claude Code family slots, not claims that GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 
@@ -121,7 +123,7 @@ Use these reliable paths:
 
 - start the saved root with `airlock`, the OpenAI-only root with `airlock openai`, or an exact root with `airlock terra` or `airlock hybrid MODEL`
 - use an exact named `airlock-*` Agent
-- pass an allowed exact model ID to Explore, Plan, or general-purpose
+- pass a schema-valid `fable`, `opus`, `sonnet`, or `haiku` family alias to Explore, Plan, or general-purpose
 
 A model ID that the router does not allow cannot be used even if Claude Code accepts the text.
 

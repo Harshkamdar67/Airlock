@@ -54,6 +54,10 @@ jobs:
             plugins/airlock/scripts/worktree-create.sh \
             plugins/airlock/scripts/worktree-remove.sh \
             tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh
+          python -m py_compile \
+            scripts/test-sol-long-context.py \
+            tests/test-live-context.py \
+            tests/test-setup-pty.py
           python tests/test-access.py
           python tests/test-agent-guard.py
           python tests/test-router.py
@@ -64,7 +68,7 @@ jobs:
           python tests/test-release.py
           python tests/test-update.py
           python tests/test-docs.py
-          python -m py_compile tests/test-setup-pty.py
+          python tests/test-live-context.py
           bash tests/test-airlock.sh
           bash tests/test-setup.sh
           python tests/test-setup-pty.py
