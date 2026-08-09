@@ -114,6 +114,14 @@ The installer writes the bundle marker last. The launcher verifies hashes for la
 
 A stale, changed, missing, or partially installed component stops startup. This catches accidental version mixing. It does not protect against a local attacker who can replace both the files and the trusted marker.
 
+### Cached update notice
+
+Only an explicit `airlock update --check` contacts GitHub and writes update state. Normal startup reads one local file under the Airlock config root and makes no update network request.
+
+The SessionStart reader accepts only a regular file of at most 4096 bytes with the exact schema, strict versions, canonical Airlock release URL, matching installed version, eligible release channel, and a check time within seven days. It rejects links, stale data, malformed JSON, duplicate fields, unknown fields, and unsafe output. A valid record becomes only Claude Code's top-level `systemMessage`; it is not returned as model context. Every invalid or internal-error path exits successfully without stdout or stderr so an untrusted cache cannot create a prompt or a hook error.
+
+The cache is only a reminder. Installation still happens outside the active session through the verified updater and managed-file conflict checks. A local process with the user's file permissions can delete the reminder, but it cannot use the cache to bypass release verification or installation confirmation.
+
 ## Important attack cases
 
 ### Claude authorization reaches OpenAI

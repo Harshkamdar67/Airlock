@@ -159,6 +159,7 @@ $pluginFiles = @(
   '.claude-plugin\plugin.json', 'hooks\hooks.json',
   'scripts\agent-guard.py', 'scripts\secret-guard.py',
   'scripts\agent-guard.sh', 'scripts\secret-guard.sh',
+  'scripts\update-notice.sh', 'scripts\update-notice.py',
   'scripts\file_safety.py', 'scripts\worktree.py',
   'scripts\worktree-create.sh', 'scripts\worktree-remove.sh'
 )

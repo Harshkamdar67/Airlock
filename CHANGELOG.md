@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+## 0.1.0-beta.3 - 2026-08-09
+
+### Added
+
+- An explicit `airlock update --check` that finds a newer release now saves a bounded local reminder. A later Airlock startup, resume, or clear shows the available version as a user-only message without contacting GitHub or adding the notice to model context. Notices expire after seven days, and missing, malformed, unsafe, or incompatible state is ignored silently.
+
 ## 0.1.0-beta.2 - 2026-08-09
 
 ### Added

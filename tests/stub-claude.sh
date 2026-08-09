@@ -49,6 +49,7 @@ else
 fi
 printf 'EFFORT_ENV=%s\n' "${CLAUDE_CODE_EFFORT_LEVEL:-unset}"
 printf 'ACTIVE_PROFILE=%s\n' "${AIRLOCK_ACTIVE_PROFILE:-unset}"
+printf 'UPDATE_NOTICE=%s\n' "${AIRLOCK_UPDATE_NOTICE_FILE:-unset}"
 printf 'ROOT_MODEL=%s\n' "${AIRLOCK_ROOT_MODEL:-unset}"
 printf 'DISCOVERY_MODEL=%s\n' "${AIRLOCK_DISCOVERY_MODEL:-unset}"
 printf 'SESSION_ROUTER=%s\n' "${AIRLOCK_SESSION_ROUTER_URL:-unset}"

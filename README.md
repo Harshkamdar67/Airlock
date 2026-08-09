@@ -117,7 +117,7 @@ powershell -NoProfile -File .\scripts\doctor.ps1
 
 The installer does not change PATH, native Claude settings, native Codex settings, global hooks, registered plugins, or MCP settings. Add `%USERPROFILE%\.local\bin` to your user PATH if `airlock` is not found.
 
-[Read the Windows guide](docs/windows.md). After installation, use `airlock update --check` for a manual notice and `airlock update` for a confirmed, verified update. Normal startup never checks GitHub. Existing configuration is preserved, and only recognized managed files are replaced. [Read the update guide](docs/updating.md).
+[Read the Windows guide](docs/windows.md). After installation, use `airlock update --check` to query GitHub manually and `airlock update` for a confirmed, verified update. A successful check for a newer release leaves a short local notice for the next Airlock session. Normal startup only reads that bounded cache and never checks GitHub. Existing configuration is preserved, and only recognized managed files are replaced. [Read the update guide](docs/updating.md).
 
 ## First run
 

@@ -104,6 +104,7 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("SMALL_FAST=" + (Environment.GetEnvironmentVariable("ANTHROPIC_SMALL_FAST_MODEL") ?? "unset"));
     Console.WriteLine("FABLE_NAME=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
+    Console.WriteLine("UPDATE_NOTICE=" + (Environment.GetEnvironmentVariable("AIRLOCK_UPDATE_NOTICE_FILE") ?? "unset"));
     Console.WriteLine("ROOT_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_ROOT_MODEL") ?? "unset"));
     Console.WriteLine("DISCOVERY_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_DISCOVERY_MODEL") ?? "unset"));
     Console.WriteLine("SESSION_ROUTER=" + (Environment.GetEnvironmentVariable("AIRLOCK_SESSION_ROUTER_URL") ?? "unset"));
@@ -155,6 +156,7 @@ function Invoke-LauncherProcess(
   [void]$processInfo.EnvironmentVariables.Remove('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONTEXT_WINDOW')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_ROUTER_URL')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_UPDATE_NOTICE_FILE')
   if ($ExtraEnvironment) {
     foreach ($name in $ExtraEnvironment.Keys) {
       $processInfo.EnvironmentVariables[$name] = [string]$ExtraEnvironment[$name]
@@ -265,8 +267,8 @@ try {
     throw 'Windows installer missed the managed plugin.'
   }
   foreach ($relative in @(
-    'scripts\file_safety.py', 'scripts\worktree.py',
-    'scripts\worktree-create.sh', 'scripts\worktree-remove.sh'
+    'scripts\file_safety.py', 'scripts\update-notice.sh', 'scripts\update-notice.py',
+    'scripts\worktree.py', 'scripts\worktree-create.sh', 'scripts\worktree-remove.sh'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $ConfigDir "plugins\airlock\$relative") -PathType Leaf)) {
       throw "Windows installer missed plugin file $relative"
@@ -302,7 +304,9 @@ try {
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
 
   $VersionCommand = Invoke-LauncherProcess $InstalledLauncher @('version')
-  if ($VersionCommand.Output -notmatch '(?m)^Airlock 0\.1\.0-beta\.2$') {
+  $ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Root 'VERSION') -Raw).Trim()
+  $ExpectedVersionPattern = '(?m)^Airlock ' + [regex]::Escape($ExpectedVersion) + '$'
+  if ($VersionCommand.Output -notmatch $ExpectedVersionPattern) {
     throw "Windows version command returned unexpected output: $($VersionCommand.Output)"
   }
   $ModelsCommand = Invoke-LauncherProcess $InstalledLauncher @('models')
@@ -351,6 +355,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   }
   if ($LegacyLaunch.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra$' -or
       $LegacyLaunch.Output -notmatch '(?m)^DISCOVERY_MODEL=gpt-5\.6-luna$' -or
+      $LegacyLaunch.Output -notmatch "(?m)^UPDATE_NOTICE=$([regex]::Escape((Join-Path $ConfigDir 'update-notice.json')))$" -or
       $LegacyLaunch.Output -notmatch '(?m)^SESSION_ROUTER=unset$') {
     throw "Windows session did not pin economical Explore discovery: $($LegacyLaunch.Output)"
   }

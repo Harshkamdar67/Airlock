@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from functools import total_ordering
 from typing import BinaryIO, Iterable
@@ -43,6 +44,9 @@ ARCHIVE_LIMIT = 64 * 1024 * 1024
 EXTRACTED_LIMIT = 256 * 1024 * 1024
 MEMBER_LIMIT = 10_000
 MANIFEST_LIMIT = 64 * 1024
+NOTICE_LIMIT = 4096
+NOTICE_SCHEMA_VERSION = 1
+NOTICE_KIND = "airlock-update-notice"
 TIMEOUT_SECONDS = 20
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -210,6 +214,81 @@ def read_installed_version(manifest_path: Path) -> SemVer:
     if not isinstance(version, str):
         raise UpdateError("managed plugin manifest has no release version")
     return SemVer.parse(version)
+
+
+def update_notice_payload(current: SemVer, release: Release) -> bytes:
+    payload = {
+        "schema_version": NOTICE_SCHEMA_VERSION,
+        "kind": NOTICE_KIND,
+        "checked_at": int(time.time()),
+        "current_version": str(current),
+        "available_version": str(release.version),
+        "release_url": release.page_url,
+    }
+    encoded = (json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > NOTICE_LIMIT:
+        raise UpdateError("update notice is unexpectedly large")
+    return encoded
+
+
+def replace_update_notice(source: Path, destination: Path) -> None:
+    for attempt in range(10):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as error:
+            if os.name != "nt" or attempt == 9 or getattr(error, "winerror", None) not in {5, 32}:
+                raise
+            time.sleep(0.05)
+
+
+def write_update_notice(path: Path | None, current: SemVer, release: Release) -> None:
+    if path is None:
+        return
+    parent = path.parent
+    temporary_path: Path | None = None
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise UpdateError(f"update notice path is unsafe: {path}")
+        descriptor, temporary_text = tempfile.mkstemp(prefix=f".{path.name}.", dir=parent)
+        temporary_path = Path(temporary_text)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(temporary_path, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(update_notice_payload(current, release))
+                handle.flush()
+                os.fsync(handle.fileno())
+            replace_update_notice(temporary_path, path)
+            temporary_path = None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    except UpdateError:
+        raise
+    except OSError as error:
+        raise UpdateError(f"could not write update notice: {error}") from error
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def clear_update_notice(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
 
 
 def releases_api_url() -> str:
@@ -709,7 +788,12 @@ def confirm_install() -> bool:
     return answer.strip().lower() in {"y", "yes"}
 
 
-def run_update(manifest: Path, check_only: bool, assume_yes: bool) -> int:
+def run_update(
+    manifest: Path,
+    check_only: bool,
+    assume_yes: bool,
+    notice_file: Path | None = None,
+) -> int:
     if check_only and assume_yes:
         raise UpdateError("--check and --yes cannot be used together")
     current = read_installed_version(manifest)
@@ -720,10 +804,18 @@ def run_update(manifest: Path, check_only: bool, assume_yes: bool) -> int:
         )
     release = check_for_release(current)
     if release is None:
+        clear_update_notice(notice_file)
         print(f"Airlock {current} is up to date for its release channel.")
         return 0
     if check_only:
         print_release(current, release)
+        try:
+            write_update_notice(notice_file, current, release)
+        except UpdateError as error:
+            print(
+                f"Warning: {error}. Future sessions will not show this update notice.",
+                file=sys.stderr,
+            )
         print("Run airlock update to download, verify, and install it.")
         return 0
 
@@ -756,6 +848,7 @@ def run_update(manifest: Path, check_only: bool, assume_yes: bool) -> int:
             print("Update cancelled. No installed files were changed.")
             return 0
         install_and_check(release_root, platform_name)
+    clear_update_notice(notice_file)
     print(f"Airlock updated to {release.version}. Start a fresh Airlock session.")
     return 0
 
@@ -767,6 +860,7 @@ def build_parser() -> argparse.ArgumentParser:
     version_parser.add_argument("--manifest", type=Path, required=True, help=argparse.SUPPRESS)
     update_parser = subparsers.add_parser("update", help="check for and install a verified update")
     update_parser.add_argument("--manifest", type=Path, required=True, help=argparse.SUPPRESS)
+    update_parser.add_argument("--notice-file", type=Path, help=argparse.SUPPRESS)
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="report an available update without downloading it")
     mode.add_argument("--yes", action="store_true", help="install without an interactive confirmation")
@@ -782,7 +876,7 @@ def main(arguments: list[str] | None = None) -> int:
                 raise UpdateError("version accepts no update options")
             print(f"Airlock {read_installed_version(parsed.manifest)}")
             return 0
-        return run_update(parsed.manifest, parsed.check, parsed.yes)
+        return run_update(parsed.manifest, parsed.check, parsed.yes, parsed.notice_file)
     except UpdateError as error:
         print(f"airlock {parsed.command}: {error}", file=sys.stderr)
         return 1

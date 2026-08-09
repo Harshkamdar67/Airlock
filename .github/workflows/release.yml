@@ -51,13 +51,16 @@ jobs:
             scripts/setup.sh scripts/install.sh scripts/doctor.sh \
             plugins/airlock/scripts/agent-guard.sh \
             plugins/airlock/scripts/secret-guard.sh \
+            plugins/airlock/scripts/update-notice.sh \
             plugins/airlock/scripts/worktree-create.sh \
             plugins/airlock/scripts/worktree-remove.sh \
             tests/stub-claude.sh tests/test-airlock.sh tests/test-setup.sh
           python -m py_compile \
+            plugins/airlock/scripts/update-notice.py \
             scripts/test-sol-long-context.py \
             tests/test-live-context.py \
-            tests/test-setup-pty.py
+            tests/test-setup-pty.py \
+            tests/test-update-notice.py
           python tests/test-access.py
           python tests/test-agent-guard.py
           python tests/test-router.py
@@ -67,6 +70,7 @@ jobs:
           python tests/test-platform.py
           python tests/test-release.py
           python tests/test-update.py
+          python tests/test-update-notice.py
           python tests/test-docs.py
           python tests/test-live-context.py
           bash tests/test-airlock.sh

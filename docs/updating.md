@@ -16,7 +16,9 @@ Check whether a newer release is available:
 airlock update --check
 ```
 
-This is the manual update notice. It reads public GitHub Release metadata but does not download or install an asset. From inside an Airlock session, run:
+This explicit check reads public GitHub Release metadata but does not download or install an asset. When it finds a newer release, Airlock saves a small notice under its private config root. The next new, resumed, or cleared Airlock session shows the cached result as a user-only message. Session startup reads only that local file and never contacts GitHub. The notice expires after seven days, is ignored if it is malformed or does not match the installed version, and is removed by an up-to-date check or a successful update.
+
+From inside an Airlock session, run:
 
 ```bash
 ! airlock update --check
