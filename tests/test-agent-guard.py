@@ -43,6 +43,8 @@ class AgentGuardTests(unittest.TestCase):
         allowed_models: str | None = None,
         extra_agents: str | None = None,
         extra_models: str | None = None,
+        discovery_model: str | None = None,
+        root_model: str | None = None,
     ) -> dict | None:
         environment = os.environ.copy()
         for variable in (
@@ -50,6 +52,8 @@ class AgentGuardTests(unittest.TestCase):
             "AIRLOCK_ALLOWED_AGENT_MODELS",
             "AIRLOCK_EXTRA_USAGE_AGENT_NAMES",
             "AIRLOCK_EXTRA_USAGE_AGENT_MODELS",
+            "AIRLOCK_DISCOVERY_MODEL",
+            "AIRLOCK_ROOT_MODEL",
         ):
             environment.pop(variable, None)
         if allowed_agents is not None:
@@ -60,6 +64,10 @@ class AgentGuardTests(unittest.TestCase):
             environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"] = extra_agents
         if extra_models is not None:
             environment["AIRLOCK_EXTRA_USAGE_AGENT_MODELS"] = extra_models
+        if discovery_model is not None:
+            environment["AIRLOCK_DISCOVERY_MODEL"] = discovery_model
+        if root_model is not None:
+            environment["AIRLOCK_ROOT_MODEL"] = root_model
         if profile is None:
             environment.pop("AIRLOCK_ACTIVE_PROFILE", None)
         else:
@@ -170,6 +178,55 @@ class AgentGuardTests(unittest.TestCase):
                     {"subagent_type": name, "model": "claude-sonnet-5[1m]"},
                     allowed_models=hybrid_models,
                 ))
+
+    def test_explore_avoids_accidental_premium_inheritance_but_keeps_exact_choice(self) -> None:
+        models = "gpt-5.6-luna[1m],gpt-5.6-sol[1m]"
+        denied = self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore", "prompt": "trace"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna[1m]",
+            root_model="gpt-5.6-sol[1m]",
+        )
+        self.assert_denied(denied)
+        self.assertIn(
+            "gpt-5.6-luna[1m]",
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+        self.assertIsNone(self.invoke(
+            "openai-pure",
+            {
+                "subagent_type": "Explore",
+                "model": "gpt-5.6-sol[1m]",
+                "prompt": "deep trace",
+            },
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna[1m]",
+            root_model="gpt-5.6-sol[1m]",
+        ))
+        self.assertIsNone(self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore", "prompt": "trace"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-luna[1m]",
+            root_model="gpt-5.6-luna[1m]",
+        ))
+        for name in ("Plan", "general-purpose"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.invoke(
+                    "openai-pure",
+                    {"subagent_type": name},
+                    allowed_models=models,
+                    discovery_model="gpt-5.6-luna[1m]",
+                    root_model="gpt-5.6-sol[1m]",
+                ))
+        self.assert_denied(self.invoke(
+            "openai-pure",
+            {"subagent_type": "Explore"},
+            allowed_models=models,
+            discovery_model="gpt-5.6-terra[1m]",
+            root_model="gpt-5.6-sol[1m]",
+        ))
 
     def test_builtins_reject_missing_disabled_cross_profile_and_alias_models(self) -> None:
         allowed = "gpt-5.6-luna[1m],gpt-5.6-sol[1m]"

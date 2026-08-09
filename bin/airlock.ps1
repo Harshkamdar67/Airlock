@@ -21,7 +21,8 @@ $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
 $SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol[1m]' }
-$ContextWin = if ($env:AIRLOCK_CONTEXT_WINDOW) { $env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
+$ExplicitContextWin = Test-Path Env:\AIRLOCK_CONTEXT_WINDOW
+$ContextWin = if ($ExplicitContextWin) { [string]$env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 # A window the user set themselves outranks Airlock's default. Record it before
 # any proxy cleanup removes it.
 $UserContextWin = if ($env:CLAUDE_CODE_AUTO_COMPACT_WINDOW) { $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW } else { '' }
@@ -133,7 +134,7 @@ function Show-Models {
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
   Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
-  Write-Host 'Other commands: bg, mode, usage, access, bundle, config, models, proxy auth, version, update'
+  Write-Host 'Other commands: bg, mode, usage, session-usage, access, bundle, config, models, proxy auth, version, update'
   Write-Host ''
   Write-Host 'Proxy login commands:'
   Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
@@ -161,6 +162,7 @@ function Show-Models {
   Write-Host '  airlock usage set --claude-plan pro|max5x|max20x|unknown'
   Write-Host '  airlock usage set --openai-capacity auto|1x|5x|20x'
   Write-Host '  airlock usage defaults           Clear capacity overrides'
+  Write-Host '  airlock session-usage [--json]   Show router-observed token counts for this hybrid session'
   Write-Host ''
   Write-Host 'Update commands:'
   Write-Host '  airlock version                  Show the installed Airlock version'
@@ -376,6 +378,7 @@ function Set-GptEffortCapabilities {
 function Set-OpenAIEnvironment {
   param([string]$Model, [string]$ModelName, [string]$ProviderLabel = 'OpenAI subscription')
   Start-ProxyIfNeeded
+  Remove-Item Env:\AIRLOCK_SESSION_ROUTER_URL -ErrorAction SilentlyContinue
   $env:ANTHROPIC_BASE_URL   = $ProxyUrl
   $env:ANTHROPIC_AUTH_TOKEN = 'unused'
   $env:ANTHROPIC_MODEL      = $Model
@@ -392,10 +395,12 @@ function Set-OpenAIEnvironment {
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
   Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
-  # Reached only by the OpenAI-only and Grok-only profiles, where Claude Code
-  # cannot recognise the proxy-routed model and has no tuned window of its own.
+  # OpenAI and Grok custom roots keep the conservative process-wide fallback
+  # unless the user explicitly exports another value or selects auto.
   if ($UserContextWin) {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $UserContextWin
+  } elseif ($ExplicitContextWin -and $ContextWin -ne 'auto') {
+    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   } elseif ($ContextWin -eq 'auto') {
     Remove-Item Env:\CLAUDE_CODE_AUTO_COMPACT_WINDOW -ErrorAction SilentlyContinue
   } else {
@@ -565,6 +570,7 @@ function Invoke-AirlockSession {
     root_model = [string]$RootModel
     root_name = [string]$RootName
     context_window = [string]$ContextWin
+    force_context_window = [bool]$ExplicitContextWin
     max_agents = [string]$MaxAgents
     fast_mode = [string]$sessionFastMode
     args = [string[]]$ChildArguments
@@ -693,6 +699,18 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'usage') {
     $usageArguments += @($Arguments[1..($Arguments.Count - 1)])
   }
   exit (Invoke-AccessPolicy -PolicyArguments $usageArguments)
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'session-usage') {
+  if (-not $env:AIRLOCK_SESSION_ROUTER_URL) {
+    [Console]::Error.WriteLine('airlock session-usage: this command is available only inside an active hybrid Airlock session.')
+    exit 1
+  }
+  $sessionUsageArguments = @('session-usage', '--router-url', $env:AIRLOCK_SESSION_ROUTER_URL)
+  if ($Arguments.Count -gt 1) {
+    $sessionUsageArguments += @($Arguments[1..($Arguments.Count - 1)])
+  }
+  exit (Invoke-AccessPolicy -PolicyArguments $sessionUsageArguments)
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'version') {
@@ -906,7 +924,13 @@ if ($Arguments.Count -gt 0) {
       Write-Host "Main effort: $MainEffort"
       Write-Host "Background command: airlock bg -> $($Models[$DefaultBgModel][1]) ($($Models[$DefaultBgModel][0])) / $BgEffort effort"
       Write-Host "Utility model: $SmallFast"
-      $contextWinDisplay = if ($ContextWin -eq 'auto') { 'auto (Claude Code decides)' } else { "$ContextWin (OpenAI and Grok roots only)" }
+      if ($ContextWin -eq 'auto') {
+        $contextWinDisplay = 'auto (Claude Code decides)'
+      } elseif ($ExplicitContextWin) {
+        $contextWinDisplay = "$ContextWin (explicit process-wide override)"
+      } else {
+        $contextWinDisplay = "$ContextWin (saved fallback for OpenAI and Grok roots)"
+      }
       Write-Host "Context window: $contextWinDisplay"
       Write-Host "Proxy URL: $ProxyUrl"
       $proxyStorageDisplay = if ($ProxyConfigDir -or $ProxyStateHome) { 'configured proxy directories' } else { 'upstream defaults' }

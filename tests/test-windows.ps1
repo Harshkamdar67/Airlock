@@ -104,6 +104,9 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("SMALL_FAST=" + (Environment.GetEnvironmentVariable("ANTHROPIC_SMALL_FAST_MODEL") ?? "unset"));
     Console.WriteLine("FABLE_NAME=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
+    Console.WriteLine("ROOT_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_ROOT_MODEL") ?? "unset"));
+    Console.WriteLine("DISCOVERY_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_DISCOVERY_MODEL") ?? "unset"));
+    Console.WriteLine("SESSION_ROUTER=" + (Environment.GetEnvironmentVariable("AIRLOCK_SESSION_ROUTER_URL") ?? "unset"));
     Console.WriteLine("COMPACT_WINDOW=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW") ?? "unset"));
     for (int index = 0; index < args.Length; index++) {
       Console.WriteLine("ARG=" + args[index]);
@@ -151,6 +154,7 @@ function Invoke-LauncherProcess(
   # the launcher's own choice.
   [void]$processInfo.EnvironmentVariables.Remove('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONTEXT_WINDOW')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_ROUTER_URL')
   if ($ExtraEnvironment) {
     foreach ($name in $ExtraEnvironment.Keys) {
       $processInfo.EnvironmentVariables[$name] = [string]$ExtraEnvironment[$name]
@@ -345,6 +349,11 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
       $LegacyLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
     throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
   }
+  if ($LegacyLaunch.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra\[1m\]$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^DISCOVERY_MODEL=gpt-5\.6-luna\[1m\]$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^SESSION_ROUTER=unset$') {
+    throw "Windows session did not pin economical Explore discovery: $($LegacyLaunch.Output)"
+  }
   foreach ($ExpectedPickerLine in @(
     'DEFAULT_FABLE=gpt-5.6-sol[1m]',
     'DEFAULT_OPUS=gpt-5.6-sol[1m]',
@@ -357,16 +366,29 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     }
   }
 
-  # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
-  # tuning and locks the /config control while it is set, so it belongs only on a
-  # root Claude Code cannot size on its own.
+  # The >300k Sol proof did not pass, so OpenAI roots keep the saved fallback.
   if ($LegacyLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=272000$') {
-    throw "Windows OpenAI-only root did not receive the context window: $($LegacyLaunch.Output)"
+    throw "Windows OpenAI root lost the conservative context fallback: $($LegacyLaunch.Output)"
+  }
+  $NoSessionUsage = Invoke-LauncherProcess $InstalledLauncher @('session-usage') $false
+  if ($NoSessionUsage.ExitCode -eq 0 -or
+      $NoSessionUsage.Error -notmatch 'available only inside an active hybrid Airlock session') {
+    throw "Windows session usage did not fail clearly outside a hybrid session: $($NoSessionUsage.Error)"
+  }
+  $BareUnknownLaunch = Invoke-LauncherProcess $InstalledLauncher @('openai', 'spark', '-p', 'test')
+  if ($BareUnknownLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.3-codex-spark$' -or
+      $BareUnknownLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=272000$') {
+    throw "Windows bare proxy root lost the conservative context fallback: $($BareUnknownLaunch.Output)"
   }
   $AutoWindowLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $true `
     @{ AIRLOCK_CONTEXT_WINDOW = 'auto' }
   if ($AutoWindowLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=unset$') {
     throw "Windows auto context window still set the variable: $($AutoWindowLaunch.Output)"
+  }
+  $ExplicitAirlockWindowLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $true `
+    @{ AIRLOCK_CONTEXT_WINDOW = '450000' }
+  if ($ExplicitAirlockWindowLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=450000$') {
+    throw "Windows launcher discarded an explicit Airlock context window: $($ExplicitAirlockWindowLaunch.Output)"
   }
   $UserWindowLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test') $true `
     @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '450000' }
@@ -392,6 +414,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $HybridLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
   if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5\[1m\]$' -or
       $HybridLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-anthropic-root$' -or
+      $HybridLaunch.Output -notmatch '(?m)^SESSION_ROUTER=http://127\.0\.0\.1:[1-9][0-9]*$' -or
       $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
     throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
@@ -442,7 +465,8 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     throw "Background alias did not use the saved background route: $($BackgroundLaunch.Output)"
   }
   $ConfigAlias = Invoke-LauncherProcess $InstalledLauncher @('--config')
-  if ($ConfigAlias.Output -notmatch '(?m)^Default profile: hybrid$') {
+  if ($ConfigAlias.Output -notmatch '(?m)^Default profile: hybrid$' -or
+      $ConfigAlias.Output -notmatch '(?m)^Context window: 272000 \(saved fallback for OpenAI and Grok roots\)$') {
     throw "PowerShell --config alias did not show the saved profile: $($ConfigAlias.Output)"
   }
 

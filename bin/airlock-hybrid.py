@@ -355,6 +355,7 @@ def build_child_environment(
     context_window: str,
     route_policy: dict[str, object],
     router_url: str | None,
+    force_context_window: bool = False,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     # A window the user set themselves outranks Airlock's default. Read it before
@@ -386,10 +387,21 @@ def build_child_environment(
     environment["AIRLOCK_ALLOWED_AGENT_MODELS"] = ",".join(model_ids)
     environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"] = ",".join(extra_agents)
     environment["AIRLOCK_EXTRA_USAGE_AGENT_MODELS"] = ",".join(extra_models)
+    environment["AIRLOCK_ROOT_MODEL"] = root_model
+    discovery_model = route_policy.get("discovery_model")
+    if discovery_model is not None:
+        if not isinstance(discovery_model, str) or discovery_model not in model_ids:
+            fail("native session discovery model is invalid")
+        if discovery_model in extra_models:
+            fail("native session discovery model requires confirmation")
+        environment["AIRLOCK_DISCOVERY_MODEL"] = discovery_model
+    else:
+        environment.pop("AIRLOCK_DISCOVERY_MODEL", None)
 
     if profile in PROXY_PURE_PROFILES:
         if router_url is not None:
             fail(f"{profile} cannot use the hybrid router")
+        environment.pop("AIRLOCK_SESSION_ROUTER_URL", None)
         require_proxy_environment(environment, proxy_url, root_model, profile)
         configure_proxy_model_picker(
             environment, profile, route_policy.get("picker_models")
@@ -409,6 +421,7 @@ def build_child_environment(
     for variable in PROXY_VARIABLES:
         environment.pop(variable, None)
     environment["ANTHROPIC_BASE_URL"] = router_url
+    environment["AIRLOCK_SESSION_ROUTER_URL"] = router_url
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
         f"{root_name} (native hybrid route)"
@@ -420,13 +433,17 @@ def build_child_environment(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
     # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
-    # tuning, and refuses to let /config change the window while the variable is
-    # set. Anthropic models already carry accurate windows, so setting it there
-    # only costs tokens and takes the control away. A proxy-routed OpenAI or Grok
-    # model is the case Claude Code genuinely cannot recognise.
+    # tuning. Native Anthropic roots already carry real model-aware sizing. An
+    # explicit Airlock window wins; otherwise OpenAI and Grok roots keep the
+    # conservative saved fallback for the whole process.
     if user_context_window:
         environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
-    elif context_window != "auto" and profile != "hybrid-anthropic-root":
+    elif force_context_window and context_window != "auto":
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+    elif (
+        context_window != "auto"
+        and profile != "hybrid-anthropic-root"
+    ):
         environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
@@ -512,6 +529,9 @@ def main() -> int:
     context_window = required_request_string(
         request, "context_window", "context window"
     )
+    force_context_window = request.get("force_context_window", False)
+    if not isinstance(force_context_window, bool):
+        fail("context window override marker is invalid")
     fast_mode = required_request_string(request, "fast_mode", "Fast mode")
     if fast_mode not in {"inherit", "on", "off"}:
         fail("session Fast mode is invalid")
@@ -576,6 +596,7 @@ def main() -> int:
         context_window=context_window,
         route_policy=route_policy,
         router_url=router_url,
+        force_context_window=force_context_window,
     )
 
     command = [

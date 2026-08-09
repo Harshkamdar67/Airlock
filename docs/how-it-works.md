@@ -42,7 +42,7 @@ On an Anthropic route, the router preserves Claude Code capability and Agent att
 
 On an OpenAI route, it removes incoming Claude authorization, API-key, cookie, proxy authorization, and OAuth capability headers before calling the local proxy. Claude credentials are never sent to OpenAI.
 
-The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes only a bounded in-memory list of provider, exact enabled model, status, byte-count, duration, outcome, and token-count metadata for parity checks. Token counts are read from the response that was already forwarded, so they never change, delay, or buffer the stream. When an upstream sends no usage at all, the event simply has no token counts rather than a made-up zero.
+The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes a bounded in-memory event list plus cumulative per-provider/model request and token totals for the current session. Token counts are read from the response that was already forwarded, so observation never changes, delays, or buffers the stream. When an upstream sends no usage, the event has no token counts and the summary records that usage was absent rather than inventing a zero.
 
 ## Native Agents
 
@@ -85,7 +85,7 @@ Airlock keeps the exact built-in Agent types:
 - Plan for read-only technical design
 - general-purpose for multi-step work
 
-By default, they inherit the orchestrator model. This includes Explore.
+Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the exact economical discovery model in the generated session guidance. If an unpinned Explore would inherit a different premium root, the guard blocks it and names the exact retry ID. An explicit exact enabled model remains valid for all three built-in types, including the orchestrator itself.
 
 For one call, the main model may pass an exact full model ID:
 
@@ -100,7 +100,7 @@ The session guard checks the ID before Claude Code starts the Agent.
 - The Grok-only profile allows only enabled Grok IDs.
 - Hybrid allows enabled OpenAI and Anthropic IDs, plus Grok IDs when Grok is enabled.
 - Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage routes, and ineligible Fast routes are rejected when supplied as overrides.
-- Omitting `model` keeps normal inheritance.
+- Omitting `model` keeps normal inheritance for Plan and general-purpose. Explore also inherits when the root is already the economical discovery route; otherwise routine unpinned Explore is rejected with the exact safe retry ID.
 
 A named Agent has no per-call effort field. It follows the session effort by default, and `/effort` can move it in the middle of a session. A configured pin stays fixed until the config changes.
 
@@ -219,9 +219,19 @@ It returns a key-only projection for an exact env read. It blocks known credenti
 
 This is a practical safety layer, not a full shell sandbox. A model with Bash can run repository code. A tracked secret may already exist in shared Git history. Do not commit credentials and use stronger operating-system isolation for untrusted repositories.
 
+## Context sizing
+
+Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI and Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. That fallback also affects named workers in the same process.
+
+A user-exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` has highest priority. An explicitly exported numeric `AIRLOCK_CONTEXT_WINDOW` also wins, while `AIRLOCK_CONTEXT_WINDOW=auto` removes the override. Any explicit numeric value applies to the root and every worker because Claude Code has no per-Agent compaction variable.
+
 ## Usage and failure handling
 
 `airlock usage` reads OpenAI plan windows through the documented Codex app-server method. It does not send a model request.
+
+Inside a hybrid session, `airlock session-usage` reads only the active loopback router's cumulative summary. It reports per-provider/model requests, completed and failed outcomes, observed-usage events, input, cache-write, cache-read, and output totals. The command rejects non-loopback and deceptive URLs, never emits diagnostic event bodies, and labels the result as provider-reported session usage rather than a bill. Provider-pure profiles have no session router, so the command fails clearly instead of guessing.
+
+Claude Code's native Agent card can still show zero tokens for custom OpenAI or Grok IDs. Airlock does not spoof a Claude ID or rewrite provider bytes to change that closed-source display. `airlock session-usage` is the accurate Airlock-owned view when the provider returned usage.
 
 Grok has no equivalent readable plan window, so Airlock reports Grok headroom as unknown rather than guessing. It does record whether the proxy holds a Grok login, and a session that confirms it is signed out disables the Grok routes instead of advertising workers that would fail on their first request.
 

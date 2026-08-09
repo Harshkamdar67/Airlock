@@ -545,6 +545,14 @@ class RouterProtocolTests(unittest.TestCase):
                 "cache_read_input_tokens": 64,
             },
         )
+        summary = diagnostics["summary"][-1]
+        self.assertEqual(summary["requests"], 1)
+        self.assertEqual(summary["completed"], 1)
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["usage_events"], 1)
+        self.assertEqual(summary["input_tokens"], 1200)
+        self.assertEqual(summary["cache_read_input_tokens"], 64)
+        self.assertEqual(summary["output_tokens"], 350)
 
     def test_usage_is_observed_from_a_json_response(self) -> None:
         self.anthropic.mode = "usage_json"
@@ -611,6 +619,36 @@ class RouterProtocolTests(unittest.TestCase):
         event = diagnostics["events"][-1]
         self.assertEqual(event["outcome"], "completed")
         self.assertNotIn("usage", event)
+
+    def test_cumulative_usage_outlives_the_bounded_event_window(self) -> None:
+        def record(_index: int) -> None:
+            self.gateway.record_diagnostic({
+                "provider": "openai",
+                "model": "gpt-test",
+                "status": 200,
+                "outcome": "completed",
+                "usage": {
+                    "input_tokens": 1,
+                    "cache_creation_input_tokens": 2,
+                    "cache_read_input_tokens": 3,
+                    "output_tokens": 4,
+                },
+            })
+
+        request_count = router.MAX_DIAGNOSTIC_EVENTS + 44
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(record, range(request_count)))
+        report = self.gateway.diagnostic_report()
+        self.assertEqual(len(report["events"]), router.MAX_DIAGNOSTIC_EVENTS)
+        summary = report["summary"][0]
+        self.assertEqual(summary["requests"], request_count)
+        self.assertEqual(summary["completed"], request_count)
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["usage_events"], request_count)
+        self.assertEqual(summary["input_tokens"], request_count)
+        self.assertEqual(summary["cache_creation_input_tokens"], request_count * 2)
+        self.assertEqual(summary["cache_read_input_tokens"], request_count * 3)
+        self.assertEqual(summary["output_tokens"], request_count * 4)
 
     def test_usage_observer_ignores_content_and_malformed_events(self) -> None:
         observer = router.UsageObserver()

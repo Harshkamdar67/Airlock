@@ -11,6 +11,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Grok subscription path (Phase 1 of multi-provider work): `airlock grok`, hybrid roots `grok` / `composer`, workers `airlock-grok` and `airlock-composer`, router provider label `grok` (shared loopback proxy with Codex), and `airlock proxy grok auth` for Grok OAuth. Available on macOS, Linux, and Windows.
 - Setup wizard support for Grok: a `grok` default profile, a Grok subscription question in hybrid, a Grok worker pool question, and `--grok-model` / `--grok-workers` flags.
 - Doctor reports Grok OAuth on both platforms, and treats a missing Grok login as a failure only when the saved configuration enables Grok routes.
+- `airlock session-usage` reports cumulative provider-reported request and token totals from the active hybrid router without rewriting responses or inventing missing counts.
+- An opt-in Sol long-context helper sends one synthetic root-only request through standard input and fails unless provider-reported input plus cache usage exceeds 300,000 tokens and both distant markers return.
 
 ### Changed
 
@@ -19,6 +21,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - A session that confirms the proxy is signed out of Grok disables the Grok routes rather than offering workers whose first request would fail. An unknown login state leaves the configured routes alone.
 
 - Session guidance now names only the providers and workers a session actually enabled. A Grok-only session previously spent most of its guidance describing Luna armies and Anthropic workers it could not call.
+- Routine Explore now uses an economical exact discovery model instead of silently inheriting a different premium root. Explore, Plan, and general-purpose still accept any exact model enabled for the active session, and explicit exact choices always win.
+- Native Anthropic roots now leave Claude Code's process-wide auto-compact override unset. The authorized Sol proof above 300,000 tokens did not pass, so OpenAI and Grok roots retain the saved conservative fallback. An explicitly exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `AIRLOCK_CONTEXT_WINDOW` still wins for the whole process.
 - Grok and Composer now have explicit routing rules rather than only a descriptive role-map entry, so the orchestrator can positively select them. Composer is described as the agentic coding worker it is instead of a summarizer, and is eligible for automatic fan-out.
 
 ### Fixed
@@ -33,7 +37,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - `airlock.ps1` resolved every managed path from `$HOME\.config\airlock` while `install.ps1` honoured `AIRLOCK_CONFIG_DIR`, so a Windows install into a custom directory validated another installation's files.
 - The installers refused to update any agent catalog whose contents changed, because catalogs carried no managed marker. They now carry one, and a file whose hash matches the installed bundle's record for that component is recognised as Airlock's own. A file with neither is still refused.
 - `setup.sh` defaulted `AIRLOCK_HYBRID_MODEL` to `sol` while both launchers fall back to `sonnet`, so rewriting a config that never had the key silently moved the hybrid root. A new setup still recommends Sol.
-- Every profile forced `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to 272000, including Anthropic roots. Claude Code reads that variable ahead of its own per-model tuning and disables the auto-compact control in `/config` while it is set, so a Claude root lost the control and gained a window it already knew. The value is now applied only to the OpenAI and Grok roots that Claude Code genuinely cannot size, a window you set yourself always wins, and `AIRLOCK_CONTEXT_WINDOW=auto` leaves the decision to Claude Code.
+- Earlier context handling applied the saved 272000 fallback to every root, including native Anthropic roots that Claude Code could size itself. Native Anthropic roots now stay model-aware. OpenAI and Grok roots keep the fallback because the guarded Sol request above 300,000 tokens exited with status 1 and did not produce a valid proof.
 - `AIRLOCK_CONTEXT_WINDOW` accepted values Claude Code discards. Claude Code takes 100000 to 1000000 and ignores anything else without a word, so an out-of-range number looked applied while doing nothing. Both launchers now reject it before the session starts. The Windows launcher previously checked only that the value was a positive integer, and the POSIX launcher did not check at all.
 - Router diagnostics never reported token usage for Anthropic routes. Anthropic answers with `Content-Encoding: gzip`, and the observer read the compressed bytes, so it could never find a usage object. It now decodes a private copy of the response to read the counts. The bytes forwarded to the client are still passed through untouched, and a response in an encoding the standard library cannot read records no usage instead of guessing.
 

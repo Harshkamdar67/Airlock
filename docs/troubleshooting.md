@@ -112,9 +112,9 @@ The router chooses an unused `127.0.0.1` port and exits with its launcher. It is
 
 Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpose` Agent types.
 
-Without a model field, each one inherits the orchestrator model.
+Plan and general-purpose inherit the orchestrator when the model field is omitted. Explore inherits only when the root is already the economical discovery route. If routine unpinned Explore would spend a different premium root, Airlock blocks the call and names the exact enabled retry model.
 
-With a model field, the value must be one exact full model ID enabled for the active session. The OpenAI-only profile allows OpenAI IDs only. Hybrid can allow both providers. Bare `airlock` starts the profile saved by setup.
+With a model field, any of the three built-ins may use one exact full model ID enabled for the active session. Explicit exact choices always win. Bare `airlock` starts the profile saved by setup.
 
 Aliases, `inherit`, malformed IDs, disabled models, blocked extra-usage models, and ineligible Fast models fail closed.
 
@@ -183,13 +183,15 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set in the environment, and Airlock sets it for OpenAI and Grok roots so Claude Code stops guessing their context window.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09.
 
 To take the control back for a session, start it with:
 
 ```bash
 AIRLOCK_CONTEXT_WINDOW=auto airlock hybrid sol
 ```
+
+If you explicitly export a numeric `AIRLOCK_CONTEXT_WINDOW` or `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, that value wins even on a `[1m]` root and applies to every worker in the process.
 
 To change the number instead of removing it, set `AIRLOCK_CONTEXT_WINDOW` to a whole number from 100000 to 1000000, in your config file or on the command line. Anthropic roots never set the variable, so the control stays available there. See [Context window and auto-compaction](models-and-usage.md#context-window-and-auto-compaction).
 
@@ -297,21 +299,22 @@ For Anthropic plan bars, use native Claude Code:
 /usage
 ```
 
-## An OpenAI Agent card reports zero tokens
+## An OpenAI or Grok Agent card reports zero tokens
 
-A native OpenAI worker can finish correctly and still show zero subagent tokens on its Agent card, while an Anthropic worker in the same session reports real numbers.
+A native OpenAI or Grok worker can finish correctly and still show zero subagent tokens on its Agent card while an Anthropic worker in the same session reports real numbers.
 
-Claude Code reads that number from usage fields associated with the response. The router forwards responses byte for byte and never edits them, so it cannot repair a missing or ignored count. Airlock records the integer token fields that were present in the response so you can tell where the gap begins.
+The router forwards provider responses byte for byte. Airlock does not spoof Claude IDs or edit usage fields to influence Claude Code's closed-source card accounting. The work itself is unaffected.
 
-The work itself is not affected. Only the reported count is.
-
-To see what actually arrived, read the router diagnostics for the session:
+Inside the active hybrid session, run:
 
 ```bash
-curl -s "$ANTHROPIC_BASE_URL/diagnostics"
+airlock session-usage
+airlock session-usage --json
 ```
 
-Each event carries a `usage` object when the response contained token counts. If an OpenAI event has no `usage` object, the counts were missing from the response produced by the translation step. If the event has nonzero usage but the Agent card still shows zero, the display gap is inside Claude Code's accounting. The router reports what arrived and does not invent a number to fill either gap.
+The command reads only the active `127.0.0.1` router's cumulative sanitized summary. It reports how many requests contained upstream usage and shows per-provider/model input, cache-write, cache-read, and output totals. It never prints prompts, headers, bodies, or raw responses, and it labels the numbers as provider-reported session usage rather than a bill.
+
+If `usage-observed` is lower than `requests`, some upstream responses carried no usage. If usage is nonzero here but the Agent card still shows zero, the display gap is inside Claude Code. A provider-pure session has no router, so `airlock session-usage` fails clearly rather than guessing.
 
 ## Shell scripts fail with `\r`
 

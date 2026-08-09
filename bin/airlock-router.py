@@ -256,6 +256,7 @@ class RouterServer(ThreadingHTTPServer):
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
+        self.usage_summary: dict[tuple[str, str], dict[str, object]] = {}
         self.diagnostics_lock = threading.Lock()
 
     def server_bind(self) -> None:
@@ -274,10 +275,43 @@ class RouterServer(ThreadingHTTPServer):
     def record_diagnostic(self, event: dict[str, object]) -> None:
         with self.diagnostics_lock:
             self.diagnostics.append(dict(event))
+            provider = event.get("provider")
+            model = event.get("model")
+            if not isinstance(provider, str) or not isinstance(model, str):
+                return
+            key = (provider, model)
+            summary = self.usage_summary.setdefault(key, {
+                "provider": provider,
+                "model": model,
+                "requests": 0,
+                "completed": 0,
+                "errors": 0,
+                "usage_events": 0,
+                **{field: 0 for field in USAGE_FIELDS},
+            })
+            summary["requests"] += 1
+            if event.get("outcome") == "completed":
+                summary["completed"] += 1
+            else:
+                summary["errors"] += 1
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                summary["usage_events"] += 1
+                for field in USAGE_FIELDS:
+                    value = usage.get(field)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        summary[field] += value
 
-    def diagnostic_snapshot(self) -> list[dict[str, object]]:
+    def diagnostic_report(self) -> dict[str, object]:
         with self.diagnostics_lock:
-            return [dict(event) for event in self.diagnostics]
+            return {
+                "instance_id": self.instance_id,
+                "events": [dict(event) for event in self.diagnostics],
+                "summary": [
+                    dict(self.usage_summary[key])
+                    for key in sorted(self.usage_summary)
+                ],
+            }
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -317,10 +351,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"data": models, "has_more": False})
             return
         if path == "/diagnostics":
-            self.send_json(200, {
-                "instance_id": self.router.instance_id,
-                "events": self.router.diagnostic_snapshot(),
-            })
+            self.send_json(200, self.router.diagnostic_report())
             return
         self.send_error_response(404, "not_found", "Route not found")
 

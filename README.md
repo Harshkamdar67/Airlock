@@ -28,7 +28,7 @@ airlock grok            # Saved Grok-only root, needs a separate Grok login
 - Start with an OpenAI or Anthropic model, and reach both from the same session.
 - Use real Claude Code Agents for both providers, each with an exact model, and move them all with `/effort`.
 - Keep native Agent cards, tools, background work, cancellation, and worktrees.
-- Let Explore, Plan, and general-purpose inherit the main model or use an allowed exact model for one call.
+- Let Plan and general-purpose inherit the main model, route routine Explore to an economical exact model, or choose any enabled exact model for one call.
 - Set a budget mode and a smaller worker cap when you want one.
 - See OpenAI plan usage without making a model request.
 - Keep ignored files, env values, and known credentials out of isolated worker copies.
@@ -130,7 +130,7 @@ Inside the session, ask for work normally. The main model can use:
 - built-in general-purpose for multi-step work
 - exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`, plus `airlock-grok` and `airlock-composer` when Grok is enabled
 
-Built-in agents inherit the orchestrator model by default. The Agent call may give Explore, Plan, or general-purpose one exact enabled model ID. The OpenAI-only profile accepts enabled OpenAI IDs. Hybrid accepts enabled OpenAI and Anthropic IDs. Aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
+Plan and general-purpose inherit the orchestrator when the Agent call omits `model`. Routine Explore should use the exact economical discovery model named in the session guidance. If an unpinned Explore would spend a different premium root, the guard blocks it and names the exact retry model. Explore, Plan, and general-purpose may all receive any exact model ID enabled for the active profile. Explicit exact choices always win, while aliases, disabled models, unknown IDs, and blocked extra-usage routes fail closed.
 
 Named `airlock-*` workers have a fixed exact model. Their effort follows the session by default, so `/effort` moves the main model and those workers together. You can pin one route or every worker in the config. Claude Code does not expose per-call Agent effort for either Claude or OpenAI workers, so Airlock cannot yet vary one worker's effort task by task. Automatic task-specific effort routing is under design. Until it is available, use session `/effort` or setup-time pins. Named workers use Claude Code's normal subagent tools.
 
@@ -205,11 +205,11 @@ The same session plugin blocks direct Read, Grep, Glob, and obvious Bash access 
 Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 
 ## Known limits
-
 - Anthropic supports Claude Code gateways and saved-login forwarding, but it does not officially support non-Claude models behind a gateway.
 - GPT model IDs may not appear in Claude Code's `/model` discovery list. Start the exact root with `airlock` or `airlock hybrid`, and use exact Agent model IDs through the guarded Agent call.
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
 - Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
+- Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative provider-reported totals without changing provider responses. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped while OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
 - File hooks and prompts do not replace an operating-system sandbox.
 - Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
 - Subscription access, provider terms, model availability, and usage limits can change.

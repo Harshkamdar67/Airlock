@@ -29,6 +29,7 @@ ROUTE_POLICY = {
     "agent_names": ["airlock-luna", "airlock-opus", "airlock-sol"],
     "extra_model_ids": [],
     "extra_agent_names": [],
+    "discovery_model": "gpt-5.6-luna[1m]",
     "picker_models": {
         "fable": "gpt-5.6-sol[1m]",
         "opus": "gpt-5.6-sol[1m]",
@@ -74,6 +75,9 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES", environment)
         self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", environment)
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "hybrid-anthropic-root")
+        self.assertEqual(environment["AIRLOCK_SESSION_ROUTER_URL"], "http://127.0.0.1:28471")
+        self.assertEqual(environment["AIRLOCK_ROOT_MODEL"], "claude-opus-5")
+        self.assertEqual(environment["AIRLOCK_DISCOVERY_MODEL"], "gpt-5.6-luna[1m]")
         self.assertEqual(environment["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"], "3")
         self.assertEqual(environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"], "1")
         self.assertEqual(
@@ -92,6 +96,7 @@ class HybridLauncherTests(unittest.TestCase):
         *,
         context_window: str = "272000",
         preset_environment: dict[str, str] | None = None,
+        force_context_window: bool = False,
     ) -> dict[str, str]:
         """Build a child environment for one profile with the shared defaults."""
         base = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:18765"}
@@ -107,6 +112,7 @@ class HybridLauncherTests(unittest.TestCase):
                 context_window=context_window,
                 route_policy=ROUTE_POLICY,
                 router_url="http://127.0.0.1:28471",
+                force_context_window=force_context_window,
             )
 
     def test_anthropic_root_keeps_claude_codes_own_auto_compact_window(self) -> None:
@@ -116,16 +122,22 @@ class HybridLauncherTests(unittest.TestCase):
         environment = self.build("hybrid-anthropic-root", "claude-opus-5")
         self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
 
-    def test_proxy_routed_roots_still_receive_the_auto_compact_window(self) -> None:
-        for profile, root_model in (
-            ("hybrid-openai-root", "gpt-5.6-sol[1m]"),
-            ("hybrid-grok-root", "grok-4.5"),
-        ):
-            with self.subTest(profile=profile):
-                environment = self.build(profile, root_model)
-                self.assertEqual(
-                    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000"
-                )
+    def test_unproven_1m_proxy_root_keeps_the_conservative_window(self) -> None:
+        environment = self.build("hybrid-openai-root", "gpt-5.6-sol[1m]")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
+
+    def test_explicit_airlock_window_can_override_a_1m_root(self) -> None:
+        environment = self.build(
+            "hybrid-openai-root",
+            "gpt-5.6-sol[1m]",
+            context_window="450000",
+            force_context_window=True,
+        )
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
+
+    def test_bare_proxy_root_keeps_the_conservative_auto_compact_window(self) -> None:
+        environment = self.build("hybrid-grok-root", "grok-4.5")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
     def test_auto_context_window_never_sets_the_variable(self) -> None:
         environment = self.build(
@@ -251,6 +263,7 @@ class HybridLauncherTests(unittest.TestCase):
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
             "ANTHROPIC_AUTH_TOKEN": "unused",
             "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
+            "AIRLOCK_SESSION_ROUTER_URL": "http://127.0.0.1:9999",
             "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5",
             "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "wrong inherited label",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "wrong inherited description",
@@ -271,6 +284,7 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", environment)
         self.assertEqual(environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"], "1")
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
+        self.assertNotIn("AIRLOCK_SESSION_ROUTER_URL", environment)
         self.assertEqual(environment["ANTHROPIC_AUTH_TOKEN"], "unused")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol[1m]")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.6-sol[1m]")

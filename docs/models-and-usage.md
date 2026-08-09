@@ -81,11 +81,9 @@ Both controls stay under Advanced in the setup wizard because they are optional 
 
 ## Built-in Agent model choice
 
-Explore, Plan, and general-purpose inherit the orchestrator model by default.
+Plan and general-purpose inherit the orchestrator model when `model` is omitted. Routine Explore uses the exact economical discovery model named in the generated guidance. If an unpinned Explore would inherit a different premium root, the guard blocks it and names the exact enabled retry model.
 
-A main model can give one of those built-ins an exact full model ID for one call. The guard allows it only when the route is enabled for the current session.
-
-The OpenAI-only profile allows enabled OpenAI IDs. Hybrid allows enabled OpenAI and Anthropic IDs.
+A main model can give Explore, Plan, or general-purpose any exact full model ID enabled for the active session. Explicit exact choices always win. The guard still rejects aliases, disabled routes, unknown IDs, and extra-usage models without confirmation.
 
 Named `airlock-*` Agents already have an exact model. They follow the session effort unless setup pins a level. Callers cannot override either value for one Agent call.
 
@@ -295,40 +293,49 @@ Airlock does not read login files, decode tokens, scrape the screen, or guess a 
 
 ## Context window and auto-compaction
 
-Claude Code decides when to compact a session from the context window it believes the model has. It knows the real window for Claude model IDs. It cannot know it for a GPT or Grok model reached through the proxy, because those arrive as a custom model ID it has never seen, so it falls back to a generic default.
+Claude Code decides when to compact from the context window assigned to the root process. Native Anthropic roots already have model-aware sizing, so Airlock leaves the process-wide override unset for them.
 
-Airlock fills that gap with `AIRLOCK_CONTEXT_WINDOW`, which defaults to `272000`. The value is applied only where Claude Code is actually guessing:
+The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI and Grok roots instead of treating their `[1m]` IDs as proof. The fallback defaults to `272000`.
 
-| Root model | What Airlock sets |
+| Root profile | Default behavior |
 | --- | --- |
-| Anthropic (`hybrid-anthropic-root`) | Nothing. Claude Code uses its own per-model window. |
-| OpenAI (`openai-pure`, `hybrid-openai-root`) | `AIRLOCK_CONTEXT_WINDOW` |
-| Grok (`grok-pure`, `hybrid-grok-root`) | `AIRLOCK_CONTEXT_WINDOW` |
+| Native Anthropic root | No process-wide override. Claude Code uses native model knowledge and `[1m]` where configured. |
+| OpenAI or Grok root | Apply the saved `AIRLOCK_CONTEXT_WINDOW` fallback. |
 
-Three rules go with it:
+Four rules go with it:
 
-- A window you set yourself in `CLAUDE_CODE_AUTO_COMPACT_WINDOW` always wins, on every profile.
-- `AIRLOCK_CONTEXT_WINDOW=auto` tells Airlock to set nothing at all and let Claude Code decide.
-- The value has to be `auto` or a whole number from 100000 to 1000000. Claude Code ignores anything outside that range without a word, so Airlock refuses it up front instead of letting a silently discarded number look applied.
+- A value you export yourself in `CLAUDE_CODE_AUTO_COMPACT_WINDOW` always wins.
+- An explicitly exported numeric `AIRLOCK_CONTEXT_WINDOW` also wins, including on a `[1m]` root.
+- `AIRLOCK_CONTEXT_WINDOW=auto` tells Airlock to set nothing and let Claude Code decide.
+- The value has to be `auto` or a whole number from 100000 to 1000000. Claude Code silently ignores anything outside that range, so Airlock refuses it.
 
-A larger window means fewer compactions, later, each one summarizing more history. That is usually what you want on a long session, but it also means more tokens per request once the session grows, and Claude Code's own warning is worth repeating: overriding the window can raise token usage, especially when resuming a long session. Lower the number or use `auto` if that matters more to you than compaction frequency.
+A larger explicit override means fewer, later compactions that summarize more history. It can also raise tokens per request once a session grows. Lower or remove the exported override when usage matters more than compaction frequency.
 
-While the variable is set, Claude Code disables the auto-compact control in `/config`. That is why Anthropic roots are left alone: their window is already correct, so taking the control away would cost you something and buy nothing.
+While the variable is set, Claude Code disables the auto-compact control in `/config`. The variable is process-wide, so the fallback or one explicit numeric value affects the root and every named worker. Airlock cannot safely give workers a separate threshold while retaining native Agents.
 
-### Why the Claude model IDs carry a `[1m]` suffix
+### Why long-context model IDs carry a `[1m]` suffix
 
 Opus 5, Sonnet 5, and Fable 5 have a one million token context window. Claude Code grants it automatically, but only when `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`. Airlock always points that variable at its own session router, so Claude Code stops treating the connection as first party and drops all three models to 200000 tokens.
 
 Nothing reports this. The session simply compacts four times as often as the same model would outside Airlock, which costs more usage rather than less.
 
-Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honours regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allow-list accepts both spellings for that reason.
+Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
+
+The enabled GPT-5.6 Sol, Terra, and Luna routes retain their exact `[1m]` IDs for Claude Code routing compatibility, but the suffix is not treated as proof of usable provider context. The guarded helper in `scripts/test-sol-long-context.py` attempts a separate Sol proof with one synthetic root-only request. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
 
 Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
 
-Two limits still apply. `AIRLOCK_CONTEXT_WINDOW` cannot raise the window, only lower it, because Claude Code takes the smaller of your value and the model's real maximum. And a one million token window is not free on every plan. When an account cannot use it, Claude Code caps the session back to 200000 on its own.
+Two limits still apply. The conservative OpenAI or Grok fallback also lowers every worker in that root process. Also, a one million token window is not available on every plan. A future release must pass the guarded proof before removing the fallback.
 
 ## Native usage display
 
-Because named workers are real Claude Code Agents, Claude Code owns their cards, state, cancellation, and usage display. Airlock no longer needs a transport wrapper to estimate worker tokens in normal sessions.
+Because named workers are real Claude Code Agents, Claude Code owns their cards, state, cancellation, and display. Claude cards report native usage. Custom OpenAI and Grok IDs can still show zero on the native card even when the upstream response contains real usage fields.
 
-Native counters are still not a provider bill or proof of remaining plan quota.
+Inside a hybrid session, run:
+
+```bash
+airlock session-usage
+airlock session-usage --json
+```
+
+This reads only the active loopback router's sanitized cumulative summary. It shows per-provider/model request outcomes and provider-reported input, cache-write, cache-read, and output totals. It does not rewrite provider responses, spoof Claude model IDs, estimate missing values, or claim to be a bill. Provider-pure profiles have no router and fail clearly rather than guessing.

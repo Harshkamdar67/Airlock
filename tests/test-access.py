@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -360,8 +362,9 @@ for line in sys.stdin:
             with self.subTest(profile=profile):
                 guidance = ACCESS.profile_guidance(policy, profile)
                 self.assertIn("Orchestration: choose the smallest effective path", guidance)
-                self.assertIn("Use exact Explore for bounded read-only", guidance)
-                self.assertIn("without a model field it inherits the orchestrator model", guidance)
+                self.assertIn("Built-in Explore, Plan, and general-purpose may receive any exact full model ID", guidance)
+                self.assertIn("pass `model=gpt-5.6-luna[1m]`", guidance)
+                self.assertIn("Omit `model` only when inheriting the orchestrator is deliberate", guidance)
                 self.assertIn("Use exact Plan for read-only technical design", guidance)
                 self.assertIn("Use exact general-purpose for multi-step work", guidance)
                 self.assertIn("For an automatic army, launch multiple exact airlock-luna", guidance)
@@ -463,6 +466,10 @@ for line in sys.stdin:
         policy = ACCESS.default_policy()
         for model in policy["providers"]["grok"]["models"].values():
             model["access"] = "unknown"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "grok-pure"),
+            "grok-composer-2.5-fast",
+        )
         self.assertEqual(ACCESS.proxy_picker_models(policy, "grok-pure"), {
             "fable": "grok-4.5",
             "opus": "grok-4.5",
@@ -483,6 +490,19 @@ for line in sys.stdin:
         self.assertEqual(
             ACCESS.proxy_picker_models(policy, "openai-pure")["sonnet"],
             "gpt-5.6-terra[1m]",
+        )
+
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["models"]["luna"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "ask"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "openai-pure"),
+            "gpt-5.6-terra[1m]",
+        )
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(
+            ACCESS.discovery_model(policy, "openai-pure"),
+            "gpt-5.6-luna[1m]",
         )
 
     def test_natively_1m_anthropic_models_keep_their_window_behind_the_router(self) -> None:
@@ -521,6 +541,11 @@ for line in sys.stdin:
                 {"gpt-5.6-sol[1m]", "gpt-5.6-terra[1m]", "gpt-5.6-luna[1m]"},
             )
             self.assertNotIn("gpt-5.6-sol", pure["model_ids"])
+            self.assertEqual(pure["discovery_model"], "gpt-5.6-luna[1m]")
+            self.assertEqual(
+                ACCESS.session_route_field(policy, "openai-pure", "discovery-model"),
+                "gpt-5.6-luna[1m]",
+            )
             self.assertEqual(pure["picker_models"], {
                 "fable": "gpt-5.6-sol[1m]",
                 "opus": "gpt-5.6-sol[1m]",
@@ -533,6 +558,7 @@ for line in sys.stdin:
                 "opus=gpt-5.6-sol[1m]\nsonnet=gpt-5.6-terra[1m]",
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+            self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna[1m]")
             self.assertEqual(hybrid["picker_models"], {})
             self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
             # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
@@ -894,6 +920,133 @@ class GrokAuthenticationTests(unittest.TestCase):
         self.assertFalse(refreshed)
         cached = json.loads((self.root / "access.json").read_text(encoding="utf-8"))
         self.assertIs(cached["providers"]["grok"]["authenticated"], True)
+
+
+class SessionUsageTests(unittest.TestCase):
+    def payload(self) -> dict[str, object]:
+        return {
+            "instance_id": "0123456789abcdef",
+            "events": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol[1m]",
+                    "prompt": "must-not-leak",
+                    "authorization": "must-not-leak-either",
+                }
+            ],
+            "summary": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol[1m]",
+                    "requests": 2,
+                    "completed": 1,
+                    "errors": 1,
+                    "usage_events": 1,
+                    "input_tokens": 0,
+                    "cache_creation_input_tokens": 11,
+                    "cache_read_input_tokens": 320000,
+                    "output_tokens": 7,
+                }
+            ],
+        }
+
+    def test_session_usage_keeps_only_valid_cumulative_counts(self) -> None:
+        report = ACCESS.session_usage_report(self.payload())
+        self.assertEqual(report["source"], "airlock-router")
+        self.assertFalse(report["billing"])
+        self.assertEqual(report["bounded_event_window"], 1)
+        self.assertEqual(report["groups"][0]["cache_read_input_tokens"], 320000)
+        rendered = json.dumps(report)
+        self.assertNotIn("must-not-leak", rendered)
+        lines = "\n".join(ACCESS.session_usage_lines(report))
+        self.assertIn("provider-reported, not a bill", lines)
+        self.assertIn("cache-read=320000", lines)
+        self.assertIn("Claude Code may still show zero", lines)
+        self.assertNotIn("must-not-leak", lines)
+
+    def test_session_usage_rejects_non_loopback_and_deceptive_urls(self) -> None:
+        self.assertEqual(
+            ACCESS.validate_session_router_url("http://127.0.0.1:28471"),
+            ("127.0.0.1", 28471),
+        )
+        for rejected in (
+            "https://127.0.0.1:28471",
+            "http://localhost:28471",
+            "http://127.0.0.1:28471/diagnostics",
+            "http://127.0.0.1:28471?target=evil",
+            "http://user@127.0.0.1:28471",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:28471.evil.test",
+        ):
+            with self.subTest(rejected=rejected), self.assertRaises(ACCESS.AccessError):
+                ACCESS.validate_session_router_url(rejected)
+
+    def test_session_usage_rejects_invented_or_inconsistent_counts(self) -> None:
+        for field, value in (
+            ("input_tokens", -1),
+            ("output_tokens", True),
+            ("requests", 3),
+            ("usage_events", 3),
+        ):
+            payload = self.payload()
+            payload["summary"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ACCESS.AccessError):
+                ACCESS.session_usage_report(payload)
+
+    def test_session_usage_cli_fetches_only_the_loopback_diagnostics_path(self) -> None:
+        body = json.dumps(self.payload(), separators=(",", ":")).encode("utf-8")
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/diagnostics":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "bin" / "airlock-access.py"),
+                    "session-usage",
+                    "--router-url",
+                    f"http://127.0.0.1:{server.server_address[1]}",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["groups"][0]["output_tokens"], 7)
+        self.assertNotIn("must-not-leak", completed.stdout)
+
+    def test_session_usage_rejects_unbounded_or_unexpected_diagnostics(self) -> None:
+        payload = self.payload()
+        payload["events"] = [{}] * (ACCESS.MAX_SESSION_DIAGNOSTIC_EVENTS + 1)
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.session_usage_report(payload)
+        payload = self.payload()
+        payload["raw_response"] = "must-not-be-accepted"
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.session_usage_report(payload)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
@@ -29,6 +31,15 @@ MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
 MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
+MAX_SESSION_DIAGNOSTICS_BYTES = 512 * 1024
+SESSION_DIAGNOSTICS_TIMEOUT_SECONDS = 3
+MAX_SESSION_DIAGNOSTIC_EVENTS = 256
+SESSION_USAGE_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
 APP_SERVER_TIMEOUT_SECONDS = 15
 VALID_ACCESS = {"included", "extra", "unavailable", "unknown"}
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -1927,6 +1938,41 @@ def wire_model_id(model: str) -> str:
     return model
 
 
+DISCOVERY_ROUTES = (
+    "luna",
+    "composer",
+    "haiku",
+    "luna-fast",
+    "terra",
+    "sonnet",
+    "grok",
+    "sol",
+    "fable",
+    "opus",
+)
+
+
+def discovery_model_from_workers(
+    policy: dict[str, Any], workers: list[dict[str, str]]
+) -> str | None:
+    """Choose a cheap exact model that never bypasses extra-usage approval."""
+    require_confirmation = policy["policies"]["extra_usage"] == "ask"
+    by_route = {
+        worker["route"]: worker["model"]
+        for worker in workers
+        if not (require_confirmation and worker["access"] == "extra")
+    }
+    for route in DISCOVERY_ROUTES:
+        model = by_route.get(route)
+        if model:
+            return model
+    return None
+
+
+def discovery_model(policy: dict[str, Any], profile: str) -> str | None:
+    return discovery_model_from_workers(policy, enabled_profile_workers(policy, profile))
+
+
 def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
     """Map Claude Code's four family slots to enabled models from one provider.
 
@@ -2000,7 +2046,151 @@ def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, obje
         "extra_model_ids": sorted(extra_model_ids),
         "extra_agent_names": sorted(extra_agent_names),
         "picker_models": proxy_picker_models(policy, profile),
+        "discovery_model": discovery_model_from_workers(policy, workers),
     }
+
+
+def validate_session_router_url(raw_url: str) -> tuple[str, int]:
+    """Accept only Airlock's unauthenticated IPv4 loopback router address."""
+    if not isinstance(raw_url, str) or not re.fullmatch(
+        r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", raw_url
+    ):
+        raise AccessError(
+            "session usage requires an active Airlock hybrid router on 127.0.0.1"
+        )
+    parsed = urlsplit(raw_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise AccessError("session router port is invalid") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or port is None
+        or not 1 <= port <= 65535
+    ):
+        raise AccessError(
+            "session usage requires an active Airlock hybrid router on 127.0.0.1"
+        )
+    return "127.0.0.1", port
+
+
+def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
+    host, port = validate_session_router_url(router_url)
+    connection = http.client.HTTPConnection(
+        host, port, timeout=SESSION_DIAGNOSTICS_TIMEOUT_SECONDS
+    )
+    try:
+        connection.request("GET", "/diagnostics", headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise AccessError("active Airlock session diagnostics are unavailable")
+        content_type = response.getheader("content-type", "").split(";", 1)[0].strip()
+        if content_type != "application/json":
+            raise AccessError("active Airlock session diagnostics returned an invalid type")
+        body = response.read(MAX_SESSION_DIAGNOSTICS_BYTES + 1)
+        if len(body) > MAX_SESSION_DIAGNOSTICS_BYTES:
+            raise AccessError("active Airlock session diagnostics are too large")
+    except (OSError, http.client.HTTPException) as exc:
+        raise AccessError("active Airlock session diagnostics are unavailable") from exc
+    finally:
+        connection.close()
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AccessError("active Airlock session diagnostics are invalid") from exc
+    if not isinstance(payload, dict):
+        raise AccessError("active Airlock session diagnostics are invalid")
+    return payload
+
+
+def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and retain only cumulative counts from router diagnostics."""
+    if set(payload) != {"instance_id", "events", "summary"}:
+        raise AccessError("active Airlock session diagnostics have an invalid shape")
+    instance_id = payload.get("instance_id")
+    events = payload.get("events")
+    raw_summary = payload.get("summary")
+    if not isinstance(instance_id, str) or not re.fullmatch(r"[0-9a-f]{16}", instance_id):
+        raise AccessError("active Airlock session diagnostics have an invalid instance")
+    if not isinstance(events, list) or len(events) > MAX_SESSION_DIAGNOSTIC_EVENTS:
+        raise AccessError("active Airlock session diagnostics have an invalid event window")
+    if not isinstance(raw_summary, list) or len(raw_summary) > 128:
+        raise AccessError("active Airlock session usage summary is invalid")
+
+    expected_fields = {
+        "provider", "model", "requests", "completed", "errors", "usage_events",
+        *SESSION_USAGE_FIELDS,
+    }
+    groups: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_group in raw_summary:
+        if not isinstance(raw_group, dict) or set(raw_group) != expected_fields:
+            raise AccessError("active Airlock session usage summary is invalid")
+        provider = raw_group.get("provider")
+        model = raw_group.get("model")
+        if provider not in PROVIDER_ROUTES or not isinstance(model, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:+\-\[\]]{0,127}", model
+        ):
+            raise AccessError("active Airlock session usage route is invalid")
+        key = (provider, model)
+        if key in seen:
+            raise AccessError("active Airlock session usage route is duplicated")
+        seen.add(key)
+        counts: dict[str, int] = {}
+        for field in expected_fields - {"provider", "model"}:
+            value = raw_group.get(field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 10**15
+            ):
+                raise AccessError("active Airlock session usage count is invalid")
+            counts[field] = value
+        if (
+            counts["completed"] + counts["errors"] != counts["requests"]
+            or counts["usage_events"] > counts["requests"]
+        ):
+            raise AccessError("active Airlock session usage counts are inconsistent")
+        groups.append({"provider": provider, "model": model, **counts})
+    groups.sort(key=lambda group: (group["provider"], group["model"]))
+    return {
+        "source": "airlock-router",
+        "scope": "current-session",
+        "billing": False,
+        "bounded_event_window": len(events),
+        "groups": groups,
+    }
+
+
+def session_usage_lines(report: dict[str, Any]) -> list[str]:
+    lines = [
+        "Airlock observed usage for the current hybrid session (provider-reported, not a bill):"
+    ]
+    groups = report.get("groups")
+    if not isinstance(groups, list) or not groups:
+        lines.append("  No routed model requests have completed yet.")
+    else:
+        for group in groups:
+            lines.append(
+                f"  {group['provider']}/{group['model']}: "
+                f"requests={group['requests']}, completed={group['completed']}, "
+                f"errors={group['errors']}, usage-observed={group['usage_events']}, "
+                f"input={group['input_tokens']}, "
+                f"cache-write={group['cache_creation_input_tokens']}, "
+                f"cache-read={group['cache_read_input_tokens']}, "
+                f"output={group['output_tokens']}"
+            )
+    lines.append(
+        "These counts come from upstream usage fields. Claude Code may still show zero "
+        "on native Agent cards for custom OpenAI or Grok model IDs."
+    )
+    return lines
 
 
 def session_route_field(policy: dict[str, Any], profile: str, field: str) -> str:
@@ -2020,6 +2210,13 @@ def session_route_field(policy: dict[str, Any], profile: str, field: str) -> str
         return "\n".join(
             f"{family}={picker_models[family]}" for family in sorted(picker_models)
         )
+    if field == "discovery-model":
+        model = route_policy.get("discovery_model")
+        if model is None:
+            return ""
+        if not isinstance(model, str) or model not in route_policy["model_ids"]:
+            raise AccessError("native session discovery model is invalid")
+        return model
     values = route_policy.get(field.replace("-", "_"))
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
         raise AccessError("native session route field is invalid")
@@ -2146,12 +2343,25 @@ def root_orchestration_guidance(
     policy: dict[str, Any], workers: list[dict[str, str]]
 ) -> str:
     plan = swarm_plan(workers)
+    recommended_discovery = discovery_model_from_workers(policy, workers)
+    if recommended_discovery:
+        discovery_guidance = (
+            "Built-in Explore, Plan, and general-purpose may receive any exact full model ID enabled for this session. "
+            f"For routine Plan Mode and bounded read-only discovery, pass `model={recommended_discovery}` instead of "
+            "omitting the model and spending the orchestrator. Omit `model` only when inheriting the orchestrator is "
+            "deliberate; an explicit exact enabled model always wins. "
+        )
+    else:
+        discovery_guidance = (
+            "This session has no non-confirmation discovery model, so do not choose one automatically; built-in "
+            "Explore inherits the orchestrator unless the user authorizes an exact enabled model. "
+        )
     return (
         "Orchestration: choose the smallest effective path. Before working directly on a multi-part request, split it "
         "by skill and route independent parts. A coupled final result does not make every "
         "phase coupled. Work directly only for small single-role work, inseparable edits, integration, or synthesis. "
-        "Use exact Explore for bounded read-only repository discovery; without a model field it "
-        "inherits the orchestrator model. Use exact Plan for read-only technical design after context and do not duplicate "
+        + discovery_guidance
+        + "Use exact Plan for read-only technical design after context and do not duplicate "
         "the same discovery in Explore and Plan. Use exact general-purpose for multi-step work in the native runtime. Start one native "
         "airlock-* Agent for a separable task that benefits from its exact model. "
         + plan["launch"]
@@ -2893,6 +3103,9 @@ def main() -> int:
     usage_parser.add_argument("usage_action", nargs="?")
     usage_parser.add_argument("--claude-plan", choices=sorted(VALID_CLAUDE_PLANS))
     usage_parser.add_argument("--openai-capacity", choices=sorted(VALID_OPENAI_CAPACITIES))
+    session_usage_parser = subparsers.add_parser("session-usage")
+    session_usage_parser.add_argument("--router-url", required=True)
+    session_usage_parser.add_argument("--json", action="store_true")
     recommend_parser = subparsers.add_parser("recommend-effort")
     recommend_parser.add_argument("--provider", choices=sorted(PROVIDER_ROUTES), required=True)
     recommend_parser.add_argument("--risk", choices=VALID_RISKS, required=True)
@@ -2926,7 +3139,7 @@ def main() -> int:
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument(
         "--field",
-        choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names", "picker-models"),
+        choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names", "picker-models", "discovery-model"),
         default="routes",
     )
     profile_help = subparsers.add_parser("profile-guidance")
@@ -2980,6 +3193,13 @@ def main() -> int:
             if updated:
                 print("Airlock usage preferences updated.")
             print("\n".join(usage_lines(policy, refresh_failed=refresh_failed)))
+            return 0
+        if args.command == "session-usage":
+            report = session_usage_report(fetch_session_diagnostics(args.router_url))
+            if args.json:
+                print(json.dumps(report, separators=(",", ":"), ensure_ascii=True))
+            else:
+                print("\n".join(session_usage_lines(report)))
             return 0
         if args.command == "recommend-effort":
             policy = load_policy()
@@ -3037,7 +3257,9 @@ def main() -> int:
         print("\n".join(status_lines(policy)))
         return 0
     except AccessError as error:
-        command_name = args.command if args.command in {"mode", "usage"} else "access"
+        command_name = (
+            args.command if args.command in {"mode", "usage", "session-usage"} else "access"
+        )
         print(f"airlock {command_name}: {error}", file=sys.stderr)
         return 1
 

@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp_dir"' EXIT
 # The launcher keeps a window the user set themselves, so a suite that runs
 # inside an Airlock session would otherwise inherit that session's window and
 # read it back as the launcher's own choice.
-unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL
 # Build a legacy config without the saved-profile keys to verify that existing
 # installations keep their original OpenAI-only bare command.
 while IFS= read -r line; do
@@ -327,8 +327,7 @@ configured_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$
 grep -q '^MODEL=gpt-5.6-terra\[1m\]$' <<<"$configured_output"
 grep -q '^SMALL_FAST=gpt-5.4-mini\[1m\]$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
-# The fixture sets AIRLOCK_CONTEXT_WINDOW=200000, so the config file has to reach
-# the child rather than the launcher's own default.
+# The saved OpenAI fallback remains conservative until a >300k proof passes.
 grep -q '^COMPACT_WINDOW=200000$' <<<"$configured_output"
 
 configured_bg_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
@@ -337,6 +336,7 @@ grep -q '^ARG=low$' <<<"$configured_bg_output"
 
 config_output="$(AIRLOCK_CONFIG_FILE="$custom_config" "$launcher" config)"
 grep -q '^Default profile: openai$' <<<"$config_output"
+grep -q '^Context window: 200000 (saved fallback for OpenAI and Grok roots)$' <<<"$config_output"
 grep -q '^Default command: airlock -> GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
 grep -q '^Hybrid root: Claude Sonnet 5 (claude-sonnet-5\[1m\])$' <<<"$config_output"
 grep -q '^OpenAI root: GPT-5.6 Terra (gpt-5.6-terra\[1m\])$' <<<"$config_output"
@@ -395,7 +395,9 @@ assert "Skill(claude-api)" in args
 assert "Skill(claude-api *)" in args
 guidance = args[args.index("--append-system-prompt") + 1]
 assert "claude-api skill is blocked" in guidance
-assert "Work directly" in guidance and "Use exact Explore" in guidance and "Use exact Plan" in guidance
+assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose may receive any exact full model ID" in guidance
+assert "pass `model=gpt-5.6-luna[1m]`" in guidance and "Omit `model` only when inheriting the orchestrator is deliberate" in guidance
+assert "Use exact Plan" in guidance
 assert "Use exact general-purpose" in guidance and "For an automatic army, launch multiple exact airlock-luna" in guidance
 assert "Agent calls with `run_in_background: true`" in guidance
 assert "useful non-overlapping batch before waiting" in guidance
@@ -411,6 +413,9 @@ PY
 grep -q '^OPENAI_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ACTIVE_PROFILE=openai-pure$' <<<"$normal_output"
+grep -q '^ROOT_MODEL=gpt-5.6-sol\[1m\]$' <<<"$normal_output"
+grep -q '^DISCOVERY_MODEL=gpt-5.6-luna\[1m\]$' <<<"$normal_output"
+grep -q '^SESSION_ROUTER=unset$' <<<"$normal_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-terra$' <<<"$normal_output"
 grep -q '^ALLOWED_MODELS=gpt-5.6-luna\[1m\],gpt-5.6-sol\[1m\],gpt-5.6-terra\[1m\]$' <<<"$normal_output"
 grep -q '^EXTRA_AGENTS=$' <<<"$normal_output"
@@ -711,13 +716,14 @@ grep -q '^CUSTOM_CAPS=unset$' <<<"$bare_hybrid_output"
 hybrid_gpt_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
 grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$hybrid_gpt_output"
 
-# Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
-# tuning and locks the /config control while it is set, so only a root it cannot
-# recognise should receive it.
+# The >300k Sol proof did not pass, so OpenAI roots keep the saved fallback.
 grep -q '^COMPACT_WINDOW=272000$' <<<"$hybrid_gpt_output"
+grep -Eq '^SESSION_ROUTER=http://127\.0\.0\.1:[1-9][0-9]*$' <<<"$hybrid_gpt_output"
 grep -q '^COMPACT_WINDOW=unset$' <<<"$hybrid_anthropic_output"
 auto_window_output="$(AIRLOCK_CONTEXT_WINDOW=auto AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
 grep -q '^COMPACT_WINDOW=unset$' <<<"$auto_window_output"
+explicit_airlock_window_output="$(AIRLOCK_CONTEXT_WINDOW=450000 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
+grep -q '^COMPACT_WINDOW=450000$' <<<"$explicit_airlock_window_output"
 user_window_output="$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=450000 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus -p test)"
 grep -q '^COMPACT_WINDOW=450000$' <<<"$user_window_output"
 # Claude Code accepts 100000 to 1000000 and silently ignores anything else.
@@ -731,9 +737,11 @@ done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
 grep -Fq '"--model", "gpt-5.6-sol[1m]", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
-# The OpenAI-only profile routes every model through the proxy, so its root is
-# always one Claude Code cannot size on its own.
+# The unproven OpenAI [1m] path keeps the conservative fallback.
 grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_openai_output"
+bare_unknown_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" spark -p test)"
+grep -q '^MODEL=gpt-5.3-codex-spark$' <<<"$bare_unknown_output"
+grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_unknown_output"
 
 # Configs without AIRLOCK_DEFAULT_PROFILE preserve the original OpenAI-only
 # bare command. New configs can save a hybrid root without changing explicit
@@ -872,5 +880,11 @@ if grep -q 'airlock-grok' <<<"$hybrid_plain_output"; then
   printf 'test: hybrid session enabled Grok without an explicit opt-in\n' >&2
   exit 1
 fi
+
+if AIRLOCK_SESSION_ROUTER_URL= "$launcher" session-usage >/dev/null 2>"$tmp_dir/session-usage.err"; then
+  printf 'test: session usage succeeded outside a hybrid session\n' >&2
+  exit 1
+fi
+grep -q 'available only inside an active hybrid Airlock session' "$tmp_dir/session-usage.err"
 
 printf 'All airlock launcher tests passed.\n'

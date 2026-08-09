@@ -151,9 +151,32 @@ def main() -> int:
     subagent_type = tool_input.get("subagent_type")
     if subagent_type in BUILTIN_AGENT_TYPES:
         if "model" not in tool_input:
+            discovery_model = os.environ.get("AIRLOCK_DISCOVERY_MODEL")
+            root_model = os.environ.get("AIRLOCK_ROOT_MODEL")
+            if discovery_model is None:
+                return 0
+            allowed_models = configured_models(profile)
+            if (
+                allowed_models is None
+                or discovery_model not in allowed_models
+                or discovery_model in extra_models
+            ):
+                deny("Airlock blocked Agent because the discovery model is invalid.")
+                return 0
+            if (
+                subagent_type == "Explore"
+                and discovery_model
+                and root_model
+                and discovery_model != root_model
+            ):
+                deny(
+                    "Airlock blocked unpinned Explore to avoid spending the orchestrator on routine discovery. "
+                    f"Retry with the exact enabled model: {discovery_model}"
+                )
+                return 0
             return 0
-        model = tool_input.get("model")
         allowed_models = configured_models(profile)
+        model = tool_input.get("model")
         if (
             allowed_models is None
             or not isinstance(model, str)
