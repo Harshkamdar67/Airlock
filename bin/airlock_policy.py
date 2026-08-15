@@ -909,6 +909,17 @@ def _protect_windows_path(path: Path) -> None:
     _validate_windows_path_security(path)
 
 
+def protect_private_path(path: str | os.PathLike[str]) -> None:
+    """Give a managed file the private owner and DACL this module requires.
+
+    An elevated Windows administrator creates files owned by the built-in
+    Administrators group rather than by their own account, so a file that is
+    only chmod-ed still fails the owner rule this module enforces on read.
+    """
+
+    _protect_windows_path(Path(path))
+
+
 def _read_regular_file(path: str | os.PathLike[str]) -> bytes:
     policy_path = Path(path)
     try:

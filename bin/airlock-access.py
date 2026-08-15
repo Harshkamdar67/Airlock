@@ -2631,8 +2631,9 @@ def _write_fast_transition(path: Path, value: dict[str, object], *, exclusive: b
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(path, 0o600)
+            POLICY_SCHEMA.protect_private_path(path)
             return
-        except OSError as exc:
+        except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
             if created:
                 try:
                     path.unlink(missing_ok=True)
@@ -2650,10 +2651,11 @@ def _write_fast_transition(path: Path, value: dict[str, object], *, exclusive: b
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary_name, 0o600)
+        POLICY_SCHEMA.protect_private_path(temporary_name)
         _fast_transition_file_details(path)
         os.replace(temporary_name, path)
         replaced = True
-    except OSError as exc:
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
         raise AccessError("Fast transition state could not be replaced atomically") from exc
     finally:
         if not replaced:
@@ -2972,7 +2974,8 @@ def write_session_snapshot(
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary_path, 0o600)
-    except (AccessError, OSError) as exc:
+        POLICY_SCHEMA.protect_private_path(temporary_path)
+    except (AccessError, OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
         if descriptor >= 0:
             try:
                 os.close(descriptor)
