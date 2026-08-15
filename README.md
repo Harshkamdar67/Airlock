@@ -14,6 +14,7 @@ Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, ba
 ```bash
 airlock                 # Saved default, new setups recommend GPT-5.6 Sol hybrid
 airlock openai          # Saved OpenAI-only root, no mixed-provider router
+airlock fast -r         # One-session gpt-5.6-sol-fast root, without saving Fast mode
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
 airlock grok            # Saved Grok-only root, needs a separate Grok login
@@ -121,7 +122,10 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
-Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock grok`, `airlock hybrid opus`, or `airlock hybrid choose`. [Common commands](#common-commands) lists the full set.
+Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, or `airlock hybrid choose`. [Common commands](#common-commands) lists the full set.
+
+`airlock fast -r` starts one `gpt-5.6-sol-fast` session through the Codex proxy without changing saved `AIRLOCK_OPENAI_FAST`; eligible OpenAI plan and proxy checks apply, with no fallback.
+In a managed session, `/airlock-fast` arms a one-shot handoff. Exit cleanly and the owning launcher resumes the exact conversation once on fixed `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`; hard kill, crash, non-clean exit, hook failure, or expiry prevents relaunch. The private nonce-, PID-, cwd-, and session-bound marker carries no credentials, prompts, transcript data, arbitrary executable data, or model choice. The managed plugin SessionEnd hook is required and is not a global hook.
 
 Inside the session, ask for work normally. The main model can use:
 
@@ -157,6 +161,7 @@ For UI and UX work in a hybrid session, an exact user choice wins. Otherwise vis
 ```bash
 airlock                         # saved default profile and orchestrator
 airlock openai                  # saved OpenAI-only orchestrator
+airlock fast -r                 # one-session gpt-5.6-sol-fast root, not saved
 airlock terra                   # explicit OpenAI-only GPT-5.6 Terra root
 airlock hybrid                  # saved hybrid orchestrator
 airlock hybrid choose           # full interactive hybrid picker
@@ -166,19 +171,18 @@ airlock proxy grok auth login   # sign in to Grok on the local proxy
 airlock mode                    # show routing and worker limits
 airlock mode budget             # prefer lower use and block extra usage
 airlock mode max-agents off     # use Claude Code's native worker limit
-airlock mode max-agents 3       # save a smaller worker cap
-airlock mode fast openai        # enable eligible OpenAI Fast routes only
 airlock usage                   # refresh stale OpenAI usage and show it
+airlock openrouter auth set-key # store an OpenRouter key in OS credential storage
+airlock openrouter models presets # show curated opt-in starting points
+airlock opr                     # interactive OpenRouter-only root picker
+airlock opr kimi-k3             # exact OpenRouter-only root on a declared route
 airlock config                  # show saved roots and advanced values
 airlock bundle                  # verify managed files
-airlock version                 # show the installed Airlock version
 airlock update --check          # manually check for a newer release
 airlock update                  # download, verify, and confirm an update
 ```
 
-Use native Claude Code's `/usage` screen for Anthropic subscription bars. Anthropic does not document a personal subscription API that Airlock can safely read.
-
-[Read the models and usage guide](docs/models-and-usage.md).
+Use native Claude Code's `/usage` screen for Anthropic subscription bars. Anthropic does not document a personal subscription API that Airlock can safely read. OpenRouter is a separate opt-in path, off until you run the commands above and declare a route with `airlock openrouter models add` or `airlock openrouter models add-preset`. A declared route can start a session two ways: inside a hybrid session it appears as a named `airlock-or-ROUTE` worker alongside your OpenAI and Claude workers, and `airlock opr [ROUTE]` starts an OpenRouter-only session on that one exact route as the session root, with no hybrid router, no OpenAI or Codex proxy, and no Claude or Grok credential involved. Omit `ROUTE` in an interactive terminal to pick from your declared routes offline; outside an interactive terminal, or when the route is missing, disabled, or misspelled, `airlock opr` fails instead of guessing. The selected `opr` root carries normal usage the same as any other root and is never itself gated by the extra-usage policy; any other declared OpenRouter route that also becomes available in that session still follows `AIRLOCK_EXTRA_USAGE_POLICY` like it does in a hybrid session. `airlock openrouter models presets` lists three curated starting points without accessing the network or enabling paid usage. Their suggested uses and tradeoffs come from community reports, are explicitly unverified, and are not capability, price, or availability guarantees. [Read the full explanation](docs/how-it-works.md#openrouter-routes-optional). [Read the models and usage guide](docs/models-and-usage.md).
 
 ## Security and file access
 
@@ -209,9 +213,10 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - GPT model IDs may not appear in Claude Code's `/model` discovery list. Start the exact root with `airlock` or `airlock hybrid`, use Claude Code's family aliases for built-in Agents, and use a named `airlock-*` Agent when exact model identity matters.
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
 - Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
-- Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative provider-reported totals without changing provider responses. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped while OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
+- Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative Anthropic, OpenAI, and Grok provider-reported totals without changing provider responses; OpenRouter is omitted because it belongs to a separate account. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped while OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
 - File hooks and prompts do not replace an operating-system sandbox.
 - Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
+- OpenRouter routes are entirely user-declared. Airlock checks the exact model and endpoint against the public catalog when you add or refresh one, but it does not verify or rank a route's real capability, context window, or cost, and it does not offer `count_tokens` for those routes.
 - Subscription access, provider terms, model availability, and usage limits can change.
 
 ## Documentation
@@ -224,16 +229,13 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - [Testing](docs/testing.md)
 - [Live tests that use plan quota](docs/live-tests.md)
 - [Threat model](docs/threat-model.md)
-- [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md) | [Support](SUPPORT.md)
-- [Release process](docs/releasing.md)
-- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md) | [Support](SUPPORT.md) | [Release process](docs/releasing.md) | [Changelog](CHANGELOG.md)
 
 ## What this project does not do
 
 - It does not modify native Claude Code or native Codex.
 - It does not read, copy, or decode login token files.
-- It does not make subscription limits unlimited.
-- It does not silently switch an exact model to another provider.
+- It does not make subscription limits unlimited or silently switch an exact model to another provider.
 
 ## Credits
 
@@ -245,6 +247,4 @@ See [CREDITS.md](CREDITS.md) for the full list.
 
 ## License
 
-This repository is released under the [MIT License](LICENSE). `claude-code-proxy` is a separate project with its own maintainers and license.
-
-Claude Code is a product of Anthropic. Codex, GPT, ChatGPT, and OpenAI are products and marks of OpenAI. Airlock is an independent community project and is not affiliated with either company.
+This repository is released under the [MIT License](LICENSE). `claude-code-proxy` is separate. Claude Code, Codex, GPT, ChatGPT, and OpenAI are respective Anthropic and OpenAI products; Airlock is independent.

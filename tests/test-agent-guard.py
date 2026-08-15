@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic PreToolUse tests for the session-scoped Agent guard."""
+"""Synthetic PreToolUse tests for the snapshot-backed Agent guard."""
 
 from __future__ import annotations
 
@@ -11,375 +11,553 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+ACCESS_PATH = ROOT / "bin" / "airlock-access.py"
+POLICY_PATH = ROOT / "bin" / "airlock_policy.py"
 GUARD = ROOT / "plugins" / "airlock" / "scripts" / "agent-guard.py"
 GUARD_SH = GUARD.with_suffix(".sh")
 SECRET_GUARD_SH = GUARD.parent / "secret-guard.sh"
+MARKER = "Extra usage authorized: yes"
+ROOT_MODELS = {
+    "openrouter-pure": "anthropic/claude-sonnet-4.5",
+    "openai-pure": "gpt-5.6-sol",
+    "grok-pure": "grok-4.5",
+    "hybrid-openai-root": "gpt-5.6-sol",
+    "hybrid-anthropic-root": "claude-sonnet-5[1m]",
+    "hybrid-grok-root": "grok-4.5",
+}
+FAMILY_VARIABLES = {
+    "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+ACCESS = load_module("airlock_access_guard_test", ACCESS_PATH)
+POLICY = load_module("airlock_policy_guard_test", POLICY_PATH)
+GUARD_MODULE = load_module("airlock_agent_guard_test", GUARD)
 
 
 class AgentGuardTests(unittest.TestCase):
-    @staticmethod
-    def load_module(name: str, path: Path):
-        spec = importlib.util.spec_from_file_location(name, path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.registry = self.root / "openrouter-registry.json"
+        self.environment = {
+            "AIRLOCK_CONFIG_FILE": str(self.root / "config"),
+            "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
+            "AIRLOCK_OPENROUTER_REGISTRY_FILE": str(self.registry),
+            "AIRLOCK_SESSION_RUNTIME_DIR": str(self.root / "runtime"),
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
+            "AIRLOCK_GROK_MODELS": "grok,composer",
+        }
+        self.patch = patch.dict(os.environ, self.environment, clear=False)
+        self.patch.start()
 
-    def load_access_module(self):
-        return self.load_module("airlock_access_guard_test", ROOT / "bin" / "airlock-access.py")
+    def tearDown(self) -> None:
+        self.patch.stop()
+        self.temporary.cleanup()
 
-    def guard_constant(self, name: str) -> set[str]:
-        return getattr(self.load_module("airlock_agent_guard_test", GUARD), name)
+    def write_registry(self, *, include_other: bool = False) -> None:
+        entries = [{
+            "route": "declared-sonnet",
+            "model": "anthropic/claude-sonnet-4.5",
+            "endpoint_provider": "deepinfra/turbo",
+            "provider_name": "DeepInfra",
+            "provider_slug": "deepinfra",
+            "quantization": "fp8",
+            "canonical_slug": "anthropic/claude-sonnet-4.5-20250929",
+            "alias_target": None,
+            "supported_parameters": ["tool_choice", "tools"],
+            "expiration_date": None,
+            "checked_at": int(time.time()),
+            "enabled": True,
+        }]
+        if include_other:
+            entries.append({
+                "route": "other",
+                "model": "deepseek/deepseek-chat-v3-0324",
+                "endpoint_provider": "deepinfra/turbo",
+                "provider_name": "DeepInfra",
+                "provider_slug": "deepinfra",
+                "quantization": "fp8",
+                "canonical_slug": "deepseek/deepseek-chat-v3-0324",
+                "alias_target": None,
+                "supported_parameters": ["tool_choice", "tools"],
+                "expiration_date": None,
+                "checked_at": int(time.time()),
+                "enabled": True,
+            })
+        self.registry.write_text(json.dumps({
+            "schema_version": 1,
+            "models": entries,
+        }), encoding="utf-8")
+
+    def session(
+        self,
+        profile: str,
+        *,
+        openrouter: bool = False,
+        openrouter_root_route: str | None = None,
+        include_other_openrouter: bool = False,
+    ) -> dict[str, object]:
+        if openrouter:
+            self.write_registry(include_other=include_other_openrouter)
+        elif self.registry.exists():
+            self.registry.unlink()
+        policy = ACCESS.load_policy()
+        root_model = ROOT_MODELS[profile]
+        path, digest = ACCESS.write_session_snapshot(
+            policy,
+            profile,
+            root_model,
+            self.root / f"runtime-{profile}-{openrouter}",
+            openrouter_root_route=openrouter_root_route,
+        )
+        snapshot = POLICY.load_session_snapshot(path, digest)
+        return {
+            "policy": policy,
+            "snapshot": snapshot,
+            "path": path,
+            "digest": digest,
+            "openrouter_root_route": openrouter_root_route,
+        }
+
+    def rewrite_snapshot(self, session: dict[str, object], **changes: object) -> None:
+        value = session["snapshot"].to_dict()
+        value.update(changes)
+        raw = POLICY.canonical_json_bytes(value)
+        path = session["path"]
+        path.write_bytes(raw)
+        session["digest"] = POLICY.sha256_bytes(raw)
 
     def invoke(
         self,
-        profile: str | None,
+        session: dict[str, object] | None,
         tool_input: object,
+        *,
         tool_name: str = "Agent",
-        allowed_agents: str | None = None,
-        allowed_models: str | None = None,
-        extra_agents: str | None = None,
-        extra_models: str | None = None,
-        discovery_model: str | None = None,
-        root_model: str | None = None,
-        family_models: dict[str, str] | None = None,
+        environment_changes: dict[str, str | None] | None = None,
+        raw_event: str | None = None,
+        digest: str | None = None,
     ) -> dict | None:
         environment = os.environ.copy()
-        family_variables = {
-            "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
-            "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        }
-        for variable in (
+        managed_variables = {
+            "AIRLOCK_ACTIVE_PROFILE",
             "AIRLOCK_ALLOWED_AGENT_NAMES",
             "AIRLOCK_ALLOWED_AGENT_MODELS",
             "AIRLOCK_EXTRA_USAGE_AGENT_NAMES",
             "AIRLOCK_EXTRA_USAGE_AGENT_MODELS",
             "AIRLOCK_DISCOVERY_MODEL",
             "AIRLOCK_ROOT_MODEL",
-            *family_variables.values(),
-        ):
-            environment.pop(variable, None)
-        if allowed_agents is not None:
-            environment["AIRLOCK_ALLOWED_AGENT_NAMES"] = allowed_agents
-        builtin = isinstance(tool_input, dict) and tool_input.get("subagent_type") in {
-            "Explore", "Plan", "general-purpose",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "AIRLOCK_POLICY_HELPER",
+            "AIRLOCK_SESSION_SNAPSHOT",
+            "AIRLOCK_SESSION_SNAPSHOT_SHA256",
+            *FAMILY_VARIABLES.values(),
         }
-        if builtin and allowed_models is None and family_models is None:
-            if profile == "openai-pure":
-                allowed_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
-            elif profile == "grok-pure":
-                allowed_models = "grok-4.5,grok-composer-2.5-fast"
-            elif profile in {
-                "hybrid-openai-root", "hybrid-anthropic-root", "hybrid-grok-root",
-            }:
-                allowed_models = (
-                    "claude-opus-5[1m],claude-sonnet-5[1m],"
-                    "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,"
-                    "grok-4.5,grok-composer-2.5-fast"
-                )
-        if allowed_models is not None:
-            environment["AIRLOCK_ALLOWED_AGENT_MODELS"] = allowed_models
-        if extra_agents is not None:
-            environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"] = extra_agents
-        if extra_models is not None:
-            environment["AIRLOCK_EXTRA_USAGE_AGENT_MODELS"] = extra_models
-        if discovery_model is not None:
-            environment["AIRLOCK_DISCOVERY_MODEL"] = discovery_model
-        if root_model is not None:
-            environment["AIRLOCK_ROOT_MODEL"] = root_model
-        if builtin and family_models is None:
-            configured = set((allowed_models or "").split(","))
-            extra = set((extra_models or "").split(",")) - {""}
-            eligible = configured - extra - {""}
-
-            def first(*models: str) -> str:
-                return next((model for model in models if model in eligible), "invalid")
-
-            family_models = {
-                "fable": first("gpt-5.6-sol", "claude-opus-5[1m]", "grok-4.5"),
-                "opus": first("claude-opus-5[1m]", "gpt-5.6-sol", "grok-4.5"),
-                "sonnet": first(
-                    "claude-sonnet-5[1m]", "gpt-5.6-terra",
-                    "grok-composer-2.5-fast", "gpt-5.6-sol",
-                    "claude-opus-5[1m]", "grok-4.5",
-                ),
-                "haiku": discovery_model or first(
-                    "gpt-5.6-luna", "grok-composer-2.5-fast", "gpt-5.6-terra",
-                    "claude-sonnet-5[1m]", "gpt-5.6-sol", "claude-opus-5[1m]",
-                    "grok-4.5",
-                ),
-            }
-        for family, model in (family_models or {}).items():
-            environment[family_variables[family]] = model
-        if profile is None:
-            environment.pop("AIRLOCK_ACTIVE_PROFILE", None)
-        else:
-            environment["AIRLOCK_ACTIVE_PROFILE"] = profile
+        for variable in managed_variables:
+            environment.pop(variable, None)
+        if session is not None:
+            snapshot = session["snapshot"]
+            policy = session["policy"]
+            agents = snapshot.agents
+            environment.update({
+                "AIRLOCK_ACTIVE_PROFILE": snapshot.profile,
+                "AIRLOCK_ALLOWED_AGENT_NAMES": ",".join(sorted(agents)),
+                "AIRLOCK_ALLOWED_AGENT_MODELS": ",".join(sorted({
+                    agent.model for agent in agents.values()
+                })),
+                "AIRLOCK_EXTRA_USAGE_AGENT_NAMES": ",".join(sorted(
+                    name for name, agent in agents.items() if agent.extra_usage
+                )),
+                "AIRLOCK_EXTRA_USAGE_AGENT_MODELS": ",".join(sorted({
+                    agent.model for agent in agents.values() if agent.extra_usage
+                })),
+                "AIRLOCK_ROOT_MODEL": snapshot.root_model,
+                "AIRLOCK_POLICY_HELPER": str(POLICY_PATH),
+                "AIRLOCK_SESSION_SNAPSHOT": str(session["path"]),
+                "AIRLOCK_SESSION_SNAPSHOT_SHA256": digest or str(session["digest"]),
+            })
+            family_models = ACCESS.proxy_picker_models(
+                policy,
+                snapshot.profile,
+                openrouter_root_route=session.get("openrouter_root_route"),
+            )
+            for family, model in family_models.items():
+                environment[FAMILY_VARIABLES[family]] = model
+            discovery = ACCESS.discovery_model(
+                policy,
+                snapshot.profile,
+                openrouter_root_route=session.get("openrouter_root_route"),
+            )
+            if discovery:
+                environment["AIRLOCK_DISCOVERY_MODEL"] = discovery
+            if snapshot.profile == "openrouter-pure":
+                environment["ANTHROPIC_SMALL_FAST_MODEL"] = snapshot.root_model
+        for variable, value in (environment_changes or {}).items():
+            if value is None:
+                environment.pop(variable, None)
+            else:
+                environment[variable] = value
+        event = raw_event
+        if event is None:
+            event = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         completed = subprocess.run(
             [sys.executable, str(GUARD)],
-            input=json.dumps({"tool_name": tool_name, "tool_input": tool_input}),
+            input=event,
             text=True,
             encoding="utf-8",
             capture_output=True,
             env=environment,
             check=False,
         )
-        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout) if completed.stdout.strip() else None
 
-    def assert_denied(self, result: dict | None) -> None:
+    def assert_denied(self, result: dict | None, contains: str | None = None) -> None:
         self.assertIsNotNone(result)
         decision = result["hookSpecificOutput"]
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
+        if contains:
+            self.assertIn(contains, decision["permissionDecisionReason"])
 
-    def test_guard_baseline_matches_the_models_the_launcher_actually_enables(self) -> None:
-        # The guard validates the launcher's model list against its own baseline
-        # and treats any unrecognised value as a corrupt permission set, which
-        # denies every Agent call in the session rather than just that model. So
-        # the two lists drifting apart is not a cosmetic mismatch, and reading
-        # both from the same source is the only way to keep them honest.
-        access = self.load_access_module()
-        for provider, models in (
-            ("anthropic", "ANTHROPIC_MODELS"),
-            ("openai", "OPENAI_MODELS"),
-            ("grok", "GROK_MODELS"),
-        ):
-            with self.subTest(provider=provider):
-                expected = {
-                    profile["model"]
-                    for profile in access.MODEL_PROFILES[provider].values()
-                }
-                self.assertEqual(self.guard_constant(models), expected)
-
-    def test_a_full_session_permission_set_is_accepted_end_to_end(self) -> None:
-        # The drift above was invisible to every other test here because they all
-        # supply their own model lists. This one sends exactly what the launcher
-        # sends, including the extra-usage list that made the guard reject the
-        # whole permission set.
-        access = self.load_access_module()
-        anthropic = access.MODEL_PROFILES["anthropic"]
-        openai = access.MODEL_PROFILES["openai"]
-        allowed = ",".join(sorted({
-            anthropic["opus"]["model"], anthropic["sonnet"]["model"],
-            openai["sol"]["model"], openai["luna"]["model"],
-        }))
-        decision = self.invoke(
-            "hybrid-anthropic-root",
-            {"subagent_type": "airlock-opus", "prompt": "work"},
-            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
-            allowed_models=allowed,
-            extra_models=anthropic["fable"]["model"],
+    def test_protocol_version_matches_snapshot_producer(self) -> None:
+        self.assertEqual(
+            GUARD_MODULE.MANAGED_PROTOCOL_VERSION,
+            ACCESS.MANAGED_PROTOCOL_VERSION,
         )
-        self.assertIsNone(decision)
-        override = self.invoke(
-            "hybrid-anthropic-root",
-            {
-                "subagent_type": "Explore",
-                "model": anthropic["opus"]["model"],
-                "prompt": "research",
-            },
-            allowed_agents="airlock-luna,airlock-opus,airlock-sol,airlock-sonnet",
-            allowed_models=allowed,
-            extra_models=anthropic["fable"]["model"],
-        )
-        self.assertIsNone(override)
 
-    def test_allows_exact_profile_worker(self) -> None:
-        self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-terra", "prompt": "ignored"}))
-        self.assertIsNone(self.invoke("openai-pure", {"subagent_type": "airlock-luna-fast"}))
-        self.assertIsNone(self.invoke("hybrid-anthropic-root", {"subagent_type": "airlock-opus"}))
-        self.assertIsNone(self.invoke("hybrid-anthropic-root", {"subagent_type": "airlock-fable"}))
-        self.assertIsNone(self.invoke("hybrid-anthropic-root", {"subagent_type": "airlock-haiku"}))
-
-    def test_allows_exact_builtins_for_every_profile(self) -> None:
-        for profile in ("openai-pure", "hybrid-openai-root", "hybrid-anthropic-root"):
-            for name in ("Explore", "Plan", "general-purpose"):
-                with self.subTest(profile=profile, name=name):
-                    self.assertIsNone(self.invoke(profile, {"subagent_type": name}))
-
-    def test_denies_other_generic_and_cross_profile_workers(self) -> None:
-        for name in ("claude", "airlock-opus", "Agent", "unknown-worker"):
-            with self.subTest(name=name):
-                self.assert_denied(self.invoke("openai-pure", {"subagent_type": name}))
-
-    def test_builtins_accept_schema_family_aliases_and_exact_ids_defensively(self) -> None:
-        openai_models = "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra"
-        hybrid_models = openai_models + ",claude-opus-5[1m],claude-sonnet-5[1m]"
-        for name in ("Explore", "Plan", "general-purpose"):
-            with self.subTest(name=name, mode="inherit"):
-                self.assertIsNone(self.invoke("openai-pure", {"subagent_type": name}))
-            for family in ("fable", "opus", "sonnet", "haiku"):
-                with self.subTest(name=name, family=family):
+    def test_all_profiles_accept_their_exact_workers_and_builtins(self) -> None:
+        for profile in ROOT_MODELS:
+            if profile == "openrouter-pure":
+                continue
+            session = self.session(profile)
+            for name, agent in session["snapshot"].agents.items():
+                prompt = MARKER if agent.extra_usage else "work"
+                with self.subTest(profile=profile, agent=name):
                     self.assertIsNone(self.invoke(
-                        "openai-pure",
-                        {"subagent_type": name, "model": family},
-                        allowed_models=openai_models,
+                        session, {"subagent_type": name, "prompt": prompt}
                     ))
-            # Keep exact IDs defensive in case a future Agent schema permits them.
-            with self.subTest(name=name, mode="exact"):
-                self.assertIsNone(self.invoke(
-                    "hybrid-openai-root",
-                    {"subagent_type": name, "model": "claude-sonnet-5[1m]"},
-                    allowed_models=hybrid_models,
-                ))
+            for name in ("Explore", "Plan", "general-purpose"):
+                with self.subTest(profile=profile, builtin=name):
+                    self.assertIsNone(self.invoke(
+                        session, {"subagent_type": name, "model": "haiku"}
+                    ))
 
-    def test_explore_avoids_accidental_premium_inheritance_but_keeps_exact_choice(self) -> None:
-        models = "gpt-5.6-luna,gpt-5.6-sol"
-        denied = self.invoke(
-            "openai-pure",
-            {"subagent_type": "Explore", "prompt": "trace"},
-            allowed_models=models,
-            discovery_model="gpt-5.6-luna",
-            root_model="gpt-5.6-sol",
-        )
-        self.assert_denied(denied)
-        self.assertIn(
-            'model: "haiku"',
-            denied["hookSpecificOutput"]["permissionDecisionReason"],
-        )
-        self.assertIn(
-            "gpt-5.6-luna",
-            denied["hookSpecificOutput"]["permissionDecisionReason"],
-        )
+    def test_declared_openrouter_worker_is_exact_named_and_always_extra(self) -> None:
+        session = self.session("hybrid-anthropic-root", openrouter=True)
+        name = "airlock-or-declared-sonnet"
+        self.assert_denied(self.invoke(
+            session, {"subagent_type": name, "prompt": "work"}
+        ), "extra-usage")
         self.assertIsNone(self.invoke(
-            "openai-pure",
+            session, {"subagent_type": name, "prompt": MARKER}
+        ))
+        self.assert_denied(self.invoke(
+            session,
             {
-                "subagent_type": "Explore",
-                "model": "haiku",
-                "prompt": "routine trace",
+                "subagent_type": name,
+                "model": "anthropic/claude-sonnet-4.5",
+                "prompt": MARKER,
             },
-            allowed_models=models,
-            discovery_model="gpt-5.6-luna",
-            root_model="gpt-5.6-sol",
-        ))
-        self.assertIsNone(self.invoke(
-            "openai-pure",
-            {"subagent_type": "Explore", "prompt": "trace"},
-            allowed_models=models,
-            discovery_model="gpt-5.6-luna",
-            root_model="gpt-5.6-luna",
-        ))
-        for name in ("Plan", "general-purpose"):
-            with self.subTest(name=name):
+        ), "caller model overrides")
+
+    def test_openrouter_pure_selected_root_maps_all_aliases_discovery_and_small_fast(self) -> None:
+        session = self.session(
+            "openrouter-pure",
+            openrouter=True,
+            openrouter_root_route="declared-sonnet",
+        )
+        root = session["snapshot"].root_model
+        self.assertEqual(root, "anthropic/claude-sonnet-4.5")
+        self.assertEqual(
+            ACCESS.proxy_picker_models(
+                session["policy"],
+                "openrouter-pure",
+                openrouter_root_route="declared-sonnet",
+            ),
+            {family: root for family in FAMILY_VARIABLES},
+        )
+        self.assertEqual(
+            ACCESS.discovery_model(
+                session["policy"],
+                "openrouter-pure",
+                openrouter_root_route="declared-sonnet",
+            ),
+            root,
+        )
+        for model in (*FAMILY_VARIABLES, root):
+            with self.subTest(model=model):
                 self.assertIsNone(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": name},
-                    allowed_models=models,
-                    discovery_model="gpt-5.6-luna",
-                    root_model="gpt-5.6-sol",
+                    session, {"subagent_type": "Plan", "model": model}
                 ))
+        self.assertIsNone(self.invoke(session, {"subagent_type": "Explore"}))
+
+    def test_openrouter_pure_rejects_every_other_openrouter_family_model(self) -> None:
+        session = self.session(
+            "openrouter-pure",
+            openrouter=True,
+            openrouter_root_route="declared-sonnet",
+            include_other_openrouter=True,
+        )
+        other = "deepseek/deepseek-chat-v3-0324"
+        for family, variable in FAMILY_VARIABLES.items():
+            with self.subTest(family=family):
+                self.assert_denied(self.invoke(
+                    session,
+                    {"subagent_type": "Plan", "model": family},
+                    environment_changes={variable: other},
+                ), "family model map")
         self.assert_denied(self.invoke(
-            "openai-pure",
-            {"subagent_type": "Explore"},
-            allowed_models=models,
-            discovery_model="gpt-5.6-terra",
-            root_model="gpt-5.6-sol",
+            session, {"subagent_type": "Plan", "model": other}
+        ), "configured family alias")
+
+    def test_openrouter_pure_root_agent_is_free_and_extra_agent_requires_marker(self) -> None:
+        session = self.session(
+            "openrouter-pure",
+            openrouter=True,
+            openrouter_root_route="declared-sonnet",
+            include_other_openrouter=True,
+        )
+        self.assertIsNone(self.invoke(
+            session,
+            {"subagent_type": "airlock-or-declared-sonnet", "prompt": "work"},
+        ))
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "airlock-or-other", "prompt": "work"},
+        ), "extra-usage")
+        self.assertIsNone(self.invoke(
+            session,
+            {
+                "subagent_type": "airlock-or-other",
+                "prompt": MARKER,
+            },
         ))
 
-    def test_builtins_reject_invalid_routes_and_family_maps(self) -> None:
-        allowed = "gpt-5.6-luna,gpt-5.6-sol"
-        for model, models in (
-            ("gpt-5.6-luna", ""),
-            ("gpt-5.6-luna[1m]", allowed),
-            ("gpt-5.6-luna-fast", allowed),
-            ("claude-opus-5[1m]", allowed),
-            ("inherit", allowed),
-            (None, allowed),
-        ):
-            with self.subTest(model=model, models=models):
+    def test_openrouter_pure_snapshot_and_environment_mismatches_fail_closed(self) -> None:
+        session = self.session(
+            "openrouter-pure",
+            openrouter=True,
+            openrouter_root_route="declared-sonnet",
+        )
+        cases = [
+            ({"digest": "0" * 64}, "permission set"),
+            (
+                {"environment_changes": {"AIRLOCK_ACTIVE_PROFILE": "openai-pure"}},
+                "permission set",
+            ),
+            (
+                {"environment_changes": {"AIRLOCK_ROOT_MODEL": "other/model"}},
+                "permission set",
+            ),
+            (
+                {"environment_changes": {"AIRLOCK_DISCOVERY_MODEL": "other/model"}},
+                "root model map",
+            ),
+            (
+                {"environment_changes": {"ANTHROPIC_SMALL_FAST_MODEL": "other/model"}},
+                "root model map",
+            ),
+        ]
+        for options, reason in cases:
+            with self.subTest(options=options):
                 self.assert_denied(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": "Explore", "model": model},
-                    allowed_models=models,
-                ))
-        for invalid in ("", "gpt-5.6-sol,gpt-5.6-sol", "unknown-model"):
-            with self.subTest(invalid=invalid):
+                    session,
+                    {"subagent_type": "Plan", "model": "sonnet"},
+                    **options,
+                ), reason)
+
+    def test_hybrid_profiles_still_block_openrouter_family_aliases(self) -> None:
+        session = self.session("hybrid-anthropic-root", openrouter=True)
+        other = "anthropic/claude-sonnet-4.5"
+        for family, variable in FAMILY_VARIABLES.items():
+            with self.subTest(family=family):
                 self.assert_denied(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": "Plan", "model": "opus"},
-                    allowed_models=invalid,
-                ))
-        valid_map = {
-            "fable": "gpt-5.6-sol",
-            "opus": "gpt-5.6-sol",
-            "sonnet": "gpt-5.6-sol",
-            "haiku": "gpt-5.6-luna",
-        }
-        for invalid_map in (
-            {},
-            {**valid_map, "haiku": "gpt-5.6-luna-fast"},
-            {**valid_map, "haiku": "gpt-5.6-sol"},
-        ):
-            with self.subTest(invalid_map=invalid_map):
+                    session,
+                    {"subagent_type": "Plan", "model": family},
+                    environment_changes={variable: other},
+                ), "family model map")
+
+        session = self.session("hybrid-anthropic-root", openrouter=True)
+        result = self.invoke(session, {
+            "subagent_type": "general-purpose",
+            "model": "anthropic/claude-sonnet-4.5",
+            "prompt": MARKER,
+        })
+        self.assert_denied(result, "configured family alias")
+
+    def test_undeclared_and_cross_profile_workers_are_denied(self) -> None:
+        session = self.session("openai-pure")
+        for name in ("airlock-or-not-declared", "airlock-opus", "claude", "unknown"):
+            with self.subTest(name=name):
                 self.assert_denied(self.invoke(
-                    "openai-pure",
-                    {"subagent_type": "Explore", "model": "haiku"},
-                    allowed_models=allowed,
-                    discovery_model="gpt-5.6-luna",
-                    family_models=invalid_map,
+                    session, {"subagent_type": name, "prompt": MARKER}
                 ))
 
-    def test_named_agents_reject_every_caller_model_override(self) -> None:
-        self.assert_denied(self.invoke("openai-pure", {
-            "subagent_type": "airlock-sol", "model": "gpt-5.6-sol",
+    def test_named_workers_reject_every_model_override(self) -> None:
+        session = self.session("openai-pure")
+        for model in ("gpt-5.6-sol", None):
+            with self.subTest(model=model):
+                self.assert_denied(self.invoke(session, {
+                    "subagent_type": "airlock-sol", "model": model,
+                }), "caller model overrides")
+
+    def test_builtin_aliases_and_exact_non_openrouter_models_are_accepted(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        family = ACCESS.proxy_picker_models(
+            session["policy"], "hybrid-anthropic-root"
+        )
+        for model in (*FAMILY_VARIABLES, family["sonnet"]):
+            with self.subTest(model=model):
+                self.assertIsNone(self.invoke(session, {
+                    "subagent_type": "Plan", "model": model,
+                }))
+        self.assert_denied(self.invoke(session, {
+            "subagent_type": "Plan", "model": "not-a-route",
+        }), "configured family alias")
+
+    def test_unpinned_explore_uses_snapshot_bound_discovery_policy(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        result = self.invoke(session, {"subagent_type": "Explore"})
+        discovery = ACCESS.discovery_model(
+            session["policy"], session["snapshot"].profile
+        )
+        if discovery == session["snapshot"].root_model:
+            self.assertIsNone(result)
+        else:
+            self.assert_denied(result, 'model: "haiku"')
+        self.assertIsNone(self.invoke(session, {
+            "subagent_type": "Explore", "model": "haiku",
         }))
-        self.assert_denied(self.invoke("openai-pure", {
-            "subagent_type": "airlock-sol", "model": None,
-        }))
+        self.assertIsNone(self.invoke(session, {"subagent_type": "Plan"}))
 
-    def test_extra_usage_models_and_agents_require_exact_confirmation(self) -> None:
-        marker = "Extra usage authorized: yes"
-        models = "claude-fable-5[1m],claude-opus-5[1m]"
+    def test_missing_invalid_or_mismatched_snapshot_fails_closed(self) -> None:
+        session = self.session("openai-pure")
+        self.assert_denied(self.invoke(None, {"subagent_type": "airlock-sol"}))
         self.assert_denied(self.invoke(
-            "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": "research"},
-            allowed_models=models,
-            extra_models="claude-fable-5[1m]",
-        ))
-        self.assertIsNone(self.invoke(
-            "hybrid-openai-root",
-            {"subagent_type": "Explore", "model": "claude-fable-5[1m]", "prompt": marker},
-            allowed_models=models,
-            extra_models="claude-fable-5[1m]",
-        ))
+            session,
+            {"subagent_type": "airlock-sol"},
+            digest="0" * 64,
+        ), "permission set")
         self.assert_denied(self.invoke(
-            "hybrid-openai-root",
-            {"subagent_type": "airlock-fable", "prompt": "research"},
-            extra_agents="airlock-fable",
-        ))
-        self.assertIsNone(self.invoke(
-            "hybrid-openai-root",
-            {"subagent_type": "airlock-fable", "prompt": marker},
-            extra_agents="airlock-fable",
-        ))
+            session,
+            {"subagent_type": "airlock-sol"},
+            environment_changes={"AIRLOCK_ACTIVE_PROFILE": "grok-pure"},
+        ), "permission set")
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "airlock-sol"},
+            environment_changes={"AIRLOCK_ROOT_MODEL": "gpt-5.6-luna"},
+        ), "permission set")
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "airlock-sol"},
+            environment_changes={"AIRLOCK_POLICY_HELPER": None},
+        ), "permission set")
 
-    def test_dynamic_enabled_worker_set_denies_disabled_workers(self) -> None:
-        allowed = "airlock-luna,airlock-sol"
-        self.assertIsNone(self.invoke(
-            "openai-pure", {"subagent_type": "airlock-luna"}, allowed_agents=allowed,
-        ))
+    def test_protocol_mismatch_fails_closed(self) -> None:
+        session = self.session("openai-pure")
+        self.rewrite_snapshot(
+            session,
+            protocol_version=GUARD_MODULE.MANAGED_PROTOCOL_VERSION + 1,
+        )
         self.assert_denied(self.invoke(
-            "openai-pure", {"subagent_type": "airlock-terra"}, allowed_agents=allowed,
-        ))
-        for invalid in ("", "airlock-sol,airlock-sol", "airlock-sol,Explore"):
-            with self.subTest(invalid=invalid):
+            session, {"subagent_type": "airlock-sol"}
+        ), "permission set")
+
+    def test_every_environment_allow_list_must_match_snapshot_exactly(self) -> None:
+        session = self.session("hybrid-anthropic-root", openrouter=True)
+        variables = (
+            "AIRLOCK_ALLOWED_AGENT_NAMES",
+            "AIRLOCK_ALLOWED_AGENT_MODELS",
+            "AIRLOCK_EXTRA_USAGE_AGENT_NAMES",
+            "AIRLOCK_EXTRA_USAGE_AGENT_MODELS",
+        )
+        for variable in variables:
+            for value in (None, "", "wrong", "wrong,wrong"):
+                with self.subTest(variable=variable, value=value):
+                    self.assert_denied(self.invoke(
+                        session,
+                        {"subagent_type": "airlock-sonnet"},
+                        environment_changes={variable: value},
+                    ), "permission set")
+
+    def test_family_map_must_resolve_to_non_openrouter_snapshot_models(self) -> None:
+        session = self.session("hybrid-anthropic-root", openrouter=True)
+        for value in (None, "unknown", "anthropic/claude-sonnet-4.5"):
+            with self.subTest(value=value):
                 self.assert_denied(self.invoke(
-                    "openai-pure", {"subagent_type": "airlock-sol"}, allowed_agents=invalid,
-                ))
+                    session,
+                    {"subagent_type": "Plan", "model": "haiku"},
+                    environment_changes={"ANTHROPIC_DEFAULT_HAIKU_MODEL": value},
+                ), "family model map")
 
-    def test_shell_agent_guard_uses_explicit_python(self) -> None:
+    def test_duplicate_key_malformed_and_unexpected_events_fail_closed(self) -> None:
+        session = self.session("openai-pure")
+        duplicate = (
+            '{"tool_name":"Agent","tool_name":"Read",'
+            '"tool_input":{"subagent_type":"airlock-sol"}}'
+        )
+        self.assert_denied(self.invoke(
+            session, {}, raw_event=duplicate
+        ), "malformed")
+        self.assert_denied(self.invoke(
+            session, None
+        ), "malformed Agent tool input")
+        self.assert_denied(self.invoke(
+            session, {"subagent_type": "airlock-sol"}, tool_name="Read"
+        ), "unexpected tool event")
+
+    def test_oversized_event_fails_closed(self) -> None:
+        session = self.session("openai-pure")
+        event = json.dumps({
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": "airlock-sol",
+                "prompt": "x" * (GUARD_MODULE.MAX_EVENT_BYTES + 1),
+            },
+        })
+        self.assert_denied(self.invoke(
+            session, {}, raw_event=event
+        ), "oversized")
+
+    def test_shell_guard_uses_explicit_python_and_snapshot(self) -> None:
         bash = shutil.which("bash")
         self.assertIsNotNone(bash)
+        session = self.session("openai-pure")
         environment = os.environ.copy()
         environment["AIRLOCK_PYTHON"] = sys.executable
-        environment["AIRLOCK_ACTIVE_PROFILE"] = "openai-pure"
-        environment.pop("AIRLOCK_ALLOWED_AGENT_NAMES", None)
+        snapshot = session["snapshot"]
+        environment.update({
+            "AIRLOCK_ACTIVE_PROFILE": snapshot.profile,
+            "AIRLOCK_ALLOWED_AGENT_NAMES": ",".join(sorted(snapshot.agents)),
+            "AIRLOCK_ALLOWED_AGENT_MODELS": ",".join(sorted({
+                agent.model for agent in snapshot.agents.values()
+            })),
+            "AIRLOCK_EXTRA_USAGE_AGENT_NAMES": "",
+            "AIRLOCK_EXTRA_USAGE_AGENT_MODELS": "",
+            "AIRLOCK_ROOT_MODEL": snapshot.root_model,
+            "AIRLOCK_POLICY_HELPER": str(POLICY_PATH),
+            "AIRLOCK_SESSION_SNAPSHOT": str(session["path"]),
+            "AIRLOCK_SESSION_SNAPSHOT_SHA256": str(session["digest"]),
+        })
         event = json.dumps({
             "tool_name": "Agent",
             "tool_input": {"subagent_type": "airlock-terra"},
@@ -418,80 +596,8 @@ class AgentGuardTests(unittest.TestCase):
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                     result = json.loads(completed.stdout)
                     self.assertEqual(
-                        result["hookSpecificOutput"]["permissionDecision"],
-                        "deny",
+                        result["hookSpecificOutput"]["permissionDecision"], "deny"
                     )
-
-    def test_fails_closed_on_unknown_profile_or_malformed_event(self) -> None:
-        self.assert_denied(self.invoke(None, {"subagent_type": "airlock-sol"}))
-        self.assert_denied(self.invoke("not-a-profile", {"subagent_type": "airlock-sol"}))
-        self.assert_denied(self.invoke("openai-pure", None))
-        self.assert_denied(self.invoke("openai-pure", {"subagent_type": "airlock-sol"}, "Read"))
-
-    def test_grok_pure_allows_only_grok_workers(self) -> None:
-        for name in ("airlock-grok", "airlock-composer"):
-            with self.subTest(name=name, allowed=True):
-                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
-        for name in ("airlock-sol", "airlock-opus", "airlock-luna-fast", "airlock-sonnet"):
-            with self.subTest(name=name, allowed=False):
-                self.assert_denied(self.invoke("grok-pure", {"subagent_type": name}))
-
-    def test_grok_pure_builtins_take_only_grok_model_overrides(self) -> None:
-        grok_models = "grok-4.5,grok-composer-2.5-fast"
-        for name in ("Explore", "Plan", "general-purpose"):
-            with self.subTest(name=name, mode="inherit"):
-                self.assertIsNone(self.invoke("grok-pure", {"subagent_type": name}))
-            with self.subTest(name=name, mode="grok"):
-                self.assertIsNone(self.invoke(
-                    "grok-pure",
-                    {"subagent_type": name, "model": "grok-4.5"},
-                    allowed_models=grok_models,
-                ))
-            for model in ("gpt-5.6-sol", "claude-opus-5", "grok", "grok-4.5-latest"):
-                with self.subTest(name=name, model=model):
-                    self.assert_denied(self.invoke(
-                        "grok-pure",
-                        {"subagent_type": name, "model": model},
-                        allowed_models=grok_models,
-                    ))
-
-    def test_hybrid_grok_root_reaches_every_provider(self) -> None:
-        for name in (
-            "airlock-grok", "airlock-composer", "airlock-sol", "airlock-opus",
-        ):
-            with self.subTest(name=name):
-                self.assertIsNone(self.invoke("hybrid-grok-root", {"subagent_type": name}))
-        every_model = (
-            "grok-4.5,grok-composer-2.5-fast,gpt-5.6-sol,claude-opus-5[1m]"
-        )
-        for model in ("grok-4.5", "gpt-5.6-sol", "claude-opus-5[1m]"):
-            with self.subTest(model=model):
-                self.assertIsNone(self.invoke(
-                    "hybrid-grok-root",
-                    {"subagent_type": "Explore", "model": model},
-                    allowed_models=every_model,
-                ))
-
-    def test_named_grok_workers_reject_caller_model_overrides(self) -> None:
-        # A named worker's identity binds its model, so a caller override would
-        # let the card name and the billed model disagree.
-        for profile in ("grok-pure", "hybrid-grok-root"):
-            with self.subTest(profile=profile):
-                self.assert_denied(self.invoke(profile, {
-                    "subagent_type": "airlock-grok", "model": "grok-composer-2.5-fast",
-                }))
-
-    def test_grok_session_can_narrow_its_own_worker_set(self) -> None:
-        # A config that enables only one Grok route must not leave the other one
-        # reachable through the guard.
-        self.assertIsNone(self.invoke(
-            "grok-pure", {"subagent_type": "airlock-grok"},
-            allowed_agents="airlock-grok",
-        ))
-        self.assert_denied(self.invoke(
-            "grok-pure", {"subagent_type": "airlock-composer"},
-            allowed_agents="airlock-grok",
-        ))
 
 
 if __name__ == "__main__":

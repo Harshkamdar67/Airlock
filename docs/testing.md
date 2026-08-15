@@ -18,6 +18,8 @@ bash -n bin/airlock \
 ```bash
 python -m py_compile \
   bin/airlock-access.py bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
+  bin/airlock_policy.py bin/airlock_openrouter_auth.py \
+  bin/airlock_openrouter_presets.py bin/airlock_openrouter_models.py \
   plugins/airlock/scripts/agent-guard.py \
   plugins/airlock/scripts/update-notice.py \
   plugins/airlock/scripts/secret-guard.py \
@@ -42,7 +44,20 @@ python tests/test-release.py
 python tests/test-update.py
 python tests/test-update-notice.py
 python tests/test-docs.py
+python tests/test-openrouter-policy.py
+python tests/test-openrouter-auth.py
+python tests/test-openrouter-models.py
+python tests/test-openrouter-access.py
+python tests/test-fast-session-end.py
 ```
+
+`tests/test-openrouter-policy.py` covers the shared registry and session-snapshot schema: exact-field checks, the 10-route limit, separate routable-ID and canonical-identity validation, bounded provider-name, provider-slug, and quantization routing tokens, sorted and deduplicated `supported_parameters` with `tools` and `tool_choice` required, the 30-day `checked_at` freshness window, owner and file-permission checks, atomic durable writes, and compare-and-swap conflicts between concurrent writers.
+
+`tests/test-openrouter-auth.py` covers key-shape validation and the platform credential backends with fake system calls; it never touches a real Keychain, DPAPI store, or Secret Service, and never contacts OpenRouter.
+
+`tests/test-openrouter-models.py` covers `list`, `presets`, `add`, `add-preset`, `remove`, and `refresh` against a fake catalog fetcher. It verifies exact routable-model and endpoint-tag identity, accepts an omitted or null `alias_target` but rejects a declared non-null alias, freezes preset canonical, provider-name, provider-slug, and quantization metadata, rejects a provider-plus-quantization pair that identifies more than one endpoint, checks required tool support, prompts before catalog access, handles concurrent update conflicts, and keeps `refresh` report-only until `--apply` is passed. It also proves that listing presets is offline, no preset is enabled automatically, and preset guidance never enters registry JSON. It never sends a real HTTP request.
+
+`tests/test-openrouter-access.py` covers how a declared registry becomes a session: hybrid-session Agent exposure, the extra-usage marker requirement, the exclusive `airlock opr` root profile, credential-free session-snapshot freezing of the endpoint tag, provider name, provider slug, quantization, and canonical response identity, and fail-closed behavior for an unregistered or invalid registry. For the `airlock opr` root profile specifically, it proves that the selected root route is always `access: "included"` and never marked extra usage regardless of the extra-usage policy, that any other declared route in that same session still follows the normal `never`/`ask`/`allow` extra-usage gating, that an unknown, disabled, or case-mismatched root route is rejected with an "unknown or disabled" error before a session can start, and that the root route is rejected for every profile other than `openrouter-pure`. A separate test proves that adding the `opr` root profile leaves hybrid-session OpenRouter exposure unchanged. It verifies that a matching preset adds only fixed, labeled community guidance to the Agent description, while preset guidance stays out of snapshots, policies, and prompts and non-preset descriptions remain neutral.
 
 `tests/test-update.py` uses only loopback fake release servers and temporary archives. It never contacts GitHub. It covers release channels, exact checksums, optional attestations, network failures, archive traversal and links, active-session refusal, confirmation, installation, Doctor, cleanup, and update-notice cache lifecycle.
 
@@ -82,7 +97,7 @@ bash tests/test-setup.sh
 python tests/test-setup-pty.py
 ```
 
-These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, update and version dispatch, provider Fast controls, paid Anthropic Fast refusal, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
+These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, update and version dispatch, provider Fast controls, the session-local `airlock fast -r` shortcut and `/airlock-fast` clean-exit handoff, paid Anthropic Fast refusal, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
 
 `test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, provider Fast choices and paid-credit wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. Every run reports its start and finish. The harness polls the child independently of pipe EOF, then drains buffered output. A timeout terminates the full child process group within a fixed grace period, falls back to the exact child when the platform rejects a group signal, and reports the last output plus unsent key count. The suite prints a skip on Windows, where the Python PTY module is unavailable.
 
@@ -102,7 +117,9 @@ From PowerShell:
 powershell -NoProfile -File .\tests\test-windows.ps1
 ```
 
-The test installs into a temporary folder with fake commands. It checks PowerShell parsing, missing Claude Code and proxy refusal, managed-file conflicts, separate Claude login reporting, router and worktree-hook installation, saved Claude and GPT hybrid roots, provider Fast startup and paid-usage refusal, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy.
+The test installs into a temporary folder with fake commands. It checks PowerShell parsing, missing Claude Code and proxy refusal, managed-file conflicts, separate Claude login reporting, router and worktree-hook installation, saved Claude and GPT hybrid roots, current-policy resume with exact `-r` forwarding and a declared OpenRouter Agent in the native inline `--agents` payload, private file transport for managed settings and routing guidance, cleanup after Claude exits, and early refusal when the remaining command exceeds the Windows `CreateProcessW` limit. It also covers provider Fast startup and paid-usage refusal, explicit OpenAI override behavior, old-config compatibility, invalid profile refusal, and doctor failure for an unhealthy proxy. Its synthetic OpenRouter registry is fresh, credential-free, and protected with the same Windows ACL writer used in production. The Python hybrid regression separately proves exact UTF-16 command-length accounting, cleanup on startup failure and interruption, and that an undeclared dynamic worker still fails closed.
+
+`test-fast-session-end.py` covers malformed, oversized, non-clean, missing-channel, exact helper-command, and plugin metadata cases for the managed SessionEnd handoff hook. It uses fake temporary paths and does not start a session or contact a provider.
 
 ## JSON files
 
@@ -137,8 +154,10 @@ Review the marker change before committing it.
 
 It verifies:
 
-- exact request-body preservation
+- exact request-body preservation outside documented provider compatibility normalization
 - provider-specific header handling
+- text-only custom-model notice normalization from a non-standard system-role message into top-level Anthropic `system` content
+- exact OpenRouter provider, quantization, fallback, optional-parameter, and response-identity controls
 - token-count routing
 - unknown, malformed, and oversized request rejection
 - redirect rejection with a sanitized upstream error

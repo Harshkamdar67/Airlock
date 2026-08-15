@@ -44,13 +44,18 @@ jobs:
         shell: bash
         run: |
           python -m py_compile \
-            bin/airlock-access.py bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
+            bin/airlock-access.py bin/airlock_policy.py \
+            bin/airlock_openrouter_auth.py bin/airlock_openrouter_presets.py \
+            bin/airlock_openrouter_models.py \
+            bin/airlock-update.py bin/airlock-router.py bin/airlock-hybrid.py \
             plugins/airlock/scripts/agent-guard.py \
             plugins/airlock/scripts/secret-guard.py \
             plugins/airlock/scripts/update-notice.py \
             plugins/airlock/scripts/file_safety.py \
             plugins/airlock/scripts/worktree.py scripts/update-bundle.py \
             tests/test-access.py tests/test-agent-guard.py \
+            tests/test-openrouter-policy.py tests/test-openrouter-auth.py \
+            tests/test-openrouter-models.py tests/test-openrouter-access.py \
             tests/test-router.py tests/test-hybrid.py tests/test-worktree.py \
             tests/test-secret-guard.py tests/test-platform.py tests/test-release.py \
             tests/test-update.py tests/test-update-notice.py tests/test-docs.py tests/test-live-context.py \
@@ -68,6 +73,10 @@ jobs:
         run: |
           python tests/test-access.py
           python tests/test-agent-guard.py
+          python tests/test-openrouter-policy.py
+          python tests/test-openrouter-auth.py
+          python tests/test-openrouter-models.py
+          python tests/test-openrouter-access.py
           python tests/test-router.py
           python tests/test-hybrid.py
           python tests/test-secret-guard.py

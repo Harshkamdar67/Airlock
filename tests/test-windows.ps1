@@ -92,6 +92,7 @@ New-Item -ItemType Directory -Path $StubDir -Force | Out-Null
 $ClaudeStub = Join-Path $StubDir 'claude-launch-stub.exe'
 $ClaudeStubSource = @'
 using System;
+using System.IO;
 
 public static class ClaudeLaunchStub {
   public static int Main(string[] args) {
@@ -108,14 +109,33 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("ROOT_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_ROOT_MODEL") ?? "unset"));
     Console.WriteLine("DISCOVERY_MODEL=" + (Environment.GetEnvironmentVariable("AIRLOCK_DISCOVERY_MODEL") ?? "unset"));
     Console.WriteLine("SESSION_ROUTER=" + (Environment.GetEnvironmentVariable("AIRLOCK_SESSION_ROUTER_URL") ?? "unset"));
+    Console.WriteLine("POLICY_HELPER=" + (Environment.GetEnvironmentVariable("AIRLOCK_POLICY_HELPER") ?? "unset"));
+    string snapshot = Environment.GetEnvironmentVariable("AIRLOCK_SESSION_SNAPSHOT");
+    Console.WriteLine("SESSION_SNAPSHOT=" + (snapshot ?? "unset"));
+    Console.WriteLine("SNAPSHOT_SHA256=" + (Environment.GetEnvironmentVariable("AIRLOCK_SESSION_SNAPSHOT_SHA256") ?? "unset"));
+    Console.WriteLine("SNAPSHOT_EXISTS=" + (snapshot != null && File.Exists(snapshot) ? "yes" : "no"));
     Console.WriteLine("COMPACT_WINDOW=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW") ?? "unset"));
     for (int index = 0; index < args.Length; index++) {
       Console.WriteLine("ARG=" + args[index]);
       if (args[index] == "--settings" && index + 1 < args.Length) {
-        string settings = args[index + 1].Replace(" ", "");
+        string settingsPath = args[index + 1];
+        bool settingsFile = File.Exists(settingsPath);
+        string settings = settingsFile ? File.ReadAllText(settingsPath) : settingsPath;
+        Console.WriteLine("SETTINGS_FILE=" + (settingsFile ? "yes" : "no"));
+        Console.WriteLine("SETTINGS_PATH=" + settingsPath);
+        settings = settings.Replace(" ", "");
         if (settings.Contains("\"fastMode\":true")) Console.WriteLine("FAST_MODE=on");
         else if (settings.Contains("\"fastMode\":false")) Console.WriteLine("FAST_MODE=off");
         else Console.WriteLine("FAST_MODE=inherit");
+      }
+      if (args[index] == "--append-system-prompt-file" && index + 1 < args.Length) {
+        string guidancePath = args[index + 1];
+        bool guidanceFile = File.Exists(guidancePath);
+        Console.WriteLine("GUIDANCE_FILE=" + (guidanceFile ? "yes" : "no"));
+        Console.WriteLine("GUIDANCE_PATH=" + guidancePath);
+        Console.WriteLine("GUIDANCE_NONEMPTY=" + (
+          guidanceFile && File.ReadAllText(guidancePath).Length > 0 ? "yes" : "no"
+        ));
       }
     }
     return 0;
@@ -157,6 +177,9 @@ function Invoke-LauncherProcess(
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONTEXT_WINDOW')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_ROUTER_URL')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_UPDATE_NOTICE_FILE')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_POLICY_HELPER')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_SNAPSHOT')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_SNAPSHOT_SHA256')
   if ($ExtraEnvironment) {
     foreach ($name in $ExtraEnvironment.Keys) {
       $processInfo.EnvironmentVariables[$name] = [string]$ExtraEnvironment[$name]
@@ -246,7 +269,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Windows installer returned a failure.' }
 
   foreach ($relative in @(
-    'airlock', 'airlock.cmd', 'airlock.ps1', 'airlock-access.py', 'airlock-update.py', 'airlock-router.py', 'airlock-hybrid.py'
+    'airlock', 'airlock.cmd', 'airlock.ps1', 'airlock-access.py',
+    'airlock_policy.py', 'airlock_openrouter_auth.py',
+    'airlock_openrouter_presets.py', 'airlock_openrouter_models.py',
+    'airlock-update.py', 'airlock-router.py', 'airlock-hybrid.py'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf)) {
       throw "Windows installer missed $relative"
@@ -263,10 +289,15 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path $ConfigDir 'managed-bundle.json') -PathType Leaf)) {
     throw 'Windows installer missed the managed bundle marker.'
   }
+  if (Test-Path -LiteralPath (Join-Path $ConfigDir 'openrouter-registry.json')) {
+    throw 'Windows installer enabled OpenRouter without an explicit add command.'
+  }
   if (-not (Test-Path -LiteralPath (Join-Path $ConfigDir 'plugins\airlock\hooks\hooks.json') -PathType Leaf)) {
     throw 'Windows installer missed the managed plugin.'
   }
   foreach ($relative in @(
+    'skills\airlock-fast\SKILL.md',
+    'scripts\fast-session-end.sh', 'scripts\fast-session-end.py',
     'scripts\file_safety.py', 'scripts\update-notice.sh', 'scripts\update-notice.py',
     'scripts\worktree.py', 'scripts\worktree-create.sh', 'scripts\worktree-remove.sh'
   )) {
@@ -300,6 +331,7 @@ try {
   $env:AIRLOCK_PLUGIN_DIR = Join-Path $ConfigDir 'plugins\airlock'
   $env:AIRLOCK_MANAGED_BUNDLE_FILE = Join-Path $ConfigDir 'managed-bundle.json'
   $env:AIRLOCK_MANAGED_BIN_DIR = $InstallDir
+  $env:AIRLOCK_SESSION_RUNTIME_DIR = Join-Path $TempRoot 'sessions'
   $env:AIRLOCK_REAL_CLAUDE = $ClaudeStub
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
 
@@ -312,7 +344,9 @@ try {
   $ModelsCommand = Invoke-LauncherProcess $InstalledLauncher @('models')
   foreach ($expected in @(
     'airlock grok [model] [claude arguments]',
+    'airlock opr [route] [claude arguments]',
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
+    'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, composer',
     'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
   )) {
@@ -320,11 +354,290 @@ try {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
     }
   }
+  $OprHelp = Invoke-LauncherProcess $InstalledLauncher @('opr', '--help')
+  $OprShortHelp = Invoke-LauncherProcess $InstalledLauncher @('opr', '-h')
+  if ($OprHelp.Output -notmatch '(?m)^Usage: airlock opr \[ROUTE\] \[Claude arguments\.\.\.\]$' -or
+      $OprHelp.Output -notmatch 'offline registry' -or
+      $OprShortHelp.Output -ne $OprHelp.Output -or
+      $OprHelp.Output -match 'airlock orp') {
+    throw "Windows OPR help was not dispatched cleanly: $($OprHelp.Output)"
+  }
   $UpdateHelp = Invoke-LauncherProcess $InstalledLauncher @('update', '--help')
   if ($UpdateHelp.Output -notmatch '(?m)^usage: airlock update') {
     throw "Windows update help was not dispatched: $($UpdateHelp.Output)"
   }
   [void](Invoke-LauncherProcess $InstalledLauncher @('update', '--check', '--yes') $false)
+
+  # Exercise only the launcher dispatch here. The credential backend itself has
+  # isolated DPAPI tests, so this mock cannot read or write a real key.
+  $OpenRouterAuthStub = Join-Path $TempRoot 'openrouter-auth-stub.py'
+  [IO.File]::WriteAllText(
+    $OpenRouterAuthStub,
+    "import os, sys`nprint('MOCK_OPENROUTER_AUTH=' + '|'.join(sys.argv[1:]))`nsys.exit(int(os.environ.get('AIRLOCK_TEST_HELPER_EXIT', '0')))`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $OpenRouterStatus = Invoke-LauncherProcess $InstalledLauncher @('openrouter', 'auth', 'status') $true `
+    @{ AIRLOCK_OPENROUTER_AUTH_HELPER = $OpenRouterAuthStub }
+  if ($OpenRouterStatus.Output -notmatch '(?m)^MOCK_OPENROUTER_AUTH=status$') {
+    throw "Windows OpenRouter auth status was not dispatched safely: $($OpenRouterStatus.Output)"
+  }
+  $FailedOpenRouterStatus = Invoke-LauncherProcess $InstalledLauncher @('openrouter', 'auth', 'status') $false @{
+    AIRLOCK_OPENROUTER_AUTH_HELPER = $OpenRouterAuthStub
+    AIRLOCK_TEST_HELPER_EXIT = '23'
+  }
+  if ($FailedOpenRouterStatus.ExitCode -ne 23) {
+    throw "Windows OpenRouter auth helper exit status was lost: $($FailedOpenRouterStatus.ExitCode)"
+  }
+  $InvalidOpenRouterStatus = Invoke-LauncherProcess $InstalledLauncher `
+    @('openrouter', 'auth', 'status', '--online') $false `
+    @{ AIRLOCK_OPENROUTER_AUTH_HELPER = $OpenRouterAuthStub }
+  if ($InvalidOpenRouterStatus.ExitCode -ne 2 -or
+      $InvalidOpenRouterStatus.Error -notmatch 'usage: airlock openrouter auth status') {
+    throw 'Windows OpenRouter auth status accepted an unsupported online probe.'
+  }
+
+  # The model helper is also mocked so this dispatch test remains offline and
+  # cannot inspect a real registry or contact the public catalog.
+  $OpenRouterModelsStub = Join-Path $TempRoot 'openrouter-models-stub.py'
+  [IO.File]::WriteAllText(
+    $OpenRouterModelsStub,
+    "import os, sys`nprint('MOCK_OPENROUTER_MODELS=' + '|'.join(sys.argv[1:]))`nsys.exit(int(os.environ.get('AIRLOCK_TEST_HELPER_EXIT', '0')))`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $OpenRouterRegistry = Join-Path `
+    (Join-Path $TempRoot 'openrouter-private') 'openrouter-registry.json'
+  $OpenRouterModels = Invoke-LauncherProcess $InstalledLauncher @('openrouter', 'models', 'list') $true @{
+    AIRLOCK_OPENROUTER_MODELS_HELPER = $OpenRouterModelsStub
+    AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+  }
+  $ExpectedModelsDispatch = "MOCK_OPENROUTER_MODELS=--registry|$OpenRouterRegistry|list"
+  if (-not $OpenRouterModels.Output.Contains($ExpectedModelsDispatch)) {
+    throw "Windows OpenRouter models command was not dispatched safely: $($OpenRouterModels.Output)"
+  }
+  $FailedOpenRouterModels = Invoke-LauncherProcess $InstalledLauncher @('openrouter', 'models', 'list') $false @{
+    AIRLOCK_OPENROUTER_MODELS_HELPER = $OpenRouterModelsStub
+    AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+    AIRLOCK_TEST_HELPER_EXIT = '24'
+  }
+  if ($FailedOpenRouterModels.ExitCode -ne 24) {
+    throw "Windows OpenRouter model helper exit status was lost: $($FailedOpenRouterModels.ExitCode)"
+  }
+  $OpenRouterPresets = Invoke-LauncherProcess $InstalledLauncher @('openrouter', 'models', 'presets') $true @{
+    AIRLOCK_OPENROUTER_MODELS_HELPER = $OpenRouterModelsStub
+    AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+  }
+  $ExpectedPresetsDispatch = "MOCK_OPENROUTER_MODELS=--registry|$OpenRouterRegistry|presets"
+  if (-not $OpenRouterPresets.Output.Contains($ExpectedPresetsDispatch)) {
+    throw "Windows OpenRouter models presets was not dispatched safely: $($OpenRouterPresets.Output)"
+  }
+  $OpenRouterAddPreset = Invoke-LauncherProcess $InstalledLauncher `
+    @('openrouter', 'models', 'add-preset', 'kimi-k3', '--yes') $true @{
+    AIRLOCK_OPENROUTER_MODELS_HELPER = $OpenRouterModelsStub
+    AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+  }
+  $ExpectedAddPresetDispatch = "MOCK_OPENROUTER_MODELS=--registry|$OpenRouterRegistry|add-preset|kimi-k3|--yes"
+  if (-not $OpenRouterAddPreset.Output.Contains($ExpectedAddPresetDispatch)) {
+    throw "Windows OpenRouter models add-preset was not dispatched safely: $($OpenRouterAddPreset.Output)"
+  }
+
+  # An interactive helper prompt must reach the terminal before the helper reads
+  # its answer. Capturing child stdout in a PowerShell variable hides the prompt
+  # until exit and leaves the user waiting on an invisible question.
+  $InteractiveModelsStub = Join-Path $TempRoot 'openrouter-models-interactive-stub.py'
+  [IO.File]::WriteAllText(
+    $InteractiveModelsStub,
+    "import sys`nprint('PROMPT_VISIBLE', flush=True)`nsys.stdin.readline()`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $interactiveInfo = New-Object Diagnostics.ProcessStartInfo
+  $interactiveInfo.FileName = $PowerShellExe
+  $interactiveInfo.Arguments = "-NoProfile -NonInteractive -File `"$InstalledLauncher`" openrouter models add-preset kimi-k3"
+  $interactiveInfo.UseShellExecute = $false
+  $interactiveInfo.RedirectStandardInput = $true
+  $interactiveInfo.RedirectStandardOutput = $true
+  $interactiveInfo.RedirectStandardError = $true
+  $interactiveInfo.EnvironmentVariables['AIRLOCK_OPENROUTER_MODELS_HELPER'] = $InteractiveModelsStub
+  $interactiveInfo.EnvironmentVariables['AIRLOCK_OPENROUTER_REGISTRY_FILE'] = $OpenRouterRegistry
+  $interactiveProcess = [Diagnostics.Process]::Start($interactiveInfo)
+  $promptTask = $interactiveProcess.StandardOutput.ReadLineAsync()
+  if (-not $promptTask.Wait(5000)) {
+    try { $interactiveProcess.Kill() } catch {}
+    throw 'Windows OpenRouter helper buffered an interactive confirmation prompt.'
+  }
+  if ($promptTask.Result -ne 'PROMPT_VISIBLE') {
+    try { $interactiveProcess.Kill() } catch {}
+    throw "Windows OpenRouter helper emitted an unexpected prompt: $($promptTask.Result)"
+  }
+  $interactiveProcess.StandardInput.WriteLine('n')
+  $interactiveProcess.StandardInput.Close()
+  $interactiveError = $interactiveProcess.StandardError.ReadToEnd()
+  $interactiveProcess.WaitForExit()
+  if ($interactiveProcess.ExitCode -ne 0) {
+    throw "Windows interactive OpenRouter dispatch failed: $interactiveError"
+  }
+
+  foreach ($expected in @(
+    'airlock openrouter models presets',
+    'airlock openrouter models add-preset NAME [--yes]'
+  )) {
+    if (-not $ModelsCommand.Output.Contains($expected)) {
+      throw "Windows models help omitted '$expected': $($ModelsCommand.Output)"
+    }
+  }
+  $InvalidOpenRouterCommand = Invoke-LauncherProcess $InstalledLauncher `
+    @('openrouter', 'unsupported') $false
+  if ($InvalidOpenRouterCommand.ExitCode -ne 2 -or
+      $InvalidOpenRouterCommand.Error -notmatch 'usage: airlock openrouter auth\|models') {
+    throw 'Windows launcher accepted an unsupported OpenRouter command.'
+  }
+
+  # Capture the protected OPR launch request without starting a router or reading
+  # a real credential. The bridge itself has separate Python tests.
+  $OprAccessStub = Join-Path $TempRoot 'opr-access-stub.py'
+  $OprAccessStubSource = @'
+import json
+import os
+from pathlib import Path
+import sys
+marker = os.environ.get("AIRLOCK_TEST_ACCESS_MARKER")
+if marker:
+    Path(marker).write_text("called", encoding="utf-8")
+args = sys.argv[1:]
+route = {
+    "route": "kimi-k3",
+    "model": "moonshotai/kimi-k3",
+    "endpoint_provider": "digitalocean",
+    "provider_name": "DigitalOcean",
+    "provider_slug": "digitalocean",
+    "quantization": "unknown",
+    "canonical_slug": "moonshotai/kimi-k3-20260715",
+}
+if args and args[0] == "bundle-check":
+    raise SystemExit(0)
+if args and args[0] == "fast-transition-create":
+    print("fast-transition-0123456789abcdef0123456789abcdef.json\t" + "a" * 64)
+    raise SystemExit(0)
+if args and args[0] == "fast-transition-cleanup":
+    raise SystemExit(0)
+if args == ["openrouter-routes"]:
+    print(json.dumps([route], separators=(",", ":")))
+    raise SystemExit(0)
+if len(args) == 2 and args[0] == "openrouter-resolve" and args[1] == route["route"]:
+    print(json.dumps(route, separators=(",", ":")))
+    raise SystemExit(0)
+print("unknown or disabled OpenRouter route", file=sys.stderr)
+raise SystemExit(2)
+'@
+  [IO.File]::WriteAllText(
+    $OprAccessStub,
+    $OprAccessStubSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $InstalledBridge = Join-Path $InstallDir 'airlock-hybrid.py'
+  $InstalledBridgeBytes = [IO.File]::ReadAllBytes($InstalledBridge)
+  $CaptureBridgeSource = @'
+import json
+import sys
+from pathlib import Path
+request_path = Path(sys.argv[sys.argv.index("--request-file") + 1])
+request = json.loads(request_path.read_text(encoding="utf-8"))
+print("OPR_REQUEST=" + json.dumps(request, separators=(",", ":"), sort_keys=True))
+'@
+  try {
+    [IO.File]::WriteAllText(
+      $InstalledBridge,
+      $CaptureBridgeSource,
+      (New-Object Text.UTF8Encoding($false))
+    )
+    foreach ($SavedProfile in @('hybrid', 'grok')) {
+      $LegacyAccessMarker = Join-Path $TempRoot "orp-${SavedProfile}-access.marker"
+      Remove-Item -LiteralPath $LegacyAccessMarker -Force -ErrorAction SilentlyContinue
+      $LegacyOrp = Invoke-LauncherProcess $InstalledLauncher `
+        @('orp', 'kimi-k3', '-r') $false @{
+          AIRLOCK_ACCESS_HELPER = $OprAccessStub
+          AIRLOCK_DEFAULT_PROFILE = $SavedProfile
+          AIRLOCK_TEST_ACCESS_MARKER = $LegacyAccessMarker
+        }
+      if ($LegacyOrp.ExitCode -ne 2 -or
+          $LegacyOrp.Error -notmatch "command 'orp' was renamed to 'opr'; use airlock opr\." -or
+          $LegacyOrp.Output -match 'OPR_REQUEST=' -or
+          (Test-Path -LiteralPath $LegacyAccessMarker)) {
+        throw "Windows legacy ORP command was not rejected before dispatch under ${SavedProfile}."
+      }
+    }
+    $OprCapture = Invoke-LauncherProcess $InstalledLauncher `
+      @('opr', 'kimi-k3', '-r', '--effort', 'high', '-p', 'morpheus-corp') $true @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+        AIRLOCK_DEFAULT_PROFILE = 'hybrid'
+      }
+    $OprMatch = [regex]::Match($OprCapture.Output, '(?m)^OPR_REQUEST=(.+)$')
+    if (-not $OprMatch.Success) {
+      throw "Windows OPR launch did not reach the protected bridge: $($OprCapture.Output)"
+    }
+    $OprRequest = $OprMatch.Groups[1].Value | ConvertFrom-Json
+    if ($OprRequest.profile -ne 'openrouter-pure' -or
+        $OprRequest.openrouter_root_route -ne 'kimi-k3') {
+      throw "Windows OPR launch lost its exact route: $($OprMatch.Groups[1].Value)"
+    }
+    foreach ($ForbiddenField in @('proxy_url', 'root_model', 'root_name')) {
+      if ($OprRequest.PSObject.Properties.Name -contains $ForbiddenField) {
+        throw "Windows OPR request trusted forbidden field ${ForbiddenField}."
+      }
+    }
+    $OprRequestArguments = @($OprRequest.args)
+    $ExpectedTail = @('-r', '--effort', 'high', '-p', 'morpheus-corp')
+    $ActualTail = @($OprRequestArguments[($OprRequestArguments.Count - 5)..($OprRequestArguments.Count - 1)])
+    if ((ConvertTo-Json -Compress $ActualTail) -ne (ConvertTo-Json -Compress $ExpectedTail)) {
+      throw "Windows OPR request changed Claude arguments: $($OprMatch.Groups[1].Value)"
+    }
+    $OprGrokDefault = Invoke-LauncherProcess $InstalledLauncher `
+      @('opr', 'kimi-k3', '-r') $true @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+        AIRLOCK_DEFAULT_PROFILE = 'grok'
+      }
+    $OprGrokMatch = [regex]::Match($OprGrokDefault.Output, '(?m)^OPR_REQUEST=(.+)$')
+    if (-not $OprGrokMatch.Success) {
+      throw "Windows OPR command was rewritten under the saved Grok default: $($OprGrokDefault.Output)"
+    }
+    $OprGrokRequest = $OprGrokMatch.Groups[1].Value | ConvertFrom-Json
+    if ($OprGrokRequest.profile -ne 'openrouter-pure' -or
+        $OprGrokRequest.openrouter_root_route -ne 'kimi-k3' -or
+        @($OprGrokRequest.args)[-1] -ne '-r') {
+      throw "Windows OPR command changed under the saved Grok default: $($OprGrokMatch.Groups[1].Value)"
+    }
+    foreach ($Override in @('--model=moonshotai/kimi-k3', '--model', '-m')) {
+      $BlockedOpr = Invoke-LauncherProcess $InstalledLauncher `
+        @('opr', 'kimi-k3', $Override, 'blocked') $false @{
+          AIRLOCK_ACCESS_HELPER = $OprAccessStub
+        }
+      if ($BlockedOpr.ExitCode -ne 2 -or
+          $BlockedOpr.Error -notmatch 'selected by exact registry route') {
+        throw "Windows OPR launch accepted model override ${Override}."
+      }
+    }
+    $MissingOprRoute = Invoke-LauncherProcess $InstalledLauncher `
+      @('opr', '-r') $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($MissingOprRoute.ExitCode -ne 2 -or
+        $MissingOprRoute.Error -notmatch 'route is required outside an interactive terminal') {
+      throw 'Windows noninteractive OPR launch accepted a missing route.'
+    }
+    $BareOpr = Invoke-LauncherProcess $InstalledLauncher `
+      @('opr') $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($BareOpr.ExitCode -ne 2 -or
+        $BareOpr.Error -notmatch 'route is required outside an interactive terminal') {
+      throw 'Windows noninteractive bare OPR launch accepted a missing route.'
+    }
+    $UnknownOprRoute = Invoke-LauncherProcess $InstalledLauncher `
+      @('opr', 'missing-route', '-p', 'test') $false @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+      }
+    if ($UnknownOprRoute.ExitCode -ne 2 -or
+        $UnknownOprRoute.Error -notmatch 'unknown or disabled OpenRouter route') {
+      throw 'Windows OPR launch accepted an unknown route.'
+    }
+  } finally {
+    [IO.File]::WriteAllBytes($InstalledBridge, $InstalledBridgeBytes)
+  }
 
   $LegacyConfig = @'
 AIRLOCK_MODEL=terra
@@ -356,8 +669,16 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   if ($LegacyLaunch.Output -notmatch '(?m)^ROOT_MODEL=gpt-5\.6-terra$' -or
       $LegacyLaunch.Output -notmatch '(?m)^DISCOVERY_MODEL=gpt-5\.6-luna$' -or
       $LegacyLaunch.Output -notmatch "(?m)^UPDATE_NOTICE=$([regex]::Escape((Join-Path $ConfigDir 'update-notice.json')))$" -or
-      $LegacyLaunch.Output -notmatch '(?m)^SESSION_ROUTER=unset$') {
-    throw "Windows session did not pin economical Explore discovery: $($LegacyLaunch.Output)"
+      $LegacyLaunch.Output -notmatch '(?m)^SESSION_ROUTER=unset$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^POLICY_HELPER=.*airlock_policy\.py$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^SNAPSHOT_SHA256=[0-9a-f]{64}$' -or
+      $LegacyLaunch.Output -notmatch '(?m)^SNAPSHOT_EXISTS=yes$') {
+    throw "Windows session did not pin its policy snapshot and economical Explore discovery: $($LegacyLaunch.Output)"
+  }
+  $LegacySnapshotMatch = [regex]::Match($LegacyLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$')
+  if (-not $LegacySnapshotMatch.Success -or
+      (Test-Path -LiteralPath $LegacySnapshotMatch.Groups[1].Value -PathType Leaf)) {
+    throw 'Windows pure-session snapshot remained after Claude exited.'
   }
   foreach ($ExpectedPickerLine in @(
     'DEFAULT_FABLE=gpt-5.6-sol',
@@ -420,10 +741,142 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   if ($HybridLaunch.Output -notmatch '(?m)^CUSTOM_MODEL=claude-sonnet-5\[1m\]$' -or
       $HybridLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-anthropic-root$' -or
       $HybridLaunch.Output -notmatch '(?m)^SESSION_ROUTER=http://127\.0\.0\.1:[1-9][0-9]*$' -or
+      $HybridLaunch.Output -notmatch '(?m)^POLICY_HELPER=.*airlock_policy\.py$' -or
+      $HybridLaunch.Output -notmatch '(?m)^SNAPSHOT_SHA256=[0-9a-f]{64}$' -or
+      $HybridLaunch.Output -notmatch '(?m)^SNAPSHOT_EXISTS=yes$' -or
       $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
-    throw "Saved Claude hybrid root did not launch: $($HybridLaunch.Output)"
+    throw "Saved Claude hybrid root did not launch with a pinned policy snapshot: $($HybridLaunch.Output)"
   }
+  $HybridSnapshotMatch = [regex]::Match($HybridLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$')
+  if (-not $HybridSnapshotMatch.Success -or
+      (Test-Path -LiteralPath $HybridSnapshotMatch.Groups[1].Value -PathType Leaf)) {
+    throw 'Windows hybrid-session snapshot remained after Claude exited.'
+  }
+  $RegistryWriter = Join-Path $TempRoot 'write-openrouter-registry.py'
+  $RegistryWriterSource = @'
+import sys
+import time
+
+sys.path.insert(0, sys.argv[1])
+import airlock_policy as policy
+
+policy.write_openrouter_registry(sys.argv[2], {
+    "schema_version": 1,
+    "models": [{
+        "route": "kimi-k3",
+        "model": "moonshotai/kimi-k3",
+        "endpoint_provider": "digitalocean",
+        "provider_name": "DigitalOcean",
+        "provider_slug": "digitalocean",
+        "quantization": "unknown",
+        "canonical_slug": "moonshotai/kimi-k3-20260715",
+        "alias_target": None,
+        "supported_parameters": ["tool_choice", "tools"],
+        "expiration_date": None,
+        "checked_at": int(time.time()),
+        "enabled": True,
+    }],
+})
+'@
+  [IO.File]::WriteAllText(
+    $RegistryWriter,
+    $RegistryWriterSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  & $RealPython $RegistryWriter $InstallDir $OpenRouterRegistry
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Windows test could not create a protected synthetic OpenRouter registry.'
+  }
+  $ResumeLaunch = Invoke-LauncherProcess `
+    $InstalledLauncher @('hybrid', 'sol', '-r') $true @{
+      AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+    }
+  $ResumeLines = $ResumeLaunch.Output -split "`n"
+  $AgentsIndex = [Array]::IndexOf($ResumeLines, 'ARG=--agents')
+  if ($ResumeLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-openai-root$' -or
+      $ResumeLaunch.Output -notmatch '(?m)^ARG=-r$' -or
+      $ResumeLaunch.Output -notmatch '(?m)^SETTINGS_FILE=yes$' -or
+      $ResumeLaunch.Output -notmatch '(?m)^GUIDANCE_FILE=yes$' -or
+      $ResumeLaunch.Output -notmatch '(?m)^GUIDANCE_NONEMPTY=yes$' -or
+      $ResumeLaunch.Output -notmatch '(?m)^ARG=Agent\(airlock-or-kimi-k3\)$' -or
+      $AgentsIndex -lt 0 -or
+      $AgentsIndex + 1 -ge $ResumeLines.Count -or
+      $ResumeLines[$AgentsIndex + 1] -notmatch '"airlock-or-kimi-k3"') {
+    throw "Windows hybrid resume did not retain the managed current-policy OpenRouter launch: $($ResumeLaunch.Output)"
+  }
+  $ResumeSettingsMatch = [regex]::Match(
+    $ResumeLaunch.Output, '(?m)^SETTINGS_PATH=(.+)$'
+  )
+  $ResumeGuidanceMatch = [regex]::Match(
+    $ResumeLaunch.Output, '(?m)^GUIDANCE_PATH=(.+)$'
+  )
+  if (-not $ResumeSettingsMatch.Success -or
+      -not $ResumeGuidanceMatch.Success -or
+      (Test-Path -LiteralPath $ResumeSettingsMatch.Groups[1].Value -PathType Leaf) -or
+      (Test-Path -LiteralPath $ResumeGuidanceMatch.Groups[1].Value -PathType Leaf)) {
+    throw 'Windows hybrid resume left a managed settings or guidance file after Claude exited.'
+  }
+
+  $OverflowLocalAppData = Join-Path $TempRoot 'overflow-local-app-data'
+  $OverflowLaunchDirectory = Join-Path $OverflowLocalAppData 'Airlock\launch'
+  $OverflowRuntime = Join-Path $TempRoot 'overflow-runtime'
+  New-Item -ItemType Directory -Path $OverflowLaunchDirectory -Force | Out-Null
+  $OverflowRequestPath = Join-Path $OverflowLaunchDirectory 'overflow.json'
+  $OverflowRequest = [ordered]@{
+    profile = 'hybrid-openai-root'
+    claude = $ClaudeStub
+    catalog_files = [ordered]@{
+      openai_direct = Join-Path $ConfigDir 'openai-direct-agents.json'
+      anthropic_direct = Join-Path $ConfigDir 'anthropic-direct-agents.json'
+      openai_wrappers = Join-Path $ConfigDir 'hybrid-agents.json'
+      anthropic_wrappers = Join-Path $ConfigDir 'claude-agents.json'
+      grok_direct = Join-Path $ConfigDir 'grok-agents.json'
+      grok_wrappers = Join-Path $ConfigDir 'grok-agents.json'
+    }
+    plugin_dir = Join-Path $ConfigDir 'plugins\airlock'
+    router_helper = Join-Path $InstallDir 'airlock-router.py'
+    context_window = '272000'
+    force_context_window = $false
+    max_agents = 'off'
+    fast_mode = 'off'
+    args = @((('x' * 32767) -join ''))
+    proxy_url = 'http://127.0.0.1:18765'
+    root_model = 'gpt-5.6-sol'
+    root_name = 'GPT-5.6 Sol'
+  }
+  [IO.File]::WriteAllText(
+    $OverflowRequestPath,
+    (ConvertTo-Json -InputObject $OverflowRequest -Depth 4 -Compress),
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $overflowInfo = New-Object Diagnostics.ProcessStartInfo
+  $overflowInfo.FileName = $RealPython
+  $overflowInfo.Arguments = '"' + (Join-Path $InstallDir 'airlock-hybrid.py') + '" --request-file "' + $OverflowRequestPath + '"'
+  $overflowInfo.UseShellExecute = $false
+  $overflowInfo.RedirectStandardOutput = $true
+  $overflowInfo.RedirectStandardError = $true
+  [void]$overflowInfo.EnvironmentVariables.Remove('ANTHROPIC_API_KEY')
+  [void]$overflowInfo.EnvironmentVariables.Remove('ANTHROPIC_AUTH_TOKEN')
+  $overflowInfo.EnvironmentVariables['LOCALAPPDATA'] = $OverflowLocalAppData
+  $overflowInfo.EnvironmentVariables['AIRLOCK_SESSION_RUNTIME_DIR'] = $OverflowRuntime
+  $overflowInfo.EnvironmentVariables['AIRLOCK_CONFIG_DIR'] = $ConfigDir
+  $overflowInfo.EnvironmentVariables['AIRLOCK_OPENROUTER_REGISTRY_FILE'] = $OpenRouterRegistry
+  $overflowInfo.EnvironmentVariables['AIRLOCK_GPT_HYBRID'] = '1'
+  $overflowProcess = [Diagnostics.Process]::Start($overflowInfo)
+  $overflowOutput = $overflowProcess.StandardOutput.ReadToEnd().Replace("`r", '')
+  $overflowError = $overflowProcess.StandardError.ReadToEnd().Replace("`r", '')
+  $overflowProcess.WaitForExit()
+  if ($overflowProcess.ExitCode -ne 2 -or
+      $overflowError -notmatch 'Claude Code launch command is too long for Windows' -or
+      $overflowError -match 'WinError 206' -or
+      $overflowOutput -match '(?m)^MODEL=' -or
+      (Test-Path -LiteralPath $OverflowRequestPath -PathType Leaf) -or
+      ((Test-Path -LiteralPath $OverflowRuntime -PathType Container) -and
+       @(Get-ChildItem -LiteralPath $OverflowRuntime -File).Count -ne 0)) {
+    throw "Windows command preflight did not fail cleanly before Claude: $overflowError$overflowOutput"
+  }
+
   foreach ($ExpectedFamilyLine in @(
     'DEFAULT_FABLE=gpt-5.6-sol',
     'DEFAULT_OPUS=claude-opus-5[1m]',
@@ -676,6 +1129,33 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   if ($DoctorCompact -notmatch 'PASS Release updater: .*airlock-update\.py \(manual checks only\)') {
     throw "Windows doctor did not verify the release updater: $DoctorOutput"
   }
+  if ($DoctorOutput -notmatch '(?m)^INFO  OpenRouter registry is not configured: ' -or
+      $DoctorOutput -notmatch '(?m)^PASS  OpenRouter credential backend is available: windows-dpapi$' -or
+      $DoctorOutput -notmatch '(?m)^INFO  Doctor does not read the OpenRouter credential;') {
+    throw "Windows doctor did not report safe OpenRouter state: $DoctorOutput"
+  }
+
+  $DoctorModelsStub = Join-Path $TempRoot 'doctor-models-stub.py'
+  [IO.File]::WriteAllText(
+    $DoctorModelsStub,
+    "print('STATE=valid')`nprint('COUNT=1')`nprint('MODEL=flash\tdeepseek/deepseek-v4-flash-0731\tprovider/cheap\tenabled')`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $DoctorAuthStub = Join-Path $TempRoot 'doctor-auth-stub.py'
+  [IO.File]::WriteAllText(
+    $DoctorAuthStub,
+    "print('BACKEND=windows-dpapi')`nprint('STATE=available')`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $env:AIRLOCK_OPENROUTER_MODELS_HELPER = $DoctorModelsStub
+  $env:AIRLOCK_OPENROUTER_AUTH_HELPER = $DoctorAuthStub
+  $ConfiguredDoctorOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
+  if ($ConfiguredDoctorOutput -notmatch '(?m)^PASS  OpenRouter registry is valid and fresh \(1 model\(s\)\): ' -or
+      $ConfiguredDoctorOutput -notmatch '(?m)^INFO  OpenRouter route: airlock-or-flash -> deepseek/deepseek-v4-flash-0731 via provider/cheap \(enabled\)$') {
+    throw "Windows doctor did not report configured OpenRouter routes: $ConfiguredDoctorOutput"
+  }
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_MODELS_HELPER'
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_AUTH_HELPER'
 
   Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@if `"%1 %2`"==`"auth status`" exit /b 1`r`n@exit /b 0"
   $SignedOutOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
@@ -691,6 +1171,8 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $env:AIRLOCK_AGENT_DIR = $OldAgent
   Remove-Item -LiteralPath 'Env:AIRLOCK_PROXY_URL' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_PROXY_LOG' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_MODELS_HELPER' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_AUTH_HELPER' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 

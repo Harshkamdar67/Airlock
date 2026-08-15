@@ -25,6 +25,49 @@ SPEC = importlib.util.spec_from_file_location("airlock_router_test", ROUTER)
 assert SPEC is not None and SPEC.loader is not None
 router = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(router)
+POLICY = router.load_policy_schema()
+
+
+def write_test_snapshot(
+    directory: str | Path,
+    *,
+    routes: dict[str, str] | None = None,
+    profile: str = "openai-pure",
+    openrouter: dict[str, dict[str, str]] | None = None,
+    agents: dict[str, dict[str, object]] | None = None,
+) -> tuple[Path, str]:
+    routes = routes or {"gpt-test": "openai"}
+    root_model, root_provider = next(iter(routes.items()))
+    snapshot = POLICY.validate_session_snapshot({
+        "schema_version": 1,
+        "protocol_version": router.MANAGED_PROTOCOL_VERSION,
+        "profile": profile,
+        "root_model": root_model,
+        "root_provider": root_provider,
+        "routes": routes,
+        "agents": agents or {
+            "airlock-test": {
+                "model": root_model,
+                "provider": root_provider,
+                "extra_usage": False,
+            }
+        },
+        "openrouter": openrouter or {},
+    })
+    path = Path(directory) / "session.json"
+    path.write_bytes(snapshot.canonical_bytes())
+    return path, snapshot.digest()
+
+
+TEST_OPENROUTER_METADATA = {
+    "vendor/model-test": {
+        "endpoint_provider": "deepinfra/fp4",
+        "provider_name": "DeepInfra",
+        "provider_slug": "deepinfra",
+        "quantization": "fp4",
+        "canonical_slug": "vendor/model-test-20260810",
+    }
+}
 
 
 class RecordingServer(ThreadingHTTPServer):
@@ -61,6 +104,62 @@ class RecordingHandler(BaseHTTPRequestHandler):
                 },
                 "body": body,
             })
+        if self.recorder.mode.startswith("or_"):
+            request = json.loads(body)
+            response_model = request["model"]
+            if self.recorder.mode == "or_list_model_json":
+                response_model = []
+            elif self.recorder.mode == "or_object_model_json":
+                response_model = {"id": "vendor/model-test"}
+            elif "mismatch" in self.recorder.mode:
+                response_model = "vendor/different-model"
+            elif "canonical" in self.recorder.mode:
+                response_model = "vendor/model-test-20260810"
+            if self.recorder.mode in {
+                "or_stream",
+                "or_mismatch_stream",
+                "or_canonical_stream",
+            }:
+                start = json.dumps({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_openrouter",
+                        "model": response_model,
+                        "content": [],
+                        "usage": {"input_tokens": 5, "output_tokens": 1},
+                    },
+                }, separators=(",", ":"))
+                payload = (
+                    "event: message_start\ndata: " + start + "\n\n"
+                    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.send_header("connection", "close")
+                self.end_headers()
+                try:
+                    for index in range(0, len(payload), 5):
+                        self.wfile.write(payload[index : index + 5])
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return
+            if self.recorder.mode == "or_malformed":
+                response = b'{"model":'
+            else:
+                response = json.dumps({
+                    "id": "msg_openrouter",
+                    "model": response_model,
+                    "content": [{"type": "text", "text": "hello"}],
+                    "usage": {"input_tokens": 7, "output_tokens": 9},
+                }, separators=(",", ":")).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+            return
         if self.recorder.mode == "redirect":
             self.send_response(307)
             self.send_header("location", "http://invalid.example/v1/messages")
@@ -149,9 +248,12 @@ class RecordingHandler(BaseHTTPRequestHandler):
             self.send_header("content-length", str(len(encoded)))
             self.send_header("connection", "close")
             self.end_headers()
-            for index in range(0, len(encoded), 7):
-                self.wfile.write(encoded[index : index + 7])
-                self.wfile.flush()
+            try:
+                for index in range(0, len(encoded), 7):
+                    self.wfile.write(encoded[index : index + 7])
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                pass
             self.close_connection = True
             return
         if self.recorder.mode in {"usage_stream", "no_usage_stream"}:
@@ -234,9 +336,11 @@ class RouterProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.openai = RecordingServer()
         self.anthropic = RecordingServer()
+        self.openrouter = RecordingServer()
+        self.openrouter.mode = "or_json"
         self.threads = [
             threading.Thread(target=server.serve_forever, daemon=True)
-            for server in (self.openai, self.anthropic)
+            for server in (self.openai, self.anthropic, self.openrouter)
         ]
         for thread in self.threads:
             thread.start()
@@ -245,10 +349,30 @@ class RouterProtocolTests(unittest.TestCase):
                 "gpt-test": "openai",
                 "claude-test": "anthropic",
                 "grok-test": "grok",
+                "vendor/model-test": "openrouter",
+                "qwen/qwen3.6-27b": "openrouter",
             },
             f"http://127.0.0.1:{self.openai.server_address[1]}",
             f"http://127.0.0.1:{self.anthropic.server_address[1]}",
             production=False,
+            openrouter={
+                "vendor/model-test": router.OpenRouterRoute(
+                    endpoint_provider="deepinfra/fp4",
+                    provider_name="DeepInfra",
+                    provider_slug="deepinfra",
+                    quantization="fp4",
+                    canonical_slug="vendor/model-test-20260810",
+                ),
+                "qwen/qwen3.6-27b": router.OpenRouterRoute(
+                    endpoint_provider="chutes/fp8",
+                    provider_name="Chutes",
+                    provider_slug="chutes",
+                    quantization="fp8",
+                    canonical_slug="qwen/qwen3.6-27b-20260422",
+                ),
+            },
+            openrouter_key=b"sk-or-v1-SENTINEL_ROUTER_KEY_123456",
+            openrouter_url=f"http://127.0.0.1:{self.openrouter.server_address[1]}/api/v1",
         )
         self.gateway = router.RouterServer(("127.0.0.1", 0), config)
         self.gateway_thread = threading.Thread(
@@ -259,7 +383,7 @@ class RouterProtocolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.gateway.shutdown()
         self.gateway.server_close()
-        for server in (self.openai, self.anthropic):
+        for server in (self.openai, self.anthropic, self.openrouter):
             server.shutdown()
             server.server_close()
 
@@ -363,6 +487,286 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertNotIn("anthropic-beta", headers)
         self.assertNotIn("cookie", headers)
         self.assertEqual(headers["x-claude-code-session-id"], "session-test")
+
+    def test_openrouter_route_pins_model_endpoint_and_credential_boundary(self) -> None:
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(response)["model"], "vendor/model-test")
+        self.assertEqual(len(self.openrouter.requests), 1)
+        recorded = self.openrouter.requests[0]
+        self.assertEqual(recorded["path"], "/api/v1/messages")
+        headers = recorded["headers"]
+        self.assertEqual(
+            headers["authorization"],
+            "Bearer sk-or-v1-SENTINEL_ROUTER_KEY_123456",
+        )
+        self.assertEqual(headers["http-referer"], router.OPENROUTER_REFERER)
+        self.assertEqual(headers["x-openrouter-title"], router.OPENROUTER_TITLE)
+        self.assertEqual(headers["accept-encoding"], "identity")
+        self.assertNotIn("x-api-key", headers)
+        self.assertNotIn("anthropic-beta", headers)
+        self.assertNotIn("x-claude-code-session-id", headers)
+        payload = json.loads(recorded["body"])
+        self.assertEqual(payload["model"], "vendor/model-test")
+        self.assertNotIn("canonical_slug", payload)
+        self.assertEqual(payload["provider"], {
+            "only": ["deepinfra"],
+            "quantizations": ["fp4"],
+            "allow_fallbacks": False,
+            "require_parameters": False,
+        })
+
+    def test_openrouter_preserves_native_optional_parameters(self) -> None:
+        original = {
+            "model": "vendor/model-test",
+            "max_tokens": 1024,
+            "system": [{
+                "type": "text",
+                "text": "synthetic system text",
+                "cache_control": {"type": "ephemeral"},
+            }],
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{
+                "name": "lookup",
+                "description": "synthetic tool",
+                "input_schema": {"type": "object", "properties": {}},
+            }],
+            "tool_choice": {"type": "auto"},
+            "metadata": {"user_id": "synthetic-user"},
+            "stream": True,
+            "thinking": {"type": "enabled", "budget_tokens": 128},
+        }
+        body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+        status, _response, _elapsed = self.request(
+            "vendor/model-test", body=body
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        provider = payload.pop("provider")
+        self.assertEqual(payload, original)
+        self.assertEqual(provider, {
+            "only": ["deepinfra"],
+            "quantizations": ["fp4"],
+            "allow_fallbacks": False,
+            "require_parameters": False,
+        })
+
+    def test_openrouter_lifts_native_system_role_into_system_blocks(self) -> None:
+        original_system = [{
+            "type": "text",
+            "text": "synthetic system text",
+            "cache_control": {"type": "ephemeral"},
+        }]
+        user_message = {
+            "role": "user",
+            "content": [{"type": "text", "text": "hello"}],
+        }
+        body = json.dumps({
+            "model": "qwen/qwen3.6-27b",
+            "max_tokens": 32000,
+            "system": original_system,
+            "messages": [
+                user_message,
+                {"role": "system", "content": "custom model notice"},
+            ],
+            "tools": [{
+                "name": "lookup",
+                "description": "synthetic tool",
+                "input_schema": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }],
+            "metadata": {"user_id": "synthetic-user"},
+            "stream": True,
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        }, separators=(",", ":")).encode("utf-8")
+        status, response, _elapsed = self.request(
+            "qwen/qwen3.6-27b", body=body
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(response)["model"], "qwen/qwen3.6-27b")
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        self.assertEqual(payload["messages"], [user_message])
+        self.assertEqual(payload["system"], original_system + [{
+            "type": "text", "text": "custom model notice",
+        }])
+        self.assertEqual(payload["thinking"], {"type": "adaptive"})
+        self.assertEqual(payload["output_config"], {"effort": "high"})
+        self.assertEqual(payload["provider"], {
+            "only": ["chutes"],
+            "quantizations": ["fp8"],
+            "allow_fallbacks": False,
+            "require_parameters": False,
+        })
+
+    def test_openrouter_lifts_text_blocks_after_string_system_content(self) -> None:
+        lifted = {
+            "type": "text",
+            "text": "custom model notice",
+            "cache_control": {"type": "ephemeral"},
+        }
+        body = json.dumps({
+            "model": "qwen/qwen3.6-27b",
+            "system": "base system text",
+            "messages": [
+                {"role": "system", "content": "first custom notice"},
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": [lifted]},
+            ],
+        }, separators=(",", ":")).encode("utf-8")
+        status, _response, _elapsed = self.request(
+            "qwen/qwen3.6-27b", body=body
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        self.assertEqual(payload["messages"], [
+            {"role": "user", "content": "hello"},
+        ])
+        self.assertEqual(payload["system"], [
+            {"type": "text", "text": "base system text"},
+            {"type": "text", "text": "first custom notice"},
+            lifted,
+        ])
+
+    def test_openrouter_rejects_unsafe_system_role_normalization(self) -> None:
+        cases = (
+            {
+                "model": "qwen/qwen3.6-27b",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "system", "content": []},
+                ],
+            },
+            {
+                "model": "qwen/qwen3.6-27b",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "system", "content": {"text": "notice"}},
+                ],
+            },
+            {
+                "model": "qwen/qwen3.6-27b",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {
+                        "role": "system",
+                        "content": "notice",
+                        "unknown": True,
+                    },
+                ],
+            },
+            {
+                "model": "qwen/qwen3.6-27b",
+                "messages": [{"role": "system", "content": "notice"}],
+            },
+            {
+                "model": "qwen/qwen3.6-27b",
+                "system": {"text": "invalid"},
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "system", "content": "notice"},
+                ],
+            },
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                status, response, _elapsed = self.request(
+                    "qwen/qwen3.6-27b", body=body
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(
+                    json.loads(response)["error"]["type"],
+                    "invalid_request_error",
+                )
+        self.assertEqual(self.openrouter.requests, [])
+
+    def test_openrouter_count_tokens_is_explicitly_unsupported(self) -> None:
+        status, response, _elapsed = self.request(
+            "vendor/model-test", path="/v1/messages/count_tokens"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("only the Messages operation", response.decode("utf-8"))
+        self.assertEqual(self.openrouter.requests, [])
+
+    def test_openrouter_rejects_caller_routing_and_duplicate_keys(self) -> None:
+        for field, value in (
+            ("canonical_slug", "vendor/model-canonical"),
+            ("provider", {"only": ["other"]}),
+            ("models", ["vendor/fallback"]),
+            ("plugins", [{"id": "router"}]),
+            ("transforms", ["middle-out"]),
+        ):
+            with self.subTest(field=field):
+                body = json.dumps({
+                    "model": "vendor/model-test", field: value,
+                }).encode("utf-8")
+                status, _response, _elapsed = self.request(
+                    "vendor/model-test", body=body
+                )
+                self.assertEqual(status, 400)
+        duplicate = b'{"model":"vendor/model-test","model":"vendor/other"}'
+        status, _response, _elapsed = self.request(
+            "vendor/model-test", body=duplicate
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(self.openrouter.requests, [])
+
+    def test_openrouter_accepts_only_routable_or_canonical_json_model(self) -> None:
+        self.openrouter.mode = "or_canonical_json"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(response)["model"], "vendor/model-test-20260810"
+        )
+        self.openrouter.mode = "or_mismatch_json"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 502)
+        self.assertNotIn("different-model", response.decode("utf-8"))
+        self.openrouter.mode = "or_malformed"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(response)["error"]["type"], "api_error")
+        for mode in ("or_list_model_json", "or_object_model_json"):
+            with self.subTest(mode=mode):
+                self.openrouter.mode = mode
+                status, response, _elapsed = self.request("vendor/model-test")
+                self.assertEqual(status, 502)
+                self.assertEqual(
+                    json.loads(response)["error"]["type"], "api_error"
+                )
+                self.assertNotIn("vendor/model-test", response.decode("utf-8"))
+
+    def test_openrouter_accepts_only_routable_or_canonical_sse_model(self) -> None:
+        self.openrouter.mode = "or_stream"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 200)
+        self.assertIn(b'"model":"vendor/model-test"', response)
+        self.openrouter.mode = "or_canonical_stream"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 200)
+        self.assertIn(b'"model":"vendor/model-test-20260810"', response)
+        self.openrouter.mode = "or_mismatch_stream"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 502)
+        self.assertNotIn("different-model", response.decode("utf-8"))
+
+    def test_openrouter_rejects_compressed_success_before_forwarding(self) -> None:
+        self.openrouter.mode = "gzip_usage_json"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(response)["error"]["type"], "api_error")
+
+    def test_openrouter_error_body_is_not_reflected(self) -> None:
+        self.openrouter.mode = "error"
+        status, response, _elapsed = self.request("vendor/model-test")
+        self.assertEqual(status, 429)
+        self.assertNotIn("rate_limit_error", response.decode("utf-8"))
+        self.assertIn("rejected the request", response.decode("utf-8"))
 
     def test_grok_route_is_recorded_with_its_own_provider_label(self) -> None:
         # Grok and Codex share an upstream, so the diagnostics label is the only
@@ -716,7 +1120,13 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(models.status, 200)
         self.assertEqual(
             {entry["id"] for entry in json.loads(models.read())["data"]},
-            {"gpt-test", "claude-test", "grok-test"},
+            {
+                "gpt-test",
+                "claude-test",
+                "grok-test",
+                "vendor/model-test",
+                "qwen/qwen3.6-27b",
+            },
         )
         connection.close()
 
@@ -728,6 +1138,7 @@ class RouterProtocolTests(unittest.TestCase):
             # wait below must exceed it too, so a slow runner reports a real
             # failure instead of a test-imposed timeout. The owner is always
             # terminated in the finally block, so the long sleep costs nothing.
+            snapshot, digest = write_test_snapshot(directory)
             owner = subprocess.Popen([
                 sys.executable,
                 "-c",
@@ -741,8 +1152,12 @@ class RouterProtocolTests(unittest.TestCase):
                         "start",
                         "--parent-pid",
                         str(owner.pid),
-                        "--routes-json",
-                        json.dumps({"gpt-test": "openai"}),
+                        "--snapshot",
+                        str(snapshot),
+                        "--snapshot-sha256",
+                        digest,
+                        "--openai-url",
+                        "http://127.0.0.1:49152",
                     ],
                     env=environment,
                     text=True,
@@ -784,6 +1199,7 @@ class RouterProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["LOCALAPPDATA"] = directory
+            snapshot, digest = write_test_snapshot(directory)
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -791,8 +1207,10 @@ class RouterProtocolTests(unittest.TestCase):
                     "start",
                     "--parent-pid",
                     "2147483647",
-                    "--routes-json",
-                    json.dumps({"gpt-test": "openai"}),
+                    "--snapshot",
+                    str(snapshot),
+                    "--snapshot-sha256",
+                    digest,
                 ],
                 env=environment,
                 text=True,
@@ -804,6 +1222,176 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("owner process is not running", completed.stderr)
         self.assertEqual(completed.stdout, "")
+
+    def test_openrouter_only_startup_and_config_need_no_subscription_upstream(self) -> None:
+        routes = {"vendor/model-test": "openrouter"}
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot, digest = write_test_snapshot(
+                directory,
+                routes=routes,
+                profile="openrouter-pure",
+                openrouter=TEST_OPENROUTER_METADATA,
+            )
+            loaded = router.load_router_snapshot(str(snapshot), digest)
+            with mock.patch.object(
+                router,
+                "load_openrouter_key",
+                return_value=b"sk-or-v1-SENTINEL_STARTUP_KEY",
+            ):
+                config = router.router_config_from_snapshot(
+                    loaded, None, "https://api.anthropic.com"
+                )
+                self.assertIsNone(config.openai)
+                self.assertEqual(config.routes, routes)
+
+                process = mock.Mock()
+                process.pid = 4242
+                process.poll.return_value = None
+
+                def launch(command: list[str], **_kwargs: object) -> mock.Mock:
+                    ready = Path(command[command.index("--ready-file") + 1])
+                    ready.write_text(json.dumps({
+                        "pid": process.pid,
+                        "bundle_version": router.MANAGED_BUNDLE_VERSION,
+                        "url": "http://127.0.0.1:39123",
+                    }), encoding="ascii")
+                    return process
+
+                with (
+                    mock.patch.object(router, "process_alive", return_value=True),
+                    mock.patch.object(
+                        router.subprocess, "Popen", side_effect=launch
+                    ) as popen,
+                    mock.patch.object(
+                        router, "safe_runtime_root", return_value=Path(directory)
+                    ),
+                ):
+                    args = router.parser().parse_args([
+                        "start",
+                        "--parent-pid",
+                        "1234",
+                        "--snapshot",
+                        str(snapshot),
+                        "--snapshot-sha256",
+                        digest,
+                    ])
+                    self.assertEqual(router.start_router(args), 0)
+
+                command = popen.call_args.args[0]
+                self.assertNotIn("--openai-url", command)
+
+    def test_subscription_routes_require_an_openai_upstream_at_startup_and_config(self) -> None:
+        for provider in ("openai", "grok"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                model = "gpt-test" if provider == "openai" else "grok-test"
+                snapshot, digest = write_test_snapshot(
+                    directory, routes={model: provider}
+                )
+                loaded = router.load_router_snapshot(str(snapshot), digest)
+                with self.assertRaisesRegex(
+                    router.RouterError, "subscription proxy upstream is required"
+                ):
+                    router.router_config_from_snapshot(
+                        loaded, None, "https://api.anthropic.com"
+                    )
+
+                args = router.parser().parse_args([
+                    "start",
+                    "--parent-pid",
+                    "1234",
+                    "--snapshot",
+                    str(snapshot),
+                    "--snapshot-sha256",
+                    digest,
+                ])
+                with (
+                    mock.patch.object(router, "process_alive", return_value=True),
+                    mock.patch.object(router.subprocess, "Popen") as popen,
+                    self.assertRaisesRegex(
+                        router.RouterError,
+                        "subscription proxy upstream is required",
+                    ),
+                ):
+                    router.start_router(args)
+                popen.assert_not_called()
+
+    def test_hybrid_snapshot_keeps_subscription_and_openrouter_upstreams(self) -> None:
+        routes = {
+            "gpt-test": "openai",
+            "grok-test": "grok",
+            "vendor/model-test": "openrouter",
+        }
+        agents = {
+            "airlock-gpt": {
+                "model": "gpt-test", "provider": "openai", "extra_usage": False,
+            },
+            "airlock-grok": {
+                "model": "grok-test", "provider": "grok", "extra_usage": False,
+            },
+            "airlock-openrouter": {
+                "model": "vendor/model-test",
+                "provider": "openrouter",
+                "extra_usage": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot, digest = write_test_snapshot(
+                directory,
+                routes=routes,
+                profile="hybrid",
+                openrouter=TEST_OPENROUTER_METADATA,
+                agents=agents,
+            )
+            loaded = router.load_router_snapshot(str(snapshot), digest)
+            with mock.patch.object(
+                router,
+                "load_openrouter_key",
+                return_value=b"sk-or-v1-SENTINEL_HYBRID_KEY",
+            ):
+                config = router.router_config_from_snapshot(
+                    loaded,
+                    "http://127.0.0.1:49152",
+                    "https://api.anthropic.com",
+                )
+
+        self.assertEqual(config.openai, ("http", "127.0.0.1", 49152, ""))
+        self.assertEqual(config.anthropic, ("https", "api.anthropic.com", 443, ""))
+        self.assertEqual(config.openrouter, ("https", "openrouter.ai", 443, "/api/v1"))
+        self.assertEqual(config.openrouter_key, b"sk-or-v1-SENTINEL_HYBRID_KEY")
+
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot, digest = write_test_snapshot(directory)
+            loaded = router.load_router_snapshot(str(snapshot), digest)
+            self.assertEqual(loaded.routes["gpt-test"], "openai")
+            snapshot.write_bytes(snapshot.read_bytes() + b"\n")
+            # Canonical whitespace is intentionally digest-equivalent.
+            router.load_router_snapshot(str(snapshot), digest)
+            value = loaded.to_dict()
+            value["routes"] = {"gpt-other": "openai"}
+            value["root_model"] = "gpt-other"
+            value["agents"]["airlock-test"]["model"] = "gpt-other"
+            snapshot.write_bytes(POLICY.canonical_json_bytes(value))
+            with self.assertRaisesRegex(router.RouterError, "snapshot is invalid"):
+                router.load_router_snapshot(str(snapshot), digest)
+
+    def test_openrouter_production_upstream_is_exactly_pinned(self) -> None:
+        self.assertEqual(
+            router.parse_upstream(
+                router.OPENROUTER_URL, "openrouter", production=True
+            ),
+            ("https", "openrouter.ai", 443, "/api/v1"),
+        )
+        for invalid in (
+            "http://openrouter.ai/api/v1",
+            "https://example.com/api/v1",
+            "https://openrouter.ai:444/api/v1",
+            "https://openrouter.ai/api/v2",
+            "https://user@openrouter.ai/api/v1",
+            "https://openrouter.ai/api/v1?x=1",
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(router.RouterError):
+                    router.parse_upstream(invalid, "openrouter", production=True)
 
     def test_production_upstreams_fail_closed(self) -> None:
         self.assertTrue(router.valid_router_url("http://127.0.0.1:49152"))

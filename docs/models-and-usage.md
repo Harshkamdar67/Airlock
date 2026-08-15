@@ -137,6 +137,14 @@ A number saves a smaller cap for new sessions. Top-level spawn depth remains one
 
 ## Provider Fast controls
 
+For a one-session root, use:
+
+```bash
+airlock fast -r
+```
+
+This starts fixed `gpt-5.6-sol-fast` through the Codex proxy without changing saved `AIRLOCK_OPENAI_FAST`. It requires the same eligible OpenAI plan and verified proxy checks as other OpenAI Fast routes and has no fallback. Inside a managed session, `/airlock-fast` arms a one-shot handoff; exit cleanly so the owning launcher can resume the exact conversation once on that root. This is not Claude Code Anthropic `/fast`. Hard kills, crashes, non-clean exits, hook failures, and expiry prevent relaunch. The managed plugin SessionEnd hook is required.
+
 ```bash
 airlock mode fast all
 airlock mode fast openai
@@ -207,6 +215,35 @@ Extra usage authorized: yes
 ```
 
 Provider billing settings are final. If paid credits are enabled on the account, a local routing preference cannot promise zero paid usage.
+
+## OpenRouter routes
+
+OpenRouter routes are not in the model roles table above because Airlock does not rank them. Add any supported exact route yourself with `airlock openrouter models add ROUTE MODEL ENDPOINT`, or start from one of three managed presets:
+
+```bash
+airlock openrouter models presets
+airlock openrouter models add-preset kimi-k3
+airlock openrouter models add-preset deepseek-v4-flash-0731
+airlock openrouter models add-preset qwen-3-6-27b
+```
+
+Listing presets is offline and changes nothing. Adding one still asks for confirmation and checks its exact model, frozen canonical provenance, pinned endpoint tag, catalog provider name, provider-registry routing slug, endpoint quantization, and required tool support against OpenRouter's public catalog before writing the registry. The provider name must map to one slug, and provider plus quantization must identify one endpoint. Requests use the slug and quantization constraints with fallback disabled. They require catalog support for `tools` and `tool_choice` without requiring the endpoint to advertise every optional Claude Code field. Responses must report either the exact routable model or its frozen canonical slug. The shipped suggestions are cautious summaries of community reports, not benchmarks or guarantees. They do not claim that an endpoint will remain cheapest, and their text never enters the registry, session snapshot, route policy, or Agent prompt.
+
+The current preset guidance is:
+
+| Preset | Suggested use | Reported tradeoffs |
+|---|---|---|
+| Kimi K3 | Frontend and visual implementation, plus substantial coding agents | Slower and token-heavy |
+| DeepSeek V4 Flash 0731 | Cost-sensitive coding, debugging, and bounded repository automation | Harness-sensitive tool use and weaker non-coding reliability |
+| Qwen 3.6 27B | Bounded coding, refactoring, planning, tests, and data work | Tool loops and long-session degradation |
+
+The preset guidance was reviewed on 2026-08-10 and remains unverified. Airlock does not accept custom descriptions, notes, or prompt text through either model command.
+
+All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers, or it can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
+
+Because Airlock does not evaluate a declared model's real capability, context window, or cost, an OpenRouter route usually follows `AIRLOCK_EXTRA_USAGE_POLICY` like any other extra-usage worker: it needs `Extra usage authorized: yes` under `ask`, runs without asking under `allow`, and is not offered under `never`. The one route you explicitly select as the `airlock opr` root is the exception: it carries that session's normal traffic and is not itself gated by the extra-usage policy, the same as an explicit hybrid root. Any other declared route that becomes available in that same `opr` session still follows the extra-usage policy normally. `airlock session-usage` and `airlock usage` do not cover OpenRouter, since it is a separate account with its own billing.
+
+Read [How it works](how-it-works.md#openrouter-routes-optional) for the full explanation, including `airlock opr`, the 30-day metadata expiry, and the credential storage backends.
 
 ## Effort
 

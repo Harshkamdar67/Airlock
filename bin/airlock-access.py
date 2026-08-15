@@ -5,15 +5,20 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import http.client
+import importlib.util
 import json
 import os
 from pathlib import Path
 import queue
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,16 +27,67 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+
+def _load_policy_schema() -> Any:
+    path = Path(__file__).with_name("airlock_policy.py")
+    spec = importlib.util.spec_from_file_location("airlock_managed_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("managed policy module is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+POLICY_SCHEMA = _load_policy_schema()
+
+
+def _load_openrouter_presets() -> Any:
+    path = Path(__file__).with_name("airlock_openrouter_presets.py")
+    spec = importlib.util.spec_from_file_location(
+        "airlock_managed_openrouter_presets", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("managed OpenRouter preset module is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    had_policy_module = "airlock_policy" in sys.modules
+    previous_policy_module = sys.modules.get("airlock_policy")
+    sys.modules["airlock_policy"] = POLICY_SCHEMA
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    finally:
+        if had_policy_module:
+            sys.modules["airlock_policy"] = previous_policy_module
+        else:
+            sys.modules.pop("airlock_policy", None)
+    return module
+
+
+OPENROUTER_PRESETS = _load_openrouter_presets()
+
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.09.2"
-MANAGED_PROTOCOL_VERSION = 3
+MANAGED_BUNDLE_VERSION = "2026.08.15.1"
+MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
 MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
 MAX_SESSION_DIAGNOSTICS_BYTES = 512 * 1024
+MAX_SESSION_ARTIFACT_BYTES = 2 * 1024 * 1024
+MAX_FAST_TRANSITION_BYTES = 4096
+MAX_FAST_TRANSITION_STDIN_BYTES = 4096
+FAST_TRANSITION_TTL_SECONDS = 120
+FAST_TRANSITION_SCHEMA_VERSION = 1
+FAST_TRANSITION_ROUTE = "sol-fast"
+FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
+FAST_TRANSITION_ENV_CHANNEL = "AIRLOCK_FAST_TRANSITION_CHANNEL"
+FAST_TRANSITION_ENV_NONCE = "AIRLOCK_FAST_TRANSITION_NONCE"
 SESSION_DIAGNOSTICS_TIMEOUT_SECONDS = 3
 MAX_SESSION_DIAGNOSTIC_EVENTS = 256
 SESSION_USAGE_FIELDS = (
@@ -108,6 +164,7 @@ PROVIDER_ROUTES = {
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
 PROFILE_COMPONENTS = {
+    "openrouter-pure": (),
     "openai-pure": (("openai", "openai_direct"),),
     "grok-pure": (("grok", "grok_direct"),),
     "hybrid-openai-root": (
@@ -127,6 +184,7 @@ PROFILE_COMPONENTS = {
     ),
 }
 PROFILE_ROOT_PROVIDERS = {
+    "openrouter-pure": "openrouter",
     "openai-pure": "openai",
     "grok-pure": "grok",
     "hybrid-openai-root": "openai",
@@ -255,6 +313,26 @@ def config_path() -> Path:
     if not standard_parent.exists() and os.access(home, os.W_OK):
         return standard_root / "config"
     return fallback_root / "config"
+
+
+def openrouter_registry_path() -> Path:
+    configured = os.environ.get("AIRLOCK_OPENROUTER_REGISTRY_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "openrouter-registry.json"
+
+
+def load_openrouter_registry() -> Any:
+    path = openrouter_registry_path()
+    try:
+        return POLICY_SCHEMA.load_openrouter_registry(path)
+    except POLICY_SCHEMA.RegistryNotFoundError:
+        return POLICY_SCHEMA.validate_openrouter_registry({
+            "schema_version": 1,
+            "models": [],
+        })
+    except POLICY_SCHEMA.PolicyValidationError as exc:
+        raise AccessError(f"OpenRouter registry is invalid: {exc}") from exc
 
 
 def access_path() -> Path:
@@ -1023,7 +1101,9 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_policy(path: Path | None = None) -> dict[str, Any]:
-    return apply_runtime_overrides(load_cached_policy(path))
+    policy = apply_runtime_overrides(load_cached_policy(path))
+    policy["_openrouter_registry"] = load_openrouter_registry()
+    return policy
 
 
 def _run_status(command: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -1108,7 +1188,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.3",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.4",
             }},
         }):
             return None
@@ -1360,7 +1440,9 @@ def refresh_policy(path: Path | None = None) -> dict[str, Any]:
     policy["providers"]["anthropic"].update(detect_anthropic())
     policy["providers"]["openai"].update(detect_openai())
     _write_policy(policy, target)
-    return apply_runtime_overrides(policy)
+    policy = apply_runtime_overrides(policy)
+    policy["_openrouter_registry"] = load_openrouter_registry()
+    return policy
 
 
 def load_or_refresh_policy(path: Path | None = None) -> dict[str, Any]:
@@ -1766,16 +1848,26 @@ def grok_auth_status() -> dict[str, object]:
     }
 
 
-def explicit_fast_status(policy: dict[str, Any], route: str) -> dict[str, object]:
+def explicit_fast_status(
+    policy: dict[str, Any], route: str, *, ephemeral: bool = False
+) -> dict[str, object]:
     if route not in {"sol-fast", "luna-fast"}:
         raise AccessError(f"unknown Fast route: {route}")
+    if ephemeral and route != FAST_TRANSITION_ROUTE:
+        raise AccessError("ephemeral Fast eligibility is available only for sol-fast")
     fast_enabled = policy.get("policies", {}).get("openai_fast") == "on"
     plan = str(policy["providers"]["openai"].get("detected_plan", "unknown")).lower()
     capability = proxy_fast_capability()
     plan_eligible = plan in OPENAI_FAST_ELIGIBLE_PLANS
-    eligible = fast_enabled and plan_eligible and capability["supported"] is True
-    if not fast_enabled:
+    policy_allows = fast_enabled or ephemeral
+    eligible = policy_allows and plan_eligible and capability["supported"] is True
+    if not policy_allows:
         reason = "OpenAI Fast routes are disabled by policy."
+    elif eligible and ephemeral and not fast_enabled:
+        reason = (
+            f"Session-local sol-fast is eligible because OpenAI plan {plan} "
+            "and proxy Fast support are verified."
+        )
     elif eligible:
         reason = f"OpenAI plan {plan} and proxy Fast support are verified."
     elif not plan_eligible:
@@ -1785,6 +1877,7 @@ def explicit_fast_status(policy: dict[str, Any], route: str) -> dict[str, object
     return {
         "route": route,
         "eligible": eligible,
+        "ephemeral": ephemeral,
         "enabled_by_policy": fast_enabled,
         "plan": plan,
         "plan_eligible": plan_eligible,
@@ -1861,7 +1954,8 @@ def delegation_error(policy: dict[str, Any], provider: str, route: str, effort: 
 
 
 def provider_headroom(policy: dict[str, Any], provider: str) -> dict[str, object]:
-    usage = policy["providers"][provider].get("usage", _default_usage(provider))
+    provider_state = policy.get("providers", {}).get(provider, {})
+    usage = provider_state.get("usage", _default_usage(provider))
     age = usage_age_seconds(usage)
     source = usage.get("source", "not_checked") if isinstance(usage, dict) else "not_checked"
     buckets = usage.get("buckets") if isinstance(usage, dict) else None
@@ -1894,10 +1988,111 @@ def provider_headroom(policy: dict[str, Any], provider: str) -> dict[str, object
     }
 
 
-def enabled_profile_workers(policy: dict[str, Any], profile: str) -> list[dict[str, str]]:
+def _openrouter_route_fields(entry: Any) -> dict[str, str]:
+    """Return only validated launcher-safe fields from one registry entry."""
+    return {
+        "route": entry.route,
+        "agent": entry.agent_name,
+        "model": entry.model,
+        "endpoint_provider": entry.endpoint_provider,
+        "provider_name": entry.provider_name,
+        "provider_slug": entry.provider_slug,
+        "quantization": entry.quantization,
+        "canonical_slug": entry.canonical_slug,
+    }
+
+
+def list_enabled_openrouter_routes(policy: dict[str, Any]) -> list[dict[str, str]]:
+    """List enabled routes from the already validated in-memory registry."""
+    registry = policy.get("_openrouter_registry")
+    entries = getattr(registry, "models", ())
+    return [
+        _openrouter_route_fields(entry)
+        for entry in sorted(entries, key=lambda item: item.route)
+        if entry.enabled
+    ]
+
+
+def resolve_openrouter_route(policy: dict[str, Any], route: str) -> Any:
+    """Resolve one exact enabled route from the validated registry, or fail closed."""
+    registry = policy.get("_openrouter_registry")
+    entries = getattr(registry, "models", ())
+    if isinstance(route, str):
+        for entry in entries:
+            if entry.route == route and entry.enabled:
+                return entry
+    raise AccessError(f"unknown or disabled OpenRouter route: {route!r}")
+
+
+def _validate_openrouter_root_route(
+    policy: dict[str, Any], profile: str, openrouter_root_route: str | None
+) -> Any | None:
+    if profile == "openrouter-pure":
+        if openrouter_root_route is None:
+            raise AccessError("openrouter-pure requires an exact OpenRouter root route")
+        return resolve_openrouter_route(policy, openrouter_root_route)
+    if openrouter_root_route is not None:
+        raise AccessError(
+            f"OpenRouter root route is not valid for session profile: {profile}"
+        )
+    return None
+
+
+def enabled_openrouter_workers(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> list[dict[str, str]]:
+    root_entry = _validate_openrouter_root_route(
+        policy, profile, openrouter_root_route
+    )
+    if profile != "openrouter-pure" and not profile.startswith("hybrid-"):
+        return []
+    registry = policy.get("_openrouter_registry")
+    entries = getattr(registry, "models", ())
+    if not entries:
+        return []
+    extra_policy = policy["policies"]["extra_usage"]
+    workers: list[dict[str, str]] = []
+    for entry in entries:
+        if not entry.enabled:
+            continue
+        selected_root = root_entry is not None and entry.route == root_entry.route
+        if not selected_root and extra_policy == "never":
+            continue
+        workers.append({
+            "provider": "openrouter",
+            "route": f"or-{entry.route}",
+            "agent": entry.agent_name,
+            "model": entry.model,
+            "effort": INHERIT_EFFORT,
+            "access": "included" if selected_root else "extra",
+            "capability": "unverified",
+            "cost": "unknown",
+            "strength": (
+                "user-declared OpenRouter route; Airlock does not infer its "
+                "capability, best use, context window, or relative cost"
+            ),
+            "endpoint_provider": entry.endpoint_provider,
+            "provider_name": entry.provider_name,
+            "provider_slug": entry.provider_slug,
+            "quantization": entry.quantization,
+            "canonical_slug": entry.canonical_slug,
+        })
+    return workers
+
+
+def enabled_profile_workers(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> list[dict[str, str]]:
     components = PROFILE_COMPONENTS.get(profile)
-    if not components:
+    if components is None:
         raise AccessError(f"unknown session profile: {profile}")
+    _validate_openrouter_root_route(policy, profile, openrouter_root_route)
     extra_policy = policy["policies"]["extra_usage"]
     workers: list[dict[str, str]] = []
     for provider, catalog_name in components:
@@ -1920,6 +2115,15 @@ def enabled_profile_workers(policy: dict[str, Any], profile: str) -> list[dict[s
                 "cost": model_profile["cost"],
                 "strength": model_profile["strength"],
             })
+    workers.extend(enabled_openrouter_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    ))
+    if len(workers) > MAX_CONFIGURED_SUBAGENTS:
+        raise AccessError(
+            f"{profile} enables more than {MAX_CONFIGURED_SUBAGENTS} named Agents"
+        )
     return workers
 
 
@@ -1968,11 +2172,28 @@ def discovery_model_from_workers(
     return None
 
 
-def discovery_model(policy: dict[str, Any], profile: str) -> str | None:
-    return discovery_model_from_workers(policy, enabled_profile_workers(policy, profile))
+def discovery_model(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> str | None:
+    workers = enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    if profile == "openrouter-pure":
+        return resolve_openrouter_route(policy, openrouter_root_route).model
+    return discovery_model_from_workers(policy, workers)
 
 
-def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
+def proxy_picker_models(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> dict[str, str]:
     """Map Claude Code's four Agent/model family aliases to exact enabled models.
 
     Claude Code's Agent tool accepts family aliases rather than arbitrary model
@@ -1982,7 +2203,11 @@ def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
     has no place to carry that confirmation marker.
     """
     workers = [
-        worker for worker in enabled_profile_workers(policy, profile)
+        worker for worker in enabled_profile_workers(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        )
         if not (
             worker["access"] == "extra"
             and policy["policies"]["extra_usage"] == "ask"
@@ -1997,6 +2222,9 @@ def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
                 return model
         raise AccessError(f"{profile} has no model eligible for a Claude Code family slot")
 
+    if profile == "openrouter-pure":
+        root = resolve_openrouter_route(policy, str(openrouter_root_route)).model
+        return {family: root for family in ("fable", "opus", "sonnet", "haiku")}
     if profile == "openai-pure":
         fable = opus = first("sol", "terra", "luna", "luna-fast")
         sonnet = first("terra", "sol", "luna", "luna-fast")
@@ -2027,8 +2255,17 @@ def proxy_picker_models(policy: dict[str, Any], profile: str) -> dict[str, str]:
     }
 
 
-def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, object]:
-    workers = enabled_profile_workers(policy, profile)
+def session_route_policy(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> dict[str, object]:
+    workers = enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
     routes: dict[str, str] = {}
     model_ids: list[str] = []
     agent_names: list[str] = []
@@ -2049,15 +2286,733 @@ def session_route_policy(policy: dict[str, Any], profile: str) -> dict[str, obje
             extra_model_ids.append(model)
     if not routes or len(agent_names) != len(set(agent_names)):
         raise AccessError("native session route policy is empty or ambiguous")
+    discovery = (
+        resolve_openrouter_route(policy, str(openrouter_root_route)).model
+        if profile == "openrouter-pure"
+        else discovery_model_from_workers(policy, workers)
+    )
     return {
         "routes": {model: routes[model] for model in sorted(routes)},
         "model_ids": sorted(model_ids),
         "agent_names": sorted(agent_names),
         "extra_model_ids": sorted(extra_model_ids),
         "extra_agent_names": sorted(extra_agent_names),
-        "picker_models": proxy_picker_models(policy, profile),
-        "discovery_model": discovery_model_from_workers(policy, workers),
+        "picker_models": proxy_picker_models(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        ),
+        "discovery_model": discovery,
     }
+
+
+def build_session_snapshot(
+    policy: dict[str, Any],
+    profile: str,
+    root_model: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> Any:
+    root_provider = PROFILE_ROOT_PROVIDERS.get(profile)
+    if root_provider is None:
+        raise AccessError(f"unknown session profile: {profile}")
+    root_entry = _validate_openrouter_root_route(
+        policy, profile, openrouter_root_route
+    )
+    if root_entry is not None and root_model != root_entry.model:
+        raise AccessError(
+            "session root model does not match the selected OpenRouter route"
+        )
+    route_policy = session_route_policy(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    raw_routes = route_policy["routes"]
+    if not isinstance(raw_routes, dict):
+        raise AccessError("session route policy is invalid")
+    routes = dict(raw_routes)
+    existing_provider = routes.get(root_model)
+    if existing_provider is not None and existing_provider != root_provider:
+        raise AccessError(
+            f"session root model route disagrees with {root_provider}: {root_model}"
+        )
+    routes[root_model] = root_provider
+    workers = enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    extra_agents = set(route_policy["extra_agent_names"])
+    agents = {
+        worker["agent"]: {
+            "model": worker["model"],
+            "provider": worker["provider"],
+            "extra_usage": worker["agent"] in extra_agents,
+        }
+        for worker in workers
+    }
+    if root_entry is not None:
+        root_agent = agents.get(root_entry.agent_name)
+        if (
+            not isinstance(root_agent, dict)
+            or root_agent.get("model") != root_model
+            or root_agent.get("provider") != "openrouter"
+            or root_agent.get("extra_usage") is not False
+        ):
+            raise AccessError("selected OpenRouter root Agent is missing or extra-gated")
+    openrouter = {
+        worker["model"]: {
+            "endpoint_provider": worker["endpoint_provider"],
+            "provider_name": worker["provider_name"],
+            "provider_slug": worker["provider_slug"],
+            "quantization": worker["quantization"],
+            "canonical_slug": worker["canonical_slug"],
+        }
+        for worker in workers
+        if worker["provider"] == "openrouter"
+    }
+    try:
+        return POLICY_SCHEMA.validate_session_snapshot({
+            "schema_version": 1,
+            "protocol_version": MANAGED_PROTOCOL_VERSION,
+            "profile": profile,
+            "root_model": root_model,
+            "root_provider": root_provider,
+            "routes": routes,
+            "agents": agents,
+            "openrouter": openrouter,
+        })
+    except POLICY_SCHEMA.PolicyValidationError as exc:
+        raise AccessError(f"session policy snapshot is invalid: {exc}") from exc
+
+
+def session_runtime_dir() -> Path:
+    configured = os.environ.get("AIRLOCK_SESSION_RUNTIME_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        root = Path(local) if local else Path.home() / "AppData" / "Local"
+        return root / "Airlock" / "sessions"
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "airlock"
+    return config_path().parent / "runtime"
+
+
+def _prepare_session_runtime_dir(directory: Path | None = None) -> Path:
+    target_dir = directory or session_runtime_dir()
+    if (
+        target_dir.is_symlink()
+        or (
+            target_dir.exists()
+            and (
+                not target_dir.is_dir()
+                or _is_reparse_point(target_dir.lstat())
+            )
+        )
+    ):
+        raise AccessError("session runtime path is not a safe directory")
+    target_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        details = target_dir.stat()
+        if hasattr(os, "geteuid") and details.st_uid != os.geteuid():
+            raise AccessError("session runtime directory is not owned by this user")
+        if details.st_mode & 0o077:
+            os.chmod(target_dir, 0o700)
+    return target_dir
+
+
+def _is_reparse_point(details: os.stat_result) -> bool:
+    attributes = getattr(details, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)
+
+
+def _validate_fast_transition_channel(channel: object) -> str:
+    if not isinstance(channel, str) or not re.fullmatch(
+        r"fast-transition-[0-9a-f]{32}\.json", channel
+    ):
+        raise AccessError("Fast transition channel is invalid")
+    return channel
+
+
+def _validate_fast_transition_nonce(nonce: object) -> str:
+    if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        raise AccessError("Fast transition nonce is invalid")
+    return nonce
+
+
+def _validate_fast_transition_pid(pid: object) -> int:
+    if isinstance(pid, bool):
+        raise AccessError("Fast transition launcher PID is invalid")
+    try:
+        parsed = int(pid)
+    except (TypeError, ValueError) as exc:
+        raise AccessError("Fast transition launcher PID is invalid") from exc
+    if str(parsed) != str(pid) or not 1 <= parsed <= 0xFFFFFFFF:
+        raise AccessError("Fast transition launcher PID is invalid")
+    return parsed
+
+
+def _canonical_fast_transition_cwd(cwd: object) -> str:
+    if not isinstance(cwd, (str, os.PathLike)):
+        raise AccessError("Fast transition cwd is invalid")
+    raw = os.fspath(cwd)
+    if not raw or len(raw) > 4096 or any(character in raw for character in "\x00\r\n"):
+        raise AccessError("Fast transition cwd is invalid")
+    try:
+        resolved = Path(raw).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise AccessError("Fast transition cwd is unavailable") from exc
+    if not resolved.is_dir():
+        raise AccessError("Fast transition cwd is not a directory")
+    canonical = os.path.normcase(str(resolved)) if os.name == "nt" else str(resolved)
+    if len(canonical) > 4096:
+        raise AccessError("Fast transition cwd is invalid")
+    return canonical
+
+
+def _validate_fast_transition_session_id(session_id: object) -> str:
+    if not isinstance(session_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", session_id
+    ):
+        raise AccessError("Fast transition session ID is invalid")
+    return session_id
+
+
+def _fast_transition_credentials(
+    channel: str | None, nonce: str | None
+) -> tuple[str, str]:
+    explicit = channel is not None or nonce is not None
+    if explicit and (channel is None or nonce is None):
+        raise AccessError("Fast transition channel and nonce must be supplied together")
+    selected_channel = channel if explicit else os.environ.get(FAST_TRANSITION_ENV_CHANNEL)
+    selected_nonce = nonce if explicit else os.environ.get(FAST_TRANSITION_ENV_NONCE)
+    return (
+        _validate_fast_transition_channel(selected_channel),
+        _validate_fast_transition_nonce(selected_nonce),
+    )
+
+
+def _fast_transition_path(channel: str) -> Path:
+    runtime_dir = _prepare_session_runtime_dir()
+    return runtime_dir / _validate_fast_transition_channel(channel)
+
+
+@contextmanager
+def _fast_transition_lock(channel: str) -> Any:
+    runtime_dir = _prepare_session_runtime_dir()
+    lock_path = runtime_dir / f".{_validate_fast_transition_channel(channel)}.lock"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise AccessError("Fast transition channel is busy") from exc
+    try:
+        os.close(descriptor)
+        os.chmod(lock_path, 0o600)
+        yield
+    finally:
+        try:
+            details = lock_path.lstat()
+            if not lock_path.is_symlink() and stat.S_ISREG(details.st_mode):
+                lock_path.unlink()
+        except OSError:
+            pass
+
+
+def _fast_transition_file_details(path: Path) -> os.stat_result:
+    try:
+        details = path.lstat()
+    except OSError as exc:
+        raise AccessError("Fast transition channel is missing") from exc
+    if (
+        path.is_symlink()
+        or _is_reparse_point(details)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_size > MAX_FAST_TRANSITION_BYTES
+    ):
+        raise AccessError("Fast transition channel is unsafe")
+    return details
+
+
+def _load_fast_transition(channel: str) -> tuple[Path, dict[str, object]]:
+    path = _fast_transition_path(channel)
+    before = _fast_transition_file_details(path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise AccessError("Fast transition channel changed while reading")
+            content = stream.read(MAX_FAST_TRANSITION_BYTES + 1)
+        after = _fast_transition_file_details(path)
+    except AccessError:
+        raise
+    except OSError as exc:
+        raise AccessError("Fast transition channel could not be read securely") from exc
+    if (
+        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        or len(content) > MAX_FAST_TRANSITION_BYTES
+        or len(content) != before.st_size
+    ):
+        raise AccessError("Fast transition channel changed while reading")
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AccessError("Fast transition channel contains invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise AccessError("Fast transition channel must contain a JSON object")
+    common = {
+        "schema_version", "state", "route", "model", "channel",
+        "nonce_sha256", "launcher_pid", "cwd", "created_at", "expires_at",
+    }
+    state = value.get("state")
+    expected = common | (
+        {"session_id", "armed_at"}
+        if state in {"armed", "ready", "consumed"}
+        else set()
+    )
+    if state not in {"pending", "armed", "ready", "consumed"} or set(value) != expected:
+        raise AccessError("Fast transition channel schema is invalid")
+    if (
+        value.get("schema_version") != FAST_TRANSITION_SCHEMA_VERSION
+        or value.get("route") != FAST_TRANSITION_ROUTE
+        or value.get("model") != FAST_TRANSITION_MODEL
+        or value.get("channel") != channel
+        or not isinstance(value.get("nonce_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("nonce_sha256")))
+        or isinstance(value.get("created_at"), bool)
+        or not isinstance(value.get("created_at"), int)
+        or not 0 <= value["created_at"] <= 0x7FFFFFFFFFFFFFFF
+        or isinstance(value.get("expires_at"), bool)
+        or not isinstance(value.get("expires_at"), int)
+        or not 0 <= value["expires_at"] <= 0x7FFFFFFFFFFFFFFF
+    ):
+        raise AccessError("Fast transition channel schema is invalid")
+    if state == "pending":
+        if value["expires_at"] != 0:
+            raise AccessError("Fast transition pending state must not expire")
+    elif (
+        isinstance(value.get("armed_at"), bool)
+        or not isinstance(value.get("armed_at"), int)
+        or not 0 <= value["armed_at"] <= 0x7FFFFFFFFFFFFFFF
+        or value["armed_at"] < value["created_at"]
+        or value["expires_at"] - value["armed_at"] != FAST_TRANSITION_TTL_SECONDS
+    ):
+        raise AccessError("Fast transition channel schema is invalid")
+    _validate_fast_transition_pid(value.get("launcher_pid"))
+    canonical_cwd = _canonical_fast_transition_cwd(value.get("cwd"))
+    if not hmac.compare_digest(canonical_cwd, str(value.get("cwd"))):
+        raise AccessError("Fast transition channel cwd is not canonical")
+    if state != "pending":
+        _validate_fast_transition_session_id(value.get("session_id"))
+    return path, value
+
+
+def _write_fast_transition(path: Path, value: dict[str, object], *, exclusive: bool) -> None:
+    content = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    if len(content) > MAX_FAST_TRANSITION_BYTES:
+        raise AccessError("Fast transition state exceeds its size limit")
+    target_dir = _prepare_session_runtime_dir()
+    if path.parent.resolve(strict=True) != target_dir.resolve(strict=True):
+        raise AccessError("Fast transition channel is outside the runtime directory")
+    if exclusive:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        created = False
+        try:
+            descriptor = os.open(path, flags, 0o600)
+            created = True
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(path, 0o600)
+            return
+        except OSError as exc:
+            if created:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise AccessError("Fast transition channel could not be created exclusively") from exc
+    _fast_transition_file_details(path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".fast-transition-", suffix=".tmp", dir=target_dir
+    )
+    replaced = False
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_name, 0o600)
+        _fast_transition_file_details(path)
+        os.replace(temporary_name, path)
+        replaced = True
+    except OSError as exc:
+        raise AccessError("Fast transition state could not be replaced atomically") from exc
+    finally:
+        if not replaced:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+
+def _validate_fast_transition_binding(
+    value: dict[str, object], nonce: str, launcher_pid: object, cwd: object,
+    *, check_expiry: bool = True, now: int | None = None,
+) -> None:
+    digest = hashlib.sha256(nonce.encode("ascii")).hexdigest()
+    if not hmac.compare_digest(digest, str(value["nonce_sha256"])):
+        raise AccessError("Fast transition nonce does not match")
+    if _validate_fast_transition_pid(launcher_pid) != value["launcher_pid"]:
+        raise AccessError("Fast transition launcher PID does not match")
+    canonical_cwd = _canonical_fast_transition_cwd(cwd)
+    if not hmac.compare_digest(canonical_cwd, str(value["cwd"])):
+        raise AccessError("Fast transition cwd does not match")
+    current = int(time.time()) if now is None else now
+    if isinstance(current, bool) or not isinstance(current, int) or current < 0:
+        raise AccessError("Fast transition validation time is invalid")
+    if (
+        check_expiry
+        and value.get("state") != "pending"
+        and current > value["expires_at"]
+    ):
+        raise AccessError("Fast transition channel has expired")
+
+
+def fast_transition_create(
+    launcher_pid: object, cwd: object, *, now: int | None = None,
+) -> dict[str, str]:
+    pid = _validate_fast_transition_pid(launcher_pid)
+    canonical_cwd = _canonical_fast_transition_cwd(cwd)
+    created_at = int(time.time()) if now is None else now
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, int)
+        or not 0 <= created_at <= 0x7FFFFFFFFFFFFFFF - FAST_TRANSITION_TTL_SECONDS
+    ):
+        raise AccessError("Fast transition creation time is invalid")
+    runtime_dir = _prepare_session_runtime_dir()
+    for _attempt in range(8):
+        channel = f"fast-transition-{secrets.token_hex(16)}.json"
+        nonce = secrets.token_hex(32)
+        value: dict[str, object] = {
+            "schema_version": FAST_TRANSITION_SCHEMA_VERSION,
+            "state": "pending",
+            "route": FAST_TRANSITION_ROUTE,
+            "model": FAST_TRANSITION_MODEL,
+            "channel": channel,
+            "nonce_sha256": hashlib.sha256(nonce.encode("ascii")).hexdigest(),
+            "launcher_pid": pid,
+            "cwd": canonical_cwd,
+            "created_at": created_at,
+            "expires_at": 0,
+        }
+        try:
+            _write_fast_transition(runtime_dir / channel, value, exclusive=True)
+        except AccessError:
+            continue
+        return {"channel": channel, "nonce": nonce}
+    raise AccessError("Fast transition channel could not be allocated")
+
+
+def fast_transition_arm(
+    session_id: object, channel: str | None = None, nonce: str | None = None,
+    *, now: int | None = None,
+) -> None:
+    selected_channel, selected_nonce = _fast_transition_credentials(channel, nonce)
+    with _fast_transition_lock(selected_channel):
+        path, value = _load_fast_transition(selected_channel)
+        digest = hashlib.sha256(selected_nonce.encode("ascii")).hexdigest()
+        if not hmac.compare_digest(digest, str(value["nonce_sha256"])):
+            raise AccessError("Fast transition nonce does not match")
+        current = int(time.time()) if now is None else now
+        if isinstance(current, bool) or not isinstance(current, int) or current < 0:
+            raise AccessError("Fast transition validation time is invalid")
+        if value["state"] != "pending":
+            raise AccessError("Fast transition can be armed only from pending state")
+        if current < value["created_at"]:
+            raise AccessError("Fast transition arm time predates creation")
+        if current > 0x7FFFFFFFFFFFFFFF - FAST_TRANSITION_TTL_SECONDS:
+            raise AccessError("Fast transition arm time is invalid")
+        value["state"] = "armed"
+        value["session_id"] = _validate_fast_transition_session_id(session_id)
+        value["armed_at"] = current
+        value["expires_at"] = current + FAST_TRANSITION_TTL_SECONDS
+        _write_fast_transition(path, value, exclusive=False)
+
+
+def _read_fast_transition_finalize_input(stream: Any = None) -> dict[str, str]:
+    source = sys.stdin.buffer if stream is None else stream
+    try:
+        content = source.read(MAX_FAST_TRANSITION_STDIN_BYTES + 1)
+    except (OSError, AttributeError) as exc:
+        raise AccessError("Fast transition finalize input could not be read") from exc
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    if not isinstance(content, bytes) or len(content) > MAX_FAST_TRANSITION_STDIN_BYTES:
+        raise AccessError("Fast transition finalize input is too large")
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AccessError("Fast transition finalize input is invalid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {"session_id", "cwd", "reason"}:
+        raise AccessError("Fast transition finalize input schema is invalid")
+    session_id = _validate_fast_transition_session_id(payload.get("session_id"))
+    cwd = _canonical_fast_transition_cwd(payload.get("cwd"))
+    reason = payload.get("reason")
+    if reason != "prompt_input_exit":
+        raise AccessError("Fast transition requires a clean prompt_input_exit")
+    return {"session_id": session_id, "cwd": cwd, "reason": reason}
+
+
+def fast_transition_finalize(
+    payload: dict[str, str], channel: str | None = None, nonce: str | None = None,
+    *, now: int | None = None,
+) -> None:
+    if not isinstance(payload, dict) or set(payload) != {"session_id", "cwd", "reason"}:
+        raise AccessError("Fast transition finalize input schema is invalid")
+    session_id = _validate_fast_transition_session_id(payload.get("session_id"))
+    canonical_cwd = _canonical_fast_transition_cwd(payload.get("cwd"))
+    if payload.get("reason") != "prompt_input_exit":
+        raise AccessError("Fast transition requires a clean prompt_input_exit")
+    selected_channel, selected_nonce = _fast_transition_credentials(channel, nonce)
+    with _fast_transition_lock(selected_channel):
+        path, value = _load_fast_transition(selected_channel)
+        digest = hashlib.sha256(selected_nonce.encode("ascii")).hexdigest()
+        if not hmac.compare_digest(digest, str(value["nonce_sha256"])):
+            raise AccessError("Fast transition nonce does not match")
+        current = int(time.time()) if now is None else now
+        if isinstance(current, bool) or not isinstance(current, int) or current < 0:
+            raise AccessError("Fast transition validation time is invalid")
+        if value["state"] != "armed":
+            raise AccessError("Fast transition can be finalized only from armed state")
+        if current > value["expires_at"]:
+            raise AccessError("Fast transition channel has expired")
+        if not hmac.compare_digest(session_id, str(value["session_id"])):
+            raise AccessError("Fast transition session ID does not match")
+        if not hmac.compare_digest(canonical_cwd, str(value["cwd"])):
+            raise AccessError("Fast transition cwd does not match")
+        value["state"] = "ready"
+        _write_fast_transition(path, value, exclusive=False)
+
+
+def fast_transition_consume(
+    launcher_pid: object, cwd: object, channel: str | None = None,
+    nonce: str | None = None, *, now: int | None = None,
+    if_ready: bool = False,
+) -> str | None:
+    selected_channel, selected_nonce = _fast_transition_credentials(channel, nonce)
+    with _fast_transition_lock(selected_channel):
+        path, value = _load_fast_transition(selected_channel)
+        _validate_fast_transition_binding(
+            value, selected_nonce, launcher_pid, cwd, now=now
+        )
+        if if_ready and value["state"] == "pending":
+            return None
+        if if_ready and value["state"] == "armed":
+            raise AccessError(
+                "Fast transition was armed but SessionEnd did not finalize it"
+            )
+        if value["state"] != "ready":
+            raise AccessError("Fast transition can be consumed only from ready state")
+        session_id = _validate_fast_transition_session_id(value.get("session_id"))
+        value["state"] = "consumed"
+        _write_fast_transition(path, value, exclusive=False)
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise AccessError("Fast transition was consumed but could not be removed") from exc
+    return session_id
+
+
+def fast_transition_cleanup(
+    launcher_pid: object, cwd: object, channel: str | None = None,
+    nonce: str | None = None,
+) -> None:
+    selected_channel, selected_nonce = _fast_transition_credentials(channel, nonce)
+    with _fast_transition_lock(selected_channel):
+        path, value = _load_fast_transition(selected_channel)
+        _validate_fast_transition_binding(
+            value, selected_nonce, launcher_pid, cwd, check_expiry=False
+        )
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise AccessError("Fast transition channel could not be cleaned up") from exc
+
+
+def write_session_artifact(
+    content: bytes,
+    prefix: str,
+    suffix: str,
+    directory: Path | None = None,
+) -> tuple[Path, str, int]:
+    if not isinstance(content, bytes) or len(content) > MAX_SESSION_ARTIFACT_BYTES:
+        raise AccessError("session artifact content is invalid or too large")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}-", prefix):
+        raise AccessError("session artifact prefix is invalid")
+    if suffix not in {".json", ".txt"}:
+        raise AccessError("session artifact suffix is invalid")
+
+    temporary_path: Path | None = None
+    descriptor = -1
+    try:
+        target_dir = _prepare_session_runtime_dir(directory)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=prefix, suffix=suffix, dir=target_dir
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, 0o600)
+    except BaseException as exc:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if isinstance(exc, AccessError):
+            raise
+        if isinstance(exc, OSError):
+            raise AccessError("session artifact could not be written securely") from exc
+        raise
+    if temporary_path is None:
+        raise AccessError("session artifact could not be written securely")
+    return temporary_path, hashlib.sha256(content).hexdigest(), len(content)
+
+
+def delete_session_artifact(
+    path: Path,
+    expected_digest: str,
+    expected_size: int,
+    directory: Path | None = None,
+) -> None:
+    target = path.expanduser()
+    runtime_dir = (directory or session_runtime_dir()).expanduser()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        raise AccessError("session artifact digest is invalid")
+    if not 0 <= expected_size <= MAX_SESSION_ARTIFACT_BYTES:
+        raise AccessError("session artifact size is invalid")
+    try:
+        if not runtime_dir.exists() or runtime_dir.is_symlink():
+            raise AccessError("session runtime path is not a safe directory")
+        if target.parent.resolve(strict=True) != runtime_dir.resolve(strict=True):
+            raise AccessError("session artifact is outside the runtime directory")
+        before = target.lstat()
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or before.st_size != expected_size
+        ):
+            raise AccessError("session artifact changed before cleanup")
+        with target.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise AccessError("session artifact changed before cleanup")
+            content = stream.read(expected_size + 1)
+        after = target.lstat()
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or after.st_size != expected_size
+            or len(content) != expected_size
+            or not hmac.compare_digest(
+                hashlib.sha256(content).hexdigest(), expected_digest
+            )
+        ):
+            raise AccessError("session artifact changed before cleanup")
+        target.unlink()
+    except AccessError:
+        raise
+    except OSError as exc:
+        raise AccessError("session artifact could not be removed securely") from exc
+
+
+def write_session_snapshot(
+    policy: dict[str, Any],
+    profile: str,
+    root_model: str,
+    directory: Path | None = None,
+    *,
+    openrouter_root_route: str | None = None,
+) -> tuple[Path, str]:
+    snapshot = build_session_snapshot(
+        policy,
+        profile,
+        root_model,
+        openrouter_root_route=openrouter_root_route,
+    )
+    temporary_path: Path | None = None
+    descriptor = -1
+    try:
+        target_dir = _prepare_session_runtime_dir(directory)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="session-", suffix=".json", dir=target_dir
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(snapshot.canonical_bytes())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, 0o600)
+    except (AccessError, OSError) as exc:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if isinstance(exc, AccessError):
+            raise
+        raise AccessError("session policy snapshot could not be written securely") from exc
+    if temporary_path is None:
+        raise AccessError("session policy snapshot could not be written securely")
+    return temporary_path, snapshot.digest()
+
+
+def delete_session_snapshot(path: Path, expected_digest: str) -> None:
+    target = path.expanduser()
+    runtime_dir = session_runtime_dir().expanduser()
+    try:
+        if not runtime_dir.exists() or runtime_dir.is_symlink():
+            raise AccessError("session runtime path is not a safe directory")
+        if target.parent.resolve(strict=True) != runtime_dir.resolve(strict=True):
+            raise AccessError("session policy snapshot is outside the runtime directory")
+        before = target.lstat()
+        POLICY_SCHEMA.load_session_snapshot(target, expected_digest)
+        after = target.lstat()
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise AccessError("session policy snapshot changed before cleanup")
+        target.unlink()
+    except AccessError:
+        raise
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
+        raise AccessError("session policy snapshot could not be removed securely") from exc
 
 
 def validate_session_router_url(raw_url: str) -> tuple[str, int]:
@@ -2144,6 +3099,8 @@ def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
             raise AccessError("active Airlock session usage summary is invalid")
         provider = raw_group.get("provider")
         model = raw_group.get("model")
+        if provider == "openrouter":
+            continue
         if provider not in PROVIDER_ROUTES or not isinstance(model, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._:+\-\[\]]{0,127}", model
         ):
@@ -2197,14 +3154,27 @@ def session_usage_lines(report: dict[str, Any]) -> list[str]:
                 f"output={group['output_tokens']}"
             )
     lines.append(
+        "OpenRouter usage is not included because it belongs to a separate account."
+    )
+    lines.append(
         "These counts come from upstream usage fields. Claude Code may still show zero "
         "on native Agent cards for custom OpenAI or Grok model IDs."
     )
     return lines
 
 
-def session_route_field(policy: dict[str, Any], profile: str, field: str) -> str:
-    route_policy = session_route_policy(policy, profile)
+def session_route_field(
+    policy: dict[str, Any],
+    profile: str,
+    field: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> str:
+    route_policy = session_route_policy(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
     if field == "routes":
         return json.dumps(
             route_policy["routes"], separators=(",", ":"), ensure_ascii=True
@@ -2234,6 +3204,12 @@ def session_route_field(policy: dict[str, Any], profile: str, field: str) -> str
 
 
 def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str, str]]) -> str:
+    if profile == "openrouter-pure":
+        return (
+            "UI/UX routing: this OpenRouter-only profile has no verified design specialist. "
+            "Do not infer capability or cost from the selected model or substitute another route; "
+            "follow the user's exact selected root and verify rendered behavior and accessibility."
+        )
     if profile == "openai-pure":
         return (
             "UI/UX routing: this OpenAI-only profile has no Anthropic worker. Do not invoke or "
@@ -2350,11 +3326,26 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
 
 
 def root_orchestration_guidance(
-    policy: dict[str, Any], workers: list[dict[str, str]]
+    policy: dict[str, Any],
+    workers: list[dict[str, str]],
+    *,
+    openrouter_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
-    recommended_discovery = discovery_model_from_workers(policy, workers)
-    if recommended_discovery:
+    recommended_discovery = (
+        resolve_openrouter_route(policy, openrouter_root_route).model
+        if openrouter_root_route is not None
+        else discovery_model_from_workers(policy, workers)
+    )
+    if openrouter_root_route is not None:
+        discovery_guidance = (
+            "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
+            f"Airlock resolves every alias to the exact selected OpenRouter root model {recommended_discovery}. "
+            "Passing `model=haiku` selects that same root for bounded read-only discovery and does not claim a cheaper, "
+            "smaller, or more capable route. No other OpenRouter route may enter a built-in alias. Named airlock-* Agents "
+            "remain the exact-model interface for separately enabled routes. "
+        )
+    elif recommended_discovery:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
             "Airlock resolves every alias to an exact model enabled for this session. "
@@ -2397,8 +3388,20 @@ def root_orchestration_guidance(
     )
 
 
-def worker_handoff_guidance(policy: dict[str, Any], profile: str) -> str:
-    providers = {worker["provider"] for worker in enabled_profile_workers(policy, profile)}
+def worker_handoff_guidance(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> str:
+    providers = {
+        worker["provider"]
+        for worker in enabled_profile_workers(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        )
+    }
     parts = [
         "Worker handoff wording: a worker sees only the query you send and returns only its final report, "
         "so name the goal, the paths, the constraints, and what the report must contain."
@@ -2445,8 +3448,17 @@ def root_communication_guidance() -> str:
     )
 
 
-def portfolio_guidance(policy: dict[str, Any], profile: str) -> str:
-    workers = enabled_profile_workers(policy, profile)
+def portfolio_guidance(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> str:
+    workers = enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
     routing = policy["policies"]["routing"]
     mode = mode_state()
     configured_max = str(mode["effective_max_agents"])
@@ -2601,12 +3613,21 @@ def provider_signal_summary(policy: dict[str, Any], provider: str) -> str:
     return "/".join(parts)
 
 
-def profile_guidance(policy: dict[str, Any], profile: str) -> str:
+def profile_guidance(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> str:
     if profile not in PROFILE_COMPONENTS:
         raise AccessError(f"unknown session profile: {profile}")
     routing = policy["policies"]["routing"]
     objective = ROUTING_OBJECTIVES[routing]
-    enabled_workers = enabled_profile_workers(policy, profile)
+    enabled_workers = enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
     workers = [
         f"{worker['route']}={worker['provider']}/native/{worker['access']}/"
         f"{worker['capability']}/{worker['cost']}"
@@ -2620,7 +3641,40 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         for provider in ("openai", "anthropic", "grok")
         if provider in enabled_providers and provider in policy.get("providers", {})
     )
-    if profile == "openai-pure":
+    if "openrouter" in enabled_providers:
+        openrouter_signal = (
+            "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
+            if profile == "openrouter-pure"
+            else "openrouter(registry=pinned/key=separate/usage=extra)"
+        )
+        signals = ", ".join(filter(None, (signals, openrouter_signal)))
+    if profile == "openrouter-pure":
+        selected = resolve_openrouter_route(policy, str(openrouter_root_route))
+        extra_policy = policy["policies"]["extra_usage"]
+        if extra_policy == "never":
+            other_routes = "Other OpenRouter routes are omitted by the active extra-usage policy."
+        elif extra_policy == "ask":
+            other_routes = (
+                "Other enabled OpenRouter Agents are separate extra-usage choices that require "
+                "explicit authorization."
+            )
+        else:
+            other_routes = (
+                "Other enabled OpenRouter Agents are separate extra-usage choices allowed without "
+                "per-call confirmation."
+            )
+        boundary = (
+            "Provider boundary: this is an OpenRouter-only native session. The exact user-selected "
+            f"route {selected.route} and model {selected.model} carry normal root traffic through the "
+            f"single pinned endpoint provider {selected.endpoint_provider}. Its named Agent is the "
+            "same explicitly selected route and is not marked extra in this session policy. "
+            + other_routes
+            + " Built-in Explore, Plan, and general-purpose may use only the selected root through "
+            "their session-owned family aliases. No other OpenRouter route may enter a built-in alias. "
+            "Do not invoke or claim an Anthropic, OpenAI Codex, or Grok route. Airlock does not infer "
+            "OpenRouter model capability, best use, context window, availability, or relative cost."
+        )
+    elif profile == "openai-pure":
         boundary = (
             "Provider boundary: this is an OpenAI-only native session. The root, built-in Agents, and exact "
             "airlock-* Agents may use only enabled OpenAI model IDs. Do not invoke or claim an Anthropic or Grok route."
@@ -2654,6 +3708,12 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         elif proxy_providers == ["grok"]:
             routes.append(
                 "Exact Grok IDs go only to the loopback subscription proxy on Grok OAuth."
+            )
+        if "openrouter" in enabled_providers:
+            routes.append(
+                "Exact user-declared OpenRouter IDs go only to OpenRouter through the single "
+                "endpoint provider pinned in the local registry. OpenRouter uses a separate key; "
+                "Airlock does not infer these models' capability, context window, or relative cost."
             )
         excluded = [
             label
@@ -2705,10 +3765,22 @@ def profile_guidance(policy: dict[str, Any], profile: str) -> str:
         boundary,
         metadata,
         failure_policy,
-        portfolio_guidance(policy, profile),
+        portfolio_guidance(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        ),
         ui_ux_guidance(policy, profile, enabled_workers),
-        root_orchestration_guidance(policy, enabled_workers),
-        worker_handoff_guidance(policy, profile),
+        root_orchestration_guidance(
+            policy,
+            enabled_workers,
+            openrouter_root_route=openrouter_root_route,
+        ),
+        worker_handoff_guidance(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        ),
         managed_result_guidance(),
         root_communication_guidance(),
         skill_policy,
@@ -2817,12 +3889,85 @@ def read_agent_catalog(path: Path, catalog_name: str) -> dict[str, Any]:
     return definitions
 
 
+def render_openrouter_agents(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> dict[str, Any]:
+    rendered: dict[str, Any] = {}
+    requires_confirmation = policy["policies"]["extra_usage"] == "ask"
+    for worker in enabled_openrouter_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    ):
+        selected_root = (
+            profile == "openrouter-pure"
+            and worker["access"] == "included"
+        )
+        if selected_root:
+            usage_sentence = (
+                "This is the explicitly selected route for normal root traffic; its named "
+                "Agent uses the same route without extra-usage gating."
+            )
+        elif requires_confirmation:
+            usage_sentence = (
+                "This is an additional OpenRouter route. Under the current policy, use it "
+                "only after explicit extra-usage authorization."
+            )
+        else:
+            usage_sentence = (
+                "This is an additional OpenRouter route. The current saved policy allows "
+                "extra usage without per-call confirmation."
+            )
+        name = worker["agent"]
+        model = worker["model"]
+        endpoint = worker["endpoint_provider"]
+        preset = OPENROUTER_PRESETS.preset_by_model(model)
+        preset_sentence = ""
+        if (
+            preset is not None
+            and worker["endpoint_provider"] == preset.endpoint_provider
+            and worker["provider_name"] == preset.provider_name
+            and worker["provider_slug"] == preset.provider_slug
+            and worker["quantization"] == preset.quantization
+            and worker["canonical_slug"] == preset.canonical_slug
+        ):
+            preset_sentence = (
+                f" Community-derived guidance (unverified, researched "
+                f"{preset.evidence_date}) suggests {preset.suggested_use}; "
+                f"reported tradeoffs: {preset.tradeoffs}."
+            )
+        rendered[name] = {
+            "description": (
+                f"User-declared OpenRouter worker for exact model {model} through pinned "
+                f"endpoint {endpoint}. Airlock does not verify its capability, context window, "
+                f"best use, availability, or relative cost. {usage_sentence}"
+                f"{preset_sentence}"
+            ),
+            "prompt": (
+                "Complete the assigned task with the available tools and return the full technical "
+                "result. This is a user-declared OpenRouter route. Do not infer provider guarantees, "
+                "change model or endpoint, invoke Agent, expose credentials, or broaden the task."
+            ),
+            "model": model,
+            "disallowedTools": ["Agent"],
+        }
+    return rendered
+
+
 def render_profile(
-    policy: dict[str, Any], profile: str, catalogs: dict[str, dict[str, Any]]
+    policy: dict[str, Any],
+    profile: str,
+    catalogs: dict[str, dict[str, Any]],
+    *,
+    openrouter_root_route: str | None = None,
 ) -> dict[str, Any]:
     components = PROFILE_COMPONENTS.get(profile)
-    if not components:
+    if components is None:
         raise AccessError(f"unknown session profile: {profile}")
+    _validate_openrouter_root_route(policy, profile, openrouter_root_route)
     rendered: dict[str, Any] = {}
     for provider, catalog_name in components:
         catalog = catalogs.get(catalog_name)
@@ -2833,6 +3978,15 @@ def render_profile(
         if duplicates:
             raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
         rendered.update(component)
+    openrouter_agents = render_openrouter_agents(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    duplicates = set(rendered).intersection(openrouter_agents)
+    if duplicates:
+        raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
+    rendered.update(openrouter_agents)
     if not rendered:
         raise AccessError("user policy disables every worker in this session profile")
     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
@@ -2841,13 +3995,25 @@ def render_profile(
     return rendered
 
 
-def managed_agent_names(rendered_profile: object) -> list[str]:
+def managed_agent_name_set(policy: dict[str, Any] | None = None) -> set[str]:
+    names = set(MANAGED_AGENT_NAMES)
+    if policy is not None:
+        registry = policy.get("_openrouter_registry")
+        entries = getattr(registry, "models", ())
+        names.update(entry.agent_name for entry in entries if entry.enabled)
+    return names
+
+
+def managed_agent_names(
+    rendered_profile: object, policy: dict[str, Any] | None = None
+) -> list[str]:
     if not isinstance(rendered_profile, dict) or not rendered_profile:
         raise AccessError("rendered agent profile is empty or invalid")
     names = sorted(rendered_profile)
+    expected_names = managed_agent_name_set(policy)
     if any(
         not isinstance(name, str)
-        or name not in MANAGED_AGENT_NAMES
+        or name not in expected_names
         or not isinstance(rendered_profile[name], dict)
         for name in names
     ):
@@ -2855,22 +4021,26 @@ def managed_agent_names(rendered_profile: object) -> list[str]:
     return names
 
 
-def managed_agent_names_json(serialized: str) -> list[str]:
+def managed_agent_names_json(
+    serialized: str, policy: dict[str, Any] | None = None
+) -> list[str]:
     if not isinstance(serialized, str) or len(serialized.encode("utf-8")) > MAX_RENDERED_AGENTS_BYTES:
         raise AccessError("rendered agent profile is missing or too large")
     try:
         rendered = json.loads(serialized)
     except json.JSONDecodeError as exc:
         raise AccessError("rendered agent profile is invalid JSON") from exc
-    return managed_agent_names(rendered)
+    return managed_agent_names(rendered, policy)
 
 
 def managed_session_settings_json(
-    serialized: str, fast_mode: str = "inherit"
+    serialized: str,
+    fast_mode: str = "inherit",
+    policy: dict[str, Any] | None = None,
 ) -> str:
     if fast_mode not in {"inherit", "on", "off"}:
         raise AccessError("managed session Fast mode must be inherit, on, or off")
-    names = managed_agent_names_json(serialized)
+    names = managed_agent_names_json(serialized, policy)
     enabled = set(names)
     services: list[str] = []
     if enabled.intersection(OPENAI_MANAGED_AGENT_NAMES):
@@ -2884,6 +4054,10 @@ def managed_session_settings_json(
     if enabled.intersection(GROK_MANAGED_AGENT_NAMES):
         services.append(
             "Grok models reached through Claude Code's native Agent runtime and the active loopback subscription proxy"
+        )
+    if any(name.startswith("airlock-or-") for name in enabled):
+        services.append(
+            "user-declared OpenRouter models reached through Claude Code's native Agent runtime, the active loopback router, and exact pinned OpenRouter endpoints"
         )
     if not services:
         raise AccessError("rendered Agent profile has no native provider")
@@ -2906,18 +4080,28 @@ def managed_session_settings_json(
 
 
 def render_profile_from_paths(
-    policy: dict[str, Any], profile: str, catalog_paths: dict[str, object]
+    policy: dict[str, Any],
+    profile: str,
+    catalog_paths: dict[str, object],
+    *,
+    openrouter_root_route: str | None = None,
 ) -> dict[str, Any]:
-    required = {name for _, name in PROFILE_COMPONENTS.get(profile, ())}
-    if not required:
+    components = PROFILE_COMPONENTS.get(profile)
+    if components is None:
         raise AccessError(f"unknown session profile: {profile}")
+    required = {name for _, name in components}
     catalogs: dict[str, dict[str, Any]] = {}
     for catalog_name in required:
         raw_path = catalog_paths.get(catalog_name)
         if not isinstance(raw_path, str) or not raw_path:
             raise AccessError(f"missing agent catalog path: {catalog_name}")
         catalogs[catalog_name] = read_agent_catalog(Path(raw_path).expanduser(), catalog_name)
-    return render_profile(policy, profile, catalogs)
+    return render_profile(
+        policy,
+        profile,
+        catalogs,
+        openrouter_root_route=openrouter_root_route,
+    )
 
 
 def status_lines(policy: dict[str, Any]) -> list[str]:
@@ -3125,7 +4309,29 @@ def main() -> int:
     capacity_parser.add_argument("provider", choices=sorted(PROVIDER_ROUTES))
     fast_check = subparsers.add_parser("fast-check")
     fast_check.add_argument("--route", choices=("sol-fast", "luna-fast"), required=True)
+    fast_check.add_argument("--ephemeral", action="store_true")
     fast_check.add_argument("--quiet", action="store_true")
+    transition_create = subparsers.add_parser("fast-transition-create")
+    transition_create.add_argument("--launcher-pid", required=True)
+    transition_create.add_argument("--cwd", required=True)
+    transition_arm = subparsers.add_parser("fast-transition-arm")
+    transition_arm.add_argument("--session-id", required=True)
+    transition_arm.add_argument("--channel")
+    transition_arm.add_argument("--nonce")
+    transition_finalize = subparsers.add_parser("fast-transition-finalize")
+    transition_finalize.add_argument("--channel")
+    transition_finalize.add_argument("--nonce")
+    transition_consume = subparsers.add_parser("fast-transition-consume")
+    transition_consume.add_argument("--launcher-pid", required=True)
+    transition_consume.add_argument("--cwd", required=True)
+    transition_consume.add_argument("--channel")
+    transition_consume.add_argument("--nonce")
+    transition_consume.add_argument("--if-ready", action="store_true")
+    transition_cleanup = subparsers.add_parser("fast-transition-cleanup")
+    transition_cleanup.add_argument("--launcher-pid", required=True)
+    transition_cleanup.add_argument("--cwd", required=True)
+    transition_cleanup.add_argument("--channel")
+    transition_cleanup.add_argument("--nonce")
     render = subparsers.add_parser("render-agents")
     render.add_argument("--mode", choices=sorted(MODE_PROVIDERS), required=True)
     render.add_argument("--agents-file", type=Path, required=True)
@@ -3133,6 +4339,7 @@ def main() -> int:
     guidance.add_argument("--mode", choices=sorted(MODE_PROVIDERS), required=True)
     profile_render = subparsers.add_parser("render-profile")
     profile_render.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
+    profile_render.add_argument("--openrouter-root-route")
     profile_render.add_argument("--openai-direct-file")
     profile_render.add_argument("--anthropic-direct-file")
     profile_render.add_argument("--openai-wrappers-file")
@@ -3148,13 +4355,27 @@ def main() -> int:
     )
     session_routes = subparsers.add_parser("session-routes")
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
+    session_routes.add_argument("--openrouter-root-route")
     session_routes.add_argument(
         "--field",
         choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names", "picker-models", "discovery-model"),
         default="routes",
     )
+    session_snapshot = subparsers.add_parser("session-snapshot")
+    session_snapshot.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), required=True
+    )
+    session_snapshot.add_argument("--root-model", required=True)
+    session_snapshot.add_argument("--openrouter-root-route")
+    snapshot_delete = subparsers.add_parser("session-snapshot-delete")
+    snapshot_delete.add_argument("--snapshot", type=Path, required=True)
+    snapshot_delete.add_argument("--snapshot-sha256", required=True)
     profile_help = subparsers.add_parser("profile-guidance")
     profile_help.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
+    profile_help.add_argument("--openrouter-root-route")
+    subparsers.add_parser("openrouter-routes")
+    openrouter_resolve = subparsers.add_parser("openrouter-resolve")
+    openrouter_resolve.add_argument("route")
     bundle_check = subparsers.add_parser("bundle-check")
     bundle_check.add_argument("--bundle", type=Path, required=True)
     bundle_check.add_argument("--platform", choices=("posix", "windows"), required=True)
@@ -3176,10 +4397,14 @@ def main() -> int:
                 )
             return 0
         if args.command == "managed-agent-names":
-            print("\n".join(managed_agent_names_json(args.agents_json)))
+            policy = load_policy()
+            print("\n".join(managed_agent_names_json(args.agents_json, policy)))
             return 0
         if args.command == "managed-session-settings":
-            print(managed_session_settings_json(args.agents_json, args.fast_mode))
+            policy = load_policy()
+            print(managed_session_settings_json(
+                args.agents_json, args.fast_mode, policy
+            ))
             return 0
         if args.command == "refresh":
             policy = refresh_policy()
@@ -3225,15 +4450,77 @@ def main() -> int:
             return 0
         if args.command == "fast-check":
             policy = load_policy()
-            status = explicit_fast_status(policy, args.route)
+            status = explicit_fast_status(
+                policy, args.route, ephemeral=args.ephemeral
+            )
             if not status["eligible"]:
                 raise AccessError(str(status["reason"]))
             if not args.quiet:
                 print(json.dumps(status, separators=(",", ":"), ensure_ascii=True))
             return 0
+        if args.command == "fast-transition-create":
+            metadata = fast_transition_create(args.launcher_pid, args.cwd)
+            print(f"{metadata['channel']}\t{metadata['nonce']}")
+            return 0
+        if args.command == "fast-transition-arm":
+            fast_transition_arm(args.session_id, args.channel, args.nonce)
+            return 0
+        if args.command == "fast-transition-finalize":
+            payload = _read_fast_transition_finalize_input()
+            fast_transition_finalize(payload, args.channel, args.nonce)
+            return 0
+        if args.command == "fast-transition-consume":
+            session_id = fast_transition_consume(
+                args.launcher_pid, args.cwd, args.channel, args.nonce,
+                if_ready=args.if_ready,
+            )
+            if session_id is not None:
+                print(session_id)
+            return 0
+        if args.command == "fast-transition-cleanup":
+            fast_transition_cleanup(
+                args.launcher_pid, args.cwd, args.channel, args.nonce
+            )
+            return 0
+        if args.command == "session-snapshot-delete":
+            delete_session_snapshot(args.snapshot, args.snapshot_sha256)
+            return 0
         policy = load_or_refresh_policy()
+        if args.command == "openrouter-routes":
+            print(json.dumps(
+                list_enabled_openrouter_routes(policy),
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ))
+            return 0
+        if args.command == "openrouter-resolve":
+            print(json.dumps(
+                _openrouter_route_fields(
+                    resolve_openrouter_route(policy, args.route)
+                ),
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ))
+            return 0
+        if args.command == "session-snapshot":
+            snapshot_path, snapshot_digest = write_session_snapshot(
+                policy,
+                args.profile,
+                args.root_model,
+                openrouter_root_route=args.openrouter_root_route,
+            )
+            if any(character in str(snapshot_path) for character in "\r\n\t"):
+                snapshot_path.unlink(missing_ok=True)
+                raise AccessError("session runtime path contains a control character")
+            print(f"{snapshot_path}\t{snapshot_digest}")
+            return 0
         if args.command == "session-routes":
-            print(session_route_field(policy, args.profile, args.field))
+            print(session_route_field(
+                policy,
+                args.profile,
+                args.field,
+                openrouter_root_route=args.openrouter_root_route,
+            ))
             return 0
         if args.command == "render-profile":
             catalog_paths = {
@@ -3244,11 +4531,20 @@ def main() -> int:
                 "grok_direct": args.grok_direct_file,
                 "grok_wrappers": args.grok_wrappers_file,
             }
-            rendered_profile = render_profile_from_paths(policy, args.profile, catalog_paths)
+            rendered_profile = render_profile_from_paths(
+                policy,
+                args.profile,
+                catalog_paths,
+                openrouter_root_route=args.openrouter_root_route,
+            )
             print(json.dumps(rendered_profile, separators=(",", ":"), ensure_ascii=True))
             return 0
         if args.command == "profile-guidance":
-            print(profile_guidance(policy, args.profile))
+            print(profile_guidance(
+                policy,
+                args.profile,
+                openrouter_root_route=args.openrouter_root_route,
+            ))
             return 0
         if args.command == "render-agents":
             target = args.agents_file

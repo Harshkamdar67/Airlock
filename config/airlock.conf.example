@@ -16,6 +16,10 @@ AIRLOCK_GROK_MODEL=grok
 # AIRLOCK_GROK_MODELS=grok,composer
 # AIRLOCK_EFFORT_GROK=inherit
 # AIRLOCK_EFFORT_COMPOSER=inherit
+# OpenRouter is not configured through this file. It stays off by default and
+# has no key here on purpose; the key lives only in the operating system's own
+# credential storage. Turn it on with `airlock openrouter auth set-key` and
+# `airlock openrouter models add`, which write to a separate local registry file.
 # Starting effort for the root session. Change it live with /effort.
 AIRLOCK_MAIN_EFFORT=high
 # Advanced: separate convenience command. Normal Agents do not use this lane.

@@ -1868,6 +1868,8 @@ fi
 mv "$rendered_config" "$config_target"
 trap - EXIT
 wrap_text '' '' "Saved configuration to $config_target"
+wrap_text '' '' \
+  'OpenRouter remains off until you explicitly store a key with airlock openrouter auth set-key and add an exact model and endpoint with airlock openrouter models add.'
 
 if [[ "$config_only" -eq 1 ]]; then
   printf 'Configuration-only mode complete.\n'

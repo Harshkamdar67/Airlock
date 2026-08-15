@@ -55,6 +55,77 @@ airlock proxy grok auth login
 
 A session that confirms the proxy is signed out of Grok disables the Grok routes on purpose, so that the main model is never offered a worker whose first request would fail. `airlock grok` and `airlock hybrid grok` enable the routes themselves, because naming a Grok root is an explicit request for that provider.
 
+## Every Airlock session fails because of the OpenRouter registry
+
+An expired or invalid OpenRouter registry entry does not just disable that one route. It makes the whole registry file invalid, which stops every Airlock session, including OpenAI-only and Grok-only ones. This is deliberate: a stale or broken declared route is treated as untrusted input rather than left running on unverified metadata.
+
+Check what is declared:
+
+```bash
+airlock openrouter models list
+```
+
+A route's verified metadata expires after 30 days. Refresh it:
+
+```bash
+airlock openrouter models refresh --apply
+```
+
+Or remove the route if you no longer need it:
+
+```bash
+airlock openrouter models remove ROUTE
+```
+
+If you never ran `airlock openrouter models add` or `airlock openrouter models add-preset`, this is unrelated to OpenRouter. Listing presets does not create a registry. Run `airlock bundle` and check the doctor output instead.
+
+## `airlock opr` refuses to start
+
+`airlock opr` fails closed rather than guessing a route or falling back to another one:
+
+- **`an OpenRouter route is required outside an interactive terminal`**: you ran `airlock opr` with no route argument from a script, CI job, or other non-interactive shell. Pass the exact route: `airlock opr ROUTE`.
+- **`unknown or disabled OpenRouter route`**: the name does not match a currently declared, enabled route. Check the exact spelling with `airlock openrouter models list`; a route you removed, disabled, or never added cannot be selected, and route names are matched exactly.
+- **`no enabled OpenRouter routes are available`**: your registry has nothing declared yet, or every declared route is disabled. Add one with `airlock openrouter models add` or `add-preset` first.
+- **`OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded`**: `airlock opr` picks the model through the route, not through `--model`. Drop that flag and pass Claude Code's other arguments normally.
+- **A stale or invalid registry entry**: the same registry check that blocks other Airlock sessions also blocks `airlock opr`. See [Every Airlock session fails because of the OpenRouter registry](#every-airlock-session-fails-because-of-the-openrouter-registry) above.
+
+These checks run before Airlock contacts OpenRouter, so a rejected `airlock opr` launch never sends a request.
+
+## OpenRouter returns `The selected OpenRouter upstream rejected the request`
+
+This message means the exact pinned OpenRouter endpoint returned an error. Airlock keeps the status but hides the upstream body because it may contain prompt or account data. It does not retry another provider.
+
+Claude Code can put its custom-model notice in a `messages` entry with the non-standard `system` role. Older Airlock builds forwarded that shape unchanged, and strict endpoints such as the curated Qwen 3.6 27B Chutes route rejected it with HTTP 400. Current Airlock preserves the notice by moving it into the Anthropic Messages API's top-level `system` field.
+
+Check the managed installation first:
+
+```bash
+airlock bundle
+```
+
+If the bundle is current and the error remains, inspect the declared route without changing it:
+
+```bash
+airlock openrouter models list
+airlock openrouter models refresh
+```
+
+A provider can still reject a request for its own availability, account, limit, or compatibility reasons even while its public catalog entry is valid. Do not change the endpoint or enable fallback based only on the sanitized message.
+
+## Fast handoff does not resume
+
+The direct `airlock fast -r` shortcut starts a new one-session `gpt-5.6-sol-fast` root and does not change saved `AIRLOCK_OPENAI_FAST`. It still requires an eligible OpenAI plan and verified proxy support, and never falls back.
+
+For the in-session workflow, `/airlock-fast` must run in the current managed Airlock session. After it arms, exit normally so the owning launcher can resume the exact conversation once. A hard kill, crash, non-clean exit, SessionEnd hook failure, or expired marker intentionally prevents relaunch. This is not Claude Code Anthropic `/fast`.
+
+Check that the managed plugin is installed and current:
+
+```bash
+airlock bundle
+```
+
+The SessionEnd hook is required and is authorized as part of the Airlock plugin, not as a global hook. The private marker is bound to the session, launcher, working directory, and nonce, so moving the directory or trying to reuse it is rejected.
+
 ## Claude login is missing
 
 Run the official Claude Code login:
@@ -272,6 +343,12 @@ airlock mode
 ```
 
 Use several top-level native Agent calls when the work is truly independent. Do not build hidden descendant trees.
+
+## Windows says the Claude Code launch command is too long
+
+Current Airlock builds keep generated settings and routing guidance in private session files, so the complete managed worker catalog fits below the Windows process limit. Airlock checks the exact remaining command before starting the router. If it still refuses, a forwarded argument or the inline Agent catalog is unusually large. It reports the measured length without printing the command or prompt.
+
+For a long noninteractive prompt, use standard input as shown below. If you still see raw `[WinError 206]` instead of Airlock's clear length message, run `airlock bundle`, reinstall the current managed bundle, and start a fresh session.
 
 ## A long noninteractive prompt says `Argument list too long`
 

@@ -178,6 +178,82 @@ if command -v airlock >/dev/null 2>&1; then
     else
       fail "Release updater is missing or unsafe: $updater_path"
     fi
+
+    python_bin=''
+    if command -v python3 >/dev/null 2>&1; then
+      python_bin="$(command -v python3)"
+    elif command -v python >/dev/null 2>&1; then
+      python_bin="$(command -v python)"
+    fi
+    policy_path="${AIRLOCK_POLICY_HELPER:-$(dirname "$launcher_path")/airlock_policy.py}"
+    openrouter_auth_path="${AIRLOCK_OPENROUTER_AUTH_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_auth.py}"
+    openrouter_presets_path="${AIRLOCK_OPENROUTER_PRESETS_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_presets.py}"
+    openrouter_models_path="${AIRLOCK_OPENROUTER_MODELS_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_models.py}"
+    openrouter_registry_path="${AIRLOCK_OPENROUTER_REGISTRY_FILE:-$config_dir/openrouter-registry.json}"
+    openrouter_helpers_safe=1
+    for helper_path in "$policy_path" "$openrouter_auth_path" "$openrouter_presets_path" "$openrouter_models_path"; do
+      if [[ ! -f "$helper_path" || -L "$helper_path" ]]; then
+        fail "OpenRouter helper is missing or unsafe: $helper_path"
+        openrouter_helpers_safe=0
+      fi
+    done
+    if [[ -z "$python_bin" ]]; then
+      fail 'Python 3 is required for OpenRouter checks'
+      openrouter_helpers_safe=0
+    fi
+
+    openrouter_registry_state='unknown'
+    openrouter_registry_count=0
+    if [[ "$openrouter_helpers_safe" -eq 1 ]]; then
+      openrouter_registry_output="$(
+        "$python_bin" "$openrouter_models_path" \
+          --registry "$openrouter_registry_path" _doctor-status 2>&1
+      )"
+      openrouter_registry_status=$?
+      while IFS= read -r openrouter_line; do
+        case "$openrouter_line" in
+          STATE=*) openrouter_registry_state="${openrouter_line#STATE=}" ;;
+          COUNT=*) openrouter_registry_count="${openrouter_line#COUNT=}" ;;
+          MODEL=*)
+            openrouter_model_line="${openrouter_line#MODEL=}"
+            IFS=$'\t' read -r openrouter_route openrouter_model openrouter_endpoint openrouter_enabled <<<"$openrouter_model_line"
+            info "OpenRouter route: airlock-or-$openrouter_route -> $openrouter_model via $openrouter_endpoint ($openrouter_enabled)"
+            ;;
+          DETAIL=*) info "OpenRouter registry detail: ${openrouter_line#DETAIL=}" ;;
+        esac
+      done <<<"$openrouter_registry_output"
+      case "$openrouter_registry_state" in
+        absent) info "OpenRouter registry is not configured: $openrouter_registry_path" ;;
+        valid) pass "OpenRouter registry is valid and fresh ($openrouter_registry_count model(s)): $openrouter_registry_path" ;;
+        stale) fail "OpenRouter registry metadata is stale; refresh it before starting a new session" ;;
+        invalid) fail "OpenRouter registry is invalid: $openrouter_registry_path" ;;
+        *)
+          fail "OpenRouter registry status could not be determined: $openrouter_registry_path"
+          [[ "$openrouter_registry_status" -eq 0 ]] || info 'The registry helper returned an error.'
+          ;;
+      esac
+
+      openrouter_backend_output="$("$python_bin" "$openrouter_auth_path" _backend-status 2>&1)"
+      openrouter_backend_status=$?
+      openrouter_backend='unknown'
+      openrouter_backend_state='unknown'
+      while IFS= read -r openrouter_line; do
+        case "$openrouter_line" in
+          BACKEND=*) openrouter_backend="${openrouter_line#BACKEND=}" ;;
+          STATE=*) openrouter_backend_state="${openrouter_line#STATE=}" ;;
+        esac
+      done <<<"$openrouter_backend_output"
+      if [[ "$openrouter_backend_state" == 'available' ]]; then
+        pass "OpenRouter credential backend is available: $openrouter_backend"
+      elif [[ "$openrouter_registry_count" -gt 0 ]]; then
+        fail "OpenRouter credential backend is unavailable: $openrouter_backend"
+      else
+        info "OpenRouter credential backend is unavailable: $openrouter_backend"
+      fi
+      info 'Doctor does not read the OpenRouter credential; run airlock openrouter auth status to check it.'
+      [[ "$openrouter_backend_status" -eq 0 || "$openrouter_backend_state" == 'unavailable' ]] || \
+        fail 'OpenRouter credential backend status could not be determined'
+    fi
     if grep -qF "'usage'" "$launcher_path" 2>/dev/null; then
       while IFS= read -r usage_line; do
         info "$usage_line"
@@ -209,6 +285,9 @@ plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_dir/plugins/airlock}"
 if [[ -d "$plugin_dir" && ! -L "$plugin_dir" \
   && -f "$plugin_dir/.claude-plugin/plugin.json" \
   && -f "$plugin_dir/hooks/hooks.json" \
+  && -f "$plugin_dir/skills/airlock-fast/SKILL.md" \
+  && -f "$plugin_dir/scripts/fast-session-end.sh" \
+  && -f "$plugin_dir/scripts/fast-session-end.py" \
   && -f "$plugin_dir/scripts/agent-guard.py" \
   && -f "$plugin_dir/scripts/secret-guard.py" \
   && -f "$plugin_dir/scripts/update-notice.sh" \

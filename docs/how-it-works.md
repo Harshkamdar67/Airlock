@@ -77,6 +77,55 @@ Named workers cannot invoke Agent and a caller cannot override their model. This
 
 A worker runs inside Claude Code itself, not inside a shell command. A long response cannot be lost to a shell timeout.
 
+## OpenRouter routes (optional)
+
+OpenRouter is a separate, opt-in path for models Airlock does not otherwise offer. Setup never turns it on. It stays off until you both store a key and declare at least one route:
+
+```bash
+airlock openrouter auth set-key
+airlock openrouter auth status
+airlock openrouter auth logout
+airlock openrouter models list
+airlock openrouter models presets
+airlock openrouter models add-preset NAME
+airlock openrouter models add ROUTE MODEL ENDPOINT
+airlock openrouter models remove ROUTE
+airlock openrouter models refresh
+airlock opr [ROUTE] [Claude arguments...]
+```
+
+`airlock openrouter auth` and `airlock openrouter models` manage the credential and the local registry; neither one starts a Claude Code session by itself. `airlock opr` is the command that starts one, using a route you already declared with `airlock openrouter models add` or `add-preset`.
+
+`airlock openrouter auth set-key` stores your OpenRouter API key using the operating system's own credential protection: the macOS Keychain, Windows DPAPI scoped to your current Windows user, or the Linux Secret Service through `secret-tool`. There is no plaintext file fallback. If none of those backends is available, the command fails instead of writing the key to disk unprotected. There is no OAuth step; you bring the key from your own OpenRouter account.
+
+`airlock openrouter models presets` lists curated, opt-in starting points for Kimi K3, DeepSeek V4 Flash 0731, and Qwen 3.6 27B without accessing the network or changing the registry. `add-preset NAME` expands one managed preset into its exact model, canonical provenance, default route, and pinned endpoint, then runs the same confirmed public catalog verification as a manual add. Installation and setup never add these routes automatically. Their suggested uses and tradeoffs are project-controlled summaries of community reports, not benchmarks or guarantees, and Airlock never accepts custom prompt text through the preset or registry commands.
+
+`airlock openrouter models add ROUTE MODEL ENDPOINT` declares one route in a small local registry file. ROUTE becomes the Agent name `airlock-or-ROUTE`. MODEL must be the exact routable OpenRouter model ID returned as `data.id`, such as `anthropic/claude-sonnet-4.5`. Airlock rejects any catalog entry that declares a non-null `alias_target`; OpenRouter may omit that field for exact routes. Dynamic identities such as `:free` or `:extended` variants and `auto` or `latest` selectors are rejected independently. ENDPOINT must be the exact serving endpoint tag OpenRouter reports for that model, such as `anthropic` or `deepinfra/turbo`.
+
+Adding or refreshing a route fetches public model and endpoint metadata from `openrouter.ai`, without sending your key, and asks for confirmation by name unless you pass `--yes`. Airlock checks that both catalog responses identify the requested routable model, that the named endpoint actually serves it, and that both the model and the endpoint report `tools` and `tool_choice` support, since named workers rely on real tool calls. It freezes the endpoint tag, catalog provider name, provider-registry routing slug, endpoint quantization, and separate `canonical_slug`. The provider name must map to exactly one routing slug, and the provider plus quantization must identify only that one endpoint in the model's current catalog. If any frozen identity changes, refresh stops rather than silently accepting the remap. The credential-free session snapshot carries the bounded routing values and canonical slug to the router; guidance text and credentials remain excluded. A preset freezes the same values, so a changed preset identity requires an Airlock update before it can be added. A route that fails any check is not added. `airlock openrouter models refresh` re-checks declared routes and reports what changed; it never rewrites the saved registry by itself, so add `--apply` once you are ready to save the refreshed metadata. The registry holds at most 10 declared routes. Preset endpoints were selected from low-priced eligible endpoints when the preset catalog was reviewed, but provider prices and availability can change; Airlock never silently changes the saved endpoint or claims it will remain cheapest.
+
+The registry also records when each route was last verified. A route older than 30 days is treated as stale. Refresh it with `airlock openrouter models refresh --apply` before starting a session: a stale or otherwise invalid registry file stops every Airlock session, not only ones using OpenRouter.
+
+A declared route becomes a named Agent, `airlock-or-ROUTE`, inside a hybrid session (`airlock hybrid ...`), where it can run alongside your OpenAI and Claude workers. `airlock openai`, `airlock grok`, and their pure profiles never include OpenRouter routes.
+
+A declared route can also become the exclusive session root with `airlock opr`:
+
+```bash
+airlock opr                       # interactive picker over declared routes
+airlock opr kimi-k3               # exact declared route as the session root
+airlock opr kimi-k3 -r            # resume with an exact declared root
+```
+
+Give `airlock opr` the exact route name, or omit it in an interactive terminal to pick from the offline local registry (this reads only the file on disk; it does not contact OpenRouter). Outside an interactive terminal, `airlock opr` requires an explicit route rather than prompting. An unrecognized, misspelled, or disabled route fails closed with an error before any request is sent; nothing falls back to a different route or provider. `airlock opr` never saves a default route: every launch either names one explicitly or asks, and running it does not change guided setup, the saved profile, or any `airlock mode` setting.
+
+An `airlock opr` session is OpenRouter-only. It does not start, require, or read the OpenAI subscription proxy, and it does not touch Claude or Grok OAuth state; only the stored OpenRouter key and the declared route matter. `--model` and `-m` cannot be passed to `airlock opr`, because the root is selected by exact registry route, not by a model ID you type yourself.
+
+Every request, whether to the `opr` root or to a hybrid-session `airlock-or-ROUTE` worker, constrains OpenRouter to the verified provider-registry slug and endpoint quantization, with fallback routing turned off. Airlock rejects a catalog where that pair identifies more than one endpoint. It requires catalog support for `tools` and `tool_choice`, but it does not require the endpoint to advertise every optional field in Claude Code's native Messages payload. Claude Code may put its custom-model notice in a `messages` entry with the non-standard `system` role. Before an OpenRouter request is sent, Airlock moves that text into the Anthropic Messages API's top-level `system` field so strict endpoints receive the same instruction in the documented form. Other native fields remain unchanged. A successful response is forwarded only when its model is the exact routable ID or the frozen canonical slug; a response for any other model is rejected rather than passed through. OpenRouter's `count_tokens` operation is not available on these routes; Airlock does not invent a token estimate for a model it has not verified.
+
+Because Airlock does not evaluate an OpenRouter model's real capability, context window, or cost, an OpenRouter Agent is normally treated as extra usage: under the default `ask` policy it needs the same `Extra usage authorized: yes` confirmation as any other extra-usage worker before it can run, under `allow` it runs without asking, and under `never` it is not offered at all. The route you explicitly select as the `airlock opr` root is the one exception: it carries the session's normal root traffic and is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. If other routes are also declared, they can still appear as additional `airlock-or-ROUTE` Agents inside that same `opr` session, and those additional routes follow the normal extra-usage policy.
+
+Read [Security](../SECURITY.md) and the [threat model](threat-model.md) for the credential storage and registry trust boundary.
+
 ## Built-in Explore, Plan, and general-purpose
 
 Airlock keeps the exact built-in Agent types:
@@ -186,6 +235,14 @@ A number saves a smaller cap for new sessions.
 
 Top-level Agent spawn depth is one. Named workers also disallow the Agent tool. Fan-out stays with the main model, which prevents hidden Agent trees and keeps usage visible.
 
+## Session-local OpenAI Fast handoff
+
+The direct shortcut `airlock fast -r` starts a one-session root on fixed `gpt-5.6-sol-fast` through the Codex proxy. It leaves saved `AIRLOCK_OPENAI_FAST` unchanged. Eligible OpenAI plan and proxy checks still apply, and the route has no fallback.
+
+The in-session workflow is `/airlock-fast`. The managed skill arms the current session only. After a clean user exit, the owning launcher resumes the exact conversation once on `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`. Hard kills, crashes, non-clean exits, SessionEnd hook failures, and expiry intentionally stop the handoff rather than relaunching.
+
+The handoff marker is private and bound to a nonce, launcher PID, cwd, and session ID. It does not parse transcripts or carry credentials, prompts, arbitrary executable data, or a model choice. The managed plugin's SessionEnd hook is required and authorized as part of Airlock's plugin, not global hooks.
+
 ## Native worktree snapshots
 
 A main model can request `isolation: "worktree"` for an implementation Agent.
@@ -237,7 +294,7 @@ A user-exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` has highest priority. An expli
 
 `airlock usage` reads OpenAI plan windows through the documented Codex app-server method. It does not send a model request.
 
-Inside a hybrid session, `airlock session-usage` reads only the active loopback router's cumulative summary. It reports per-provider/model requests, completed and failed outcomes, observed-usage events, input, cache-write, cache-read, and output totals. The command rejects non-loopback and deceptive URLs, never emits diagnostic event bodies, and labels the result as provider-reported session usage rather than a bill. Provider-pure profiles have no session router, so the command fails clearly instead of guessing.
+Inside a hybrid session, `airlock session-usage` reads only the active loopback router's cumulative summary. It reports Anthropic, OpenAI, and Grok requests, completed and failed outcomes, observed-usage events, input, cache-write, cache-read, and output totals. OpenRouter groups are always omitted from this summary because OpenRouter belongs to a separate account and this command does not claim to report its usage; this applies the same way whether the OpenRouter traffic came from a hybrid-session `airlock-or-ROUTE` worker or from an `airlock opr` root. The command rejects non-loopback and deceptive URLs, never emits diagnostic event bodies, and labels the result as provider-reported session usage rather than a bill. `airlock openai` and `airlock grok` have no session router, so the command fails clearly instead of guessing. An `airlock opr` session does start its own session router the same way a hybrid session does, but since every request there goes to OpenRouter, `airlock session-usage` in an `opr` session reports no groups.
 
 Claude Code's native Agent card can still show zero tokens for custom OpenAI or Grok IDs. Airlock does not spoof a Claude ID or rewrite provider bytes to change that closed-source display. `airlock session-usage` is the accurate Airlock-owned view when the provider returned usage.
 

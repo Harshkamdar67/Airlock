@@ -15,6 +15,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from io import BytesIO
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("airlock_access_test", ROOT / "bin" / "airlock-access.py")
@@ -73,9 +74,18 @@ class AccessUsageTests(unittest.TestCase):
                     platform,
                     expected,
                 )
-                self.assertEqual(result["protocol_version"], 3)
+                self.assertEqual(result["protocol_version"], 5)
                 self.assertEqual(result["components_checked"], len(expected))
                 self.assertGreater(result["components_checked"], 15)
+
+    def test_managed_bundle_includes_openrouter_presets_helper(self) -> None:
+        bundle = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
+        self.assertIn("bin/airlock_openrouter_presets.py", bundle["components"])
+        self.assertIn("bin/airlock_openrouter_presets.py", bundle["platforms"]["common"])
+        self.assertTrue(
+            (ROOT / "bin" / "airlock_openrouter_presets.py").is_file(),
+            "OpenRouter presets helper must exist as a managed repository file",
+        )
 
     def test_managed_bundle_rejects_stale_marker_and_changed_component(self) -> None:
         original = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
@@ -863,6 +873,429 @@ for line in sys.stdin:
             ACCESS.managed_session_settings_json(json.dumps({"airlock-opus": {}}), "maybe")
 
 
+class FastTransitionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.runtime = self.root / "runtime"
+        self.config = self.root / "config"
+        self.access = self.root / "access.json"
+        self.cwd = self.root / "repo"
+        self.cwd.mkdir()
+        self.other_cwd = self.root / "other"
+        self.other_cwd.mkdir()
+        self.pid = 4242
+        self.now = 2_000_000_000
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.config),
+            "AIRLOCK_ACCESS_FILE": str(self.access),
+            "AIRLOCK_SESSION_RUNTIME_DIR": str(self.runtime),
+            "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "1",
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
+        }, clear=False)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def eligible_policy(self, plan: str = "prolite") -> dict[str, object]:
+        policy = ACCESS.default_policy()
+        policy["providers"]["openai"]["detected_plan"] = plan
+        policy["policies"]["openai_fast"] = "off"
+        return policy
+
+    def create(self) -> dict[str, str]:
+        return ACCESS.fast_transition_create(
+            self.pid, self.cwd, now=self.now
+        )
+
+    def payload(self, session_id: str = "session-123", **updates: str) -> dict[str, str]:
+        payload = {
+            "session_id": session_id,
+            "cwd": str(self.cwd.resolve()),
+            "reason": "prompt_input_exit",
+        }
+        payload.update(updates)
+        return payload
+
+    def arm(self, metadata: dict[str, str], session_id: str = "session-123") -> None:
+        ACCESS.fast_transition_arm(
+            session_id, metadata["channel"], metadata["nonce"], now=self.now,
+        )
+
+    def finalize(self, metadata: dict[str, str], payload: dict[str, str] | None = None) -> None:
+        ACCESS.fast_transition_finalize(
+            payload or self.payload(), metadata["channel"], metadata["nonce"],
+            now=self.now,
+        )
+
+    def test_ephemeral_fast_ignores_saved_off_only_for_sol_fast(self) -> None:
+        self.config.write_text("AIRLOCK_OPENAI_FAST=off\n", encoding="utf-8")
+        before = self.config.read_bytes()
+        policy = self.eligible_policy()
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": True, "source": "test", "version": "0.1.22",
+        }):
+            normal = ACCESS.explicit_fast_status(policy, "sol-fast")
+            ephemeral = ACCESS.explicit_fast_status(
+                policy, "sol-fast", ephemeral=True
+            )
+            self.assertFalse(normal["eligible"])
+            self.assertTrue(ephemeral["eligible"])
+            self.assertFalse(ephemeral["enabled_by_policy"])
+            with self.assertRaisesRegex(ACCESS.AccessError, "only for sol-fast"):
+                ACCESS.explicit_fast_status(policy, "luna-fast", ephemeral=True)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_ephemeral_fast_still_refuses_plan_and_proxy(self) -> None:
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": True, "source": "test", "version": "0.1.22",
+        }):
+            status = ACCESS.explicit_fast_status(
+                self.eligible_policy("free"), "sol-fast", ephemeral=True
+            )
+        self.assertFalse(status["eligible"])
+        self.assertIn("prolite or pro", status["reason"])
+        with patch.object(ACCESS, "proxy_fast_capability", return_value={
+            "supported": False, "source": "test", "version": "0.1.21",
+        }):
+            status = ACCESS.explicit_fast_status(
+                self.eligible_policy(), "sol-fast", ephemeral=True
+            )
+        self.assertFalse(status["eligible"])
+        self.assertIn("could not be verified", status["reason"])
+
+    def test_fast_check_cli_ephemeral_is_narrow_and_machine_safe(self) -> None:
+        policy = self.eligible_policy()
+        ACCESS._write_policy(policy, self.access)
+        self.config.write_text("AIRLOCK_OPENAI_FAST=off\n", encoding="utf-8")
+        environment = os.environ.copy()
+        environment["AIRLOCK_PROXY_FAST_CAPABLE"] = "1"
+        command = [
+            sys.executable, str(ROOT / "bin" / "airlock-access.py"),
+            "fast-check", "--route", "sol-fast", "--quiet",
+        ]
+        normal = subprocess.run(
+            command, text=True, capture_output=True, timeout=5,
+            check=False, env=environment,
+        )
+        ephemeral = subprocess.run(
+            command + ["--ephemeral"], text=True, capture_output=True,
+            timeout=5, check=False, env=environment,
+        )
+        self.assertEqual(normal.returncode, 1)
+        self.assertEqual(ephemeral.returncode, 0, ephemeral.stderr)
+        self.assertEqual(ephemeral.stdout, "")
+        luna = subprocess.run(
+            [
+                sys.executable, str(ROOT / "bin" / "airlock-access.py"),
+                "fast-check", "--route", "luna-fast", "--ephemeral", "--quiet",
+            ],
+            text=True, capture_output=True, timeout=5, check=False,
+            env=environment,
+        )
+        self.assertEqual(luna.returncode, 1)
+        self.assertIn("only for sol-fast", luna.stderr)
+
+    def test_create_does_not_require_fast_eligibility(self) -> None:
+        with patch.object(
+            ACCESS, "load_policy", side_effect=AssertionError("must not load policy")
+        ), patch.object(
+            ACCESS, "proxy_fast_capability", side_effect=AssertionError("must not probe proxy")
+        ):
+            metadata = ACCESS.fast_transition_create(
+                self.pid, self.cwd, now=self.now
+            )
+        state = json.loads((self.runtime / metadata["channel"]).read_text())
+        self.assertEqual((state["route"], state["model"]), (
+            "sol-fast", "gpt-5.6-sol-fast",
+        ))
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+
+    def test_create_arm_finalize_consume_happy_path_and_no_config_mutation(self) -> None:
+        self.config.write_text("AIRLOCK_OPENAI_FAST=off\n# keep\n", encoding="utf-8")
+        before = self.config.read_bytes()
+        metadata = self.create()
+        self.assertEqual(set(metadata), {"channel", "nonce"})
+        self.assertRegex(metadata["channel"], r"^fast-transition-[0-9a-f]{32}\.json$")
+        self.assertRegex(metadata["nonce"], r"^[0-9a-f]{64}$")
+        channel_path = self.runtime / metadata["channel"]
+        state = json.loads(channel_path.read_text(encoding="utf-8"))
+        self.assertEqual((state["state"], state["route"], state["model"]), (
+            "pending", "sol-fast", "gpt-5.6-sol-fast",
+        ))
+        self.assertEqual(state["expires_at"], 0)
+        self.assertNotIn("armed_at", state)
+        self.assertNotIn(metadata["nonce"], channel_path.read_text(encoding="utf-8"))
+        self.arm(metadata)
+        self.assertEqual(json.loads(channel_path.read_text())["state"], "armed")
+        self.finalize(metadata)
+        self.assertEqual(json.loads(channel_path.read_text())["state"], "ready")
+        session_id = ACCESS.fast_transition_consume(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"], now=self.now
+        )
+        self.assertEqual(session_id, "session-123")
+        self.assertFalse(channel_path.exists())
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.fast_transition_consume(
+                self.pid, self.cwd, metadata["channel"], metadata["nonce"], now=self.now
+            )
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_transition_cli_round_trip_uses_only_metadata_and_session_id(self) -> None:
+        policy = self.eligible_policy()
+        ACCESS._write_policy(policy, self.access)
+        self.config.write_text("AIRLOCK_OPENAI_FAST=off\n", encoding="utf-8")
+        environment = os.environ.copy()
+        environment["AIRLOCK_PROXY_FAST_CAPABLE"] = "1"
+        base = [sys.executable, str(ROOT / "bin" / "airlock-access.py")]
+        create = subprocess.run(
+            base + [
+                "fast-transition-create", "--launcher-pid", str(self.pid),
+                "--cwd", str(self.cwd),
+            ],
+            text=True, capture_output=True, timeout=5, check=False,
+            env=environment,
+        )
+        self.assertEqual(create.returncode, 0, create.stderr)
+        self.assertRegex(
+            create.stdout,
+            r"^fast-transition-[0-9a-f]{32}\.json\t[0-9a-f]{64}\n$",
+        )
+        channel, nonce = create.stdout.rstrip("\n").split("\t")
+        metadata = {"channel": channel, "nonce": nonce}
+        inherited = {
+            **environment,
+            ACCESS.FAST_TRANSITION_ENV_CHANNEL: metadata["channel"],
+            ACCESS.FAST_TRANSITION_ENV_NONCE: metadata["nonce"],
+        }
+        arm = subprocess.run(
+            base + ["fast-transition-arm", "--session-id", "session-cli"],
+            text=True, capture_output=True, timeout=5, check=False, env=inherited,
+        )
+        self.assertEqual(arm.returncode, 0, arm.stderr)
+        self.assertEqual(arm.stdout, "")
+        rejected_old_arm = subprocess.run(
+            base + [
+                "fast-transition-arm", "--session-id", "session-cli",
+                "--launcher-pid", str(self.pid), "--cwd", str(self.cwd),
+            ],
+            text=True, capture_output=True, timeout=5, check=False, env=inherited,
+        )
+        self.assertNotEqual(rejected_old_arm.returncode, 0)
+        self.assertIn("unrecognized arguments", rejected_old_arm.stderr)
+        finalize = subprocess.run(
+            base + ["fast-transition-finalize"],
+            input=json.dumps(self.payload(session_id="session-cli")),
+            text=True, capture_output=True, timeout=5, check=False, env=inherited,
+        )
+        self.assertEqual(finalize.returncode, 0, finalize.stderr)
+        self.assertEqual(finalize.stdout, "")
+        consume = subprocess.run(
+            base + [
+                "fast-transition-consume", "--launcher-pid", str(self.pid),
+                "--cwd", str(self.cwd),
+            ],
+            text=True, capture_output=True, timeout=5, check=False, env=inherited,
+        )
+        self.assertEqual(consume.returncode, 0, consume.stderr)
+        self.assertEqual(consume.stdout, "session-cli\n")
+
+    def test_if_ready_consume_is_quiet_for_pending_and_surfaces_unfinalized_arm(self) -> None:
+        metadata = self.create()
+        pending = ACCESS.fast_transition_consume(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"],
+            now=self.now, if_ready=True,
+        )
+        self.assertIsNone(pending)
+        self.assertTrue((self.runtime / metadata["channel"]).exists())
+        self.arm(metadata)
+        with self.assertRaisesRegex(
+            ACCESS.AccessError, "armed but SessionEnd did not finalize"
+        ):
+            ACCESS.fast_transition_consume(
+                self.pid, self.cwd, metadata["channel"], metadata["nonce"],
+                now=self.now, if_ready=True,
+            )
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+
+        metadata = self.create()
+        inherited = {
+            **os.environ,
+            ACCESS.FAST_TRANSITION_ENV_CHANNEL: metadata["channel"],
+            ACCESS.FAST_TRANSITION_ENV_NONCE: metadata["nonce"],
+        }
+        completed = subprocess.run(
+            [
+                sys.executable, str(ROOT / "bin" / "airlock-access.py"),
+                "fast-transition-consume", "--launcher-pid", str(self.pid),
+                "--cwd", str(self.cwd), "--if-ready",
+            ],
+            text=True, capture_output=True, timeout=5, check=False, env=inherited,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+
+    def test_arm_uses_only_channel_nonce_and_validated_session_id(self) -> None:
+        metadata = self.create()
+        with self.assertRaisesRegex(ACCESS.AccessError, "nonce does not match"):
+            ACCESS.fast_transition_arm(
+                "session-123", metadata["channel"], "0" * 64, now=self.now
+            )
+        self.assertEqual(
+            json.loads((self.runtime / metadata["channel"]).read_text())["state"],
+            "pending",
+        )
+
+        with patch.dict(os.environ, {
+            ACCESS.FAST_TRANSITION_ENV_CHANNEL: metadata["channel"],
+            ACCESS.FAST_TRANSITION_ENV_NONCE: metadata["nonce"],
+        }, clear=False):
+            ACCESS.fast_transition_arm("session-123", now=self.now)
+        state = json.loads((self.runtime / metadata["channel"]).read_text())
+        self.assertEqual(state["state"], "armed")
+        self.assertEqual(state["session_id"], "session-123")
+
+    def test_finalize_rejects_wrong_session_cwd_reason_and_invalid_transition(self) -> None:
+        cases = (
+            ("session", self.payload(session_id="other-session")),
+            ("cwd", self.payload(cwd=str(self.other_cwd.resolve()))),
+            ("reason", self.payload(reason="other")),
+        )
+        for label, payload in cases:
+            metadata = self.create()
+            self.arm(metadata)
+            with self.subTest(label=label), self.assertRaises(ACCESS.AccessError):
+                ACCESS.fast_transition_finalize(
+                    payload, metadata["channel"], metadata["nonce"], now=self.now
+                )
+            self.assertEqual(
+                json.loads((self.runtime / metadata["channel"]).read_text())["state"],
+                "armed",
+            )
+            ACCESS.fast_transition_cleanup(
+                self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+            )
+
+        metadata = self.create()
+        with self.assertRaisesRegex(ACCESS.AccessError, "only from armed"):
+            self.finalize(metadata)
+
+    def test_finalize_input_is_bounded_exact_json_and_does_not_parse_transcript(self) -> None:
+        parsed = ACCESS._read_fast_transition_finalize_input(BytesIO(
+            json.dumps(self.payload()).encode("utf-8")
+        ))
+        self.assertEqual(parsed["session_id"], self.payload()["session_id"])
+        self.assertEqual(parsed["reason"], "prompt_input_exit")
+        self.assertEqual(parsed["cwd"], ACCESS._canonical_fast_transition_cwd(self.cwd))
+        for raw in (
+            b"not-json",
+            json.dumps({**self.payload(), "transcript_path": "secret"}).encode(),
+            b"{" + b" " * ACCESS.MAX_FAST_TRANSITION_STDIN_BYTES + b"}",
+        ):
+            with self.subTest(size=len(raw)), self.assertRaises(ACCESS.AccessError):
+                ACCESS._read_fast_transition_finalize_input(BytesIO(raw))
+
+    def test_pending_can_arm_hours_later_and_ttl_starts_at_arm(self) -> None:
+        hours_later = self.now + 6 * 60 * 60
+        metadata = self.create()
+        ACCESS.fast_transition_arm(
+            "session-123", metadata["channel"], metadata["nonce"],
+            now=hours_later,
+        )
+        state = json.loads((self.runtime / metadata["channel"]).read_text())
+        self.assertEqual(state["armed_at"], hours_later)
+        self.assertEqual(
+            state["expires_at"], hours_later + ACCESS.FAST_TRANSITION_TTL_SECONDS
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "expired"):
+            ACCESS.fast_transition_finalize(
+                self.payload(), metadata["channel"], metadata["nonce"],
+                now=hours_later + ACCESS.FAST_TRANSITION_TTL_SECONDS + 1,
+            )
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+
+        metadata = self.create()
+        ACCESS.fast_transition_arm(
+            "session-123", metadata["channel"], metadata["nonce"],
+            now=hours_later,
+        )
+        ACCESS.fast_transition_finalize(
+            self.payload(), metadata["channel"], metadata["nonce"],
+            now=hours_later,
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "expired"):
+            ACCESS.fast_transition_consume(
+                self.pid, self.cwd, metadata["channel"], metadata["nonce"],
+                now=hours_later + ACCESS.FAST_TRANSITION_TTL_SECONDS + 1,
+            )
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+
+    def test_replay_and_consume_mismatches_fail_closed(self) -> None:
+        for field in ("nonce", "pid", "cwd"):
+            metadata = self.create()
+            self.arm(metadata)
+            self.finalize(metadata)
+            with self.subTest(field=field), self.assertRaises(ACCESS.AccessError):
+                ACCESS.fast_transition_consume(
+                    self.pid + (1 if field == "pid" else 0),
+                    self.other_cwd if field == "cwd" else self.cwd,
+                    metadata["channel"],
+                    "f" * 64 if field == "nonce" else metadata["nonce"],
+                    now=self.now,
+                )
+            self.assertTrue((self.runtime / metadata["channel"]).exists())
+            ACCESS.fast_transition_cleanup(
+                self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+            )
+
+    def test_malformed_symlink_and_cleanup(self) -> None:
+        metadata = self.create()
+        channel_path = self.runtime / metadata["channel"]
+        channel_path.write_text("not-json", encoding="utf-8")
+        with self.assertRaisesRegex(ACCESS.AccessError, "invalid JSON"):
+            ACCESS.fast_transition_arm(
+                "session-123", metadata["channel"], metadata["nonce"]
+            )
+        channel_path.write_bytes(b"x" * (ACCESS.MAX_FAST_TRANSITION_BYTES + 1))
+        with self.assertRaisesRegex(ACCESS.AccessError, "unsafe"):
+            ACCESS.fast_transition_arm(
+                "session-123", metadata["channel"], metadata["nonce"]
+            )
+        channel_path.unlink()
+
+        metadata = self.create()
+        ACCESS.fast_transition_cleanup(
+            self.pid, self.cwd, metadata["channel"], metadata["nonce"]
+        )
+        self.assertFalse((self.runtime / metadata["channel"]).exists())
+
+        if hasattr(os, "symlink"):
+            target = self.root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            channel = "fast-transition-" + "a" * 32 + ".json"
+            link = self.runtime / channel
+            try:
+                link.symlink_to(target)
+            except OSError:
+                self.skipTest("symlink creation is unavailable")
+            with self.assertRaisesRegex(ACCESS.AccessError, "unsafe"):
+                ACCESS.fast_transition_arm("session-123", channel, "a" * 64)
+
+
 class GrokAuthenticationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -987,7 +1420,35 @@ class SessionUsageTests(unittest.TestCase):
         self.assertIn("provider-reported, not a bill", lines)
         self.assertIn("cache-read=320000", lines)
         self.assertIn("Claude Code may still show zero", lines)
+        self.assertIn("OpenRouter usage is not included", lines)
         self.assertNotIn("must-not-leak", lines)
+
+    def test_session_usage_omits_openrouter_groups(self) -> None:
+        payload = self.payload()
+        payload["summary"].append({
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "requests": 1,
+            "completed": 1,
+            "errors": 0,
+            "usage_events": 1,
+            "input_tokens": 19,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 5,
+        })
+        report = ACCESS.session_usage_report(payload)
+        self.assertEqual(
+            [(group["provider"], group["model"]) for group in report["groups"]],
+            [("openai", "gpt-5.6-sol")],
+        )
+        self.assertNotIn("deepseek/", json.dumps(report))
+
+    def test_session_usage_still_rejects_unknown_providers(self) -> None:
+        payload = self.payload()
+        payload["summary"][0]["provider"] = "unknown"
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.session_usage_report(payload)
 
     def test_session_usage_rejects_non_loopback_and_deceptive_urls(self) -> None:
         self.assertEqual(
