@@ -93,14 +93,17 @@ jobs:
           python tests/test-docs.py
           python tests/test-live-context.py
 
+      # Git Bash spawns processes slowly, so these suites take about four
+      # minutes on a Windows runner and a slower run used to trip a five
+      # minute limit. The job timeout above still bounds a hung suite.
       - name: Run Bash launcher tests
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: bash tests/test-airlock.sh
 
       - name: Run setup shell tests
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: bash tests/test-setup.sh
 
       - name: Run setup PTY tests
