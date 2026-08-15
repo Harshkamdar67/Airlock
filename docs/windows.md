@@ -99,11 +99,30 @@ airlock openai          # saved OpenAI-only root
 airlock hybrid          # saved hybrid root
 airlock hybrid choose   # interactive hybrid picker
 airlock hybrid opus     # explicit hybrid root
+airlock hybrid sol -r   # resume with the current Airlock policy
 ```
 
 The PowerShell launcher starts the local OpenAI proxy in the background when it is installed but not healthy. A hybrid session also starts a temporary loopback router owned by its launcher process.
 
+Windows limits the complete command passed to a new process. Airlock keeps generated session settings and routing guidance in private files under its session runtime directory instead of placing their contents on Claude Code's command line. Those files remain only while Claude Code runs and are checked and removed afterward. Agent definitions stay in Claude Code's required inline `--agents` JSON because Claude Code has no Agent-file option. Airlock measures the exact remaining Windows command before it starts the router and gives a clear local error if user arguments and Agent JSON still exceed the limit.
+
+Resume uses the current validated Airlock policy rather than restoring an old routing snapshot. Airlock creates a fresh temporary router and snapshot, then forwards `-r` to Claude Code. Any currently enabled OpenRouter workers are accepted only when their exact names come from the validated registry. An invalid or stale current registry still fails closed.
+
 The installed config saves both an OpenAI-only root and a hybrid root. Bare `airlock` starts the saved default profile. `airlock openai` and explicit OpenAI aliases connect directly to the OpenAI proxy. Hybrid uses the router for exact OpenAI and Anthropic Agent model IDs.
+
+## OpenRouter on Windows
+
+OpenRouter is optional and stays off by default on Windows the same as everywhere else. When you run `airlock openrouter auth set-key`, the key is protected with Windows DPAPI, scoped to your current Windows user account, and stored under `%LOCALAPPDATA%\Airlock\credentials`. There is no plaintext fallback: another Windows user account cannot decrypt it, and if DPAPI is unavailable for some reason, `set-key` fails instead of writing the key unprotected.
+
+```powershell
+airlock openrouter auth set-key
+airlock openrouter models add ROUTE MODEL ENDPOINT
+airlock opr                       # interactive picker over declared routes
+airlock opr ROUTE                 # exact declared route as the session root
+airlock opr ROUTE -r              # resume with an exact declared root
+```
+
+`airlock opr` works the same way on Windows as it does on macOS and Linux: it starts an OpenRouter-only session on exactly one declared route, needs no Claude, Codex, or Grok credential and does not start the OpenAI proxy, and fails closed on an unknown, disabled, or misspelled route instead of prompting outside an interactive terminal.
 
 ## Why Git Bash is required
 

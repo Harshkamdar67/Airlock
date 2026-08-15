@@ -27,7 +27,17 @@ assert SPEC is not None and SPEC.loader is not None
 notice_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(notice_module)
 CURRENT_VERSION = json.loads(MANIFEST.read_text(encoding="utf-8"))["version"]
-AVAILABLE_VERSION = "0.1.0-beta.4"
+
+
+def next_version(version: str) -> str:
+    """Return the next prerelease after the installed version."""
+    head, separator, tail = version.rpartition(".")
+    if not separator or not tail.isdigit():
+        raise ValueError(f"unsupported version for this test: {version!r}")
+    return f"{head}.{int(tail) + 1}"
+
+
+AVAILABLE_VERSION = next_version(CURRENT_VERSION)
 RELEASE_URL = (
     "https://github.com/Harshkamdar67/Airlock/releases/tag/"
     f"v{AVAILABLE_VERSION}"

@@ -28,8 +28,9 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --no-login \
   --no-service \
   --config-only \
-  --yes
+  --yes > "$tmp_dir/setup.out"
 
+grep -q '^OpenRouter remains off until you explicitly store a key' "$tmp_dir/setup.out"
 config_file="$config_dir/config"
 grep -q '^AIRLOCK_DEFAULT_PROFILE=openai$' "$config_file"
 grep -q '^AIRLOCK_HYBRID_MODEL=sol$' "$config_file"
@@ -323,5 +324,10 @@ for invalid in '--grok-model bogus' '--grok-workers sonnet'; do
     exit 1
   fi
 done
+
+if [[ -n "$(find "$tmp_dir" -name openrouter-registry.json -print -quit)" ]]; then
+  printf 'test: setup enabled OpenRouter without an explicit add command\n' >&2
+  exit 1
+fi
 
 printf 'All setup wizard tests passed.\n'

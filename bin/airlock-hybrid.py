@@ -17,8 +17,16 @@ from typing import NoReturn
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_AGENTS_BYTES = 24 * 1024
+WINDOWS_COMMAND_LINE_MAX_UNITS = 32_767
 ROUTER_START_TIMEOUT_SECONDS = 15
+FAST_TRANSITION_CHANNEL_ENV = "AIRLOCK_FAST_TRANSITION_CHANNEL"
+FAST_TRANSITION_NONCE_ENV = "AIRLOCK_FAST_TRANSITION_NONCE"
+FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
+FAST_TRANSITION_ROUTE = "sol-fast"
+FAST_TRANSITION_PROFILE = "openai-pure"
+FAST_TRANSITION_NAME = "GPT-5.6 Sol Fast"
 PROFILES = {
+    "openrouter-pure",
     "openai-pure",
     "grok-pure",
     "hybrid-openai-root",
@@ -32,9 +40,19 @@ HYBRID_PROFILES = {
     "hybrid-anthropic-root",
     "hybrid-grok-root",
 }
+ROUTER_BACKED_PROFILES = HYBRID_PROFILES | {"openrouter-pure"}
+ORP_CREDENTIAL_VARIABLES = {
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "OPENROUTER_API_KEY",
+}
 PROTECTED_OPTIONS = {
     "--safe-mode", "--bare", "--agent", "--agents",
     "--plugin-dir", "--plugin-url", "--settings",
+    "--append-system-prompt-file",
 }
 PROXY_VARIABLES = {
     "ANTHROPIC_BASE_URL",
@@ -126,9 +144,10 @@ def configure_proxy_model_picker(
             f"Airlock exact route for Claude Code's {family.title()} slot"
         )
         environment.pop(f"{variable}_SUPPORTED_CAPABILITIES", None)
-        declare_non_claude_effort_capabilities(environment, variable, model)
+        if profile != "openrouter-pure":
+            declare_non_claude_effort_capabilities(environment, variable, model)
     if (
-        profile == "grok-pure"
+        profile in {"grok-pure", "openrouter-pure"}
         or profile in HYBRID_PROFILES
         or not environment.get("ANTHROPIC_SMALL_FAST_MODEL")
     ):
@@ -206,6 +225,8 @@ def render_agents(
     profile: str,
     access,
     policy: dict[str, object],
+    *,
+    openrouter_root_route: str | None = None,
 ) -> str:
     if not isinstance(raw_catalog_files, dict):
         fail("agent catalog map is invalid")
@@ -213,6 +234,7 @@ def render_agents(
         policy,
         profile,
         raw_catalog_files,
+        openrouter_root_route=openrouter_root_route,
     )
     if not rendered:
         fail("access policy disables every worker in this session profile")
@@ -222,9 +244,11 @@ def render_agents(
     return agents_json
 
 
-def managed_agent_permissions(access, agents_json: str) -> tuple[list[str], list[str]]:
+def managed_agent_permissions(
+    access, agents_json: str, policy: dict[str, object]
+) -> tuple[list[str], list[str]]:
     try:
-        names = access.managed_agent_names_json(agents_json)
+        names = access.managed_agent_names_json(agents_json, policy=policy)
     except Exception as error:
         fail(f"managed Agent permission set is invalid: {error}")
     if not names:
@@ -236,10 +260,15 @@ def managed_agent_permissions(access, agents_json: str) -> tuple[list[str], list
 
 
 def managed_session_settings(
-    access, agents_json: str, fast_mode: str
+    access,
+    agents_json: str,
+    fast_mode: str,
+    policy: dict[str, object],
 ) -> str:
     try:
-        settings = access.managed_session_settings_json(agents_json, fast_mode)
+        settings = access.managed_session_settings_json(
+            agents_json, fast_mode, policy=policy
+        )
         parsed = json.loads(settings)
     except Exception as error:
         fail(f"managed Auto-mode settings are invalid: {error}")
@@ -261,7 +290,19 @@ def validate_child_args(raw_args: object) -> list[str]:
     return raw_args
 
 
-def append_routing_guidance(child_args: list[str], guidance: str) -> list[str]:
+def reject_openrouter_model_overrides(child_args: list[str]) -> None:
+    for argument in child_args:
+        if argument in {"--model", "-m"} or argument.startswith("--model="):
+            fail(
+                "OpenRouter roots are selected by exact registry route; "
+                "--model and -m cannot be forwarded",
+                2,
+            )
+
+
+def combine_routing_guidance(
+    child_args: list[str], guidance: str
+) -> tuple[list[str], str]:
     result: list[str] = []
     custom: list[str] = []
     index = 0
@@ -280,8 +321,24 @@ def append_routing_guidance(child_args: list[str], guidance: str) -> list[str]:
         result.append(argument)
         index += 1
     combined = "\n\n".join([item for item in custom if item] + [guidance])
-    result.extend(["--append-system-prompt", combined])
-    return result
+    return result, combined
+
+
+def windows_command_line_units(command: list[str]) -> int:
+    rendered = subprocess.list2cmdline(command)
+    return len(rendered.encode("utf-16-le", errors="surrogatepass")) // 2 + 1
+
+
+def validate_windows_command_line(command: list[str]) -> None:
+    units = windows_command_line_units(command)
+    if units > WINDOWS_COMMAND_LINE_MAX_UNITS:
+        fail(
+            "Claude Code launch command is too long for Windows "
+            f"({units} UTF-16 units; maximum {WINDOWS_COMMAND_LINE_MAX_UNITS} "
+            "including the terminator); shorten forwarded arguments or pass a "
+            "long prompt through standard input",
+            2,
+        )
 
 
 def require_proxy_environment(
@@ -312,8 +369,30 @@ def validate_router_path(raw_path: object) -> Path:
     return router.resolve()
 
 
+def validate_policy_helper_path() -> Path:
+    helper = Path(__file__).with_name("airlock_policy.py")
+    if helper.is_symlink() or not helper.is_file():
+        fail("managed policy helper is missing or unsafe")
+    return helper.resolve()
+
+
+def router_start_reason(stderr: str | None) -> str:
+    """Return the router's own sanitized reason, when it reported one."""
+
+    for line in (stderr or "").splitlines():
+        line = line.strip()
+        if line.startswith("airlock-router: "):
+            reason = line[len("airlock-router: "):][:200]
+            if reason.isprintable():
+                return f": {reason}"
+    return ""
+
+
 def start_native_router(
-    router: Path, routes: dict[str, str], proxy_url: str
+    router: Path,
+    snapshot: Path,
+    snapshot_digest: str,
+    proxy_url: str | None,
 ) -> str:
     command = [
         sys.executable,
@@ -321,11 +400,13 @@ def start_native_router(
         "start",
         "--parent-pid",
         str(os.getpid()),
-        "--routes-json",
-        json.dumps(routes, separators=(",", ":"), ensure_ascii=True),
-        "--openai-url",
-        proxy_url,
+        "--snapshot",
+        str(snapshot),
+        "--snapshot-sha256",
+        snapshot_digest,
     ]
+    if proxy_url:
+        command.extend(["--openai-url", proxy_url])
     try:
         completed = subprocess.run(
             command,
@@ -336,12 +417,15 @@ def start_native_router(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        fail("native hybrid router could not start")
+        fail("native session router could not start")
     address = completed.stdout.strip()
     if completed.returncode != 0 or not re.fullmatch(
         r"http://127\.0\.0\.1:[1-9][0-9]*", address
     ):
-        fail("native hybrid router could not start securely")
+        fail(
+            "native session router could not start securely"
+            f"{router_start_reason(completed.stderr)}"
+        )
     return address
 
 
@@ -349,19 +433,32 @@ def build_child_environment(
     profile: str,
     max_agents: str,
     *,
-    proxy_url: str,
+    proxy_url: str | None,
     root_model: str,
     root_name: str,
     context_window: str,
     route_policy: dict[str, object],
     router_url: str | None,
+    policy_helper: Path,
+    snapshot_path: Path,
+    snapshot_digest: str,
     force_context_window: bool = False,
+    preserve_fast_transition: bool = False,
+    ephemeral_openai_fast: bool = False,
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    if not preserve_fast_transition:
+        environment.pop(FAST_TRANSITION_CHANNEL_ENV, None)
+        environment.pop(FAST_TRANSITION_NONCE_ENV, None)
     # A window the user set themselves outranks Airlock's default. Read it before
     # the proxy cleanup below removes it.
     user_context_window = environment.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "")
     environment["AIRLOCK_ACTIVE_PROFILE"] = profile
+    environment["AIRLOCK_POLICY_HELPER"] = str(policy_helper)
+    environment["AIRLOCK_ACCESS_HELPER"] = str(Path(__file__).with_name("airlock-access.py").resolve())
+    environment["AIRLOCK_PYTHON"] = sys.executable
+    environment["AIRLOCK_SESSION_SNAPSHOT"] = str(snapshot_path)
+    environment["AIRLOCK_SESSION_SNAPSHOT_SHA256"] = snapshot_digest
     environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = "1"
     environment.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
     if max_agents == "off":
@@ -401,11 +498,47 @@ def build_child_environment(
     if profile in PROXY_PURE_PROFILES:
         if router_url is not None:
             fail(f"{profile} cannot use the hybrid router")
+        if not proxy_url:
+            fail(f"{profile} requires a proxy URL")
         environment.pop("AIRLOCK_SESSION_ROUTER_URL", None)
+        if ephemeral_openai_fast and profile == FAST_TRANSITION_PROFILE:
+            environment["ANTHROPIC_MODEL"] = root_model
         require_proxy_environment(environment, proxy_url, root_model, profile)
         configure_proxy_model_picker(
             environment, profile, route_policy.get("picker_models")
         )
+        environment.pop("AIRLOCK_HYBRID", None)
+        environment.pop("AIRLOCK_GPT_HYBRID", None)
+        environment.pop("AIRLOCK_GROK_HYBRID", None)
+        if ephemeral_openai_fast:
+            environment["AIRLOCK_EPHEMERAL_OPENAI_FAST"] = "1"
+        else:
+            environment.pop("AIRLOCK_EPHEMERAL_OPENAI_FAST", None)
+        return environment
+
+    if profile == "openrouter-pure":
+        if proxy_url:
+            fail("openrouter-pure cannot use the subscription proxy")
+        if router_url is None:
+            fail("OpenRouter native routing is missing its loopback router")
+        for variable in PROXY_VARIABLES | ORP_CREDENTIAL_VARIABLES:
+            environment.pop(variable, None)
+        environment["ANTHROPIC_BASE_URL"] = router_url
+        environment["AIRLOCK_SESSION_ROUTER_URL"] = router_url
+        environment["ANTHROPIC_AUTH_TOKEN"] = "unused"
+        environment["ANTHROPIC_MODEL"] = root_model
+        configure_proxy_model_picker(
+            environment, profile, route_policy.get("picker_models")
+        )
+        environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
+        environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
+            f"{root_name} (OpenRouter route)"
+        )
+        environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
+            f"Selected exact OpenRouter root ({root_model})"
+        )
+        environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment.pop("AIRLOCK_GROK_HYBRID", None)
@@ -512,12 +645,102 @@ def required_request_string(
     return value
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    parser.add_argument("--request-file", required=True)
-    parsed = parser.parse_args()
+def fast_transition_request(
+    request: dict[str, object], *, enabled: bool
+) -> tuple[int, str, str, str] | None:
+    """Validate parent-owned binding metadata without accepting secret request data."""
+    if "fast_transition_channel" in request or "fast_transition_nonce" in request:
+        fail("Fast transition credentials must not be included in the launch request")
+    channel = os.environ.get(FAST_TRANSITION_CHANNEL_ENV)
+    nonce = os.environ.get(FAST_TRANSITION_NONCE_ENV)
+    has_environment = channel is not None or nonce is not None
+    has_metadata = (
+        "fast_transition_launcher_pid" in request
+        or "fast_transition_cwd" in request
+    )
+    if not enabled:
+        return None
+    if not has_environment and not has_metadata:
+        return None
+    if not has_environment or channel is None or nonce is None:
+        fail("Fast transition channel and nonce must be supplied together")
+    if not has_metadata:
+        fail("Fast transition parent binding is missing")
+    launcher_pid = request.get("fast_transition_launcher_pid")
+    cwd = request.get("fast_transition_cwd")
+    if (
+        isinstance(launcher_pid, bool)
+        or not isinstance(launcher_pid, int)
+        or not 1 <= launcher_pid <= 0xFFFFFFFF
+    ):
+        fail("Fast transition launcher PID is invalid")
+    if (
+        not isinstance(cwd, str)
+        or not cwd
+        or len(cwd) > 4096
+        or any(character in cwd for character in "\x00\r\n")
+    ):
+        fail("Fast transition cwd is invalid")
+    return launcher_pid, cwd, channel, nonce
 
-    request = read_request(resolve_managed_request(parsed.request_file))
+
+def fast_transition_effort(child_args: list[str]) -> str:
+    efforts: list[str] = []
+    index = 0
+    while index < len(child_args):
+        argument = child_args[index]
+        if argument == "--effort":
+            if index + 1 >= len(child_args):
+                fail("--effort requires a value", 2)
+            efforts.append(child_args[index + 1])
+            index += 2
+            continue
+        if argument.startswith("--effort="):
+            efforts.append(argument.split("=", 1)[1])
+        index += 1
+    if len(efforts) != 1 or efforts[0] not in {"low", "medium", "high", "xhigh", "max"}:
+        fail("Fast transition requires one valid managed effort", 2)
+    return efforts[0]
+
+
+def validate_root_route(
+    route_policy: dict[str, object], profile: str, root_model: str
+) -> None:
+    routes = route_policy.get("routes")
+    expected_provider = {
+        "openrouter-pure": "openrouter",
+        "hybrid-openai-root": "openai",
+        "hybrid-anthropic-root": "anthropic",
+        "hybrid-grok-root": "grok",
+    }.get(profile)
+    if not isinstance(routes, dict):
+        fail("session route policy is invalid", 2)
+    if root_model not in routes:
+        fail(
+            f"session root model '{root_model}' is not enabled by the active route policy",
+            2,
+        )
+    if expected_provider is None or routes.get(root_model) != expected_provider:
+        fail("session root model does not match the selected root provider", 2)
+    if profile == "openrouter-pure" and set(routes.values()) != {"openrouter"}:
+        fail("OpenRouter-only session policy contains another provider", 2)
+
+
+def main(
+    _request: dict[str, object] | None = None,
+    _access=None,
+    _policy: dict[str, object] | None = None,
+    *,
+    _allow_transition: bool = True,
+    _fast_relaunch: bool = False,
+) -> int:
+    if _request is None:
+        parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        parser.add_argument("--request-file", required=True)
+        parsed = parser.parse_args()
+        request = read_request(resolve_managed_request(parsed.request_file))
+    else:
+        request = _request
     profile = request.get("profile")
     if profile not in PROFILES:
         fail("session profile is invalid")
@@ -526,9 +749,26 @@ def main() -> int:
         fail("CLAUDE_CODE_SAFE_MODE/CLAUDE_CODE_SIMPLE would disable managed session protection", 2)
     plugin_dir = validate_plugin_path(request.get("plugin_dir"))
     max_agents = validate_max_agents(request.get("max_agents"))
-    proxy_url = required_request_string(request, "proxy_url", "OpenAI proxy URL")
-    root_model = required_request_string(request, "root_model", "root model")
-    root_name = required_request_string(request, "root_name", "root model name")
+
+    openrouter_root_route: str | None = None
+    if profile == "openrouter-pure":
+        raw_route = request.get("openrouter_root_route")
+        if not isinstance(raw_route, str) or not raw_route:
+            fail("openrouter-pure requires an exact OpenRouter root route", 2)
+        openrouter_root_route = raw_route
+        for forbidden in ("proxy_url", "root_model", "root_name"):
+            if forbidden in request:
+                fail(f"openrouter-pure launch request must not include {forbidden}", 2)
+        proxy_url: str | None = None
+        root_model = ""
+        root_name = ""
+    else:
+        if "openrouter_root_route" in request:
+            fail("OpenRouter root route is not valid for this session profile", 2)
+        proxy_url = required_request_string(request, "proxy_url", "OpenAI proxy URL")
+        root_model = required_request_string(request, "root_model", "root model")
+        root_name = required_request_string(request, "root_name", "root model name")
+
     context_window = required_request_string(
         request, "context_window", "context window"
     )
@@ -548,70 +788,219 @@ def main() -> int:
     if not claude_path.is_file():
         fail(f"Claude Code executable is missing: {claude_path}")
 
-    access = load_access_module()
+    child_args = validate_child_args(request.get("args"))
+    if profile == "openrouter-pure":
+        reject_openrouter_model_overrides(child_args)
+    transition = fast_transition_request(
+        request, enabled=_allow_transition and not _fast_relaunch
+    )
+    transition_effort = fast_transition_effort(child_args) if transition else None
+
+    access = _access if _access is not None else load_access_module()
     try:
-        policy = access.load_or_refresh_policy()
+        policy = _policy if _policy is not None else access.load_or_refresh_policy()
+        if profile == "openrouter-pure":
+            root_entry = access.resolve_openrouter_route(
+                policy, str(openrouter_root_route)
+            )
+            root_model = root_entry.model
+            root_name = f"OpenRouter {root_entry.route}"
         agents_json = render_agents(
-            request.get("catalog_files"), profile, access, policy
+            request.get("catalog_files"),
+            profile,
+            access,
+            policy,
+            openrouter_root_route=openrouter_root_route,
         )
-        agent_names, allowed_tools = managed_agent_permissions(access, agents_json)
-        route_policy = access.session_route_policy(policy, profile)
+        agent_names, allowed_tools = managed_agent_permissions(
+            access, agents_json, policy
+        )
+        route_policy = access.session_route_policy(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        )
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")
-        session_settings = managed_session_settings(access, agents_json, fast_mode)
-        guidance = access.profile_guidance(policy, profile)
+        session_settings = managed_session_settings(
+            access, agents_json, fast_mode, policy
+        )
+        guidance = access.profile_guidance(
+            policy,
+            profile,
+            openrouter_root_route=openrouter_root_route,
+        )
     except SystemExit:
         raise
     except Exception as error:
         fail(f"managed access policy could not be applied: {error}")
 
-    router_url: str | None = None
-    if profile not in PROXY_PURE_PROFILES:
-        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+    policy_helper = validate_policy_helper_path()
+    router: Path | None = None
+    if profile in ROUTER_BACKED_PROFILES:
+        if profile in HYBRID_PROFILES and (
+            os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        ):
             fail(
                 "hybrid native routing requires saved Claude subscription login without "
                 "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
             )
-        routes = route_policy.get("routes")
-        if not isinstance(routes, dict) or routes.get(root_model) not in {
-            "openai", "anthropic", "grok"
-        }:
-            fail(f"hybrid root model is not enabled by the active session policy: {root_model}", 2)
-        expected_provider = {
-            "hybrid-openai-root": "openai",
-            "hybrid-anthropic-root": "anthropic",
-            "hybrid-grok-root": "grok",
-        }.get(profile)
-        if expected_provider is None or routes[root_model] != expected_provider:
-            fail("hybrid root model does not match the selected root provider", 2)
+        validate_root_route(route_policy, profile, root_model)
         router = validate_router_path(request.get("router_helper"))
-        router_url = start_native_router(router, routes, proxy_url)
 
-    child_args = append_routing_guidance(
-        validate_child_args(request.get("args")), guidance
-    )
-    child_environment = build_child_environment(
-        profile,
-        max_agents,
-        proxy_url=proxy_url,
-        root_model=root_model,
-        root_name=root_name,
-        context_window=context_window,
-        route_policy=route_policy,
-        router_url=router_url,
-        force_context_window=force_context_window,
-    )
-
-    command = [
-        str(claude_path), "--settings", session_settings,
-        "--plugin-dir", str(plugin_dir), "--agents", agents_json,
-        "--allowedTools", *allowed_tools, *child_args,
-    ]
+    artifacts: list[tuple[str, Path, str, int]] = []
+    snapshot_path: Path | None = None
+    snapshot_digest: str | None = None
+    return_code = 1
+    resume_session_id: str | None = None
     try:
-        completed = subprocess.run(command, env=child_environment, check=False)
-    except OSError as error:
-        fail(f"could not start Claude Code: {error}")
-    return completed.returncode
+        child_args, combined_guidance = combine_routing_guidance(
+            child_args, guidance
+        )
+        if profile == "openrouter-pure":
+            child_args = ["--model", root_model, *child_args]
+
+        try:
+            settings_artifact = access.write_session_artifact(
+                session_settings.encode("utf-8"), "settings-", ".json"
+            )
+            artifacts.append(("settings", *settings_artifact))
+            guidance_artifact = access.write_session_artifact(
+                combined_guidance.encode("utf-8"), "guidance-", ".txt"
+            )
+            artifacts.append(("routing guidance", *guidance_artifact))
+        except Exception as error:
+            fail(f"managed session launch files could not be created: {error}")
+
+        settings_path = artifacts[0][1]
+        guidance_path = artifacts[1][1]
+        child_args.extend(["--append-system-prompt-file", str(guidance_path)])
+        command = [
+            str(claude_path), "--settings", str(settings_path),
+            "--plugin-dir", str(plugin_dir), "--agents", agents_json,
+            "--allowedTools", *allowed_tools, *child_args,
+        ]
+        validate_windows_command_line(command)
+
+        try:
+            snapshot_path, snapshot_digest = access.write_session_snapshot(
+                policy,
+                profile,
+                root_model,
+                openrouter_root_route=openrouter_root_route,
+            )
+        except Exception as error:
+            fail(f"session policy snapshot could not be created: {error}")
+
+        router_url: str | None = None
+        if router is not None:
+            router_url = start_native_router(
+                router, snapshot_path, snapshot_digest, proxy_url
+            )
+
+        child_environment = build_child_environment(
+            profile,
+            max_agents,
+            proxy_url=proxy_url,
+            root_model=root_model,
+            root_name=root_name,
+            context_window=context_window,
+            route_policy=route_policy,
+            router_url=router_url,
+            policy_helper=policy_helper,
+            snapshot_path=snapshot_path,
+            snapshot_digest=snapshot_digest,
+            force_context_window=force_context_window,
+            preserve_fast_transition=transition is not None,
+            ephemeral_openai_fast=_fast_relaunch,
+        )
+
+        try:
+            completed = subprocess.run(command, env=child_environment, check=False)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 206:
+                fail(
+                    "Windows rejected the Claude Code launch data as too long "
+                    "after Airlock's command preflight",
+                    2,
+                )
+            fail(f"could not start Claude Code: {error}")
+        return_code = completed.returncode
+        if return_code == 0 and transition is not None:
+            launcher_pid, transition_cwd, channel, nonce = transition
+            try:
+                resume_session_id = access.fast_transition_consume(
+                    launcher_pid,
+                    transition_cwd,
+                    channel,
+                    nonce,
+                    if_ready=True,
+                )
+            except Exception as error:
+                access_error = getattr(access, "AccessError", None)
+                if isinstance(access_error, type) and isinstance(error, access_error):
+                    fail(str(error))
+                fail("Fast transition could not be consumed")
+    finally:
+        for label, path, digest, size in reversed(artifacts):
+            try:
+                access.delete_session_artifact(path, digest, size)
+            except Exception:
+                print(
+                    f"airlock: warning: managed session {label} cleanup failed: {path}",
+                    file=sys.stderr,
+                )
+        if snapshot_path is not None and snapshot_digest is not None:
+            try:
+                access.delete_session_snapshot(snapshot_path, snapshot_digest)
+            except Exception:
+                print(
+                    f"airlock: warning: session policy snapshot cleanup failed: {snapshot_path}",
+                    file=sys.stderr,
+                )
+
+    if return_code != 0 or resume_session_id is None:
+        return return_code
+    try:
+        fast_status = access.explicit_fast_status(
+            policy, FAST_TRANSITION_ROUTE, ephemeral=True
+        )
+    except Exception as error:
+        access_error = getattr(access, "AccessError", None)
+        if isinstance(access_error, type) and isinstance(error, access_error):
+            fail(f"Fast transition eligibility could not be revalidated: {error}")
+        fail("Fast transition eligibility could not be revalidated")
+    if not isinstance(fast_status, dict) or fast_status.get("eligible") is not True:
+        reason = fast_status.get("reason") if isinstance(fast_status, dict) else None
+        fail(str(reason) if isinstance(reason, str) and reason else "Fast transition is not eligible")
+
+    resumed_request = dict(request)
+    for key in (
+        "fast_transition_launcher_pid",
+        "fast_transition_cwd",
+        "openrouter_root_route",
+        "router_helper",
+    ):
+        resumed_request.pop(key, None)
+    resumed_request.update({
+        "profile": FAST_TRANSITION_PROFILE,
+        "root_model": FAST_TRANSITION_MODEL,
+        "root_name": FAST_TRANSITION_NAME,
+        "fast_mode": "off",
+        "args": [
+            "--model", FAST_TRANSITION_MODEL,
+            "--effort", str(transition_effort),
+            "--resume", resume_session_id,
+        ],
+    })
+    return main(
+        resumed_request,
+        access,
+        policy,
+        _allow_transition=False,
+        _fast_relaunch=True,
+    )
 
 
 if __name__ == "__main__":

@@ -120,7 +120,10 @@ grep -q '^Airlock installed\.$' "$tmp_dir/login.out"
 "$repo_root/scripts/install.sh" --with-agent --no-service > "$tmp_dir/install.out"
 grep -q '^Airlock installed\.$' "$tmp_dir/install.out"
 
-for relative in airlock airlock-access.py airlock-update.py airlock-router.py airlock-hybrid.py; do
+for relative in airlock airlock-access.py airlock_policy.py \
+  airlock_openrouter_auth.py airlock_openrouter_presets.py \
+  airlock_openrouter_models.py airlock-update.py \
+  airlock-router.py airlock-hybrid.py; do
   if [[ ! -f "$install_dir/$relative" || ! -x "$install_dir/$relative" ]]; then
     printf 'test: installer did not place an executable %s\n' "$relative" >&2
     exit 1
@@ -140,10 +143,14 @@ for relative in config managed-bundle.json openai-direct-agents.json \
     exit 1
   fi
 done
+if [[ -e "$config_dir/openrouter-registry.json" ]]; then
+  printf 'test: installer enabled OpenRouter without an explicit add command\n' >&2
+  exit 1
+fi
 
 plugin_dir="$config_dir/plugins/airlock"
 for relative in .claude-plugin/plugin.json hooks/hooks.json skills/usage/SKILL.md \
-  scripts/file_safety.py; do
+  skills/airlock-fast/SKILL.md scripts/file_safety.py; do
   if [[ ! -f "$plugin_dir/$relative" ]]; then
     printf 'test: installer missed plugin file %s\n' "$relative" >&2
     exit 1
@@ -151,7 +158,8 @@ for relative in .claude-plugin/plugin.json hooks/hooks.json skills/usage/SKILL.m
 done
 # The hook scripts are launched directly by Claude Code, so the executable bit
 # is part of a working install rather than a detail of the file mode.
-for relative in scripts/agent-guard.sh scripts/agent-guard.py scripts/secret-guard.sh \
+for relative in scripts/fast-session-end.sh scripts/fast-session-end.py \
+  scripts/agent-guard.sh scripts/agent-guard.py scripts/secret-guard.sh \
   scripts/secret-guard.py scripts/update-notice.sh scripts/update-notice.py \
   scripts/worktree.py scripts/worktree-create.sh scripts/worktree-remove.sh; do
   if [[ ! -x "$plugin_dir/$relative" ]]; then
@@ -294,6 +302,8 @@ grep -q "^PASS  Launcher: $install_dir/airlock$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Managed bundle is current and complete$' "$tmp_dir/doctor.out"
 grep -q "^PASS  Hybrid router: $install_dir/airlock-router.py" "$tmp_dir/doctor.out"
 grep -q "^PASS  Release updater: $install_dir/airlock-update.py" "$tmp_dir/doctor.out"
+grep -q '^INFO  OpenRouter registry is not configured: ' "$tmp_dir/doctor.out"
+grep -q '^INFO  Doctor does not read the OpenRouter credential;' "$tmp_dir/doctor.out"
 grep -q "^PASS  Session plugin: $plugin_dir$" "$tmp_dir/doctor.out"
 grep -q '^PASS  Custom airlock-worker effort: ' "$tmp_dir/doctor.out"
 

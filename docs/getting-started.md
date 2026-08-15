@@ -154,6 +154,7 @@ Direct choices:
 
 ```bash
 airlock terra
+airlock fast -r
 airlock grok
 airlock grok composer
 airlock hybrid grok
@@ -166,13 +167,37 @@ airlock hybrid fable
 airlock hybrid haiku
 ```
 
-An OpenAI alias such as `airlock terra` always means an explicit OpenAI-only launch. Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
+An OpenAI alias such as `airlock terra` always means an explicit OpenAI-only launch. `airlock fast -r` is a one-session `gpt-5.6-sol-fast` root through the Codex proxy. It does not change saved `AIRLOCK_OPENAI_FAST`, requires an eligible OpenAI plan and verified proxy support, and has no fallback. Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
+
+In a managed Airlock session, use `/airlock-fast` to arm a one-shot handoff, then exit cleanly. The owning launcher resumes the exact conversation once on fixed `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`. Hard kills, crashes, non-clean exits, hook failures, and expiry prevent relaunch by design. The installed managed plugin SessionEnd hook is required; it is part of the Airlock plugin, not a global hook.
 
 The OpenAI-only profile uses native Claude Code Agents with enabled OpenAI model IDs. Hybrid starts one temporary loopback router so native Agents can use enabled OpenAI and Anthropic IDs in the same session.
 
 Explore, Plan, and general-purpose use Claude Code's `fable`, `opus`, `sonnet`, and `haiku` family aliases. Plan and general-purpose inherit the main model when no model is supplied. Routine Explore uses `model="haiku"`, which Airlock maps to the exact economical discovery model enabled for that session. Named `airlock-*` Agents already have a fixed model. Their effort follows the session unless the config pins it.
 
 GPT IDs may not appear in Claude Code's `/model` discovery list behind a gateway. Use the launch commands above or an exact named Agent instead of relying on discovery.
+
+## OpenRouter is optional
+
+Setup and install never turn OpenRouter on. It stays off until you separately store a key and declare a route. You can enter an exact model and endpoint yourself or start from one of Airlock's curated presets:
+
+```bash
+airlock openrouter auth set-key
+airlock openrouter models presets
+airlock openrouter models add-preset kimi-k3
+airlock openrouter models add ROUTE MODEL ENDPOINT
+```
+
+`presets` is an offline listing and does not enable anything. `add-preset` asks for confirmation, checks the preset's exact model and pinned endpoint against OpenRouter's public catalog, and then creates one route. The suggested uses and tradeoffs are unverified community guidance, not capability, price, or availability guarantees.
+
+A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers, or it can start its own session as the exclusive root:
+
+```bash
+airlock opr             # interactive picker over your declared routes
+airlock opr ROUTE       # exact declared route as the session root
+```
+
+No setup question or `--with-agent` flag enables OpenRouter or picks a route for you; you always name the route yourself or choose it interactively. Read [OpenRouter routes](how-it-works.md#openrouter-routes-optional) for the full explanation.
 
 ## Pick a budget mode
 

@@ -20,10 +20,26 @@ function Resolve-Application {
   return $null
 }
 
+function Resolve-Python3 {
+  $names = if ($env:AIRLOCK_PYTHON) {
+    @($env:AIRLOCK_PYTHON)
+  } else {
+    @('python3.exe', 'python3', 'python.exe', 'python')
+  }
+  foreach ($name in $names) {
+    $candidate = Resolve-Application @($name)
+    if (-not $candidate) { continue }
+    & $candidate -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' *> $null
+    if ($LASTEXITCODE -eq 0) { return $candidate }
+  }
+  return $null
+}
+
 $Claude = Resolve-Application @('claude.exe', 'claude.cmd', 'claude')
 $Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
 $Bash = Resolve-Application @('bash.exe', 'bash')
 $Launcher = Resolve-Application @('airlock.cmd', 'airlock.exe', 'airlock')
+$Python = Resolve-Python3
 
 if ($Claude) {
   $version = (& $Claude --version 2>$null | Select-Object -First 1)
@@ -131,6 +147,7 @@ if ($Launcher) {
 }
 
 $InstallDir = if ($env:AIRLOCK_INSTALL_DIR) { $env:AIRLOCK_INSTALL_DIR } else { Join-Path $HOME '.local\bin' }
+$ConfigDir = if ($env:AIRLOCK_CONFIG_DIR) { $env:AIRLOCK_CONFIG_DIR } else { Join-Path $HOME '.config\airlock' }
 $Router = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } else { Join-Path $InstallDir 'airlock-router.py' }
 if (Test-Path -LiteralPath $Router -PathType Leaf) {
   $routerItem = Get-Item -LiteralPath $Router -Force
@@ -153,10 +170,86 @@ if (Test-Path -LiteralPath $Updater -PathType Leaf) {
 } else {
   Fail "Release updater is missing: $Updater"
 }
-$ConfigDir = if ($env:AIRLOCK_CONFIG_DIR) { $env:AIRLOCK_CONFIG_DIR } else { Join-Path $HOME '.config\airlock' }
+
+$PolicyHelper = if ($env:AIRLOCK_POLICY_HELPER) { $env:AIRLOCK_POLICY_HELPER } else { Join-Path $InstallDir 'airlock_policy.py' }
+$OpenRouterAuthHelper = if ($env:AIRLOCK_OPENROUTER_AUTH_HELPER) { $env:AIRLOCK_OPENROUTER_AUTH_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_auth.py' }
+$OpenRouterPresetsHelper = if ($env:AIRLOCK_OPENROUTER_PRESETS_HELPER) { $env:AIRLOCK_OPENROUTER_PRESETS_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_presets.py' }
+$OpenRouterModelsHelper = if ($env:AIRLOCK_OPENROUTER_MODELS_HELPER) { $env:AIRLOCK_OPENROUTER_MODELS_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_models.py' }
+$OpenRouterRegistry = if ($env:AIRLOCK_OPENROUTER_REGISTRY_FILE) { $env:AIRLOCK_OPENROUTER_REGISTRY_FILE } else { Join-Path $ConfigDir 'openrouter-registry.json' }
+$OpenRouterHelpersSafe = $true
+foreach ($helper in @($PolicyHelper, $OpenRouterAuthHelper, $OpenRouterPresetsHelper, $OpenRouterModelsHelper)) {
+  if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+    Fail "OpenRouter helper is missing or unsafe: $helper"
+    $OpenRouterHelpersSafe = $false
+    continue
+  }
+  $helperItem = Get-Item -LiteralPath $helper -Force
+  if ($helperItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    Fail "OpenRouter helper is missing or unsafe: $helper"
+    $OpenRouterHelpersSafe = $false
+  }
+}
+if (-not $Python) {
+  Fail 'Python 3 is required for OpenRouter checks'
+  $OpenRouterHelpersSafe = $false
+}
+
+$OpenRouterRegistryState = 'unknown'
+$OpenRouterRegistryCount = 0
+if ($OpenRouterHelpersSafe) {
+  $registryOutput = @(& $Python $OpenRouterModelsHelper --registry $OpenRouterRegistry _doctor-status 2>&1)
+  $registryExitCode = $LASTEXITCODE
+  foreach ($lineValue in $registryOutput) {
+    $line = [string]$lineValue
+    if ($line -match '^STATE=(.*)$') { $OpenRouterRegistryState = $Matches[1]; continue }
+    if ($line -match '^COUNT=([0-9]+)$') { $OpenRouterRegistryCount = [int]$Matches[1]; continue }
+    if ($line -match '^MODEL=(.*)$') {
+      $parts = $Matches[1] -split "`t", 4
+      if ($parts.Count -eq 4) {
+        Info "OpenRouter route: airlock-or-$($parts[0]) -> $($parts[1]) via $($parts[2]) ($($parts[3]))"
+      }
+      continue
+    }
+    if ($line -match '^DETAIL=(.*)$') { Info "OpenRouter registry detail: $($Matches[1])" }
+  }
+  switch ($OpenRouterRegistryState) {
+    'absent' { Info "OpenRouter registry is not configured: $OpenRouterRegistry" }
+    'valid' { Pass "OpenRouter registry is valid and fresh ($OpenRouterRegistryCount model(s)): $OpenRouterRegistry" }
+    'stale' { Fail 'OpenRouter registry metadata is stale; refresh it before starting a new session' }
+    'invalid' { Fail "OpenRouter registry is invalid: $OpenRouterRegistry" }
+    default {
+      Fail "OpenRouter registry status could not be determined: $OpenRouterRegistry"
+      if ($registryExitCode -ne 0) { Info 'The registry helper returned an error.' }
+    }
+  }
+
+  $backendOutput = @(& $Python $OpenRouterAuthHelper _backend-status 2>&1)
+  $backendExitCode = $LASTEXITCODE
+  $OpenRouterBackend = 'unknown'
+  $OpenRouterBackendState = 'unknown'
+  foreach ($lineValue in $backendOutput) {
+    $line = [string]$lineValue
+    if ($line -match '^BACKEND=(.*)$') { $OpenRouterBackend = $Matches[1]; continue }
+    if ($line -match '^STATE=(.*)$') { $OpenRouterBackendState = $Matches[1] }
+  }
+  if ($OpenRouterBackendState -eq 'available') {
+    Pass "OpenRouter credential backend is available: $OpenRouterBackend"
+  } elseif ($OpenRouterRegistryCount -gt 0) {
+    Fail "OpenRouter credential backend is unavailable: $OpenRouterBackend"
+  } else {
+    Info "OpenRouter credential backend is unavailable: $OpenRouterBackend"
+  }
+  Info 'Doctor does not read the OpenRouter credential; run airlock openrouter auth status to check it.'
+  if ($backendExitCode -ne 0 -and $OpenRouterBackendState -ne 'unavailable') {
+    Fail 'OpenRouter credential backend status could not be determined'
+  }
+}
+
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
 $pluginFiles = @(
   '.claude-plugin\plugin.json', 'hooks\hooks.json',
+  'skills\airlock-fast\SKILL.md',
+  'scripts\fast-session-end.sh', 'scripts\fast-session-end.py',
   'scripts\agent-guard.py', 'scripts\secret-guard.py',
   'scripts\agent-guard.sh', 'scripts\secret-guard.sh',
   'scripts\update-notice.sh', 'scripts\update-notice.py',

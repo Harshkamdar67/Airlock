@@ -73,6 +73,11 @@ $OpenAIWrapperAgentsFile = if ($env:AIRLOCK_HYBRID_AGENTS_FILE) { $env:AIRLOCK_H
 $AnthropicWrapperAgentsFile = if ($env:AIRLOCK_CLAUDE_AGENTS_FILE) { $env:AIRLOCK_CLAUDE_AGENTS_FILE } else { Join-Path $ConfigDir 'claude-agents.json' }
 $GrokAgentsFile = if ($env:AIRLOCK_GROK_DIRECT_AGENTS_FILE) { $env:AIRLOCK_GROK_DIRECT_AGENTS_FILE } elseif ($env:AIRLOCK_GROK_AGENTS_FILE) { $env:AIRLOCK_GROK_AGENTS_FILE } else { Join-Path $ConfigDir 'grok-agents.json' }
 $AccessHelper = if ($env:AIRLOCK_ACCESS_HELPER) { $env:AIRLOCK_ACCESS_HELPER } else { Join-Path $PSScriptRoot 'airlock-access.py' }
+$PolicyHelper = if ($env:AIRLOCK_POLICY_HELPER_PATH) { $env:AIRLOCK_POLICY_HELPER_PATH } else { Join-Path $PSScriptRoot 'airlock_policy.py' }
+$OpenRouterAuthHelper = if ($env:AIRLOCK_OPENROUTER_AUTH_HELPER) { $env:AIRLOCK_OPENROUTER_AUTH_HELPER } else { Join-Path $PSScriptRoot 'airlock_openrouter_auth.py' }
+$OpenRouterPresetsHelper = if ($env:AIRLOCK_OPENROUTER_PRESETS_HELPER) { $env:AIRLOCK_OPENROUTER_PRESETS_HELPER } else { Join-Path $PSScriptRoot 'airlock_openrouter_presets.py' }
+$OpenRouterModelsHelper = if ($env:AIRLOCK_OPENROUTER_MODELS_HELPER) { $env:AIRLOCK_OPENROUTER_MODELS_HELPER } else { Join-Path $PSScriptRoot 'airlock_openrouter_models.py' }
+$OpenRouterRegistryFile = if ($env:AIRLOCK_OPENROUTER_REGISTRY_FILE) { $env:AIRLOCK_OPENROUTER_REGISTRY_FILE } else { Join-Path $ConfigDir 'openrouter-registry.json' }
 $RouterHelper = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } else { Join-Path $PSScriptRoot 'airlock-router.py' }
 $UpdateHelper = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $PSScriptRoot 'airlock-update.py' }
 $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DIR } else { $PSScriptRoot }
@@ -138,6 +143,7 @@ function Show-Models {
   Write-Host '       airlock openai [model] [claude arguments]'
   Write-Host '       airlock grok [model] [claude arguments]'
   Write-Host '       airlock hybrid [model|choose] [claude arguments]'
+  Write-Host '       airlock opr [route] [claude arguments]'
   Write-Host '       airlock [sol|terra|luna|...] [claude arguments]'
   Write-Host ''
   Write-Host 'Profiles:'
@@ -145,12 +151,28 @@ function Show-Models {
   Write-Host '  airlock openai   Start the saved OpenAI-only orchestrator'
   Write-Host '  airlock grok     Start the saved Grok-only orchestrator (subscription proxy)'
   Write-Host '  airlock hybrid   Start the saved hybrid orchestrator'
+  Write-Host '  airlock fast     Start one session with OpenAI Fast without saving the mode'
+  Write-Host '  airlock opr      Start an OpenRouter-only session on an exact registry route'
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
   Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
-  Write-Host 'Other commands: bg, mode, usage, session-usage, access, bundle, config, models, proxy auth, version, update'
+  Write-Host 'Other commands: fast, bg, mode, usage, session-usage, access, bundle, config, models, openrouter auth/models, proxy auth, version, update'
+  Write-Host ''
+  Write-Host 'OpenRouter credential commands:'
+  Write-Host '  airlock openrouter auth set-key     Store a key using a hidden prompt'
+  Write-Host '  airlock openrouter auth set-key --stdin'
+  Write-Host '  airlock openrouter auth status      Show only local credential state'
+  Write-Host '  airlock openrouter auth logout      Delete the local credential after confirmation'
+  Write-Host ''
+  Write-Host 'OpenRouter model registry commands:'
+  Write-Host '  airlock openrouter models list'
+  Write-Host '  airlock openrouter models presets'
+  Write-Host '  airlock openrouter models add-preset NAME [--yes]'
+  Write-Host '  airlock openrouter models add ROUTE MODEL ENDPOINT [--yes]'
+  Write-Host '  airlock openrouter models remove ROUTE [--yes]'
+  Write-Host '  airlock openrouter models refresh [ROUTE] [--apply] [--yes]'
   Write-Host ''
   Write-Host 'Proxy login commands:'
   Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
@@ -193,6 +215,8 @@ function Show-Models {
   Write-Host '  airlock hybrid                   # saved hybrid orchestrator'
   Write-Host '  airlock hybrid choose            # interactive seven-model picker'
   Write-Host '  airlock hybrid opus              # explicit hybrid root'
+  Write-Host '  airlock opr kimi-k3 -r           # exact OpenRouter-only root and resume'
+  Write-Host '  airlock opr                      # interactive OpenRouter route picker'
   Write-Host '  airlock access refresh'
   Write-Host ''
   Write-Host 'Inside a session:'
@@ -269,8 +293,127 @@ function Invoke-AccessPolicy {
   return $accessExitCode
 }
 
+function Invoke-AccessJson {
+  param([string[]]$PolicyArguments)
+  if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed access helper is missing: $AccessHelper")
+    exit 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for access-policy handling.')
+    exit 1
+  }
+  $raw = @(& $python $AccessHelper @PolicyArguments)
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  try {
+    return (($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    [Console]::Error.WriteLine('airlock: OpenRouter access helper returned invalid JSON.')
+    exit 1
+  }
+}
+
+function Test-OpenRouterRouteRecord {
+  param([object]$Value, [string]$ExpectedRoute = '')
+  if ($null -eq $Value) { return $false }
+  foreach ($field in @('route', 'model', 'endpoint_provider', 'provider_slug', 'quantization')) {
+    $property = $Value.PSObject.Properties[$field]
+    if ($null -eq $property -or -not ($property.Value -is [string]) -or -not $property.Value) {
+      return $false
+    }
+  }
+  return (-not $ExpectedRoute -or [string]$Value.route -ceq $ExpectedRoute)
+}
+
+function Resolve-OpenRouterRootRoute {
+  param([string]$Route)
+  $resolved = Invoke-AccessJson -PolicyArguments @('openrouter-resolve', $Route)
+  if (-not (Test-OpenRouterRouteRecord -Value $resolved -ExpectedRoute $Route)) {
+    [Console]::Error.WriteLine('airlock: OpenRouter route resolver returned an invalid result.')
+    exit 1
+  }
+  return $resolved
+}
+
+function Select-OpenRouterRootRoute {
+  $interactive = [Environment]::UserInteractive
+  try {
+    $interactive = $interactive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+  } catch { }
+  if (-not $interactive) {
+    [Console]::Error.WriteLine('airlock: an OpenRouter route is required outside an interactive terminal; use airlock opr ROUTE.')
+    exit 2
+  }
+  $routes = @(Invoke-AccessJson -PolicyArguments @('openrouter-routes'))
+  foreach ($route in $routes) {
+    if (-not (Test-OpenRouterRouteRecord -Value $route)) {
+      [Console]::Error.WriteLine('airlock: OpenRouter route list returned an invalid result.')
+      exit 1
+    }
+  }
+  if ($routes.Count -eq 0) {
+    [Console]::Error.WriteLine('airlock: no enabled OpenRouter routes are available; add one with airlock openrouter models add or add-preset.')
+    exit 2
+  }
+  Write-Host 'Choose the exact OpenRouter root route:'
+  for ($index = 0; $index -lt $routes.Count; $index++) {
+    $route = $routes[$index]
+    Write-Host ("  {0}) {1} ({2}; {3}; {4}/{5})" -f ($index + 1), $route.route, $route.model, $route.endpoint_provider, $route.provider_slug, $route.quantization)
+  }
+  $selection = Read-Host "Selection [1-$($routes.Count)]"
+  $selectedIndex = 0
+  if (-not [int]::TryParse($selection, [ref]$selectedIndex) -or $selectedIndex -lt 1 -or $selectedIndex -gt $routes.Count) {
+    [Console]::Error.WriteLine('airlock: invalid OpenRouter route selection.')
+    exit 2
+  }
+  return [string]$routes[$selectedIndex - 1].route
+}
+
+function Invoke-OpenRouterAuth {
+  param([string[]]$AuthArguments, [ref]$Result)
+  $Result.Value = 1
+  if (-not (Test-Path -LiteralPath $OpenRouterAuthHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed OpenRouter credential helper is missing: $OpenRouterAuthHelper")
+    return
+  }
+  $helperItem = Get-Item -LiteralPath $OpenRouterAuthHelper
+  if (($helperItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    [Console]::Error.WriteLine("airlock: managed OpenRouter credential helper is unsafe: $OpenRouterAuthHelper")
+    return
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for OpenRouter credential storage.')
+    return
+  }
+  & $python $OpenRouterAuthHelper @AuthArguments
+  $Result.Value = $LASTEXITCODE
+}
+
+function Invoke-OpenRouterModels {
+  param([string[]]$ModelArguments, [ref]$Result)
+  $Result.Value = 1
+  if (-not (Test-Path -LiteralPath $OpenRouterModelsHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed OpenRouter model helper is missing: $OpenRouterModelsHelper")
+    return
+  }
+  $helperItem = Get-Item -LiteralPath $OpenRouterModelsHelper
+  if (($helperItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    [Console]::Error.WriteLine("airlock: managed OpenRouter model helper is unsafe: $OpenRouterModelsHelper")
+    return
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for OpenRouter model registry management.')
+    return
+  }
+  & $python $OpenRouterModelsHelper --registry $OpenRouterRegistryFile @ModelArguments
+  $Result.Value = $LASTEXITCODE
+}
+
 function Test-FastRootModel {
-  param([string]$Model)
+  param([string]$Model, [switch]$Ephemeral)
   $route = if ($Model -eq 'gpt-5.6-sol-fast') {
     'sol-fast'
   } elseif ($Model -eq 'gpt-5.6-luna-fast') {
@@ -278,7 +421,9 @@ function Test-FastRootModel {
   } else {
     return
   }
-  $exitCode = Invoke-AccessPolicy -PolicyArguments @('fast-check', '--route', $route, '--quiet')
+  $policyArguments = @('fast-check', '--route', $route, '--quiet')
+  if ($Ephemeral) { $policyArguments += '--ephemeral' }
+  $exitCode = Invoke-AccessPolicy -PolicyArguments $policyArguments
   if ($exitCode -ne 0) { exit $exitCode }
 }
 
@@ -294,6 +439,10 @@ function Test-ManagedBundle {
     '--component', "bin/airlock.cmd=$(Join-Path $PSScriptRoot 'airlock.cmd')",
     '--component', "bin/airlock.ps1=$(Join-Path $PSScriptRoot 'airlock.ps1')",
     '--component', "bin/airlock-access.py=$AccessHelper",
+    '--component', "bin/airlock_policy.py=$PolicyHelper",
+    '--component', "bin/airlock_openrouter_auth.py=$OpenRouterAuthHelper",
+    '--component', "bin/airlock_openrouter_presets.py=$OpenRouterPresetsHelper",
+    '--component', "bin/airlock_openrouter_models.py=$OpenRouterModelsHelper",
     '--component', "bin/airlock-update.py=$UpdateHelper",
     '--component', "bin/airlock-router.py=$RouterHelper",
     '--component', "bin/airlock-hybrid.py=$(Join-Path $ManagedBinDir 'airlock-hybrid.py')",
@@ -305,6 +454,9 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/.claude-plugin/plugin.json=$(Join-Path $PluginDir '.claude-plugin\plugin.json')",
     '--component', "plugins/airlock/hooks/hooks.json=$(Join-Path $PluginDir 'hooks\hooks.json')",
     '--component', "plugins/airlock/skills/usage/SKILL.md=$(Join-Path $PluginDir 'skills\usage\SKILL.md')",
+    '--component', "plugins/airlock/skills/airlock-fast/SKILL.md=$(Join-Path $PluginDir 'skills\airlock-fast\SKILL.md')",
+    '--component', "plugins/airlock/scripts/fast-session-end.sh=$(Join-Path $PluginDir 'scripts\fast-session-end.sh')",
+    '--component', "plugins/airlock/scripts/fast-session-end.py=$(Join-Path $PluginDir 'scripts\fast-session-end.py')",
     '--component', "plugins/airlock/scripts/agent-guard.sh=$(Join-Path $PluginDir 'scripts\agent-guard.sh')",
     '--component', "plugins/airlock/scripts/agent-guard.py=$(Join-Path $PluginDir 'scripts\agent-guard.py')",
     '--component', "plugins/airlock/scripts/secret-guard.sh=$(Join-Path $PluginDir 'scripts\secret-guard.sh')",
@@ -527,8 +679,29 @@ function Invoke-AirlockSession {
     [string]$Profile,
     [string]$RootModel,
     [string]$RootName,
-    [string[]]$ChildArguments
+    [string[]]$ChildArguments,
+    [string]$OpenRouterRootRoute = ''
   )
+
+  if ($Profile -eq 'openrouter-pure') {
+    if (-not $OpenRouterRootRoute) {
+      [Console]::Error.WriteLine('airlock: openrouter-pure requires an exact OpenRouter root route.')
+      exit 2
+    }
+    if ($RootModel -or $RootName) {
+      [Console]::Error.WriteLine('airlock: the OpenRouter root identity must be derived by the managed bridge.')
+      exit 2
+    }
+    foreach ($argument in $ChildArguments) {
+      if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+        [Console]::Error.WriteLine('airlock: OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded.')
+        exit 2
+      }
+    }
+  } elseif ($OpenRouterRootRoute) {
+    [Console]::Error.WriteLine('airlock: an OpenRouter root route is valid only for openrouter-pure.')
+    exit 2
+  }
 
   foreach ($argument in $ChildArguments) {
     if ($argument -eq '--safe-mode' -or $argument -eq '--bare' -or $argument -eq '--agent' -or $argument -eq '--agents' -or $argument -eq '--plugin-dir' -or $argument -eq '--plugin-url' -or $argument -eq '--settings' -or
@@ -548,6 +721,7 @@ function Invoke-AirlockSession {
   }
   Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SUBAGENT_MODEL' -ErrorAction SilentlyContinue
   $env:AIRLOCK_UPDATE_NOTICE_FILE = [IO.Path]::GetFullPath($UpdateNoticeFile)
+  $env:AIRLOCK_ACCESS_HELPER = [IO.Path]::GetFullPath($AccessHelper)
   if ($env:AIRLOCK_ALLOW_CLAUDE_API_SKILL -ne '1') {
     $ChildArguments = @('--disallowedTools', 'Skill(claude-api)', 'Skill(claude-api *)') + $ChildArguments
   }
@@ -579,6 +753,27 @@ function Invoke-AirlockSession {
   $launchDirectory = Join-Path $env:LOCALAPPDATA 'Airlock\launch'
   New-Item -ItemType Directory -Force -Path $launchDirectory | Out-Null
   $launchRequestPath = Join-Path $launchDirectory ("{0}.json" -f [Guid]::NewGuid().ToString('N'))
+  $transitionChannel = ''
+  $transitionNonce = ''
+  $launchCwd = [IO.Path]::GetFullPath((Get-Location).Path)
+  $transitionRaw = @(& $pythonBin $AccessHelper 'fast-transition-create' '--launcher-pid' ([string]$PID) '--cwd' $launchCwd)
+  if ($LASTEXITCODE -ne 0) {
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
+    exit $LASTEXITCODE
+  }
+  $transitionLine = $transitionRaw -join "`n"
+  $transitionParts = $transitionLine -split "`t", -1
+  if ($transitionParts.Count -ne 2 -or -not $transitionParts[0] -or -not $transitionParts[1] -or $transitionLine.Contains("`n")) {
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
+    [Console]::Error.WriteLine('airlock: Fast handoff helper returned invalid channel metadata.')
+    exit 1
+  }
+  $transitionChannel = [string]$transitionParts[0]
+  $transitionNonce = [string]$transitionParts[1]
+  $env:AIRLOCK_FAST_TRANSITION_CHANNEL = $transitionChannel
+  $env:AIRLOCK_FAST_TRANSITION_NONCE = $transitionNonce
   $sessionFastMode = Get-SessionFastMode -RootModel $RootModel
   $launchRequest = [ordered]@{
     profile = $Profile
@@ -586,27 +781,38 @@ function Invoke-AirlockSession {
     catalog_files = $catalogFiles
     plugin_dir = [IO.Path]::GetFullPath($PluginDir)
     router_helper = [IO.Path]::GetFullPath($RouterHelper)
-    proxy_url = [string]$ProxyUrl
-    root_model = [string]$RootModel
-    root_name = [string]$RootName
     context_window = [string]$ContextWin
     force_context_window = [bool]$ExplicitContextWin
     max_agents = [string]$MaxAgents
     fast_mode = [string]$sessionFastMode
+    fast_transition_launcher_pid = [int64]$PID
+    fast_transition_cwd = [string]$launchCwd
     args = [string[]]$ChildArguments
   }
+  if ($Profile -eq 'openrouter-pure') {
+    $launchRequest['openrouter_root_route'] = [string]$OpenRouterRootRoute
+  } else {
+    $launchRequest['proxy_url'] = [string]$ProxyUrl
+    $launchRequest['root_model'] = [string]$RootModel
+    $launchRequest['root_name'] = [string]$RootName
+  }
   $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
-  [IO.File]::WriteAllText(
-    $launchRequestPath,
-    (ConvertTo-Json -InputObject $launchRequest -Depth 4 -Compress),
-    $utf8WithoutBom
-  )
-
   try {
+    [IO.File]::WriteAllText(
+      $launchRequestPath,
+      (ConvertTo-Json -InputObject $launchRequest -Depth 4 -Compress),
+      $utf8WithoutBom
+    )
+
     & $pythonBin $launcher --request-file $launchRequestPath
     $exitCode = $LASTEXITCODE
   } finally {
     Remove-Item -LiteralPath $launchRequestPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
+    if ($transitionChannel -and $transitionNonce) {
+      & $pythonBin $AccessHelper 'fast-transition-cleanup' '--launcher-pid' ([string]$PID) '--cwd' $launchCwd '--channel' $transitionChannel '--nonce' $transitionNonce 2>$null
+    }
   }
   exit $exitCode
 }
@@ -675,9 +881,13 @@ if (-not $DefaultBgAlias) {
   exit 2
 }
 $DefaultBgModel = $DefaultBgAlias
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'orp') {
+  [Console]::Error.WriteLine("airlock: command 'orp' was renamed to 'opr'; use airlock opr.")
+  exit 2
+}
 $ExplicitCommands = @(
-  'mode', 'usage', 'bundle', 'access', 'proxy', 'models', '--models', 'config', '--config',
-  'version', 'update', 'hybrid', 'openai', 'grok', 'bg', 'background', 'sol', 'sol-fast', 'terra',
+  'mode', 'usage', 'session-usage', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
+  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'sol', 'sol-fast', 'terra',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
 if ($DefaultProfile -eq 'grok') {
@@ -796,6 +1006,89 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'access') {
     exit 2
   }
   exit (Invoke-AccessPolicy -PolicyArguments @($accessCommand))
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'openrouter') {
+  $openRouterRest = @()
+  if ($Arguments.Count -gt 1) { $openRouterRest = @($Arguments[1..($Arguments.Count - 1)]) }
+  if ($openRouterRest.Count -eq 0) {
+    [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth|models ...')
+    exit 2
+  }
+  if ($openRouterRest[0] -eq 'models') {
+    $modelRest = @()
+    if ($openRouterRest.Count -gt 1) { $modelRest = @($openRouterRest[1..($openRouterRest.Count - 1)]) }
+    $modelExitCode = 1
+    Invoke-OpenRouterModels -ModelArguments $modelRest -Result ([ref]$modelExitCode)
+    exit $modelExitCode
+  }
+  if ($openRouterRest[0] -ne 'auth') {
+    [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth|models ...')
+    exit 2
+  }
+  $authAction = if ($openRouterRest.Count -gt 1) { $openRouterRest[1] } else { 'status' }
+  $authRest = @()
+  if ($openRouterRest.Count -gt 2) { $authRest = @($openRouterRest[2..($openRouterRest.Count - 1)]) }
+  switch ($authAction) {
+    'set-key' {
+      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--stdin')) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth set-key [--stdin]')
+        exit 2
+      }
+    }
+    'status' {
+      if ($authRest.Count -ne 0) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth status')
+        exit 2
+      }
+    }
+    'logout' {
+      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--yes')) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth logout [--yes]')
+        exit 2
+      }
+    }
+    default {
+      [Console]::Error.WriteLine("airlock: unsupported OpenRouter auth action: $authAction")
+      exit 2
+    }
+  }
+  $authExitCode = 1
+  Invoke-OpenRouterAuth -AuthArguments (@($authAction) + $authRest) -Result ([ref]$authExitCode)
+  exit $authExitCode
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'opr') {
+  $oprArguments = @()
+  if ($Arguments.Count -gt 1) {
+    $oprArguments = @($Arguments[1..($Arguments.Count - 1)])
+  }
+  if ($oprArguments.Count -gt 0 -and $oprArguments[0] -in @('--help', '-h')) {
+    Write-Host 'Usage: airlock opr [ROUTE] [Claude arguments...]'
+    Write-Host ''
+    Write-Host 'Start an OpenRouter-only session on one exact enabled registry route.'
+    Write-Host 'Omit ROUTE in an interactive terminal to choose from the offline registry.'
+    Write-Host 'Use airlock openrouter auth and airlock openrouter models to manage access.'
+    return
+  }
+  $openRouterRootRoute = ''
+  if ($oprArguments.Count -gt 0 -and $oprArguments[0] -notlike '-*') {
+    $openRouterRootRoute = [string]$oprArguments[0]
+    $oprArguments = if ($oprArguments.Count -gt 1) { @($oprArguments[1..($oprArguments.Count - 1)]) } else { @() }
+  } else {
+    $openRouterRootRoute = Select-OpenRouterRootRoute
+  }
+  $null = Resolve-OpenRouterRootRoute -Route $openRouterRootRoute
+  foreach ($argument in $oprArguments) {
+    if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+      [Console]::Error.WriteLine('airlock: OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded.')
+      exit 2
+    }
+  }
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+    Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
+  }
+  Invoke-AirlockSession 'openrouter-pure' '' '' $oprArguments $openRouterRootRoute
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'proxy') {
@@ -947,6 +1240,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
 $requested = $DefaultOpenAIModel
 $effort = $MainEffort
 $rest = @()
+$ephemeralFast = $false
 
 if ($Arguments.Count -gt 0) {
   switch ($Arguments[0]) {
@@ -1034,6 +1328,19 @@ if ($Arguments.Count -gt 0) {
       $effort = $BgEffort
       if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
     }
+    'fast' {
+      $requested = 'sol-fast'
+      $ephemeralFast = $true
+      if ($Arguments.Count -gt 1) {
+        $rest = @($Arguments[1..($Arguments.Count - 1)])
+        foreach ($argument in $rest) {
+          if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+            [Console]::Error.WriteLine("airlock: Fast uses the fixed gpt-5.6-sol-fast root; $argument cannot be forwarded.")
+            exit 2
+          }
+        }
+      }
+    }
     default {
       if ($Arguments[0] -like '--model=*') {
         $requested = $Arguments[0].Substring('--model='.Length)
@@ -1052,6 +1359,16 @@ if ($Arguments.Count -gt 0) {
   }
 }
 
+if ($Arguments.Count -ge 2 -and $Arguments[0] -eq 'fast' -and $Arguments[1] -eq '--arm') {
+  if ($Arguments.Count -ne 4 -or $Arguments[2] -ne '--session-id' -or -not $Arguments[3]) {
+    [Console]::Error.WriteLine('airlock: usage: airlock fast --arm --session-id SESSION_ID')
+    exit 2
+  }
+  if ((Test-ManagedBundle) -ne 0) { exit 1 }
+  Test-FastRootModel 'gpt-5.6-sol-fast' -Ephemeral
+  exit (Invoke-AccessPolicy -PolicyArguments @('fast-transition-arm', '--session-id', [string]$Arguments[3]))
+}
+
 $requestedAlias = Resolve-OpenAIAlias $requested
 if (-not $requestedAlias) {
   [Console]::Error.WriteLine("airlock: unsupported OpenAI model '$requested'")
@@ -1059,7 +1376,7 @@ if (-not $requestedAlias) {
 }
 $selected = $Models[$requestedAlias][0]
 $modelName = $Models[$requestedAlias][1]
-Test-FastRootModel $selected
+Test-FastRootModel $selected -Ephemeral:$ephemeralFast
 Set-OpenAIEnvironment $selected $modelName
 Remove-Item -LiteralPath 'Env:AIRLOCK_HYBRID' -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath 'Env:AIRLOCK_GPT_HYBRID' -ErrorAction SilentlyContinue

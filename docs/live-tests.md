@@ -21,6 +21,8 @@ Approval for one test does not authorize the next test.
 
 Never include OAuth files, tokens, raw env values, ignored files, outside-repository files, credentials, or private prompts in public web mode.
 
+OpenRouter needs its own approval on top of the list above: the exact declared route name, the exact routable model ID and endpoint, and confirmation that extra-usage state covers it. OpenRouter is a separate account with its own billing, so approving an OpenAI or Anthropic live test does not also approve an OpenRouter one. Approving an OpenRouter route as a hybrid-session worker (test 13) does not also approve it as the exclusive `airlock opr` root (test 14); state exactly which one you are approving.
+
 ## Starting state
 
 Record only safe output:
@@ -180,6 +182,50 @@ Record only the helper's sanitized JSON result. If the provider rejects the requ
 Approved scope: OpenAI, exact `gpt-5.6-sol`, no repository files, no public web, extra usage off, Fast off, and zero workers.
 
 The first launcher attempt made no model request because the Windows batch path contained a space and the helper invoked it incorrectly. The helper was fixed and its no-request `--help` path passed. The authorized request then reached the installed launcher but exited with status 1 before producing a valid marker or usage result. The >300k proof failed. Airlock retained the conservative OpenAI context fallback and does not claim a usable 1M Sol path from this test.
+
+### 13. OpenRouter route as a hybrid-session worker
+
+This check needs its own approval, separate from the OpenAI and Anthropic scope above: the exact declared route name, the exact routable model ID and endpoint from `airlock openrouter models list`, repository files (if any), public web state, extra-usage state, and worker count.
+
+Start:
+
+```bash
+airlock hybrid sol
+```
+
+Verify:
+
+- the route appears as `airlock-or-ROUTE`, a named worker alongside the hybrid root, not as the session root
+- the request reaches the exact endpoint declared in the registry, with no silent OpenRouter fallback to a different provider
+- under the default `ask` extra-usage policy, the Agent needs `Extra usage authorized: yes` before it starts
+- native Agent cards, tools, background execution, and cancellation work the same as any other named Agent
+- `count_tokens` is refused for the route instead of returning an estimate
+
+Do not run this check with a registry entry older than 30 days. Refresh it first with `airlock openrouter models refresh --apply`.
+
+### 14. OpenRouter route as the exclusive `airlock opr` root
+
+This check needs its own approval, separate from every other scope on this page: explicit confirmation that this is an `airlock opr` **root** proof (not the worker case in test 13), the exact declared route name, the exact routable model ID and endpoint from `airlock openrouter models list`, repository files (if any), public web state, extra-usage state for any other declared route that might also be enabled, and worker count. Approval for test 13 or for an OpenAI or Anthropic live test does not cover this one, because `airlock opr` uses a separate account with its own billing and starts a different session profile.
+
+This section documents the required approval and the verification checklist only. No `airlock opr` root proof has been run, and none should run without that separate, explicit approval recorded first.
+
+Once approved, start:
+
+```bash
+airlock opr ROUTE
+```
+
+Verify:
+
+- the named Agent for the selected route is the session root, not an extra worker, and needs no `Extra usage authorized: yes` confirmation to run even under the default `ask` extra-usage policy
+- the request reaches the exact endpoint declared in the registry, with no silent OpenRouter fallback to a different provider or model
+- the session has no Claude, Codex, or Grok credential dependency and does not start the OpenAI subscription proxy
+- if any other route is declared and enabled by the approved extra-usage scope, it appears only as a separate `airlock-or-ROUTE` worker and still needs its own extra-usage confirmation under `ask`
+- native Agent cards, tools, background execution, and cancellation work the same as any other root
+- `count_tokens` is refused for the route instead of returning an estimate
+- an unknown, disabled, or misspelled route name fails closed before any request is sent
+
+Do not run this check with a registry entry older than 30 days. Refresh it first with `airlock openrouter models refresh --apply`.
 
 ## Gateway limits to record
 

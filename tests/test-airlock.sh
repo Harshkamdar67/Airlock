@@ -10,7 +10,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 # inside an Airlock session would otherwise inherit that session's window and
 # read it back as the launcher's own choice.
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL \
-  AIRLOCK_UPDATE_NOTICE_FILE
+  AIRLOCK_UPDATE_NOTICE_FILE AIRLOCK_POLICY_HELPER AIRLOCK_SESSION_SNAPSHOT \
+  AIRLOCK_SESSION_SNAPSHOT_SHA256
 # Build a legacy config without the saved-profile keys to verify that existing
 # installations keep their original OpenAI-only bare command.
 while IFS= read -r line; do
@@ -73,6 +74,7 @@ export AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json"
 export AIRLOCK_GROK_WRAPPER_AGENTS_FILE="$repo_root/config/grok-agents.json"
 export AIRLOCK_PLUGIN_DIR="$repo_root/plugins/airlock"
 export AIRLOCK_MANAGED_BUNDLE_FILE="$repo_root/config/managed-bundle.json"
+export AIRLOCK_SESSION_RUNTIME_DIR="$tmp_dir/runtime"
 unset AIRLOCK_ROUTING_POLICY AIRLOCK_EXTRA_USAGE_POLICY
 
 fallback_home="$tmp_dir/fallback-home"
@@ -202,6 +204,53 @@ if [[ "$version_output" != "Airlock $expected_version" ]]; then
 fi
 update_help_output="$("$launcher" update --help)"
 grep -q '^usage: airlock update' <<<"$update_help_output"
+
+# Exercise OpenRouter launcher dispatch with a helper that cannot access a key
+# or the network. Registry argument forwarding is part of the command contract.
+cat > "$tmp_dir/openrouter-models-stub.py" <<'PY'
+import sys
+print("MOCK_OPENROUTER_MODELS=" + "|".join(sys.argv[1:]))
+PY
+openrouter_registry="$tmp_dir/openrouter-registry.json"
+openrouter_models_output="$(
+  AIRLOCK_OPENROUTER_MODELS_HELPER="$tmp_dir/openrouter-models-stub.py" \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$openrouter_registry" \
+    "$launcher" openrouter models list
+)"
+grep -q '^MOCK_OPENROUTER_MODELS=--registry|.*|list$' <<<"$openrouter_models_output"
+openrouter_presets_output="$(
+  AIRLOCK_OPENROUTER_MODELS_HELPER="$tmp_dir/openrouter-models-stub.py" \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$openrouter_registry" \
+    "$launcher" openrouter models presets
+)"
+grep -q '^MOCK_OPENROUTER_MODELS=--registry|.*|presets$' <<<"$openrouter_presets_output"
+openrouter_add_preset_output="$(
+  AIRLOCK_OPENROUTER_MODELS_HELPER="$tmp_dir/openrouter-models-stub.py" \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$openrouter_registry" \
+    "$launcher" openrouter models add-preset kimi-k3 --yes
+)"
+grep -q '^MOCK_OPENROUTER_MODELS=--registry|.*|add-preset|kimi-k3|--yes$' <<<"$openrouter_add_preset_output"
+models_help_output="$("$launcher" models)"
+grep -q 'airlock openrouter models presets' <<<"$models_help_output"
+grep -q 'airlock openrouter models add-preset' <<<"$models_help_output"
+opr_help_output="$("$launcher" opr --help)"
+opr_short_help_output="$("$launcher" opr -h)"
+grep -q '^Usage: airlock opr \[ROUTE\] \[Claude arguments\.\.\.\]$' <<<"$opr_help_output"
+[[ "$opr_short_help_output" == "$opr_help_output" ]]
+grep -q 'offline registry' <<<"$opr_help_output"
+if grep -q 'airlock orp' <<<"$opr_help_output"; then
+  printf 'test: OPR help still advertised the old ORP command\n' >&2
+  exit 1
+fi
+if "$launcher" openrouter unsupported >"$tmp_dir/openrouter-invalid.out" 2>"$tmp_dir/openrouter-invalid.err"; then
+  printf 'test: launcher accepted an unsupported OpenRouter command\n' >&2
+  exit 1
+else
+  openrouter_invalid_status=$?
+fi
+[[ "$openrouter_invalid_status" -eq 2 ]]
+grep -q '^airlock: usage: airlock openrouter auth|models \.\.\.$' "$tmp_dir/openrouter-invalid.err"
+
 if "$launcher" version unexpected >/dev/null 2>&1; then
   printf 'test: version command accepted an unexpected argument\n' >&2
   exit 1
@@ -305,6 +354,40 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
 fi
 
 normal_output="$(CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
+stdin_stub="$tmp_dir/stdin-claude-stub.sh"
+cat > "$stdin_stub" <<'EOF'
+#!/usr/bin/env bash
+IFS= read -r line || {
+  printf 'stdin stub: launcher passed end-of-file instead of its input\n' >&2
+  exit 67
+}
+printf 'STDIN_LINE=%s\n' "$line"
+EOF
+chmod +x "$stdin_stub"
+stdin_output="$(
+  printf 'preserved input\n' |
+    AIRLOCK_REAL_CLAUDE="$stdin_stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+      "$launcher" terra -p test
+)"
+grep -q '^STDIN_LINE=preserved input$' <<<"$stdin_output"
+closed_stdin_stub="$tmp_dir/closed-stdin-claude-stub.sh"
+cat > "$closed_stdin_stub" <<'EOF'
+#!/usr/bin/env bash
+if IFS= read -r line; then
+  printf 'closed stdin stub: unexpectedly read input: %s\n' "$line" >&2
+  exit 68
+fi
+printf 'CLOSED_STDIN=EOF\n'
+EOF
+chmod +x "$closed_stdin_stub"
+closed_stdin_output="$(
+  AIRLOCK_REAL_CLAUDE="$closed_stdin_stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+    "$launcher" terra -p test 0<&-
+)"
+grep -q '^CLOSED_STDIN=EOF$' <<<"$closed_stdin_output"
+grep -Fq 'exec 9<&0' "$launcher"
+grep -Fq 'exec 9</dev/null' "$launcher"
+grep -Fq '"$@" <&9 9<&- &' "$launcher"
 notice_config_root="$tmp_dir/notice-config"
 notice_output="$(AIRLOCK_CONFIG_DIR="$notice_config_root" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q "^UPDATE_NOTICE=$notice_config_root/update-notice.json$" <<<"$notice_output"
@@ -318,6 +401,14 @@ grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^HAIKU_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
+grep -q '^POLICY_HELPER=.*airlock_policy\.py$' <<<"$normal_output"
+grep -q '^SNAPSHOT_SHA256=[0-9a-f]\{64\}$' <<<"$normal_output"
+grep -q '^SNAPSHOT_EXISTS=yes$' <<<"$normal_output"
+normal_snapshot="$(grep '^SESSION_SNAPSHOT=' <<<"$normal_output" | cut -d= -f2-)"
+if [[ -z "$normal_snapshot" || -e "$normal_snapshot" ]]; then
+  printf 'test: pure-session snapshot was not removed after Claude exited\n' >&2
+  exit 1
+fi
 
 background_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$background_output"
@@ -491,6 +582,196 @@ for unsafe_env in CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_SIMPLE; do
   fi
 done
 
+opr_registry="$tmp_dir/opr-private/openrouter-registry.json"
+python - "$repo_root/bin" "$opr_registry" <<'PY'
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import airlock_policy as policy
+policy.write_openrouter_registry(sys.argv[2], {
+    "schema_version": 1,
+    "models": [
+        {
+            "route": "kimi-k3",
+            "model": "moonshotai/kimi-k3",
+            "endpoint_provider": "digitalocean",
+            "provider_name": "DigitalOcean",
+            "provider_slug": "digitalocean",
+            "quantization": "unknown",
+            "canonical_slug": "moonshotai/kimi-k3-20260715",
+            "alias_target": None,
+            "supported_parameters": ["tool_choice", "tools"],
+            "expiration_date": None,
+            "checked_at": int(time.time()),
+            "enabled": True,
+        },
+        {
+            "route": "deepseek-v4-flash-0731",
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "endpoint_provider": "deepinfra/fp4",
+            "provider_name": "DeepInfra",
+            "provider_slug": "deepinfra",
+            "quantization": "fp4",
+            "canonical_slug": "deepseek/deepseek-v4-flash-0731",
+            "alias_target": None,
+            "supported_parameters": ["tool_choice", "tools"],
+            "expiration_date": None,
+            "checked_at": int(time.time()),
+            "enabled": True,
+        },
+    ],
+})
+PY
+opr_router="$tmp_dir/opr-router.py"
+cat > "$opr_router" <<'PY'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+if len(sys.argv) < 2 or sys.argv[1] != "start" or "--openai-url" in sys.argv:
+    raise SystemExit(71)
+marker = os.environ.get("AIRLOCK_TEST_ROUTER_MARKER")
+if marker:
+    Path(marker).write_text("started", encoding="utf-8")
+print("http://127.0.0.1:28472")
+PY
+chmod +x "$opr_router"
+opr_bundle="$tmp_dir/opr-managed-bundle.json"
+python - "$repo_root/config/managed-bundle.json" "$opr_bundle" "$opr_router" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+bundle = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+bundle["components"]["bin/airlock-router.py"] = hashlib.sha256(
+    Path(sys.argv[3]).read_bytes()
+).hexdigest()
+Path(sys.argv[2]).write_text(json.dumps(bundle), encoding="utf-8")
+PY
+legacy_opr_access_stub="$tmp_dir/legacy-opr-access-stub.py"
+cat > "$legacy_opr_access_stub" <<'PY'
+import os
+from pathlib import Path
+marker = os.environ.get("AIRLOCK_TEST_ACCESS_MARKER")
+if marker:
+    Path(marker).write_text("called", encoding="utf-8")
+raise SystemExit(79)
+PY
+for saved_profile in hybrid grok; do
+  saved_profile_config="$tmp_dir/opr-$saved_profile.conf"
+  cp "$tmp_dir/config" "$saved_profile_config"
+  printf 'AIRLOCK_DEFAULT_PROFILE=%s\n' "$saved_profile" >> "$saved_profile_config"
+  saved_profile_help="$(AIRLOCK_CONFIG_FILE="$saved_profile_config" "$launcher" opr --help)"
+  grep -q '^Usage: airlock opr ' <<<"$saved_profile_help"
+  legacy_stdout="$tmp_dir/orp-$saved_profile.out"
+  legacy_stderr="$tmp_dir/orp-$saved_profile.err"
+  legacy_access_marker="$tmp_dir/orp-$saved_profile-access.marker"
+  legacy_router_marker="$tmp_dir/orp-$saved_profile-router.marker"
+  if AIRLOCK_CONFIG_FILE="$saved_profile_config" \
+    AIRLOCK_ACCESS_HELPER="$legacy_opr_access_stub" \
+    AIRLOCK_TEST_ACCESS_MARKER="$legacy_access_marker" \
+    AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" \
+    AIRLOCK_MANAGED_BUNDLE_FILE="$opr_bundle" \
+    AIRLOCK_ROUTER_HELPER="$opr_router" \
+    AIRLOCK_TEST_ROUTER_MARKER="$legacy_router_marker" \
+    AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+      "$launcher" orp kimi-k3 -r >"$legacy_stdout" 2>"$legacy_stderr"; then
+    printf 'test: legacy ORP command unexpectedly succeeded under %s default\n' "$saved_profile" >&2
+    exit 1
+  else
+    legacy_status=$?
+  fi
+  [[ "$legacy_status" -eq 2 ]]
+  [[ ! -s "$legacy_stdout" ]]
+  [[ ! -e "$legacy_access_marker" ]]
+  [[ ! -e "$legacy_router_marker" ]]
+  grep -q "^airlock: command 'orp' was renamed to 'opr'; use airlock opr\.$" "$legacy_stderr"
+  saved_profile_output="$(
+    ANTHROPIC_API_KEY=synthetic OPENAI_API_KEY=synthetic GROK_API_KEY=synthetic \
+    OPENROUTER_API_KEY=synthetic CLAUDE_CODE_OAUTH_TOKEN=synthetic \
+    AIRLOCK_CONFIG_FILE="$saved_profile_config" \
+    AIRLOCK_ACCESS_HELPER="$repo_root/bin/airlock-access.py" \
+    AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" \
+    AIRLOCK_MANAGED_BUNDLE_FILE="$opr_bundle" \
+    AIRLOCK_ROUTER_HELPER="$opr_router" AIRLOCK_REAL_CLAUDE="$stub" \
+      "$launcher" opr kimi-k3 -r -p morpheus-corp
+  )"
+  grep -q '^ACTIVE_PROFILE=openrouter-pure$' <<<"$saved_profile_output"
+  grep -q '^MODEL=moonshotai/kimi-k3$' <<<"$saved_profile_output"
+  grep -q '^ARG=-r$' <<<"$saved_profile_output"
+  grep -q '^ARG=morpheus-corp$' <<<"$saved_profile_output"
+  if grep -q "renamed to 'opr'" <<<"$saved_profile_output"; then
+    printf 'test: OPR arguments containing orp triggered legacy-command rejection\n' >&2
+    exit 1
+  fi
+done
+opr_output="$(
+  ANTHROPIC_API_KEY=synthetic OPENAI_API_KEY=synthetic GROK_API_KEY=synthetic \
+  OPENROUTER_API_KEY=synthetic CLAUDE_CODE_OAUTH_TOKEN=synthetic \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" \
+  AIRLOCK_MANAGED_BUNDLE_FILE="$opr_bundle" \
+  AIRLOCK_ROUTER_HELPER="$opr_router" AIRLOCK_REAL_CLAUDE="$stub" \
+    "$launcher" opr kimi-k3 -r --effort high
+)"
+grep -q '^ACTIVE_PROFILE=openrouter-pure$' <<<"$opr_output"
+grep -q '^MODEL=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^ROOT_MODEL=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^DISCOVERY_MODEL=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^SESSION_ROUTER=http://127.0.0.1:28472$' <<<"$opr_output"
+grep -q '^DEFAULT_FABLE=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^DEFAULT_OPUS=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^DEFAULT_SONNET=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^DEFAULT_HAIKU=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^SMALL_FAST=moonshotai/kimi-k3$' <<<"$opr_output"
+grep -q '^FABLE_CAPS=unset$' <<<"$opr_output"
+grep -q '^CUSTOM_CAPS=unset$' <<<"$opr_output"
+grep -q '^COMPACT_WINDOW=unset$' <<<"$opr_output"
+grep -q '^ARG=-r$' <<<"$opr_output"
+grep -q '^ARG=high$' <<<"$opr_output"
+opr_profile="$opr_output" python - <<'PY'
+import json
+import os
+lines = os.environ["opr_profile"].splitlines()
+args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
+agents = json.loads(args[args.index("--agents") + 1])
+assert set(agents) == {"airlock-or-kimi-k3", "airlock-or-deepseek-v4-flash-0731"}
+assert agents["airlock-or-kimi-k3"]["model"] == "moonshotai/kimi-k3"
+assert "explicitly selected route for normal root traffic" in agents["airlock-or-kimi-k3"]["description"]
+assert "extra-usage authorization" in agents["airlock-or-deepseek-v4-flash-0731"]["description"]
+assert args.count("--model") == 1
+assert args[args.index("--model") + 1] == "moonshotai/kimi-k3"
+assert "-r" in args
+PY
+opr_snapshot="$(grep '^SESSION_SNAPSHOT=' <<<"$opr_output" | cut -d= -f2-)"
+if [[ -z "$opr_snapshot" || -e "$opr_snapshot" ]]; then
+  printf 'test: OpenRouter-only snapshot was not removed after Claude exited\n' >&2
+  exit 1
+fi
+for override in '--model=moonshotai/kimi-k3' '--model' '-m'; do
+  if AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" "$launcher" opr kimi-k3 "$override" blocked >/dev/null 2>&1; then
+    printf 'test: OpenRouter-only launch accepted model override %s\n' "$override" >&2
+    exit 1
+  fi
+done
+if AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" "$launcher" opr missing-route -p test >/dev/null 2>"$tmp_dir/opr-unknown.err"; then
+  printf 'test: OpenRouter-only launch accepted an unknown route\n' >&2
+  exit 1
+fi
+grep -q 'unknown or disabled OpenRouter route' "$tmp_dir/opr-unknown.err"
+if AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" "$launcher" opr -r >/dev/null 2>"$tmp_dir/opr-missing.err"; then
+  printf 'test: noninteractive OpenRouter-only launch accepted a missing route\n' >&2
+  exit 1
+fi
+grep -q 'OpenRouter route is required outside an interactive terminal' "$tmp_dir/opr-missing.err"
+if AIRLOCK_OPENROUTER_REGISTRY_FILE="$opr_registry" "$launcher" opr </dev/null >/dev/null 2>"$tmp_dir/opr-bare.err"; then
+  printf 'test: noninteractive bare OPR launch accepted a missing route\n' >&2
+  exit 1
+else
+  opr_bare_status=$?
+fi
+[[ "$opr_bare_status" -eq 2 ]]
+grep -q 'OpenRouter route is required outside an interactive terminal' "$tmp_dir/opr-bare.err"
+
 hybrid_openai_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid terra -p test)"
 grep -q '^MODEL=unset$' <<<"$hybrid_openai_output"
 grep -Eq '^BASE_URL=http://127\.0\.0\.1:[1-9][0-9]*$' <<<"$hybrid_openai_output"
@@ -615,8 +896,9 @@ else:
 PY
 
 # Keep the hybrid child alive beyond the router's one-second owner monitor and
-# probe it repeatedly. On Git Bash this proves the launcher does not exec away
-# the native Windows PID that owns the router. The child's status must survive.
+# probe it repeatedly. This proves the launcher remains the stable router owner
+# while Claude runs on every platform. The child's status and snapshot cleanup
+# must survive the wrapper.
 router_hold_output="$tmp_dir/router-hold.out"
 router_hold_error="$tmp_dir/router-hold.err"
 AIRLOCK_STUB_HOLD_SECONDS=3 AIRLOCK_STUB_EXIT_STATUS=37 \
@@ -643,6 +925,15 @@ if [[ ! "$router_hold_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
   kill "$router_hold_pid" 2>/dev/null || true
   wait "$router_hold_pid" 2>/dev/null || true
   printf 'test: held hybrid session did not publish its router: %s\n' "$(<"$router_hold_error")" >&2
+  exit 1
+fi
+router_hold_snapshot="$(grep '^SESSION_SNAPSHOT=' "$router_hold_output" | cut -d= -f2-)"
+if [[ -z "$router_hold_snapshot" || ! -f "$router_hold_snapshot" ]] || \
+    ! grep -q '^SNAPSHOT_EXISTS=yes$' "$router_hold_output" || \
+    ! grep -q '^SNAPSHOT_SHA256=[0-9a-f]\{64\}$' "$router_hold_output"; then
+  kill "$router_hold_pid" 2>/dev/null || true
+  wait "$router_hold_pid" 2>/dev/null || true
+  printf 'test: held hybrid session did not retain a valid policy snapshot\n' >&2
   exit 1
 fi
 HYBRID_ROUTER_URL="$router_hold_url" python - <<'PY'
@@ -673,6 +964,10 @@ if (( router_hold_status != 37 )); then
     "$router_hold_status" "$(<"$router_hold_error")" >&2
   exit 1
 fi
+if [[ -e "$router_hold_snapshot" ]]; then
+  printf 'test: held hybrid session snapshot remained after child exit\n' >&2
+  exit 1
+fi
 HYBRID_ROUTER_URL="$router_hold_url" python - <<'PY'
 import http.client
 import os
@@ -694,8 +989,7 @@ else:
     raise AssertionError("held hybrid router remained available after child exit")
 PY
 
-# Signals sent to the launcher must reach Claude when Git Bash keeps the owner
-# process alive instead of execing it.
+# Signals sent to the stable launcher owner must reach Claude on every platform.
 router_signal_output="$tmp_dir/router-signal.out"
 router_signal_error="$tmp_dir/router-signal.err"
 router_signal_file="$tmp_dir/router-signal.txt"
@@ -722,6 +1016,13 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
         break
 PY
 )"
+router_signal_snapshot="$(grep '^SESSION_SNAPSHOT=' "$router_signal_output" | cut -d= -f2-)"
+if [[ -z "$router_signal_snapshot" || ! -f "$router_signal_snapshot" ]]; then
+  kill "$router_signal_pid" 2>/dev/null || true
+  wait "$router_signal_pid" 2>/dev/null || true
+  printf 'test: signal session policy snapshot was not retained\n' >&2
+  exit 1
+fi
 kill -TERM "$router_signal_pid"
 if wait "$router_signal_pid"; then
   printf 'test: hybrid launcher swallowed TERM\n' >&2
@@ -732,6 +1033,10 @@ fi
 if (( router_signal_status != 143 )) || [[ "$(<"$router_signal_file")" != 'TERM' ]]; then
   printf 'test: hybrid TERM forwarding failed with status %s: %s\n' \
     "$router_signal_status" "$(<"$router_signal_error")" >&2
+  exit 1
+fi
+if [[ -e "$router_signal_snapshot" ]]; then
+  printf 'test: signaled hybrid session snapshot remained after child exit\n' >&2
   exit 1
 fi
 HYBRID_ROUTER_URL="$router_signal_url" python - <<'PY'
@@ -995,6 +1300,21 @@ PY
 fast_root_output="$(AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_OPENAI_FAST=on AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol-fast -p test)"
 grep -q '^MODEL=gpt-5.6-sol-fast$' <<<"$fast_root_output"
 
+config_before_fast="$(sha256sum "$AIRLOCK_CONFIG_FILE" | cut -d' ' -f1)"
+ephemeral_fast_output="$(AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_OPENAI_FAST=off AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" fast -r)"
+grep -q '^MODEL=gpt-5.6-sol-fast$' <<<"$ephemeral_fast_output"
+grep -q '^ARG=-r$' <<<"$ephemeral_fast_output"
+grep -q '^FAST_TRANSITION=set$' <<<"$ephemeral_fast_output"
+[[ "$(sha256sum "$AIRLOCK_CONFIG_FILE" | cut -d' ' -f1)" == "$config_before_fast" ]]
+if AIRLOCK_ACCESS_FILE="$tmp_dir/fast-access.json" AIRLOCK_OPENAI_FAST=off AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" fast --model gpt-5.6-terra >/dev/null 2>&1; then
+  printf 'test: session-local Fast shortcut accepted a model override\n' >&2
+  exit 1
+fi
+if AIRLOCK_ACCESS_FILE="$tmp_dir/access.json" AIRLOCK_OPENAI_FAST=off AIRLOCK_PROXY_FAST_CAPABLE=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" fast -r >/dev/null 2>&1; then
+  printf 'test: session-local Fast shortcut bypassed the plan gate\n' >&2
+  exit 1
+fi
+
 skill_opt_in_output="$(AIRLOCK_ALLOW_CLAUDE_API_SKILL=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" sol -p test)"
 if grep -Fq 'ARG=Skill(claude-api)' <<<"$skill_opt_in_output"; then
   printf 'test: explicit claude-api skill opt-in was ignored\n' >&2
@@ -1023,11 +1343,13 @@ grep -q '^DEFAULT_SONNET=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^DEFAULT_HAIKU=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^SMALL_FAST=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^CUSTOM_NAME=Grok 4.5 (Grok subscription)$' <<<"$grok_output"
+[[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_output")" -eq 1 ]]
 
 grok_composer_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok composer -p test)"
 grep -q '^MODEL=grok-composer-2.5-fast$' <<<"$grok_composer_output"
+[[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_composer_output")" -eq 1 ]]
 
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   "$launcher" grok --model=bogus -p test >/dev/null 2>&1; then
