@@ -788,9 +788,51 @@ policy.write_openrouter_registry(sys.argv[2], {
   if ($LASTEXITCODE -ne 0) {
     throw 'Windows test could not create a protected synthetic OpenRouter registry.'
   }
+  # The credential lives under LOCALAPPDATA on Windows, so the suite keeps its
+  # own application-data root and never touches a real developer credential.
+  $OpenRouterAppData = Join-Path $TempRoot 'openrouter-appdata'
+  $EmptyAppData = Join-Path $TempRoot 'openrouter-appdata-empty'
+  New-Item -ItemType Directory -Path $OpenRouterAppData -Force | Out-Null
+  New-Item -ItemType Directory -Path $EmptyAppData -Force | Out-Null
+
+  $MissingKeyLaunch = Invoke-LauncherProcess `
+    $InstalledLauncher @('hybrid', 'sol', '-r') $false @{
+      AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+      LOCALAPPDATA = $EmptyAppData
+    }
+  if ($MissingKeyLaunch.Error -notmatch 'OpenRouter credential is missing') {
+    throw "Windows session did not name the missing OpenRouter credential: $($MissingKeyLaunch.Error)"
+  }
+
+  $KeyWriter = Join-Path $TempRoot 'store-openrouter-key.py'
+  $KeyWriterSource = @'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import airlock_openrouter_auth as auth
+
+auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
+'@
+  [IO.File]::WriteAllText(
+    $KeyWriter,
+    $KeyWriterSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $PreviousLocalAppData = $env:LOCALAPPDATA
+  try {
+    $env:LOCALAPPDATA = $OpenRouterAppData
+    & $RealPython $KeyWriter $InstallDir
+  } finally {
+    $env:LOCALAPPDATA = $PreviousLocalAppData
+  }
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Windows test could not store a synthetic OpenRouter credential.'
+  }
+
   $ResumeLaunch = Invoke-LauncherProcess `
     $InstalledLauncher @('hybrid', 'sol', '-r') $true @{
       AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+      LOCALAPPDATA = $OpenRouterAppData
     }
   $ResumeLines = $ResumeLaunch.Output -split "`n"
   $AgentsIndex = [Array]::IndexOf($ResumeLines, 'ARG=--agents')
