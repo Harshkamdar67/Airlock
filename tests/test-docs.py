@@ -50,6 +50,16 @@ class DocumentationTests(unittest.TestCase):
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertNotIn(forbidden, path.read_text(encoding="utf-8"))
 
+    def test_readme_version_badge_matches_the_release_version(self) -> None:
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        badge = re.search(
+            r"!\[Version\]\(https://img\.shields\.io/badge/version-([^-\s)]+(?:--[^-\s)]+)*)-",
+            readme,
+        )
+        self.assertIsNotNone(badge, "README has no version badge")
+        self.assertEqual(badge.group(1).replace("--", "-"), version)
+
     def test_readme_is_short_and_starts_with_useful_sections(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(readme.splitlines()), 250)
