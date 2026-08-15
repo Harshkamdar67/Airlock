@@ -678,7 +678,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $LegacySnapshotMatch = [regex]::Match($LegacyLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$')
   if (-not $LegacySnapshotMatch.Success -or
       (Test-Path -LiteralPath $LegacySnapshotMatch.Groups[1].Value -PathType Leaf)) {
-    throw 'Windows pure-session snapshot remained after Claude exited.'
+    throw "Windows pure-session snapshot remained after Claude exited: $($LegacySnapshotMatch.Groups[1].Value) [stderr] $($LegacyLaunch.Error)"
   }
   foreach ($ExpectedPickerLine in @(
     'DEFAULT_FABLE=gpt-5.6-sol',
@@ -751,7 +751,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
   $HybridSnapshotMatch = [regex]::Match($HybridLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$')
   if (-not $HybridSnapshotMatch.Success -or
       (Test-Path -LiteralPath $HybridSnapshotMatch.Groups[1].Value -PathType Leaf)) {
-    throw 'Windows hybrid-session snapshot remained after Claude exited.'
+    throw "Windows hybrid-session snapshot remained after Claude exited: $($HybridSnapshotMatch.Groups[1].Value) [stderr] $($HybridLaunch.Error)"
   }
   $RegistryWriter = Join-Path $TempRoot 'write-openrouter-registry.py'
   $RegistryWriterSource = @'
