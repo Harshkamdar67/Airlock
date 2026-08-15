@@ -1,7 +1,12 @@
 name: test
 
 on:
+  # Branch pushes are covered by the pull request run. Running both also made
+  # the macOS and Windows jobs fetch every branch, where two branch names that
+  # differ only in case collide on a case-insensitive filesystem.
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
