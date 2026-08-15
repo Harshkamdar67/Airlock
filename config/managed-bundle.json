@@ -11,7 +11,7 @@
     "bin/airlock_openrouter_models.py": "808e4b6d15c644de93276406c9d6d70200db3e530bbe7e17559967b19c71a97f",
     "bin/airlock-update.py": "0e748148537a43bfd5d6e19faa3360343b5e6bcf444019e63cb56f877635a2a8",
     "bin/airlock-router.py": "ac36f0bb6305d535c632641327027f14cfa89f904d7b983297b02cb24e399efa",
-    "bin/airlock-hybrid.py": "69dcf3a30b209ec8875d1f1d1a81332fcde646b55537edca4c4e0b1a51a6e30d",
+    "bin/airlock-hybrid.py": "cd722984d59eea2b0ec18f77574930143240e8565b2b1a7a569a681177cf7f75",
     "config/openai-direct-agents.json": "88dfa81b9892baa684f0e24b5a11fe2649eb9512f46483a4fb1f67e795921890",
     "config/anthropic-direct-agents.json": "a4ae2321c292ea5bf490c4c4c45b2a7ff97e5732a25cf0e333f360e564b93e57",
     "config/hybrid-agents.json": "88dfa81b9892baa684f0e24b5a11fe2649eb9512f46483a4fb1f67e795921890",

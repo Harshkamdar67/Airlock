@@ -376,6 +376,18 @@ def validate_policy_helper_path() -> Path:
     return helper.resolve()
 
 
+def router_start_reason(stderr: str | None) -> str:
+    """Return the router's own sanitized reason, when it reported one."""
+
+    for line in (stderr or "").splitlines():
+        line = line.strip()
+        if line.startswith("airlock-router: "):
+            reason = line[len("airlock-router: "):][:200]
+            if reason.isprintable():
+                return f": {reason}"
+    return ""
+
+
 def start_native_router(
     router: Path,
     snapshot: Path,
@@ -410,7 +422,10 @@ def start_native_router(
     if completed.returncode != 0 or not re.fullmatch(
         r"http://127\.0\.0\.1:[1-9][0-9]*", address
     ):
-        fail("native session router could not start securely")
+        fail(
+            "native session router could not start securely"
+            f"{router_start_reason(completed.stderr)}"
+        )
     return address
 
 

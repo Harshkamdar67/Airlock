@@ -71,6 +71,25 @@ def build_child_environment(*args, **kwargs):
     return HYBRID.build_child_environment(*args, **kwargs)
 
 
+class RouterStartReasonTests(unittest.TestCase):
+    def test_only_the_routers_own_printable_reason_is_reported(self) -> None:
+        self.assertEqual(
+            HYBRID.router_start_reason(
+                "traceback noise\nairlock-router: session policy snapshot is invalid\n"
+            ),
+            ": session policy snapshot is invalid",
+        )
+        self.assertEqual(HYBRID.router_start_reason(None), "")
+        self.assertEqual(HYBRID.router_start_reason(""), "")
+        self.assertEqual(HYBRID.router_start_reason("unexpected output"), "")
+        self.assertEqual(
+            HYBRID.router_start_reason("airlock-router: bad\x07reason"), ""
+        )
+        self.assertEqual(
+            len(HYBRID.router_start_reason("airlock-router: " + "x" * 500)), 202
+        )
+
+
 class HybridLauncherTests(unittest.TestCase):
     def test_hybrid_environment_uses_router_profile_depth_cap_and_allowlists(self) -> None:
         with patch.dict(os.environ, {
