@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+## 0.1.0-beta.5 - 2026-08-22
+
+### Added
+
+- A fourth curated, opt-in OpenRouter preset for Ox Alpha, added with `airlock openrouter models add-preset ox-alpha`. It pins the exact model `stealth/ox-alpha`, its own canonical slug, and the single `stealth` endpoint, then runs the same confirmed public catalog verification as every other preset. OpenRouter currently prices the model at zero for prompt and completion tokens, but this is a stealth preview from an anonymous provider that retains prompts and completions, so the preset carries that retention, the temporary pricing, and the unverified benchmark claims in its community guidance. Setup and installation still do not enable any preset.
+
+### Fixed
+
+- A `ping` event arriving before `message_start` no longer fails an OpenRouter stream. The router scans the leading events of a response to confirm the model identity, and it treated any first event other than `message_start` as a protocol failure. Anthropic streams may legitimately send `ping` first, so a valid response could be rejected.
+- An OpenRouter stream that begins with an upstream `error` event now reports that provider's own code and message instead of a generic complaint that the stream did not start with `message_start`. The provider text is bounded and stripped to printable ASCII.
+- Stream identity failures now name the declared route, so a session with several OpenRouter routes shows which one failed. An unexpected first event also names what arrived.
+
 ## 0.1.0-beta.4 - 2026-08-15
 
 ### Added
