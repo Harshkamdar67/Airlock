@@ -218,13 +218,14 @@ Provider billing settings are final. If paid credits are enabled on the account,
 
 ## OpenRouter routes
 
-OpenRouter routes are not in the model roles table above because Airlock does not rank them. Add any supported exact route yourself with `airlock openrouter models add ROUTE MODEL ENDPOINT`, or start from one of three managed presets:
+OpenRouter routes are not in the model roles table above because Airlock does not rank them. Add any supported exact route yourself with `airlock openrouter models add ROUTE MODEL ENDPOINT`, or start from one of four managed presets:
 
 ```bash
 airlock openrouter models presets
 airlock openrouter models add-preset kimi-k3
 airlock openrouter models add-preset deepseek-v4-flash-0731
 airlock openrouter models add-preset qwen-3-6-27b
+airlock openrouter models add-preset ox-alpha
 ```
 
 Listing presets is offline and changes nothing. Adding one still asks for confirmation and checks its exact model, frozen canonical provenance, pinned endpoint tag, catalog provider name, provider-registry routing slug, endpoint quantization, and required tool support against OpenRouter's public catalog before writing the registry. The provider name must map to one slug, and provider plus quantization must identify one endpoint. Requests use the slug and quantization constraints with fallback disabled. They require catalog support for `tools` and `tool_choice` without requiring the endpoint to advertise every optional Claude Code field. Responses must report either the exact routable model or its frozen canonical slug. The shipped suggestions are cautious summaries of community reports, not benchmarks or guarantees. They do not claim that an endpoint will remain cheapest, and their text never enters the registry, session snapshot, route policy, or Agent prompt.
@@ -236,8 +237,11 @@ The current preset guidance is:
 | Kimi K3 | Frontend and visual implementation, plus substantial coding agents | Slower and token-heavy |
 | DeepSeek V4 Flash 0731 | Cost-sensitive coding, debugging, and bounded repository automation | Harness-sensitive tool use and weaker non-coding reliability |
 | Qwen 3.6 27B | Bounded coding, refactoring, planning, tests, and data work | Tool loops and long-session degradation |
+| Ox Alpha | Long-horizon coding agents, multi-step tool loops, and repository-scale reasoning over a 1M-token context, with screenshots and logs alongside code | Anonymous preview provider that retains prompts and completions, free pricing and availability that can end without notice, reported tool-call errors near 4.5 percent, and single-run benchmark claims |
 
-The preset guidance was reviewed on 2026-08-10 and remains unverified. Airlock does not accept custom descriptions, notes, or prompt text through either model command.
+The Kimi K3, DeepSeek V4 Flash 0731, and Qwen 3.6 27B guidance was reviewed on 2026-08-10, and the Ox Alpha guidance on 2026-08-22. All of it remains unverified. Airlock does not accept custom descriptions, notes, or prompt text through either model command.
+
+Ox Alpha is a stealth preview rather than a named vendor model. OpenRouter lists it at zero cost for prompt and completion tokens and routes it through a single `stealth` endpoint, and it says the anonymous provider retains prompts and completions without training on them. Treat it the way you would treat any route that sends your repository to a third party you cannot name: keep private or regulated code off it, and expect the free window to close. If the catalog entry is renamed or withdrawn when the provider is revealed, `airlock openrouter models refresh` fails for that route, and its verified metadata expires 30 days after the last check, which stops every Airlock session until you refresh it or run `airlock openrouter models remove ox-alpha`.
 
 All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers, or it can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
 
