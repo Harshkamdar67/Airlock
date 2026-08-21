@@ -79,6 +79,29 @@ PRESETS = (
         ),
         tradeoffs="tool loops and long-session degradation",
     ),
+    PresetSpec(
+        name="ox-alpha",
+        display_name="Ox Alpha",
+        route="ox-alpha",
+        model="stealth/ox-alpha",
+        canonical_slug="stealth/ox-alpha",
+        endpoint_provider="stealth",
+        provider_name="Stealth",
+        provider_slug="stealth",
+        quantization="unknown",
+        evidence_date="2026-08-22",
+        suggested_use=(
+            "long-horizon coding agents, multi-step tool loops, and "
+            "repository-scale reasoning over a 1M-token context, with "
+            "screenshots and logs alongside code"
+        ),
+        tradeoffs=(
+            "anonymous preview provider that retains prompts and completions, "
+            "free pricing and availability that can end without notice, "
+            "reported tool-call errors near 4.5 percent, and single-run "
+            "benchmark claims"
+        ),
+    ),
 )
 
 

@@ -71,6 +71,17 @@ EXPECTED_PRESETS = (
         "quantization": "fp8",
         "evidence_date": "2026-08-10",
     },
+    {
+        "name": "ox-alpha",
+        "route": "ox-alpha",
+        "model": "stealth/ox-alpha",
+        "canonical_slug": "stealth/ox-alpha",
+        "endpoint_provider": "stealth",
+        "provider_name": "Stealth",
+        "provider_slug": "stealth",
+        "quantization": "unknown",
+        "evidence_date": "2026-08-22",
+    },
 )
 
 
@@ -527,7 +538,8 @@ class RegistryCommandTests(unittest.TestCase):
         calls: list[object] = []
         with self.assertRaisesRegex(
             models.ModelsError,
-            "unknown OpenRouter preset.*kimi-k3.*deepseek-v4-flash-0731.*qwen-3-6-27b",
+            "unknown OpenRouter preset.*kimi-k3.*deepseek-v4-flash-0731"
+            ".*qwen-3-6-27b.*ox-alpha",
         ):
             models.add_preset(
                 self.path,

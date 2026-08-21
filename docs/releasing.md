@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.4
+0.1.0-beta.5
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
@@ -32,7 +32,9 @@ The version appears in:
 ```text
 VERSION
 plugins/airlock/.claude-plugin/plugin.json
+bin/airlock-access.py
 CHANGELOG.md
+README.md
 ```
 
 Run:
@@ -146,8 +148,8 @@ After the release commit is merged into protected `main` and every required chec
 ```bash
 git switch main
 git pull --ff-only origin main
-git tag -a v0.1.0-beta.4 -m "Airlock v0.1.0-beta.4"
-git push origin v0.1.0-beta.4
+git tag -a v0.1.0-beta.5 -m "Airlock v0.1.0-beta.5"
+git push origin v0.1.0-beta.5
 ```
 
 Pushing the tag is an outward action. Confirm it immediately before running the command.

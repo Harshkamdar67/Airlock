@@ -1501,5 +1501,79 @@ class RouterProtocolTests(unittest.TestCase):
             server.server_close()
 
 
+class OpenRouterStreamIdentityTests(unittest.TestCase):
+    """Identity scanning over the leading SSE blocks of an OpenRouter stream."""
+
+    MODEL = "stealth/ox-alpha"
+    START = (
+        "event: message_start\n"
+        'data: {"type":"message_start","message":{"model":"stealth/ox-alpha"}}'
+    )
+
+    def prefix(self, *blocks: str) -> bytes:
+        # The trailing partial block mirrors a real read that stops mid-stream.
+        return ("\n\n".join(blocks) + "\n\nevent: partial\n").encode()
+
+    def test_message_start_yields_the_model_identity(self) -> None:
+        self.assertEqual(
+            router.openrouter_sse_model(self.prefix(self.START), self.MODEL),
+            self.MODEL,
+        )
+
+    def test_ping_before_message_start_is_skipped(self) -> None:
+        stream = self.prefix('event: ping\ndata: {"type":"ping"}', self.START)
+        self.assertEqual(router.openrouter_sse_model(stream, self.MODEL), self.MODEL)
+
+    def test_processing_comment_before_message_start_is_skipped(self) -> None:
+        stream = self.prefix(": OPENROUTER PROCESSING", self.START)
+        self.assertEqual(router.openrouter_sse_model(stream, self.MODEL), self.MODEL)
+
+    def test_upstream_error_event_reports_its_own_reason(self) -> None:
+        stream = self.prefix(
+            'event: error\ndata: {"type":"error","error":'
+            '{"code":429,"message":"Rate limit exceeded"}}'
+        )
+        with self.assertRaises(router.UpstreamError) as caught:
+            router.openrouter_sse_model(stream, self.MODEL)
+        message = str(caught.exception)
+        self.assertIn("upstream reported an error", message)
+        self.assertIn("code 429", message)
+        self.assertIn("Rate limit exceeded", message)
+        self.assertIn(self.MODEL, message)
+
+    def test_upstream_error_reason_is_bounded_and_printable(self) -> None:
+        payload = json.dumps({
+            "type": "error",
+            "error": {"message": ("x" * 400) + "\x07 tail"},
+        })
+        stream = self.prefix("event: error\ndata: " + payload)
+        with self.assertRaises(router.UpstreamError) as caught:
+            router.openrouter_sse_model(stream, self.MODEL)
+        message = str(caught.exception)
+        self.assertNotIn("\x07", message)
+        self.assertLess(len(message), 400)
+
+    def test_unexpected_first_event_names_what_arrived(self) -> None:
+        stream = self.prefix('event: weird\ndata: {"type":"weird"}')
+        with self.assertRaises(router.UpstreamError) as caught:
+            router.openrouter_sse_model(stream, self.MODEL)
+        message = str(caught.exception)
+        self.assertIn("did not start with message_start", message)
+        self.assertIn("weird", message)
+        self.assertIn(self.MODEL, message)
+
+    def test_missing_model_identity_is_rejected(self) -> None:
+        stream = self.prefix(
+            'event: message_start\ndata: {"type":"message_start","message":{}}'
+        )
+        with self.assertRaises(router.UpstreamError):
+            router.openrouter_sse_model(stream, self.MODEL)
+
+    def test_incomplete_prefix_asks_for_more_bytes(self) -> None:
+        self.assertIsNone(
+            router.openrouter_sse_model(b"event: message_start\ndata: {", self.MODEL)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
