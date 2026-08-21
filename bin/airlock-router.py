@@ -36,6 +36,7 @@ MAX_DIAGNOSTIC_EVENTS = 256
 MAX_USAGE_LINE_BYTES = 256 * 1024
 MAX_USAGE_BODY_BYTES = 1024 * 1024
 MAX_OPENROUTER_IDENTITY_PREFIX_BYTES = 256 * 1024
+MAX_UPSTREAM_REASON_CHARS = 200
 MAX_OPENROUTER_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = "https://github.com/Harshkamdar67/Airlock"
@@ -694,9 +695,9 @@ class RouterHandler(BaseHTTPRequestHandler):
                     prefix.extend(chunk)
                     if len(prefix) > MAX_OPENROUTER_IDENTITY_PREFIX_BYTES:
                         raise UpstreamError(
-                            "OpenRouter stream model identity is too large"
+                            f"OpenRouter route {model} stream model identity is too large"
                         )
-                    response_model = openrouter_sse_model(bytes(prefix))
+                    response_model = openrouter_sse_model(bytes(prefix), model)
                     if response_model is None:
                         continue
                     if response_model not in allowed_response_models:
@@ -979,7 +980,36 @@ def prepare_openrouter_request(
         raise InvalidRequestError("OpenRouter request body is invalid") from exc
 
 
-def openrouter_sse_model(prefix: bytes) -> str | None:
+def openrouter_upstream_reason(payload: Any) -> str:
+    """Return a short, printable reason from an upstream SSE error event.
+
+    The text comes from the provider, so it is bounded and stripped to printable
+    ASCII before it reaches operator output.
+    """
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return ""
+    parts: list[str] = []
+    code = error.get("code")
+    if isinstance(code, (int, str)) and not isinstance(code, bool) and str(code):
+        parts.append(f"code {str(code)[:32]}")
+    message = error.get("message")
+    if isinstance(message, str):
+        cleaned = "".join(
+            character
+            for character in message
+            if character.isascii() and 0x20 <= ord(character) < 0x7F
+        ).strip()
+        if cleaned:
+            parts.append(cleaned[:MAX_UPSTREAM_REASON_CHARS])
+    if not parts:
+        return ""
+    joined = "; ".join(parts)
+    return f" ({joined})"
+
+
+def openrouter_sse_model(prefix: bytes, model: str | None = None) -> str | None:
     normalized = prefix.replace(b"\r\n", b"\n")
     blocks = normalized.split(b"\n\n")
     for block in blocks[:-1]:
@@ -994,19 +1024,36 @@ def openrouter_sse_model(prefix: bytes) -> str | None:
                 event_name = line[6:].strip()
             elif line.startswith(b"data:"):
                 data_lines.append(line[5:].lstrip())
+        label = f"OpenRouter route {model}" if model else "OpenRouter"
         if not data_lines:
-            raise UpstreamError("OpenRouter stream omitted event data")
+            raise UpstreamError(f"{label} stream omitted event data")
         try:
             payload = strict_json_loads(b"\n".join(data_lines))
         except InvalidRequestError as exc:
-            raise UpstreamError("OpenRouter stream identity is invalid") from exc
+            raise UpstreamError(f"{label} stream identity is invalid") from exc
         payload_type = payload.get("type") if isinstance(payload, dict) else None
+        # A ping carries no identity and may legitimately precede message_start.
+        if event_name == b"ping" or payload_type == "ping":
+            continue
+        # An upstream error event explains itself. Report that instead of a
+        # protocol complaint that hides the real reason.
+        if event_name == b"error" or payload_type == "error":
+            raise UpstreamError(
+                f"{label} upstream reported an error"
+                f"{openrouter_upstream_reason(payload)}"
+            )
         if event_name != b"message_start" and payload_type != "message_start":
-            raise UpstreamError("OpenRouter stream did not start with message_start")
+            observed = payload_type if isinstance(payload_type, str) else (
+                event_name.decode("ascii", "replace") if event_name else "unknown"
+            )
+            raise UpstreamError(
+                f"{label} stream did not start with message_start "
+                f"(first event: {observed[:64]})"
+            )
         message = payload.get("message")
         model = message.get("model") if isinstance(message, dict) else None
         if not isinstance(model, str) or not model:
-            raise UpstreamError("OpenRouter stream model identity is missing")
+            raise UpstreamError(f"{label} stream model identity is missing")
         return model
     return None
 
