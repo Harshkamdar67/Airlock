@@ -526,6 +526,39 @@ for line in sys.stdin:
             "gpt-5.6-luna",
         )
 
+    def test_auto_hybrid_root_never_selects_extra_or_unavailable_models(self) -> None:
+        policy = ACCESS.default_policy()
+        # Fresh policy state: Fable is unavailable and Opus is unknown, so the
+        # reserved auto root lands on Opus without touching the network.
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "opus")
+        policy["providers"]["anthropic"]["models"]["fable"]["access"] = "included"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "fable")
+
+        # An extra-class model never wins, even when extra usage is allowed
+        # outright, because a family alias cannot carry a confirmation marker.
+        policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "opus")
+        policy["providers"]["anthropic"]["models"]["opus"]["access"] = "extra"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "sonnet")
+
+        # Sonnet is the unconditional final fallback whatever its own class.
+        policy["providers"]["anthropic"]["models"]["sonnet"]["access"] = "unavailable"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "sonnet")
+
+        rendered = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "airlock-access.py"), "hybrid-default-root"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=dict(os.environ),
+            check=False,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        # The subprocess reads the same empty access state as the default
+        # policy above, so it prints Opus.
+        self.assertEqual(rendered.stdout.strip(), "opus")
+
     def test_openai_catalog_is_bare_and_claude_window_suffixes_remain(self) -> None:
         openai_models = [profile["model"] for profile in ACCESS.MODEL_PROFILES["openai"].values()]
         self.assertTrue(openai_models)

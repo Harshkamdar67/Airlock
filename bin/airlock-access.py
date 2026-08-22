@@ -71,7 +71,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.22.2"
+MANAGED_BUNDLE_VERSION = "2026.08.22.3"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -218,6 +218,11 @@ PROFILE_COMPONENTS = {
         ("openai", "openai_wrappers"),
         ("anthropic", "anthropic_wrappers"),
     ),
+    "hybrid-openrouter-root": (
+        ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_wrappers"),
+        ("grok", "grok_wrappers"),
+    ),
 }
 PROFILE_ROOT_PROVIDERS = {
     "openrouter-pure": "openrouter",
@@ -226,6 +231,7 @@ PROFILE_ROOT_PROVIDERS = {
     "hybrid-openai-root": "openai",
     "hybrid-anthropic-root": "anthropic",
     "hybrid-grok-root": "grok",
+    "hybrid-openrouter-root": "openrouter",
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
@@ -1986,6 +1992,22 @@ def model_access(policy: dict[str, Any], provider: str, route: str) -> str:
     return policy["providers"][provider]["models"][route]["access"]
 
 
+def default_hybrid_root(policy: dict[str, Any]) -> str:
+    """Resolve the reserved ``auto`` hybrid root under the local access policy.
+
+    Fable wins when its Anthropic access class is neither ``extra`` nor
+    ``unavailable``, otherwise Opus wins under the same rule, and Sonnet is
+    the final fallback. Auto selection therefore never picks an extra-class
+    model and never creates silent metered spend, whatever the extra-usage
+    policy says.
+    """
+    for route in ("fable", "opus"):
+        access = model_access(policy, "anthropic", route)
+        if access not in ("extra", "unavailable"):
+            return route
+    return "sonnet"
+
+
 def delegation_error(policy: dict[str, Any], provider: str, route: str, effort: str, extra_authorized: bool) -> tuple[str, str] | None:
     if effort not in VALID_EFFORTS:
         return "invalid_effort", "Effort must be low, medium, high, xhigh, or max"
@@ -2077,6 +2099,12 @@ def _validate_openrouter_root_route(
     if profile == "openrouter-pure":
         if openrouter_root_route is None:
             raise AccessError("openrouter-pure requires an exact OpenRouter root route")
+        return resolve_openrouter_route(policy, openrouter_root_route)
+    if profile == "hybrid-openrouter-root":
+        if openrouter_root_route is None:
+            raise AccessError(
+                "hybrid-openrouter-root requires an exact OpenRouter root route"
+            )
         return resolve_openrouter_route(policy, openrouter_root_route)
     if openrouter_root_route is not None:
         raise AccessError(
@@ -3379,15 +3407,22 @@ def root_orchestration_guidance(
     policy: dict[str, Any],
     workers: list[dict[str, str]],
     *,
+    profile: str = "",
     openrouter_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
+    # Only openrouter-pure maps every family alias to the selected root. A
+    # hybrid OpenRouter root keeps normal wrapper-backed family slots, so it
+    # must take the ordinary discovery wording below.
+    pure_openrouter_root = (
+        profile == "openrouter-pure" and openrouter_root_route is not None
+    )
     recommended_discovery = (
         resolve_openrouter_route(policy, openrouter_root_route).model
-        if openrouter_root_route is not None
+        if pure_openrouter_root
         else discovery_model_from_workers(policy, workers)
     )
-    if openrouter_root_route is not None:
+    if pure_openrouter_root:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
             f"Airlock resolves every alias to the exact selected OpenRouter root model {recommended_discovery}. "
@@ -3692,11 +3727,19 @@ def profile_guidance(
         if provider in enabled_providers and provider in policy.get("providers", {})
     )
     if "openrouter" in enabled_providers:
-        openrouter_signal = (
-            "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
-            if profile == "openrouter-pure"
-            else "openrouter(registry=pinned/key=separate/usage=extra)"
-        )
+        if profile == "openrouter-pure":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
+            )
+        elif profile == "hybrid-openrouter-root":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=selected-hybrid-root/"
+                "other-routes=extra)"
+            )
+        else:
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/usage=extra)"
+            )
         signals = ", ".join(filter(None, (signals, openrouter_signal)))
     if profile == "openrouter-pure":
         selected = resolve_openrouter_route(policy, str(openrouter_root_route))
@@ -3765,6 +3808,14 @@ def profile_guidance(
                 "endpoint provider pinned in the local registry. OpenRouter uses a separate key; "
                 "Airlock does not infer these models' capability, context window, or relative cost."
             )
+        if profile == "hybrid-openrouter-root":
+            selected = resolve_openrouter_route(policy, str(openrouter_root_route))
+            routes.append(
+                f"The root itself is the user-selected OpenRouter route {selected.route} with model "
+                f"{selected.model} through endpoint provider {selected.endpoint_provider}. The fable, opus, "
+                "sonnet, and haiku family aliases stay wrapper backed and never carry an OpenRouter model; "
+                "Claude Code's single custom model option carries the root."
+            )
         excluded = [
             label
             for name, label in (
@@ -3824,6 +3875,7 @@ def profile_guidance(
         root_orchestration_guidance(
             policy,
             enabled_workers,
+            profile=profile,
             openrouter_root_route=openrouter_root_route,
         ),
         worker_handoff_guidance(
@@ -3960,14 +4012,17 @@ def render_openrouter_agents(
         profile,
         openrouter_root_route=openrouter_root_route,
     ):
-        selected_root = (
-            profile == "openrouter-pure"
-            and worker["access"] == "included"
-        )
-        if selected_root:
+        selected_root = worker["access"] == "included"
+        if selected_root and profile == "openrouter-pure":
             usage_sentence = (
                 "This is the explicitly selected route for normal root traffic; its named "
                 "Agent uses the same route without extra-usage gating."
+            )
+        elif selected_root:
+            usage_sentence = (
+                "This is the explicitly selected route and this session's hybrid root model; its "
+                "named Agent uses the same route without extra-usage gating, while the wrapper-backed "
+                "family aliases never resolve to an OpenRouter model."
             )
         elif requires_confirmation:
             usage_sentence = (
@@ -4441,6 +4496,7 @@ def main() -> int:
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
+    subparsers.add_parser("hybrid-default-root")
     bundle_check = subparsers.add_parser("bundle-check")
     bundle_check.add_argument("--bundle", type=Path, required=True)
     bundle_check.add_argument("--platform", choices=("posix", "windows"), required=True)
@@ -4566,6 +4622,9 @@ def main() -> int:
                 separators=(",", ":"),
                 ensure_ascii=True,
             ))
+            return 0
+        if args.command == "hybrid-default-root":
+            print(default_hybrid_root(policy))
             return 0
         if args.command == "session-snapshot":
             snapshot_path, snapshot_digest = write_session_snapshot(

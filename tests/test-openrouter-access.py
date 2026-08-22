@@ -422,6 +422,149 @@ class OpenRouterAccessTests(unittest.TestCase):
                     self.assertEqual(len(openrouter), 1)
                     self.assertEqual(openrouter[0]["access"], "extra")
 
+    def test_openrouter_hybrid_root_keeps_wrapper_backed_family_slots(self) -> None:
+        self.write_registry(
+            registry_entry(),
+            registry_entry(
+                route="other-route",
+                model="vendor/other-model",
+                endpoint_provider="deepinfra/turbo",
+                provider_name="DeepInfra",
+                provider_slug="deepinfra",
+                canonical_slug="vendor/other-model-20260810",
+            ),
+        )
+        policy = ACCESS.load_policy()
+        self.assertEqual(ACCESS.PROFILE_COMPONENTS["hybrid-openrouter-root"], (
+            ("openai", "openai_wrappers"),
+            ("anthropic", "anthropic_wrappers"),
+            ("grok", "grok_wrappers"),
+        ))
+        self.assertEqual(
+            ACCESS.PROFILE_ROOT_PROVIDERS["hybrid-openrouter-root"], "openrouter"
+        )
+
+        # Without an exact route the profile fails closed like openrouter-pure.
+        for call in (
+            lambda: ACCESS.enabled_profile_workers(policy, "hybrid-openrouter-root"),
+            lambda: ACCESS.render_profile(policy, "hybrid-openrouter-root", {}),
+            lambda: ACCESS.proxy_picker_models(policy, "hybrid-openrouter-root"),
+            lambda: ACCESS.profile_guidance(policy, "hybrid-openrouter-root"),
+            lambda: ACCESS.session_route_policy(policy, "hybrid-openrouter-root"),
+        ):
+            with self.subTest(call=call), self.assertRaisesRegex(
+                ACCESS.AccessError,
+                "hybrid-openrouter-root requires an exact OpenRouter root route",
+            ):
+                call()
+
+        root_model = "anthropic/claude-sonnet-4.5"
+        wrapper_models = {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "claude-opus-5[1m]",
+            "claude-sonnet-5[1m]",
+            "claude-haiku-4-5-20251001",
+        }
+        for extra_policy in ("never", "ask", "allow"):
+            with self.subTest(extra_policy=extra_policy):
+                policy["policies"]["extra_usage"] = extra_policy
+                workers = ACCESS.enabled_profile_workers(
+                    policy,
+                    "hybrid-openrouter-root",
+                    openrouter_root_route="declared-sonnet",
+                )
+                by_model = {worker["model"]: worker for worker in workers}
+                self.assertEqual(by_model[root_model]["access"], "included")
+                expected_models = wrapper_models | {root_model}
+                if extra_policy != "never":
+                    expected_models.add("vendor/other-model")
+                self.assertEqual(set(by_model), expected_models)
+                if extra_policy == "never":
+                    self.assertNotIn("vendor/other-model", set(by_model))
+                else:
+                    self.assertEqual(by_model["vendor/other-model"]["access"], "extra")
+
+                # The selected root carries normal traffic; every other family
+                # slot stays wrapper backed and never resolves to OpenRouter.
+                picker = ACCESS.proxy_picker_models(
+                    policy,
+                    "hybrid-openrouter-root",
+                    openrouter_root_route="declared-sonnet",
+                )
+                self.assertEqual(set(picker), {"fable", "opus", "sonnet", "haiku"})
+                self.assertNotIn(root_model, set(picker.values()))
+                self.assertNotIn("vendor/other-model", set(picker.values()))
+                self.assertTrue(all(
+                    value.startswith(("claude-", "gpt-", "grok-"))
+                    for value in picker.values()
+                ))
+
+                route_policy = ACCESS.session_route_policy(
+                    policy,
+                    "hybrid-openrouter-root",
+                    openrouter_root_route="declared-sonnet",
+                )
+                self.assertEqual(route_policy["routes"][root_model], "openrouter")
+                if extra_policy == "ask":
+                    self.assertEqual(route_policy["extra_model_ids"], ["vendor/other-model"])
+                else:
+                    self.assertEqual(route_policy["extra_model_ids"], [])
+
+        snapshot = ACCESS.build_session_snapshot(
+            policy,
+            "hybrid-openrouter-root",
+            root_model,
+            openrouter_root_route="declared-sonnet",
+        )
+        self.assertEqual(snapshot.root_provider, "openrouter")
+        self.assertEqual(snapshot.root_model, root_model)
+        self.assertFalse(snapshot.agents["airlock-or-declared-sonnet"].extra_usage)
+        with self.assertRaisesRegex(ACCESS.AccessError, "does not match"):
+            ACCESS.build_session_snapshot(
+                policy,
+                "hybrid-openrouter-root",
+                "vendor/other-model",
+                openrouter_root_route="declared-sonnet",
+            )
+
+        guidance = ACCESS.profile_guidance(
+            policy,
+            "hybrid-openrouter-root",
+            openrouter_root_route="declared-sonnet",
+        )
+        self.assertIn("root=selected-hybrid-root/other-routes=extra", guidance)
+        self.assertIn(
+            "family aliases stay wrapper backed and never carry an OpenRouter model",
+            guidance,
+        )
+        self.assertIn("route declared-sonnet with model anthropic/claude-sonnet-4.5", guidance)
+        # The pure-only wording about aliases resolving to the root must not
+        # appear for a profile whose family slots stay wrapper backed.
+        self.assertNotIn("resolves every alias to the exact selected OpenRouter root model", guidance)
+        pure_guidance = ACCESS.profile_guidance(
+            policy,
+            "openrouter-pure",
+            openrouter_root_route="declared-sonnet",
+        )
+        self.assertIn("carry normal root traffic through the", pure_guidance)
+        self.assertIn("resolves every alias to the exact selected OpenRouter root model", pure_guidance)
+        self.assertNotIn("stay wrapper backed", pure_guidance)
+
+        rendered = ACCESS.render_profile_from_paths(
+            policy,
+            "hybrid-openrouter-root",
+            catalog_paths(),
+            openrouter_root_route="declared-sonnet",
+        )
+        root_description = rendered["airlock-or-declared-sonnet"]["description"]
+        self.assertIn("explicitly selected route", root_description)
+        self.assertIn("this session's hybrid root model", root_description)
+        self.assertIn("never resolve to an OpenRouter model", root_description)
+        self.assertIn("airlock-sol", rendered)
+        self.assertIn("airlock-opus", rendered)
+
     def test_missing_registry_preserves_existing_profile_outputs(self) -> None:
         policy = ACCESS.load_policy()
         without_registry = ACCESS.apply_runtime_overrides(ACCESS.load_cached_policy())

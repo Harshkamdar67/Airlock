@@ -219,7 +219,9 @@ Profiles:
 
 OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 Grok root aliases: grok, composer
-Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer
+Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer
+  auto resolves to fable when Fable is neither extra nor unavailable, otherwise
+  opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
 Other commands: fast, bg, mode, usage, session-usage, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
 
@@ -569,7 +571,37 @@ openai_model_display() {
   printf '%s (%s)' "$model_name" "$selected_model"
 }
 
+# The reserved 'auto' hybrid root resolves at launch time under the local
+# access policy: Fable when its access class is neither extra nor unavailable,
+# otherwise Opus under the same rule, otherwise Sonnet as a final fallback.
+# Auto selection therefore never picks an extra-class model and never creates
+# silent metered spend, whatever the extra-usage policy says. The access
+# helper owns the rule so both launchers cannot drift; this wrapper only
+# validates its output and caches it for reuse within one launch.
+resolved_auto_alias=''
+resolve_auto_hybrid_root() {
+  local resolved=''
+  resolved="$(run_access hybrid-default-root)" || return $?
+  resolved="${resolved%$'\r'}"
+  case "$resolved" in
+    fable|opus|sonnet) ;;
+    *)
+      printf 'airlock: auto hybrid root resolver returned an invalid result.\n' >&2
+      return 1
+      ;;
+  esac
+  resolved_auto_alias="$resolved"
+}
+
 hybrid_model_display() {
+  if [[ "$1" == 'auto' ]]; then
+    local alias=''
+    alias="$(run_access hybrid-default-root)" || return 1
+    alias="${alias%$'\r'}"
+    resolve_hybrid_alias "$alias" || return 1
+    printf 'auto (resolves now to %s (%s))' "$root_name" "$root_model"
+    return 0
+  fi
   resolve_hybrid_alias "$1" || return 1
   printf '%s (%s)' "$root_name" "$root_model"
 }
@@ -827,6 +859,7 @@ set_hybrid_environment() {
   case "$root_profile" in
     hybrid-anthropic-root) root_provider='anthropic' ;;
     hybrid-grok-root) root_provider='grok' ;;
+    hybrid-openrouter-root) root_provider='openrouter' ;;
     *) root_provider='openai' ;;
   esac
   if [[ -n "${ANTHROPIC_API_KEY:-}" || ( -n "${ANTHROPIC_AUTH_TOKEN:-}" && "${ANTHROPIC_AUTH_TOKEN}" != 'unused' ) ]]; then
@@ -855,8 +888,13 @@ set_hybrid_environment() {
   export ANTHROPIC_BASE_URL="$router_url"
   export AIRLOCK_SESSION_ROUTER_URL="$router_url"
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected Airlock hybrid root ($root_model)"
+  if [[ "$root_profile" == 'hybrid-openrouter-root' ]]; then
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (OpenRouter hybrid root)"
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected OpenRouter hybrid root ($root_model)"
+  else
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected Airlock hybrid root ($root_model)"
+  fi
   declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
   apply_context_window "$root_provider" "$root_model"
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
@@ -985,14 +1023,14 @@ launch_session() {
   shift 4
   local argument max_agents
   local -a openrouter_root_args=()
-  if [[ "$profile" == 'openrouter-pure' ]]; then
+  if [[ "$profile" == 'openrouter-pure' || "$profile" == 'hybrid-openrouter-root' ]]; then
     if [[ -z "$openrouter_root_route" ]]; then
-      printf 'airlock: openrouter-pure requires an exact OpenRouter root route.\n' >&2
+      printf 'airlock: %s requires an exact OpenRouter root route.\n' "$profile" >&2
       exit 2
     fi
     openrouter_root_args=(--openrouter-root-route "$openrouter_root_route")
   elif [[ -n "$openrouter_root_route" ]]; then
-    printf 'airlock: an OpenRouter root route is valid only for openrouter-pure.\n' >&2
+    printf 'airlock: an OpenRouter root route is valid only for openrouter-pure or hybrid-openrouter-root.\n' >&2
     exit 2
   fi
   for argument in "$@"; do
@@ -1275,7 +1313,7 @@ launch_session() {
   validate_ephemeral_fast_root || return $?
   resolve_model 'sol-fast'
   set_openai_environment "$selected_model" "$model_name"
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
   handoff_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
   validate_effort "$handoff_effort"
   airlock_fast_handoff_hop=1
@@ -1301,13 +1339,19 @@ select_hybrid_root() {
     '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
     '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)' \
-    '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
-  read -r -p 'Selection [1-9]: ' selection
+    '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)' \
+    ' 10) An exact OpenRouter registry route'
+  read -r -p 'Selection [1-10]: ' selection
   case "$selection" in
     1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;;
     5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
     8) root_alias='grok' ;; 9) root_alias='composer' ;;
-    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 9.\n' >&2; exit 2 ;;
+    10)
+      select_openrouter_root || exit $?
+      resolve_openrouter_root "$OPR_SELECTED_ROUTE" || exit $?
+      HYBRID_SELECTED_ROUTE="$OPR_SELECTED_ROUTE"
+      ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 10.\n' >&2; exit 2 ;;
   esac
 }
 
@@ -1391,7 +1435,12 @@ except Exception:
 validate_default_profile "$default_profile" || exit $?
 validate_provider_fast_policy OpenAI "$openai_fast_policy" || exit $?
 validate_provider_fast_policy Anthropic "$anthropic_fast_policy" || exit $?
-if ! resolve_hybrid_alias "$default_hybrid_model"; then
+# Eager saved-value validation runs on every invocation, exactly as before.
+# The reserved 'auto' value is validated through the access helper instead of
+# the alias table; the resolved alias is cached for the hybrid branch below.
+if [[ "$default_hybrid_model" == 'auto' ]]; then
+  resolve_auto_hybrid_root || exit $?
+elif ! resolve_hybrid_alias "$default_hybrid_model"; then
   printf "airlock: unsupported saved hybrid model '%s'\n" "$default_hybrid_model" >&2
   exit 2
 fi
@@ -1500,10 +1549,29 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     shift
   fi
   root_alias=''
+  hybrid_selected_route=''
+  HYBRID_SELECTED_ROUTE=''
   hybrid_candidate="$(normalize_openai_model_id "${1:-}")"
-  if resolve_hybrid_alias "$hybrid_candidate" 2>/dev/null; then
+  if [[ "$hybrid_candidate" == 'auto' ]]; then
+    # Reserved value: resolve under the local access policy, never an alias.
+    root_alias='auto'
+    shift
+  elif resolve_hybrid_alias "$hybrid_candidate" 2>/dev/null; then
     root_alias="$hybrid_candidate"
     shift
+  elif [[ -n "$hybrid_candidate" && "$hybrid_candidate" != -* ]] && \
+       [[ "$hybrid_candidate" =~ ^[a-z0-9]+([._:-][a-z0-9]+)*$ ]]; then
+    # A route-shaped first word tries the OpenRouter registry before anything
+    # else. Anything that cannot be a route slug (flags, prose) stays untouched.
+    if OPR_SELECTED_ROUTE='' OPR_ROOT_MODEL='' OPR_ROOT_NAME='' \
+       resolve_openrouter_root "$hybrid_candidate"; then
+      hybrid_selected_route="$OPR_SELECTED_ROUTE"
+      shift
+    else
+      printf "airlock: '%s' is neither a hybrid root alias nor an enabled OpenRouter route.\n" \
+        "$hybrid_candidate" >&2
+      exit 2
+    fi
   fi
 
   explicit_model=''
@@ -1525,38 +1593,74 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     fi
   done
 
-  if [[ -z "$root_alias" && -z "$explicit_model" ]]; then
+  if [[ -z "$hybrid_selected_route" && -z "$root_alias" && -z "$explicit_model" ]]; then
     if [[ "$choose_root" -eq 1 ]]; then
       select_hybrid_root
+      if [[ -n "$HYBRID_SELECTED_ROUTE" ]]; then
+        hybrid_selected_route="$HYBRID_SELECTED_ROUTE"
+        root_model="$OPR_ROOT_MODEL"
+        root_name="$OPR_ROOT_NAME"
+        root_provider='openrouter'
+      fi
     else
       root_alias="$default_hybrid_model"
-    fi
-    resolve_hybrid_alias "$root_alias" || {
-      printf "airlock: unsupported saved hybrid model '%s'\n" "$root_alias" >&2
-      exit 2
-    }
-  elif [[ -n "$root_alias" ]]; then
-    resolve_hybrid_alias "$root_alias"
-  else
-    root_model="$explicit_model"
-    root_name="$explicit_model"
-    root_provider="$(model_provider "$explicit_model" || true)"
-    if [[ -z "$root_provider" ]]; then
-      printf 'airlock: cannot determine the hybrid root provider from --model; use a gpt-*, claude-*, or grok-* model ID.\n' >&2
-      exit 2
+      if [[ "$root_alias" == 'auto' && -n "$resolved_auto_alias" ]]; then
+        root_alias="$resolved_auto_alias"
+      fi
     fi
   fi
+  if [[ "$root_alias" == 'auto' ]]; then
+    [[ -n "$resolved_auto_alias" ]] || resolve_auto_hybrid_root || exit $?
+    root_alias="$resolved_auto_alias"
+  fi
+  if [[ -z "$hybrid_selected_route" ]]; then
+    if [[ -z "$root_alias" && -z "$explicit_model" ]]; then
+      # Unreachable in practice; guards the resolution below.
+      root_alias="$default_hybrid_model"
+      if [[ "$root_alias" == 'auto' && -n "$resolved_auto_alias" ]]; then
+        root_alias="$resolved_auto_alias"
+      fi
+    fi
+    if [[ -n "$root_alias" ]]; then
+      resolve_hybrid_alias "$root_alias" || {
+        printf "airlock: unsupported saved hybrid model '%s'\n" "$root_alias" >&2
+        exit 2
+      }
+    else
+      root_model="$explicit_model"
+      root_name="$explicit_model"
+      root_provider="$(model_provider "$explicit_model" || true)"
+      if [[ -z "$root_provider" ]]; then
+        printf 'airlock: cannot determine the hybrid root provider from --model; use a gpt-*, claude-*, or grok-* model ID.\n' >&2
+        exit 2
+      fi
+    fi
 
-  if [[ -n "$explicit_model" && -n "$root_alias" ]]; then
-    explicit_provider="$(model_provider "$explicit_model" || true)"
-    if [[ -z "$explicit_provider" || "$explicit_provider" != "$root_provider" ]]; then
-      printf 'airlock: hybrid root alias and --model must select the same provider.\n' >&2
+    if [[ -n "$explicit_model" && -n "$root_alias" ]]; then
+      explicit_provider="$(model_provider "$explicit_model" || true)"
+      if [[ -z "$explicit_provider" || "$explicit_provider" != "$root_provider" ]]; then
+        printf 'airlock: hybrid root alias and --model must select the same provider.\n' >&2
+        exit 2
+      fi
+      root_model="$explicit_model"
+      root_name="$explicit_model"
+    elif [[ -z "$explicit_model" ]]; then
+      hybrid_args=(--model "$root_model" ${hybrid_args[@]+"${hybrid_args[@]}"})
+    fi
+  else
+    # An OpenRouter route is selected by exact registry slug. A forwarded
+    # --model may only restate the resolved root model; anything else would
+    # move root traffic off the selected route inside one argv.
+    root_model="$OPR_ROOT_MODEL"
+    root_name="$OPR_ROOT_NAME"
+    root_provider='openrouter'
+    if [[ -n "$explicit_model" && "$explicit_model" != "$root_model" ]]; then
+      printf 'airlock: forwarded --model disagrees with the selected OpenRouter root route (%s).\n' "$root_model" >&2
       exit 2
     fi
-    root_model="$explicit_model"
-    root_name="$explicit_model"
-  elif [[ -z "$explicit_model" ]]; then
-    hybrid_args=(--model "$root_model" ${hybrid_args[@]+"${hybrid_args[@]}"})
+    if [[ -z "$explicit_model" ]]; then
+      hybrid_args=(--model "$root_model" ${hybrid_args[@]+"${hybrid_args[@]}"})
+    fi
   fi
 
   has_effort=0
@@ -1569,8 +1673,12 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     hybrid_args=(--effort "$root_effort" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
 
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID
-  if [[ "$root_provider" == 'openai' ]]; then
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+  if [[ "$root_provider" == 'openrouter' ]]; then
+    export AIRLOCK_OPENROUTER_HYBRID='1'
+    launch_session hybrid-openrouter-root "$root_model" "$root_name" \
+      "$hybrid_selected_route" ${hybrid_args[@]+"${hybrid_args[@]}"}
+  elif [[ "$root_provider" == 'openai' ]]; then
     validate_fast_root_model "$root_model"
     export AIRLOCK_GPT_HYBRID='1'
     launch_session hybrid-openai-root "$root_model" "$root_name" '' ${hybrid_args[@]+"${hybrid_args[@]}"}
@@ -1622,7 +1730,7 @@ if [[ "${1:-}" == 'opr' ]]; then
     esac
   done
   opr_args=(--model "$OPR_ROOT_MODEL" ${opr_args[@]+"${opr_args[@]}"})
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
   launch_session openrouter-pure "$OPR_ROOT_MODEL" "$OPR_ROOT_NAME" \
     "$OPR_SELECTED_ROUTE" ${opr_args[@]+"${opr_args[@]}"}
   exit $?
@@ -1739,7 +1847,7 @@ if [[ "${1:-}" == 'grok' ]]; then
     export AIRLOCK_GROK_MODELS='grok,composer'
   fi
   set_openai_environment "$selected_model" "$model_name" 'Grok subscription'
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
   has_effort=0
   for argument in "$@"; do
     [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
@@ -1822,7 +1930,7 @@ if [[ "$ephemeral_fast" -eq 0 ]]; then
   validate_fast_root_model "$selected_model"
 fi
 set_openai_environment "$selected_model" "$model_name"
-unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID
+unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
 
 has_effort=0
 for argument in "$@"; do

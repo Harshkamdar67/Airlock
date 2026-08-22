@@ -115,8 +115,13 @@ Options:
 Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
-  Hybrid: sonnet, sol, terra, luna, opus, fable, haiku
+  Hybrid: auto, sonnet, sol, terra, luna, opus, fable, haiku
   OpenAI-only: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+
+The reserved hybrid value 'auto' resolves at launch time: Fable when Fable's
+access class is neither extra nor unavailable, otherwise Opus under the same
+rule, otherwise Sonnet as a final fallback. Auto never picks an extra-class
+model and never creates silent metered spend.
 EOF
 }
 
@@ -250,14 +255,17 @@ else
   read_config_value AIRLOCK_DEFAULT_PROFILE hybrid
 fi
 default_default_profile="$CONFIG_VALUE"
-# A brand new setup recommends Sol. An existing config that simply never had
+# A brand new setup writes the reserved value 'auto': the hybrid root then
+# resolves at launch time under the local access policy (Fable when eligible,
+# otherwise Opus, otherwise Sonnet). An existing config that simply never had
 # this key must fall back to sonnet instead, because that is what both
-# launchers already use for it; picking anything else would silently move the
-# hybrid root the first time setup rewrites the file.
+# launchers already used for it; picking anything else would silently move the
+# hybrid root the first time setup rewrites the file. Moving an existing root
+# to 'auto' stays a deliberate choice through --hybrid-model auto.
 if [[ -f "$config_target" ]]; then
   read_config_value AIRLOCK_HYBRID_MODEL sonnet
 else
-  read_config_value AIRLOCK_HYBRID_MODEL sol
+  read_config_value AIRLOCK_HYBRID_MODEL auto
 fi
 default_hybrid_model="$CONFIG_VALUE"
 read_config_value AIRLOCK_GROK_MODEL grok
@@ -385,6 +393,7 @@ utility_alias_from_wire() {
 
 set_model_info() {
   case "$1" in
+    auto) MODEL_TITLE='Auto hybrid root'; MODEL_ID='auto'; MODEL_DETAIL='Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet.' ;;
     sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
     opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
     fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
@@ -435,7 +444,7 @@ validate_default_profile() {
 
 validate_hybrid_model() {
   case "$1" in
-    sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
+    auto|sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
@@ -1295,6 +1304,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
   elif [[ "$default_profile" == 'hybrid' ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
     hybrid_options=(
+      'auto|Auto (recommended)|auto|Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet. Never picks an extra-class model.'
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.'
       'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
@@ -1309,7 +1319,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
         'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
       )
     fi
-    choose_rich_option "$hybrid_model" sol "${hybrid_options[@]}"
+    choose_rich_option "$hybrid_model" auto "${hybrid_options[@]}"
     hybrid_model="$CHOICE"
     main_model="$default_main_model"
   else

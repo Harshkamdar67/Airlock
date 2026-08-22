@@ -11,7 +11,7 @@ airlock grok            # saved Grok-only root
 airlock hybrid          # saved hybrid root
 ```
 
-The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with GPT-5.6 Sol. Existing configs without the profile key retain the original OpenAI-only bare command.
+The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with the reserved root `auto`, which resolves at launch: Fable when its access class is neither extra nor unavailable, otherwise Opus, otherwise Sonnet, checked against your local access policy at every start. `auto` never selects a model that needs confirmed extra usage, so no launch can begin metered spend on its own under any extra-usage policy. Existing configs without a saved hybrid root keep Sonnet, which is what both launchers already used; moving an existing root to `auto` is a deliberate choice. Existing configs without the profile key retain the original OpenAI-only bare command.
 
 The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
@@ -108,6 +108,10 @@ The registry also records when each route was last verified. A route older than 
 
 A declared route becomes a named Agent, `airlock-or-ROUTE`, inside a hybrid session (`airlock hybrid ...`), where it can run alongside your OpenAI and Claude workers. `airlock openai`, `airlock grok`, and their pure profiles never include OpenRouter routes.
 
+A declared route can also lead the mixed-provider profile itself. `airlock hybrid ROUTE` accepts an exact declared route name, `airlock hybrid choose` offers your declared routes as roots, and setup's hybrid picker can save one. That launch starts the same session router as any other hybrid root, adds the selected OpenRouter model as the root, and keeps every other family slot wrapper backed: Sonnet, Opus, Sol, Terra, Luna, Grok, and the rest keep their exact models. No OpenRouter model ever fills a Claude Code family alias slot, so built-in Agent spawning stays intact. The route you pick is not gated by `AIRLOCK_EXTRA_USAGE_POLICY`, exactly like an explicit `opr` root, while every other declared route in that session still follows it.
+
+The reserved `auto` hybrid root resolves only among Fable, Opus, and Sonnet. Declaring or selecting an OpenRouter root never changes what `auto` launches.
+
 A declared route can also become the exclusive session root with `airlock opr`:
 
 ```bash
@@ -122,7 +126,9 @@ An `airlock opr` session is OpenRouter-only. It does not start, require, or read
 
 Every request, whether to the `opr` root or to a hybrid-session `airlock-or-ROUTE` worker, constrains OpenRouter to the verified provider-registry slug and endpoint quantization, with fallback routing turned off. Airlock rejects a catalog where that pair identifies more than one endpoint. It requires catalog support for `tools` and `tool_choice`, but it does not require the endpoint to advertise every optional field in Claude Code's native Messages payload. Claude Code may put its custom-model notice in a `messages` entry with the non-standard `system` role. Before an OpenRouter request is sent, Airlock moves that text into the Anthropic Messages API's top-level `system` field so strict endpoints receive the same instruction in the documented form. Other native fields remain unchanged. A successful response is forwarded only when its model is the exact routable ID or the frozen canonical slug; a response for any other model is rejected rather than passed through. OpenRouter's `count_tokens` operation is not available on these routes; Airlock does not invent a token estimate for a model it has not verified.
 
-Because Airlock does not evaluate an OpenRouter model's real capability, context window, or cost, an OpenRouter Agent is normally treated as extra usage: under the default `ask` policy it needs the same `Extra usage authorized: yes` confirmation as any other extra-usage worker before it can run, under `allow` it runs without asking, and under `never` it is not offered at all. The route you explicitly select as the `airlock opr` root is the one exception: it carries the session's normal root traffic and is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. If other routes are also declared, they can still appear as additional `airlock-or-ROUTE` Agents inside that same `opr` session, and those additional routes follow the normal extra-usage policy.
+Because Airlock does not evaluate an OpenRouter model's real capability, context window, or cost, an OpenRouter Agent is normally treated as extra usage: under the default `ask` policy it needs the same `Extra usage authorized: yes` confirmation as any other extra-usage worker before it can run, under `allow` it runs without asking, and under `never` it is not offered at all. The route you explicitly select as the `airlock opr` root, or as the hybrid OpenRouter root with `airlock hybrid ROUTE`, is the one exception: it carries the session's normal root traffic and is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. If other routes are also declared, they can still appear as additional `airlock-or-ROUTE` Agents inside that same session, and those additional routes follow the normal extra-usage policy.
+
+A forwarded `--model` or `-m` must agree exactly with the selected OpenRouter root route's model in a hybrid OpenRouter-rooted session, the way `airlock opr` rejects model overrides outright. A disagreeing value fails closed before any request is sent.
 
 Read [Security](../SECURITY.md) and the [threat model](threat-model.md) for the credential storage and registry trust boundary.
 

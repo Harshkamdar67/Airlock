@@ -165,7 +165,10 @@ function Show-Models {
   Write-Host ''
   Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
+  Write-Host '  opus under the same rule, otherwise sonnet.'
+  Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
   Write-Host 'Other commands: fast, bg, mode, usage, session-usage, access, bundle, config, models, openrouter auth/models, proxy auth, version, update'
   Write-Host ''
   Write-Host 'OpenRouter credential commands:'
@@ -342,6 +345,54 @@ function Resolve-OpenRouterRootRoute {
     exit 1
   }
   return $resolved
+}
+
+function Test-OpenRouterRouteEnabled {
+  # Non-exiting registry probe used before committing to a route-shaped hybrid
+  # candidate. Returns $true only when openrouter-resolve accepts the route.
+  param([string]$Route)
+  if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) { return $false }
+  $python = Resolve-Python
+  if (-not $python) { return $false }
+  & $python $AccessHelper 'openrouter-resolve' $Route *> $null
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Resolve-AutoHybridRoot {
+  # The reserved 'auto' hybrid root resolves at launch time under the local
+  # access policy: Fable when its access class is neither extra nor
+  # unavailable, otherwise Opus under the same rule, otherwise Sonnet as a
+  # final fallback. Auto selection therefore never picks an extra-class model
+  # and never creates silent metered spend. The access helper owns the rule so
+  # both launchers cannot drift; this validates its output and caches it.
+  if ($script:ResolvedAutoAlias) { return $script:ResolvedAutoAlias }
+  if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed access helper is missing: $AccessHelper")
+    exit 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for access-policy handling.')
+    exit 1
+  }
+  $raw = @(& $python $AccessHelper 'hybrid-default-root')
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $value = ''
+  foreach ($line in $raw) {
+    $trimmed = ('' + $line).Trim()
+    if (-not $trimmed) { continue }
+    if ($value) {
+      [Console]::Error.WriteLine('airlock: auto hybrid root resolver returned an invalid result.')
+      exit 1
+    }
+    $value = $trimmed
+  }
+  if ($value -notin @('fable', 'opus', 'sonnet')) {
+    [Console]::Error.WriteLine('airlock: auto hybrid root resolver returned an invalid result.')
+    exit 1
+  }
+  $script:ResolvedAutoAlias = $value
+  return $value
 }
 
 function Select-OpenRouterRootRoute {
@@ -706,8 +757,17 @@ function Invoke-AirlockSession {
         exit 2
       }
     }
+  } elseif ($Profile -eq 'hybrid-openrouter-root') {
+    if (-not $OpenRouterRootRoute) {
+      [Console]::Error.WriteLine('airlock: hybrid-openrouter-root requires an exact OpenRouter root route.')
+      exit 2
+    }
+    if ($RootModel -or $RootName) {
+      [Console]::Error.WriteLine('airlock: the OpenRouter root identity must be derived by the managed bridge.')
+      exit 2
+    }
   } elseif ($OpenRouterRootRoute) {
-    [Console]::Error.WriteLine('airlock: an OpenRouter root route is valid only for openrouter-pure.')
+    [Console]::Error.WriteLine('airlock: an OpenRouter root route is valid only for openrouter-pure or hybrid-openrouter-root.')
     exit 2
   }
 
@@ -799,6 +859,12 @@ function Invoke-AirlockSession {
   }
   if ($Profile -eq 'openrouter-pure') {
     $launchRequest['openrouter_root_route'] = [string]$OpenRouterRootRoute
+  } elseif ($Profile -eq 'hybrid-openrouter-root') {
+    # The wrapper catalogs keep GPT and Grok routes in the snapshot, and the
+    # router refuses to start without a subscription endpoint for them. The
+    # root identity itself stays bridge-derived from the exact route.
+    $launchRequest['openrouter_root_route'] = [string]$OpenRouterRootRoute
+    $launchRequest['proxy_url'] = [string]$ProxyUrl
   } else {
     $launchRequest['proxy_url'] = [string]$ProxyUrl
     $launchRequest['root_model'] = [string]$RootModel
@@ -842,7 +908,15 @@ function Select-HybridRoot {
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
   Write-Host '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)'
   Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
-  $selection = Read-Host 'Selection [1-9]'
+  Write-Host ' 10) An exact OpenRouter registry route'
+  $selection = Read-Host 'Selection [1-10]'
+  if ($selection -eq '10') {
+    $route = Select-OpenRouterRootRoute
+    $record = Resolve-OpenRouterRootRoute -Route $route
+    $script:HybridSelectedRoute = [string]$record.route
+    $script:HybridSelectedModel = [string]$record.model
+    return $null
+  }
   $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
@@ -877,12 +951,21 @@ if (-not $DefaultOpenAIAlias) {
   exit 2
 }
 $DefaultOpenAIModel = $DefaultOpenAIAlias
-$hybridOpenAIAlias = Resolve-OpenAIAlias $DefaultHybridModel
-if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
-  [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
-  exit 2
+# Eager saved-value validation runs on every invocation, exactly as before.
+# The reserved 'auto' value is validated through the access helper instead of
+# the alias tables; the resolved alias stays cached for the hybrid branch.
+$script:ResolvedAutoAlias = $null
+$script:HybridSelectedRoute = $null
+if ($DefaultHybridModel -eq 'auto') {
+  $null = Resolve-AutoHybridRoot
+} else {
+  $hybridOpenAIAlias = Resolve-OpenAIAlias $DefaultHybridModel
+  if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
+    [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
+    exit 2
+  }
+  if ($hybridOpenAIAlias -in @('sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 }
-if ($hybridOpenAIAlias -in @('sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 $DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
 if (-not $DefaultBgAlias) {
   [Console]::Error.WriteLine("airlock: unsupported saved background model '$DefaultBgModel'")
@@ -1093,7 +1176,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'opr') {
       exit 2
     }
   }
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
   # Every other root seeds the session effort here. Without it the Fast
@@ -1157,7 +1240,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'grok') {
   # them off, because the user asked for this provider by name.
   if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
   Set-OpenAIEnvironment $grokModel $grokName 'Grok subscription'
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
   $grokCmdArgs = @('--model', $grokModel)
@@ -1177,13 +1260,31 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   $rootAlias = $null
   if ($hybridArgs.Count -gt 0) {
     $hybridCandidate = Normalize-OpenAIModelId $hybridArgs[0]
-    if ($HybridRoots.ContainsKey($hybridCandidate)) {
+    if ($hybridCandidate -eq 'auto') {
+      # Reserved value: resolve under the local access policy, never an alias.
+      $rootAlias = 'auto'
+    } elseif ($HybridRoots.ContainsKey($hybridCandidate)) {
       $rootAlias = $hybridCandidate
     } else {
       $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
       if ($hybridCandidateAlias -in @('sol', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
     }
-    if ($rootAlias) {
+    if (-not $rootAlias -and $hybridCandidate -and $hybridCandidate -notlike '-*' -and
+        $hybridCandidate -cmatch '^[a-z0-9]+([._:-][a-z0-9]+)*$') {
+      # A route-shaped first word tries the OpenRouter registry before anything
+      # else. Anything that cannot be a route slug (flags, prose) stays untouched.
+      # The regex is case sensitive on purpose so it matches the POSIX launcher.
+      if (Test-OpenRouterRouteEnabled -Route $hybridCandidate) {
+        $record = Resolve-OpenRouterRootRoute -Route $hybridCandidate
+        $script:HybridSelectedRoute = [string]$record.route
+        $script:HybridSelectedModel = [string]$record.model
+        $rootAlias = $null
+      } else {
+        [Console]::Error.WriteLine("airlock: '$hybridCandidate' is neither a hybrid root alias nor an enabled OpenRouter route.")
+        exit 2
+      }
+    }
+    if ($rootAlias -or $script:HybridSelectedRoute) {
       if ($hybridArgs.Count -gt 1) { $hybridArgs = @($hybridArgs[1..($hybridArgs.Count - 1)]) } else { $hybridArgs = @() }
     }
   }
@@ -1196,11 +1297,28 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     }
   }
   $explicitModel = Get-ExplicitModel $hybridArgs
-  if (-not $rootAlias -and -not $explicitModel) {
+  if (-not $script:HybridSelectedRoute -and -not $rootAlias -and -not $explicitModel) {
     $rootAlias = if ($chooseRoot) { Select-HybridRoot } else { $DefaultHybridModel }
   }
+  if ($rootAlias -eq 'auto') {
+    $rootAlias = Resolve-AutoHybridRoot
+  }
 
-  if ($rootAlias) {
+  if ($script:HybridSelectedRoute) {
+    # An OpenRouter route is selected by exact registry slug. A forwarded
+    # --model may only restate the resolved root model; anything else would
+    # move root traffic off the selected route inside one argv.
+    $rootModel = $script:HybridSelectedModel
+    $rootName = "OpenRouter $($script:HybridSelectedRoute)"
+    $rootProvider = 'openrouter'
+    if ($explicitModel -and $explicitModel -ne $rootModel) {
+      [Console]::Error.WriteLine("airlock: forwarded --model disagrees with the selected OpenRouter root route ($rootModel).")
+      exit 2
+    }
+    if (-not $explicitModel) {
+      $hybridArgs = @('--model', $rootModel) + $hybridArgs
+    }
+  } elseif ($rootAlias) {
     $rootModel = $HybridRoots[$rootAlias][0]
     $rootName = $HybridRoots[$rootAlias][1]
     $rootProvider = $HybridRoots[$rootAlias][2]
@@ -1227,8 +1345,12 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   $hybridArgs = Add-DefaultEffort $hybridArgs $MainEffort
 
   Start-ProxyIfNeeded
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
+  }
+  if ($rootProvider -eq 'openrouter') {
+    $env:AIRLOCK_OPENROUTER_HYBRID = '1'
+    Invoke-AirlockSession 'hybrid-openrouter-root' $rootModel $rootName $hybridArgs $script:HybridSelectedRoute
   }
   if ($rootProvider -eq 'openai') {
     Test-FastRootModel $rootModel
@@ -1259,7 +1381,13 @@ if ($Arguments.Count -gt 0) {
     '--models' { Show-Models; return }
     'config'   {
       $openAIName = "$($Models[$DefaultOpenAIModel][1]) ($($Models[$DefaultOpenAIModel][0]))"
-      $hybridName = "$($HybridRoots[$DefaultHybridModel][1]) ($($HybridRoots[$DefaultHybridModel][0]))"
+      if ($DefaultHybridModel -eq 'auto') {
+        $autoAlias = Resolve-AutoHybridRoot
+        $autoRoot = $HybridRoots[$autoAlias]
+        $hybridName = "auto (resolves now to $($autoRoot[1]) ($($autoRoot[0])))"
+      } else {
+        $hybridName = "$($HybridRoots[$DefaultHybridModel][1]) ($($HybridRoots[$DefaultHybridModel][0]))"
+      }
       $defaultName = if ($DefaultProfile -eq 'hybrid') { $hybridName } else { $openAIName }
       Write-Host "Config file: $ConfigFile"
       Write-Host "Default profile: $DefaultProfile"

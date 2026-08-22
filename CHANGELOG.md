@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+### Added
+
+- A declared OpenRouter route can now lead the mixed-provider profile as its root. `airlock hybrid ROUTE` starts the normal hybrid session with that exact route as the main model, `airlock hybrid choose` offers your declared routes as roots, and setup's hybrid picker can save one. Every other family slot stays wrapper backed, so Sonnet, Opus, Sol, Terra, Luna, Grok, and your other enabled workers keep their exact models, and no OpenRouter model ever fills a Claude Code family alias slot. The selected root carries normal session traffic without extra-usage gating, exactly like an explicit `airlock opr` root, while every other declared route in the session still follows `AIRLOCK_EXTRA_USAGE_POLICY`. A forwarded `--model` or `-m` must match the selected root's model exactly or the launch fails closed.
+- A reserved `auto` hybrid root. Fresh setups now save `AIRLOCK_HYBRID_MODEL=auto`, and `airlock hybrid auto` selects it directly. `auto` resolves at every launch against your local access policy: Fable when its access class is neither extra nor unavailable, otherwise Opus, otherwise Sonnet. It never picks a model that needs confirmed extra usage, so a launch under an ask or never policy cannot start metered spend on its own. An existing config that never had a saved hybrid root keeps Sonnet instead of moving to `auto`; changing an existing root stays a deliberate choice.
+
 ## 0.1.0-beta.6 - 2026-08-22
 
 ### Fixed
