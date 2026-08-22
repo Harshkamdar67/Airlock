@@ -134,6 +134,13 @@ MINIMUM_FAST_PROXY_VERSION = (0, 1, 22)
 VALID_AGENT_DEPTHS = frozenset({"1", "2"})
 
 
+NESTED_AGENT_RULE = (
+    "You may invoke Agent, but only to spawn your own Agent type, so every "
+    "worker you start runs your model. Never pass a model override, and keep "
+    "fan-out to what the task needs."
+)
+
+
 def agent_depth_note(depth: str) -> str:
     """Describe the configured Agent spawn depth in one line."""
 
@@ -3859,6 +3866,12 @@ def render_provider_agents(
         # the session level, which is how /effort reaches workers mid-session.
         if policy["policies"].get("agent_depth") == "2":
             copy.pop("disallowedTools", None)
+            copy["tools"] = ["*"]
+            prompt = copy.get("prompt")
+            if isinstance(prompt, str):
+                copy["prompt"] = prompt.replace(
+                    "Do not invoke another Agent.", NESTED_AGENT_RULE
+                )
         worker_effort = policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT)
         if worker_effort == INHERIT_EFFORT:
             copy.pop("effort", None)
@@ -3998,7 +4011,13 @@ def render_openrouter_agents(
             ),
             "model": model,
         }
-        if policy["policies"].get("agent_depth") != "2":
+        if policy["policies"].get("agent_depth") == "2":
+            rendered[name]["tools"] = ["*"]
+            rendered[name]["prompt"] = rendered[name]["prompt"].replace(
+                "change model or endpoint, invoke Agent, expose credentials",
+                "change model or endpoint, expose credentials",
+            ) + " " + NESTED_AGENT_RULE
+        else:
             rendered[name]["disallowedTools"] = ["Agent"]
     return rendered
 

@@ -101,6 +101,7 @@ config_proxy_url=''
 config_proxy_config_dir=''
 config_proxy_state_home=''
 config_max_agents=''
+config_agent_depth=''
 config_openai_fast=''
 config_anthropic_fast=''
 config_extra_usage=''
@@ -124,6 +125,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_PROXY_CONFIG_DIR) config_proxy_config_dir="$config_value" ;;
       AIRLOCK_PROXY_STATE_HOME) config_proxy_state_home="$config_value" ;;
       AIRLOCK_MAX_CONCURRENT_SUBAGENTS) config_max_agents="$config_value" ;;
+      AIRLOCK_AGENT_DEPTH) config_agent_depth="$config_value" ;;
       AIRLOCK_OPENAI_FAST) config_openai_fast="$config_value" ;;
       AIRLOCK_ANTHROPIC_FAST) config_anthropic_fast="$config_value" ;;
       AIRLOCK_EXTRA_USAGE_POLICY) config_extra_usage="$config_value" ;;
@@ -1020,10 +1022,17 @@ launch_session() {
     exit 2
   fi
   unset CLAUDE_CODE_SUBAGENT_MODEL
-  export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH='1'
+  agent_depth="${AIRLOCK_AGENT_DEPTH:-${config_agent_depth:-1}}"
+  if [[ ! "$agent_depth" =~ ^[12]$ ]]; then
+    printf "airlock: invalid agent depth '%s' (expected 1 or 2)
+" "$agent_depth" >&2
+    exit 2
+  fi
+  export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH="$agent_depth"
+  export AIRLOCK_AGENT_DEPTH="$agent_depth"
   export AIRLOCK_ACTIVE_PROFILE="$profile"
   export AIRLOCK_UPDATE_NOTICE_FILE="$update_notice_file"
-  local agents_json guidance claude_bin managed_agent_output agent_name session_settings fast_mode
+  local agents_json guidance claude_bin managed_agent_output agent_name session_settings fast_mode agent_depth
   local route_agent_names allowed_model_ids extra_agent_names extra_model_ids picker_models discovery_model
   local snapshot_output snapshot_path snapshot_digest snapshot_extra
   local transition_output transition_channel transition_nonce transition_session_id

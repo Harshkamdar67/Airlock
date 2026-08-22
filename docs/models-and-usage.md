@@ -140,7 +140,7 @@ airlock mode depth 1
 airlock mode depth 2
 ```
 
-At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call. Depth 2 grants the Agent tool to workers, so a chain can run deeper than two levels; the model pinning is what bounds it, together with `airlock mode max-agents`.
+At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call. The depth is a real cap: Airlock sets Claude Code's own `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to it, and the harness both enforces the limit and decides whether a worker receives the Agent tool at all. A worker at depth 2 cannot spawn a third level.
 
 ## Provider Fast controls
 

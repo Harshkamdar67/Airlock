@@ -459,7 +459,12 @@ def build_child_environment(
     environment["AIRLOCK_PYTHON"] = sys.executable
     environment["AIRLOCK_SESSION_SNAPSHOT"] = str(snapshot_path)
     environment["AIRLOCK_SESSION_SNAPSHOT_SHA256"] = snapshot_digest
-    environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = "1"
+    # Claude Code enforces the cap itself, so the configured depth is the
+    # real limit. It also decides whether a worker receives the Agent tool.
+    agent_depth = environment.get("AIRLOCK_AGENT_DEPTH", "1")
+    if agent_depth not in {"1", "2"}:
+        agent_depth = "1"
+    environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = agent_depth
     environment.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
     if max_agents == "off":
         environment.pop("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", None)

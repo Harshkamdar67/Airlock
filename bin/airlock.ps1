@@ -66,6 +66,14 @@ $DefaultBgModel = Normalize-OpenAIModelId $DefaultBgModel
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
 $env:AIRLOCK_GPT_EFFORT_CAPABILITIES = $GptEffortCapabilities
+$AgentDepth = if ($env:AIRLOCK_AGENT_DEPTH) { $env:AIRLOCK_AGENT_DEPTH } elseif ($ConfigValues.ContainsKey('AIRLOCK_AGENT_DEPTH')) { $ConfigValues['AIRLOCK_AGENT_DEPTH'] } else { '1' }
+if ($AgentDepth -ne '1' -and $AgentDepth -ne '2') {
+  Write-Error "airlock: invalid agent depth '$AgentDepth' (expected 1 or 2)"
+  exit 2
+}
+# Claude Code enforces the cap, and it decides whether a worker gets the
+# Agent tool, so the session launchers must see the configured depth.
+$env:AIRLOCK_AGENT_DEPTH = $AgentDepth
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
 $OpenAIDirectAgentsFile = if ($env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE) { $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'openai-direct-agents.json' }
 $AnthropicDirectAgentsFile = if ($env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE) { $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'anthropic-direct-agents.json' }
