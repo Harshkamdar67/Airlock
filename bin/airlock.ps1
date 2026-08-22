@@ -1350,7 +1350,12 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   }
   if ($rootProvider -eq 'openrouter') {
     $env:AIRLOCK_OPENROUTER_HYBRID = '1'
-    Invoke-AirlockSession 'hybrid-openrouter-root' $rootModel $rootName $hybridArgs $script:HybridSelectedRoute
+    # The bridge derives this root's identity from the exact registry route and
+    # rejects a request carrying root_model or root_name, so the launcher must
+    # not restate them. The POSIX launcher passes them because it builds the
+    # child environment itself; this path delegates that to the bridge, so only
+    # the route travels.
+    Invoke-AirlockSession 'hybrid-openrouter-root' '' '' $hybridArgs $script:HybridSelectedRoute
   }
   if ($rootProvider -eq 'openai') {
     Test-FastRootModel $rootModel
