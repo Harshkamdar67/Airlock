@@ -600,5 +600,83 @@ class AgentGuardTests(unittest.TestCase):
                     )
 
 
+class NestedAgentGuardTests(AgentGuardTests):
+    """A worker's own Agent calls stay pinned to the worker's own model."""
+
+    def nested(self, session, caller: str, tool_input: dict) -> dict | None:
+        # Claude Code adds agent_id and agent_type when the caller is a worker.
+        return self.invoke(session, None, raw_event=json.dumps({
+            "tool_name": "Agent",
+            "tool_input": tool_input,
+            "agent_id": "a1234567890abcdef",
+            "agent_type": caller,
+        }))
+
+    def first_worker(self, session) -> tuple[str, object]:
+        for name, agent in session["snapshot"].agents.items():
+            return name, agent
+        raise AssertionError("session has no workers")
+
+    def test_worker_may_spawn_its_own_type(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        name, agent = self.first_worker(session)
+        prompt = MARKER if agent.extra_usage else "work"
+        self.assertIsNone(
+            self.nested(session, name, {"subagent_type": name, "prompt": prompt})
+        )
+
+    def test_worker_cannot_spawn_a_different_type(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        names = list(session["snapshot"].agents)
+        self.assertGreater(len(names), 1)
+        result = self.nested(
+            session, names[0], {"subagent_type": names[1], "prompt": MARKER}
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_worker_cannot_spawn_a_builtin_agent(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        name, _agent = self.first_worker(session)
+        result = self.nested(session, name, {"subagent_type": "Explore"})
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_worker_cannot_override_the_model(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        name, _agent = self.first_worker(session)
+        result = self.nested(
+            session, name,
+            {"subagent_type": name, "model": "haiku", "prompt": MARKER},
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_blank_caller_identity_is_rejected(self) -> None:
+        session = self.session("hybrid-anthropic-root")
+        name, _agent = self.first_worker(session)
+        result = self.nested(session, "", {"subagent_type": name, "prompt": MARKER})
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_root_calls_are_unaffected(self) -> None:
+        # No agent_type means the root is calling, which may pick any worker.
+        session = self.session("hybrid-anthropic-root")
+        for name, agent in session["snapshot"].agents.items():
+            prompt = MARKER if agent.extra_usage else "work"
+            with self.subTest(agent=name):
+                self.assertIsNone(self.invoke(
+                    session, {"subagent_type": name, "prompt": prompt}
+                ))
+
+
 if __name__ == "__main__":
     unittest.main()

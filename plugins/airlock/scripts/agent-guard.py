@@ -185,6 +185,24 @@ def main() -> int:
         deny("Airlock blocked malformed Agent tool input.")
         return 0
     subagent_type = tool_input.get("subagent_type")
+    # A nested call carries the calling Agent's identity; a root call does not.
+    # A worker may only fan out to its own type, which pins every descendant to
+    # the model the root already chose for it. This holds whatever the depth
+    # setting is: at depth 1 a worker has no Agent tool, so this never fires.
+    caller_agent_type = event.get("agent_type")
+    if caller_agent_type is not None:
+        if not isinstance(caller_agent_type, str) or not caller_agent_type:
+            deny("Airlock blocked Agent because the calling Agent identity is invalid.")
+            return 0
+        if subagent_type != caller_agent_type:
+            deny(
+                "Airlock allows a worker to spawn only its own Agent type, so every "
+                "descendant keeps the model the root selected."
+            )
+            return 0
+        if "model" in tool_input:
+            deny("Airlock does not allow a model override on a nested Agent call.")
+            return 0
     if subagent_type in BUILTIN_AGENT_TYPES:
         if snapshot.profile == "openrouter-pure" and (
             os.environ.get("AIRLOCK_DISCOVERY_MODEL") != snapshot.root_model

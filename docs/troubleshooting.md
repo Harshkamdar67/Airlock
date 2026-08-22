@@ -334,7 +334,7 @@ Do not run `git clean` to remove them from a working repository.
 
 ## A worker tried to start another worker
 
-Named Agents disallow Agent and top-level spawn depth is one. Fan-out must stay with the main model.
+Named Agents disallow Agent at the default Agent depth of 1, so fan-out must stay with the main model. Run `airlock mode depth 2` to let a worker spawn its own Agent type, then relaunch the session.
 
 Show the saved cap:
 

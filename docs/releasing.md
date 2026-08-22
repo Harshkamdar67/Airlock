@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.5
+0.1.0-beta.6
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
@@ -148,8 +148,8 @@ After the release commit is merged into protected `main` and every required chec
 ```bash
 git switch main
 git pull --ff-only origin main
-git tag -a v0.1.0-beta.5 -m "Airlock v0.1.0-beta.5"
-git push origin v0.1.0-beta.5
+git tag -a v0.1.0-beta.6 -m "Airlock v0.1.0-beta.6"
+git push origin v0.1.0-beta.6
 ```
 
 Pushing the tag is an outward action. Confirm it immediately before running the command.

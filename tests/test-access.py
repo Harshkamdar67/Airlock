@@ -332,7 +332,7 @@ for line in sys.stdin:
         self.assertEqual(policy["policies"]["repair_rounds"], 1)
         lines = "\n".join(ACCESS.mode_status_lines())
         self.assertIn("Failover: never", lines)
-        self.assertIn("Agent nesting: off for named Agents; root spawn depth=1", lines)
+        self.assertIn("Agent depth: 1; named Agents cannot invoke Agent", lines)
         self.assertNotIn("Descendants:", lines)
         self.assertNotIn("Repair rounds:", lines)
         usage_lines = "\n".join(ACCESS.status_lines(policy))
