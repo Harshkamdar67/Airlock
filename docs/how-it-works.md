@@ -73,7 +73,7 @@ Each name has:
 - native Agent cards and usage
 - optional native worktree isolation
 
-Named workers cannot invoke Agent and a caller cannot override their model. This keeps the card name, model, and role consistent. Their effort follows the session unless the config pins it.
+Named workers cannot invoke Agent at the default Agent depth of 1, and a caller cannot override their model. This keeps the card name, model, and role consistent. Their effort follows the session unless the config pins it.
 
 A worker runs inside Claude Code itself, not inside a shell command. A long response cannot be lost to a shell timeout.
 
@@ -233,7 +233,7 @@ airlock mode max-agents 3
 
 A number saves a smaller cap for new sessions.
 
-Top-level Agent spawn depth is one. Named workers also disallow the Agent tool. Fan-out stays with the main model, which prevents hidden Agent trees and keeps usage visible.
+Agent depth is 1 by default. Named workers disallow the Agent tool, so fan-out stays with the main model, which prevents hidden Agent trees and keeps usage visible. `airlock mode depth 2` opts into one more level. At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call.
 
 ## Session-local OpenAI Fast handoff
 

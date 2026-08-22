@@ -106,7 +106,7 @@ Plan and general-purpose inherit the orchestrator unless a schema-valid `fable`,
 
 The guard blocks unknown names or model values, malformed or stale family maps, disabled exact targets, cross-profile routes, ineligible Fast models, blocked extra-usage routes, and caller model overrides on named Agents.
 
-Named Agents disallow Agent and spawn depth is one. Fan-out stays with the main model.
+Named Agents disallow Agent at the default depth of 1, and fan-out stays with the main model. At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call.
 
 ### Native worktrees
 
@@ -177,7 +177,7 @@ Claude Code and Git own the worktree state. The cleanup hook checks the real sta
 
 Claude Code's native concurrency applies by default. The user can save a smaller cap. The ceiling is never a fan-out target.
 
-Named Agents cannot invoke Agent, and the session spawn depth is one. Automatic armies are Luna-only and final synthesis stays with a stronger model.
+Named Agents cannot invoke Agent at the default depth of 1. Automatic armies are Luna-only and final synthesis stays with a stronger model. At depth 2 a worker's descendants are pinned to that worker's own model.
 
 ### A malicious repository includes unsafe untracked files
 

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+### Added
+
+- A configurable Agent spawn depth, `airlock mode depth 1|2`, saved as `AIRLOCK_AGENT_DEPTH`. Depth stays 1 by default, which is the existing behaviour: named Agents disallow the Agent tool and every fan-out decision stays at the root. Depth 2 grants named Agents the Agent tool, and the managed guard then allows a worker to spawn only its own Agent type and rejects any model override on that call, so each worker's descendants run the model the root chose for it. The root still picks any model for any worker. Granting the tool means a chain can run deeper than two levels; the model pinning and `airlock mode max-agents` are what bound it.
+
 ## 0.1.0-beta.5 - 2026-08-22
 
 ### Added

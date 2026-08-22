@@ -173,7 +173,7 @@ Built-in Plan and general-purpose inherit the main model when no model field is 
 
 The guard rejects unknown Agent names or model values, malformed or stale family maps, disabled exact targets, cross-profile routes, blocked extra-usage routes, ineligible Fast routes, and model overrides on named Agents.
 
-Named Agents disallow Agent and the session spawn depth is one. Fan-out stays at the root.
+Named Agents disallow Agent at the default Agent depth of 1, and fan-out stays at the root. At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call.
 
 ## Native worktree snapshots
 

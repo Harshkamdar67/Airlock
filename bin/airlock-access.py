@@ -116,6 +116,7 @@ DEFAULT_MAX_CONCURRENT_SUBAGENTS = "off"
 DEFAULT_SWARM_FAST = "auto"
 DEFAULT_OPENAI_FAST = "off"
 DEFAULT_ANTHROPIC_FAST = "off"
+DEFAULT_AGENT_DEPTH = "1"
 DEFAULT_DESCENDANT_POLICY = "bounded"
 DEFAULT_MAX_DESCENDANTS = "2"
 DEFAULT_MAX_CONCURRENT_DESCENDANTS = "3"
@@ -130,6 +131,33 @@ OPENAI_PLAN_CAPACITY = {
 }
 OPENAI_FAST_ELIGIBLE_PLANS = {"prolite", "pro"}
 MINIMUM_FAST_PROXY_VERSION = (0, 1, 22)
+VALID_AGENT_DEPTHS = frozenset({"1", "2"})
+
+
+def agent_depth_note(depth: str) -> str:
+    """Describe the configured Agent spawn depth in one line."""
+
+    if depth == "2":
+        return (
+            "Agent depth: 2; named Agents may spawn only their own type, so every "
+            "descendant keeps the model the root chose"
+        )
+    return "Agent depth: 1; named Agents cannot invoke Agent"
+
+
+def agent_guidance_clause(policy: dict) -> str:
+    """Describe fan-out rules for the session guidance text."""
+
+    if policy["policies"].get("agent_depth") == "2":
+        return (
+            "Agents may invoke Agent, but only to spawn their own Agent type, so a "
+            "worker's descendants all run the model you chose for it. Choose the model "
+            "for each worker at the root. "
+        )
+    return (
+        "Agents cannot invoke Agent, and the native session spawn depth is one. Keep "
+        "every fan-out decision at the root. "
+    )
 MODE_CONFIG_KEYS = {
     "routing": "AIRLOCK_ROUTING_POLICY",
     "extra_usage": "AIRLOCK_EXTRA_USAGE_POLICY",
@@ -138,6 +166,7 @@ MODE_CONFIG_KEYS = {
     "anthropic_fast": "AIRLOCK_ANTHROPIC_FAST",
     "swarm_fast": "AIRLOCK_SWARM_FAST",
     "failover": "AIRLOCK_FAILOVER_POLICY",
+    "agent_depth": "AIRLOCK_AGENT_DEPTH",
     "descendants": "AIRLOCK_DESCENDANT_POLICY",
     "max_descendants": "AIRLOCK_MAX_DESCENDANTS_PER_WORKER",
     "max_total_descendants": "AIRLOCK_MAX_CONCURRENT_DESCENDANTS",
@@ -356,6 +385,7 @@ def default_policy() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "policies": {
             "extra_usage": "ask",
+            "agent_depth": DEFAULT_AGENT_DEPTH,
             "routing": "balanced",
             "openai_fast": DEFAULT_OPENAI_FAST,
             "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
@@ -460,6 +490,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
         "swarm_fast": DEFAULT_SWARM_FAST,
         "failover": "ask",
+        "agent_depth": DEFAULT_AGENT_DEPTH,
         "descendants": DEFAULT_DESCENDANT_POLICY,
         "max_descendants": DEFAULT_MAX_DESCENDANTS,
         "max_total_descendants": DEFAULT_MAX_CONCURRENT_DESCENDANTS,
@@ -473,6 +504,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
         "swarm_fast": VALID_SWARM_FAST_POLICIES,
         "failover": VALID_FAILOVER_POLICIES,
+        "agent_depth": VALID_AGENT_DEPTHS,
         "descendants": VALID_DESCENDANT_POLICIES,
         "max_descendants": _valid_positive_limit,
         "max_total_descendants": _valid_positive_limit,
@@ -501,6 +533,7 @@ def mode_state() -> dict[str, object]:
         "config_path": config_path(),
         "saved_routing": saved["routing"],
         "saved_extra_usage": saved["extra_usage"],
+        "saved_agent_depth": saved["agent_depth"],
         "saved_max_agents": saved["max_agents"],
         "saved_openai_fast": saved["openai_fast"],
         "saved_anthropic_fast": saved["anthropic_fast"],
@@ -523,6 +556,7 @@ def mode_state() -> dict[str, object]:
         "effective_anthropic_fast": effective["anthropic_fast"],
         "effective_swarm_fast": effective["swarm_fast"],
         "effective_failover": effective["failover"],
+        "effective_agent_depth": effective["agent_depth"],
         "effective_descendants": effective["descendants"],
         "effective_max_descendants": effective["max_descendants"],
         "effective_max_total_descendants": effective["max_total_descendants"],
@@ -569,7 +603,7 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         f"OpenAI Fast routes: {state['effective_openai_fast']} ({openai_fast_note})",
         f"Anthropic Fast startup: {state['effective_anthropic_fast']} ({anthropic_fast_note})",
         f"Luna swarm Fast selection: {state['effective_swarm_fast']} ({swarm_fast_note})",
-        "Agent nesting: off for named Agents; root spawn depth=1",
+        agent_depth_note(state["effective_agent_depth"]),
         "Defaults: routing=balanced, extra-usage=ask, failover=ask, max-agents=off, provider Fast=off, swarm-fast=auto",
     ])
     if (
@@ -613,6 +647,7 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["anthropic_fast"]: VALID_PROVIDER_FAST_POLICIES,
         MODE_CONFIG_KEYS["swarm_fast"]: VALID_SWARM_FAST_POLICIES,
         MODE_CONFIG_KEYS["failover"]: VALID_FAILOVER_POLICIES,
+        MODE_CONFIG_KEYS["agent_depth"]: VALID_AGENT_DEPTHS,
         MODE_CONFIG_KEYS["descendants"]: VALID_DESCENDANT_POLICIES,
         MODE_CONFIG_KEYS["max_descendants"]: _valid_positive_limit,
         MODE_CONFIG_KEYS["max_total_descendants"]: _valid_positive_limit,
@@ -746,6 +781,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             MODE_CONFIG_KEYS["anthropic_fast"]: DEFAULT_ANTHROPIC_FAST,
             MODE_CONFIG_KEYS["swarm_fast"]: DEFAULT_SWARM_FAST,
             MODE_CONFIG_KEYS["failover"]: "ask",
+            MODE_CONFIG_KEYS["agent_depth"]: DEFAULT_AGENT_DEPTH,
             MODE_CONFIG_KEYS["descendants"]: None,
             MODE_CONFIG_KEYS["max_descendants"]: None,
             MODE_CONFIG_KEYS["max_total_descendants"]: None,
@@ -765,6 +801,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         "anthropic-fast": ("anthropic_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
         "swarm-fast": ("swarm_fast", VALID_SWARM_FAST_POLICIES, "auto|on|off"),
         "failover": ("failover", VALID_FAILOVER_POLICIES, "ask|never|allow"),
+        "depth": ("agent_depth", VALID_AGENT_DEPTHS, "1|2"),
     }
     if action in simple_actions:
         name, validator, expected = simple_actions[action]
@@ -1015,8 +1052,11 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
     max_descendants = config.get("AIRLOCK_MAX_DESCENDANTS_PER_WORKER")
     max_total_descendants = config.get("AIRLOCK_MAX_CONCURRENT_DESCENDANTS")
     repair_rounds = config.get("AIRLOCK_MAX_REPAIR_ROUNDS")
+    agent_depth = config.get("AIRLOCK_AGENT_DEPTH")
     if extra in VALID_EXTRA_POLICIES:
         policy["policies"]["extra_usage"] = extra
+    if agent_depth in VALID_AGENT_DEPTHS:
+        policy["policies"]["agent_depth"] = agent_depth
     if routing in VALID_ROUTING_POLICIES:
         policy["policies"]["routing"] = routing
     if openai_fast in VALID_PROVIDER_FAST_POLICIES:
@@ -3379,8 +3419,8 @@ def root_orchestration_guidance(
         "expand only when coverage requires it. Do "
         "not swarm coupled edits, architecture, security judgment, cross-file integration, or final synthesis. An explicit "
         "user model choice always wins. Do not silently retry with a different provider or model. Named airlock-* "
-        "Agents cannot invoke Agent, and the native session spawn depth is one. Keep every fan-out decision at the root. "
-        "The root owns the phase-level task list. Give each worker a natural, self-contained query with its goal, relevant "
+        + agent_guidance_clause(policy)
+        +         "The root owns the phase-level task list. Give each worker a natural, self-contained query with its goal, relevant "
         "paths, constraints, settled decisions, side-effect permissions, evidence requirements, and acceptance checks. Do "
         "not add task classifications, selection markers, or transport JSON. For public-web research include exact `Public "
         "web research authorized: yes` and never include repository content, local paths, credentials, tokens, untracked "
@@ -3817,6 +3857,8 @@ def render_provider_agents(
         # The catalog records the pinned default so the shipped file stays exact
         # and hash-checkable. Dropping the key here is what lets a worker inherit
         # the session level, which is how /effort reaches workers mid-session.
+        if policy["policies"].get("agent_depth") == "2":
+            copy.pop("disallowedTools", None)
         worker_effort = policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT)
         if worker_effort == INHERIT_EFFORT:
             copy.pop("effort", None)
@@ -3955,8 +3997,9 @@ def render_openrouter_agents(
                 "change model or endpoint, invoke Agent, expose credentials, or broaden the task."
             ),
             "model": model,
-            "disallowedTools": ["Agent"],
         }
+        if policy["policies"].get("agent_depth") != "2":
+            rendered[name]["disallowedTools"] = ["Agent"]
     return rendered
 
 
@@ -4115,7 +4158,7 @@ def status_lines(policy: dict[str, Any]) -> list[str]:
         f"Anthropic Fast startup: {policy['policies']['anthropic_fast']}",
         f"Luna swarm Fast selection: {policy['policies']['swarm_fast']}",
         f"Failover: {policy['policies']['failover']}",
-        "Agent nesting: off for named Agents; root spawn depth=1",
+        agent_depth_note(policy["policies"]["agent_depth"]),
     ]
     for provider in ("anthropic", "openai"):
         state = policy["providers"][provider]

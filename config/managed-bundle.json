@@ -4,7 +4,7 @@
   "protocol_version": 5,
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
-    "bin/airlock-access.py": "cf2d314f7af7f96dff25bdee67a79c75baded01992af98087aae820367e9cfd1",
+    "bin/airlock-access.py": "69a3fb694b66aa39340136609dc408acf8a6fe3cc6080ade8d864410f4467697",
     "bin/airlock_policy.py": "088dd6db71a71e1a22cd513587122c39a9e74111c9c9854d4d6f66abecb53dc8",
     "bin/airlock_openrouter_auth.py": "8bc75d695b6392d0c49d285c94db568adc3ad3661ddc3b1ee2843452098722f4",
     "bin/airlock_openrouter_presets.py": "aaea5124809c7a32fa60ff203a1c5252e86b8dc6588213025019f408124ecdd6",
@@ -23,7 +23,7 @@
     "plugins/airlock/scripts/fast-session-end.sh": "ab9c6da10c5d181acd434bbf86be2c85497b377be26893720a2b4f068647338f",
     "plugins/airlock/scripts/fast-session-end.py": "b976f51607648a1b4c458bbdb457733d55082e709c91fcd4201c65881c7298e8",
     "plugins/airlock/scripts/agent-guard.sh": "f7c7dcea6d3a64df2d7cbeb377b1bec16fa82929a2a1216e548a061f765ebabd",
-    "plugins/airlock/scripts/agent-guard.py": "fdca0fd6e3aa73c578dddcf8b00b1499ca9731bb4c6c835240e9eb9627dc9ab3",
+    "plugins/airlock/scripts/agent-guard.py": "4487c303cb124596021ac71bcff0d2b817cc86f7ac647f7040d3cd6cffd6bd2e",
     "plugins/airlock/scripts/secret-guard.sh": "06b0f15edd1ad9363d625c4c5b53f3500a4f2ac6dfd6c789492d10befe5b6efd",
     "plugins/airlock/scripts/secret-guard.py": "897c6bded93fc8c9a91024444e0995fabf94f492939c3ba20d8873bf49e9b403",
     "plugins/airlock/scripts/update-notice.sh": "75ae73512168ceaaa890fbcdac14575f031a3c6e6160edb86f9021b9810ea16f",

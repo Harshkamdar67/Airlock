@@ -133,7 +133,14 @@ airlock mode max-agents 3
 
 `off` is the default. It removes the Airlock cap and uses Claude Code's native limit. It is not permission to start unnecessary workers.
 
-A number saves a smaller cap for new sessions. Top-level spawn depth remains one and named Agents cannot invoke Agent. This keeps fan-out visible at the root.
+A number saves a smaller cap for new sessions. Agent depth is 1 by default, so named Agents cannot invoke Agent and fan-out stays visible at the root.
+
+```bash
+airlock mode depth 1
+airlock mode depth 2
+```
+
+At depth 2 a named Agent may invoke Agent, but only to spawn its own Agent type, so every descendant runs the model the root chose for that worker. A caller still cannot override a worker's model, and the guard denies a mismatched type or a model override on a nested call. Depth 2 grants the Agent tool to workers, so a chain can run deeper than two levels; the model pinning is what bounds it, together with `airlock mode max-agents`.
 
 ## Provider Fast controls
 
