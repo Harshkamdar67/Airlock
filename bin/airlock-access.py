@@ -71,7 +71,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.22.1"
+MANAGED_BUNDLE_VERSION = "2026.08.22.2"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -1235,7 +1235,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.5",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.6",
             }},
         }):
             return None

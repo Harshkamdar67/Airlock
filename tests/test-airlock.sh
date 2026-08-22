@@ -137,7 +137,7 @@ grep -q '^Max concurrent top-level subagents: 3' <<<"$set_output"
 grep -q '^OpenAI Fast routes: on' <<<"$set_output"
 grep -q '^Anthropic Fast startup: off' <<<"$set_output"
 grep -q '^Luna swarm Fast selection: on' <<<"$set_output"
-grep -q '^Agent nesting: off for named Agents; root spawn depth=1' <<<"$set_output"
+grep -q '^Agent depth: 1; named Agents cannot invoke Agent' <<<"$set_output"
 if grep -Eq '^(Descendants:|Repair rounds:)' <<<"$set_output"; then
   printf 'test: native mode output retained legacy delegate settings\n' >&2
   exit 1
@@ -333,7 +333,7 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
   grep -q '^OpenAI Fast routes: on' <<<"$powershell_output"
   grep -q '^Anthropic Fast startup: off' <<<"$powershell_output"
   grep -q '^Luna swarm Fast selection: off' <<<"$powershell_output"
-  grep -q '^Agent nesting: off for named Agents; root spawn depth=1' <<<"$powershell_output"
+  grep -q '^Agent depth: 1; named Agents cannot invoke Agent' <<<"$powershell_output"
   powershell_usage="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" usage set --claude-plan pro --openai-capacity 5x)"
   grep -q 'configured-tier=pro; effective-tier=pro (source=user_override)' <<<"$powershell_usage"
 

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "bundle_version": "2026.08.22.1",
+  "bundle_version": "2026.08.22.2",
   "protocol_version": 5,
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
-    "bin/airlock-access.py": "b378cb335783699f1962ff711609af858c1ad9f24c985271641a4ad2738b9ae4",
+    "bin/airlock-access.py": "ad26f37be7c791ae8af14edbea4561fece0fe057cd9df548b21fb085d66d99aa",
     "bin/airlock_policy.py": "088dd6db71a71e1a22cd513587122c39a9e74111c9c9854d4d6f66abecb53dc8",
     "bin/airlock_openrouter_auth.py": "8bc75d695b6392d0c49d285c94db568adc3ad3661ddc3b1ee2843452098722f4",
     "bin/airlock_openrouter_presets.py": "aaea5124809c7a32fa60ff203a1c5252e86b8dc6588213025019f408124ecdd6",
@@ -16,7 +16,7 @@
     "config/anthropic-direct-agents.json": "a4ae2321c292ea5bf490c4c4c45b2a7ff97e5732a25cf0e333f360e564b93e57",
     "config/hybrid-agents.json": "88dfa81b9892baa684f0e24b5a11fe2649eb9512f46483a4fb1f67e795921890",
     "config/claude-agents.json": "a4ae2321c292ea5bf490c4c4c45b2a7ff97e5732a25cf0e333f360e564b93e57",
-    "plugins/airlock/.claude-plugin/plugin.json": "c00f2148ea671db29c161ecb60c3650423b5751cf53d8e1bd2e9166f4f80e6f7",
+    "plugins/airlock/.claude-plugin/plugin.json": "dd353915d8c15af7355284fcdf2de929e678c662971c4461d31cb4c09fde78cf",
     "plugins/airlock/hooks/hooks.json": "c5ad3aace0a94510325fe9cbaa0fe6cbd6b2e5d1a27a049c4c679d50c79d02e3",
     "plugins/airlock/skills/usage/SKILL.md": "39b3fac9f8def5e39ee7d33d406148d9d49a62a13563d4ba495dd394c5d39551",
     "plugins/airlock/skills/airlock-fast/SKILL.md": "9995fc5f91e02419312656e385a72dace763fd5538675db15c63d48bd7d60dc4",
