@@ -1096,6 +1096,9 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'opr') {
   foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
+  # Every other root seeds the session effort here. Without it the Fast
+  # transition binding has no managed effort to validate and the launch fails.
+  $oprArguments = Add-DefaultEffort $oprArguments $MainEffort
   Invoke-AirlockSession 'openrouter-pure' '' '' $oprArguments $openRouterRootRoute
 }
 
