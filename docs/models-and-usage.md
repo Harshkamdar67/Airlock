@@ -343,12 +343,15 @@ Airlock does not read login files, decode tokens, scrape the screen, or guess a 
 
 Claude Code decides when to compact from the context window assigned to the root process. Native Anthropic roots already have model-aware sizing, so Airlock leaves the process-wide override unset for them.
 
-The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI and Grok roots. The fallback defaults to `272000`.
+The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI roots and for Grok roots whose window is not documented. The fallback defaults to `272000`.
+
+`grok-4.6` is documented at 500000 tokens. Airlock declares that hard limit with `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and sets the compact threshold to 400000, so compaction still has room for the summary request.
 
 | Root profile | Default behavior |
 | --- | --- |
 | Native Anthropic root | No process-wide override. Claude Code uses native model knowledge and `[1m]` where configured. |
-| OpenAI or Grok root | Apply the saved `AIRLOCK_CONTEXT_WINDOW` fallback. |
+| `grok-4.6` root | Declare 500000 and compact at 400000. |
+| Other OpenAI or Grok root | Apply the saved `AIRLOCK_CONTEXT_WINDOW` fallback. |
 
 Four rules go with it:
 
@@ -373,7 +376,7 @@ GPT-5.6 Sol now uses the bare exact ID `gpt-5.6-sol`; Airlock does not label it 
 
 Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
 
-Two limits still apply. The conservative OpenAI or Grok fallback also lowers every worker in that root process. Also, a one million token window is not available on every plan. A future release must pass the guarded proof before removing the fallback.
+Two limits still apply. The conservative OpenAI fallback, and the Grok 4.6 500000/400000 pair, also apply to every worker in that root process. Also, a one million token window is not available on every plan. A future release must pass the guarded proof before removing the OpenAI fallback.
 
 ## Native usage display
 

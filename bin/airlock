@@ -442,7 +442,7 @@ validate_default_profile() {
 
 resolve_grok_model() {
   case "$1" in
-    grok|grok-4.5) selected_model='grok-4.5'; model_name='Grok 4.5' ;;
+    grok|grok-4.6|grok-4.5) selected_model='grok-4.6'; model_name='Grok 4.6' ;;
     composer|grok-composer|grok-composer-2.5-fast) selected_model='grok-composer-2.5-fast'; model_name='Grok Composer 2.5 Fast' ;;
     *)
       printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
@@ -558,7 +558,7 @@ resolve_hybrid_alias() {
     sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
     fable) root_model='claude-fable-5[1m]'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
-    grok) root_model='grok-4.5'; root_name='Grok 4.5'; root_provider='grok' ;;
+    grok|grok-4.6|grok-4.5) root_model='grok-4.6'; root_name='Grok 4.6'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
     *) return 1 ;;
   esac
@@ -728,11 +728,18 @@ configure_proxy_model_picker() {
 # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
 # tuning, and refuses to let /config change the window while the variable is set.
 # Native Anthropic roots already tell Claude Code their real window. Setting the
-# variable would cap every named worker in the process too. OpenAI and Grok roots
-# keep the conservative saved fallback unless the user explicitly overrides it.
+# variable would cap every named worker in the process too. OpenAI and unknown
+# Grok roots keep the conservative saved fallback unless the user overrides it.
+# grok-4.6 is documented at 500000; declaring that hard limit and compacting at
+# 80% leaves room for the summary request that compaction itself must send.
 apply_context_window() {
   local root_provider="$1"
   local root_model="$2"
+  if [[ "$root_model" == 'grok-4.6' && "$root_provider" != 'anthropic' ]]; then
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS='500000'
+  else
+    unset CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  fi
   if [[ -n "$user_context_window" ]]; then
     export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$user_context_window"
     return 0
@@ -747,6 +754,10 @@ apply_context_window() {
   fi
   if [[ "$default_context_window" == 'auto' || "$root_provider" == 'anthropic' ]]; then
     unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    return 0
+  fi
+  if [[ "$root_model" == 'grok-4.6' ]]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW='400000'
     return 0
   fi
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
@@ -794,7 +805,8 @@ clear_proxy_environment() {
   unset ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES
   unset ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES
   unset ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES
-  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
+  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  unset CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
   unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
   unset CLAUDE_CODE_SUBAGENT_MODEL AIRLOCK_SESSION_ROUTER_URL
 }
@@ -1300,7 +1312,7 @@ select_hybrid_root() {
     '  5) Claude Opus 5 (claude-opus-5[1m])' \
     '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
-    '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)' \
+    '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)' \
     '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
   read -r -p 'Selection [1-9]: ' selection
   case "$selection" in

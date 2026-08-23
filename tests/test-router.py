@@ -725,19 +725,24 @@ class RouterProtocolTests(unittest.TestCase):
         )
         self.openrouter.mode = "or_mismatch_json"
         status, response, _elapsed = self.request("vendor/model-test")
-        self.assertEqual(status, 502)
+        # A malformed or mismatched upstream response fails the same way every
+        # time, so the router reports it as non-retryable instead of letting
+        # Claude Code resend the whole conversation ten times.
+        self.assertEqual(status, 400)
         self.assertNotIn("different-model", response.decode("utf-8"))
         self.openrouter.mode = "or_malformed"
         status, response, _elapsed = self.request("vendor/model-test")
-        self.assertEqual(status, 502)
-        self.assertEqual(json.loads(response)["error"]["type"], "api_error")
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            json.loads(response)["error"]["type"], "invalid_request_error"
+        )
         for mode in ("or_list_model_json", "or_object_model_json"):
             with self.subTest(mode=mode):
                 self.openrouter.mode = mode
                 status, response, _elapsed = self.request("vendor/model-test")
-                self.assertEqual(status, 502)
+                self.assertEqual(status, 400)
                 self.assertEqual(
-                    json.loads(response)["error"]["type"], "api_error"
+                    json.loads(response)["error"]["type"], "invalid_request_error"
                 )
                 self.assertNotIn("vendor/model-test", response.decode("utf-8"))
 
@@ -752,14 +757,16 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertIn(b'"model":"vendor/model-test-20260810"', response)
         self.openrouter.mode = "or_mismatch_stream"
         status, response, _elapsed = self.request("vendor/model-test")
-        self.assertEqual(status, 502)
+        self.assertEqual(status, 400)
         self.assertNotIn("different-model", response.decode("utf-8"))
 
     def test_openrouter_rejects_compressed_success_before_forwarding(self) -> None:
         self.openrouter.mode = "gzip_usage_json"
         status, response, _elapsed = self.request("vendor/model-test")
-        self.assertEqual(status, 502)
-        self.assertEqual(json.loads(response)["error"]["type"], "api_error")
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            json.loads(response)["error"]["type"], "invalid_request_error"
+        )
 
     def test_openrouter_error_body_is_not_reflected(self) -> None:
         self.openrouter.mode = "error"
@@ -795,8 +802,17 @@ class RouterProtocolTests(unittest.TestCase):
     def test_upstream_redirect_is_not_followed(self) -> None:
         self.anthropic.mode = "redirect"
         status, response, _elapsed = self.request("claude-test")
-        self.assertEqual(status, 502)
-        self.assertEqual(json.loads(response)["error"]["type"], "api_error")
+        # Terminal, so it is reported non-retryable and names its own reason.
+        # The reason is a fixed string this repository owns; nothing from the
+        # upstream response is echoed back.
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            json.loads(response)["error"]["type"], "invalid_request_error"
+        )
+        self.assertEqual(
+            json.loads(response)["error"]["message"],
+            "Upstream redirects are not allowed",
+        )
         self.assertNotIn("invalid.example", response.decode("utf-8"))
         self.assertEqual(len(self.anthropic.requests), 1)
 
@@ -846,6 +862,8 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(status, 429)
         self.assertEqual(json.loads(response)["error"]["type"], "rate_limit_error")
 
+    # A timeout may succeed on a retry, so it keeps the retryable 502. Only a
+    # deterministic failure is downgraded to a non-retryable status.
     def test_upstream_header_timeout_becomes_sanitized_502(self) -> None:
         self.anthropic.mode = "headers_delay"
         self.anthropic.delay = 0.2
@@ -1540,6 +1558,7 @@ class OpenRouterStreamIdentityTests(unittest.TestCase):
         self.assertIn("code 429", message)
         self.assertIn("Rate limit exceeded", message)
         self.assertIn(self.MODEL, message)
+        self.assertFalse(caught.exception.retryable)
 
     def test_upstream_error_reason_is_bounded_and_printable(self) -> None:
         payload = json.dumps({

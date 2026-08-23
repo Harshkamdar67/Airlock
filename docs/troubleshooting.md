@@ -203,6 +203,29 @@ airlock bundle
 
 If it fails, reinstall and restart. Do not add a caller `model` override to a named `airlock-*` Agent. The guard rejects it because the Agent name and model must remain consistent.
 
+## WebFetch fails with an unrecognized model
+
+The error looks like this, and it appears before anything is fetched:
+
+```
+[claude-code:unrecognized_model] {"model":"gpt-5.6-luna","query_source":"web_fetch_apply"}
+```
+
+WebFetch reads the fetched page with Claude Code's Haiku-class model, and Claude
+Code refuses a model ID it does not recognize. Session titles use the same slot
+and fail the same way. This is not a network, proxy, or router problem, and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` has nothing to do with it.
+
+A hybrid session seats a Claude model in that slot, so WebFetch works. It prefers
+Claude Haiku and falls back to the other enabled Claude routes. Add `haiku` to
+`AIRLOCK_ANTHROPIC_MODELS` in your Airlock config to get the cheapest seat;
+without it the slot falls back to a larger Claude route and every page read
+costs more.
+
+A pure OpenAI, Grok, or OpenRouter session has no model Claude Code recognizes,
+so WebFetch cannot work in those profiles. Use a hybrid session when a task needs
+it, or give the URL to a worker that can read it another way.
+
 ## Web Search rejects `xhigh` or `max` effort
 
 Web Search can use a smaller internal search model with thinking disabled. That helper may accept only `high` effort or below even when the main model or a named worker supports `xhigh` or `max`.
@@ -254,7 +277,7 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and undocumented Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. A `grok-4.6` root declares 500000 and compacts at 400000.
 
 To take the control back for a session, start it with:
 

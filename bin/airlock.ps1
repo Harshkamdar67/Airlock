@@ -106,7 +106,7 @@ $Models = @{
 }
 
 $GrokModels = @{
-  'grok'     = @('grok-4.5', 'Grok 4.5')
+  'grok'     = @('grok-4.6', 'Grok 4.6')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast')
 }
 
@@ -122,7 +122,9 @@ $HybridRoots = @{
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5[1m]', 'Claude Fable 5', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
-  'grok'     = @('grok-4.5', 'Grok 4.5', 'grok')
+  'grok'     = @('grok-4.6', 'Grok 4.6', 'grok')
+  'grok-4.6' = @('grok-4.6', 'Grok 4.6', 'grok')
+  'grok-4.5' = @('grok-4.6', 'Grok 4.6', 'grok')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
 }
 
@@ -141,7 +143,8 @@ $ProxyVariables = @(
   'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES',
-  'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   'CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK', 'CLAUDE_CODE_SUBAGENT_MODEL'
 )
@@ -573,14 +576,22 @@ function Set-OpenAIEnvironment {
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
   Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
-  # OpenAI and Grok custom roots keep the conservative process-wide fallback
-  # unless the user explicitly exports another value or selects auto.
+  # grok-4.6 is documented at 500000. Declare that hard limit and compact at
+  # 80% so the summary request still fits. Other OpenAI and Grok roots keep
+  # the conservative fallback unless the user overrides it.
+  if ($Model -eq 'grok-4.6') {
+    $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = '500000'
+  } else {
+    Remove-Item Env:\CLAUDE_CODE_MAX_CONTEXT_TOKENS -ErrorAction SilentlyContinue
+  }
   if ($UserContextWin) {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $UserContextWin
   } elseif ($ExplicitContextWin -and $ContextWin -ne 'auto') {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   } elseif ($ContextWin -eq 'auto') {
     Remove-Item Env:\CLAUDE_CODE_AUTO_COMPACT_WINDOW -ErrorAction SilentlyContinue
+  } elseif ($Model -eq 'grok-4.6') {
+    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000'
   } else {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   }
@@ -616,6 +627,7 @@ function Resolve-GrokAlias {
   param([string]$Value)
   switch ($Value) {
     'grok' { return 'grok' }
+    'grok-4.6' { return 'grok' }
     'grok-4.5' { return 'grok' }
     'composer' { return 'composer' }
     'grok-composer' { return 'composer' }
@@ -840,7 +852,7 @@ function Select-HybridRoot {
   Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'
   Write-Host '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
-  Write-Host '  8) Grok 4.5 (grok-4.5; requires Grok OAuth)'
+  Write-Host '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)'
   Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
   $selection = Read-Host 'Selection [1-9]'
   $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer' }

@@ -4,6 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-setup-test.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
+# A suite that runs inside an Airlock session must not inherit that session's
+# helpers, saved depth, or armed Fast transition credentials.
+unset AIRLOCK_ACCESS_HELPER AIRLOCK_POLICY_HELPER AIRLOCK_SESSION_ROUTER_URL \
+  AIRLOCK_UPDATE_NOTICE_FILE AIRLOCK_SESSION_SNAPSHOT \
+  AIRLOCK_SESSION_SNAPSHOT_SHA256 AIRLOCK_AGENT_DEPTH \
+  AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE
 
 config_dir="$tmp_dir/config"
 
@@ -56,7 +62,7 @@ if grep -Eq '^AIRLOCK_(DESCENDANT_POLICY|MAX_DESCENDANTS_PER_WORKER|MAX_CONCURRE
 fi
 grep -q '^AIRLOCK_ANTHROPIC_PLAN=max5x$' "$config_file"
 grep -q '^AIRLOCK_OPENAI_CAPACITY=20x$' "$config_file"
-grep -q '^AIRLOCK_ANTHROPIC_MODELS=opus,sonnet$' "$config_file"
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku$' "$config_file"
 grep -q '^AIRLOCK_OPENAI_MODELS=sol,terra,luna$' "$config_file"
 grep -q '^AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable$' "$config_file"
 grep -q '^AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort$' "$config_file"

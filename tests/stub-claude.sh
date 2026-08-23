@@ -68,6 +68,7 @@ printf 'SPAWN_DEPTH=%s\n' "${CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH:-unset}"
 printf 'FAST_TRANSITION=%s\n' "${AIRLOCK_FAST_TRANSITION_CHANNEL:+set}"
 printf 'PYTHON_BIN=%s\n' "${AIRLOCK_PYTHON:-unset}"
 printf 'COMPACT_WINDOW=%s\n' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}"
+printf 'MAX_CONTEXT=%s\n' "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}"
 if [[ "${AIRLOCK_STUB_INSPECT_ROUTER:-0}" == '1' ]]; then
   python - <<'PY'
 import http.client

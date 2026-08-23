@@ -39,6 +39,18 @@ REMOVED_TRANSPORT_FILES = (
 )
 
 
+def scrub_ambient_airlock_environment(keep: set[str]) -> None:
+    """Drop inherited Airlock variables so tests see only their own overrides.
+
+    A suite run inside a live Airlock session inherits that session's
+    configuration, such as AIRLOCK_AGENT_DEPTH or the Fast transition
+    credentials. Call this after starting the per-test environment patch.
+    """
+    for name in list(os.environ):
+        if name.startswith("AIRLOCK_") and name not in keep:
+            os.environ.pop(name, None)
+
+
 class AccessUsageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -55,6 +67,13 @@ class AccessUsageTests(unittest.TestCase):
             "AIRLOCK_ACCESS_GROK_AUTH": "1",
         }, clear=False)
         self.environment.start()
+        scrub_ambient_airlock_environment({
+            "AIRLOCK_CONFIG_FILE",
+            "AIRLOCK_ACCESS_FILE",
+            "AIRLOCK_CLAUDE_STATE_FILE",
+            "AIRLOCK_PROXY_FAST_CAPABLE",
+            "AIRLOCK_ACCESS_GROK_AUTH",
+        })
 
     def tearDown(self) -> None:
         self.environment.stop()
@@ -373,7 +392,19 @@ for line in sys.stdin:
                 guidance = ACCESS.profile_guidance(policy, profile)
                 self.assertIn("Orchestration: choose the smallest effective path", guidance)
                 self.assertIn("Built-in Explore, Plan, and general-purpose accept Claude Code's", guidance)
-                self.assertIn("pass `model=haiku` (resolved to gpt-5.6-luna)", guidance)
+                # The guidance names what `model=haiku` actually resolves to.
+                # A hybrid profile seats Claude Haiku in that slot so Claude
+                # Code's own background work, such as WebFetch's page-reading
+                # step, keeps running; a pure profile has no Claude model and
+                # keeps the discovery model.
+                alias_model = (
+                    "claude-haiku-4-5-20251001"
+                    if profile.startswith("hybrid-")
+                    else "gpt-5.6-luna"
+                )
+                self.assertIn(
+                    f"pass `model=haiku` (resolved to {alias_model})", guidance
+                )
                 self.assertIn("Omit `model` only when inheriting the orchestrator", guidance)
                 self.assertIn("Use built-in Plan for read-only technical design", guidance)
                 self.assertIn("Use built-in general-purpose for multi-step work", guidance)
@@ -481,14 +512,21 @@ for line in sys.stdin:
             "grok-composer-2.5-fast",
         )
         self.assertEqual(ACCESS.proxy_picker_models(policy, "grok-pure"), {
-            "fable": "grok-4.5",
-            "opus": "grok-4.5",
+            "fable": "grok-4.6",
+            "opus": "grok-4.6",
             "sonnet": "grok-composer-2.5-fast",
             "haiku": "grok-composer-2.5-fast",
         })
         hybrid = ACCESS.session_route_policy(policy, "hybrid-grok-root")
         self.assertEqual(set(hybrid["picker_models"]), {"fable", "opus", "sonnet", "haiku"})
-        self.assertEqual(hybrid["picker_models"]["haiku"], hybrid["discovery_model"])
+        # Claude Code spends the Haiku slot on its own background work, such as
+        # the page-reading step of WebFetch, and rejects an ID it does not
+        # recognize. A hybrid profile therefore seats a Claude model there
+        # instead of the economical discovery model, which keeps its own
+        # AIRLOCK_DISCOVERY_MODEL channel.
+        self.assertTrue(hybrid["picker_models"]["haiku"].startswith("claude-"))
+        self.assertNotEqual(hybrid["picker_models"]["haiku"], hybrid["discovery_model"])
+        self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
         self.assertTrue(set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"]))
 
         # An Agent family alias cannot carry Airlock's explicit extra-usage
@@ -551,6 +589,7 @@ for line in sys.stdin:
         self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
         self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra[1m]"), "gpt-5.6-terra")
+        self.assertEqual(ACCESS.wire_model_id("grok-4.6"), "grok-4.6")
         self.assertEqual(ACCESS.wire_model_id("grok-4.5"), "grok-4.5")
 
     def test_session_routes_follow_profile_access_fast_and_extra_policy(self) -> None:
@@ -586,11 +625,13 @@ for line in sys.stdin:
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
             self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
+            # The Haiku slot holds a Claude model so Claude Code's own
+            # background work keeps running; discovery stays on Luna.
             self.assertEqual(hybrid["picker_models"], {
                 "fable": "gpt-5.6-sol",
                 "opus": "claude-opus-5[1m]",
                 "sonnet": "claude-sonnet-5[1m]",
-                "haiku": "gpt-5.6-luna",
+                "haiku": "claude-haiku-4-5-20251001",
             })
             self.assertTrue(
                 set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"])
@@ -895,6 +936,14 @@ class FastTransitionTests(unittest.TestCase):
             "AIRLOCK_ACCESS_GROK_AUTH": "1",
         }, clear=False)
         self.environment.start()
+        scrub_ambient_airlock_environment({
+            "AIRLOCK_CONFIG_FILE",
+            "AIRLOCK_ACCESS_FILE",
+            "AIRLOCK_SESSION_RUNTIME_DIR",
+            "AIRLOCK_CLAUDE_STATE_FILE",
+            "AIRLOCK_PROXY_FAST_CAPABLE",
+            "AIRLOCK_ACCESS_GROK_AUTH",
+        })
 
     def tearDown(self) -> None:
         self.environment.stop()
@@ -1307,6 +1356,12 @@ class GrokAuthenticationTests(unittest.TestCase):
             "AIRLOCK_PROXY_FAST_CAPABLE": "0",
         }, clear=False)
         self.environment.start()
+        scrub_ambient_airlock_environment({
+            "AIRLOCK_CONFIG_FILE",
+            "AIRLOCK_ACCESS_FILE",
+            "AIRLOCK_CLAUDE_STATE_FILE",
+            "AIRLOCK_PROXY_FAST_CAPABLE",
+        })
 
     def tearDown(self) -> None:
         self.environment.stop()

@@ -82,6 +82,17 @@ class OpenRouterAccessTests(unittest.TestCase):
             "AIRLOCK_ACCESS_GROK_AUTH": "1",
         }, clear=False)
         self.environment.start()
+        # A suite run inside an Airlock session inherits its live
+        # configuration, including the saved Agent depth; tests must see only
+        # the overrides above.
+        for name in list(os.environ):
+            if name.startswith("AIRLOCK_") and name not in {
+                "AIRLOCK_CONFIG_FILE",
+                "AIRLOCK_ACCESS_FILE",
+                "AIRLOCK_OPENROUTER_REGISTRY_FILE",
+                "AIRLOCK_ACCESS_GROK_AUTH",
+            }:
+                os.environ.pop(name, None)
 
     def tearDown(self) -> None:
         self.environment.stop()

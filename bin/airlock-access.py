@@ -289,9 +289,9 @@ MODEL_PROFILES = {
     },
     "grok": {
         "grok": {
-            "agent": "airlock-grok", "model": "grok-4.5", "effort": "xhigh",
+            "agent": "airlock-grok", "model": "grok-4.6", "effort": "xhigh",
             "capability": "frontier", "cost": "premium",
-            "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
+            "strength": "long-running agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, interactive and visual work, and token-efficient execution on a Grok subscription",
         },
         "composer": {
             "agent": "airlock-composer", "model": "grok-composer-2.5-fast", "effort": "high",
@@ -1235,7 +1235,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.6",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.7",
             }},
         }):
             return None
@@ -2244,10 +2244,19 @@ def proxy_picker_models(
     """Map Claude Code's four Agent/model family aliases to exact enabled models.
 
     Claude Code's Agent tool accepts family aliases rather than arbitrary model
-    IDs. Every slot therefore has to resolve inside the active route policy, and
-    the Haiku slot is reserved for the economical discovery model. Routes gated
-    behind explicit extra-usage confirmation are excluded because a model alias
-    has no place to carry that confirmation marker.
+    IDs. Every slot therefore has to resolve inside the active route policy.
+    Routes gated behind explicit extra-usage confirmation are excluded because a
+    model alias has no place to carry that confirmation marker.
+
+    The Haiku slot is special. Claude Code also spends it on its own background
+    work, including the page-reading step of WebFetch and session titles, and it
+    refuses a model ID it does not recognize before any request leaves the
+    machine. A profile that carries Claude routes therefore has to put a Claude
+    model in that slot, cheapest first, or those built-in features break. The
+    economical discovery model keeps its own channel in AIRLOCK_DISCOVERY_MODEL,
+    so nothing is lost by not seating it here. A pure OpenAI, Grok, or
+    OpenRouter profile has no recognized model to offer and keeps the discovery
+    model, which is why WebFetch cannot work in those profiles.
     """
     workers = [
         worker for worker in enabled_profile_workers(
@@ -2262,12 +2271,20 @@ def proxy_picker_models(
     ]
     by_route = {worker["route"]: worker["model"] for worker in workers}
 
-    def first(*routes: str) -> str:
+    def optional(*routes: str) -> str | None:
         for route in routes:
             model = by_route.get(route)
             if model:
                 return model
-        raise AccessError(f"{profile} has no model eligible for a Claude Code family slot")
+        return None
+
+    def first(*routes: str) -> str:
+        model = optional(*routes)
+        if model is None:
+            raise AccessError(
+                f"{profile} has no model eligible for a Claude Code family slot"
+            )
+        return model
 
     if profile == "openrouter-pure":
         root = resolve_openrouter_route(policy, str(openrouter_root_route)).model
@@ -2294,11 +2311,18 @@ def proxy_picker_models(
     utility = discovery_model_from_workers(policy, workers)
     if utility is None:
         raise AccessError(f"{profile} has no model eligible for the discovery slot")
+    haiku = utility
+    if profile.startswith("hybrid-"):
+        # Cheapest recognized Claude route first. Claude Haiku is the right
+        # seat; the larger Claude routes are a working fallback when it is not
+        # enabled, and cost more per background call, which is why the setup
+        # default now enables haiku.
+        haiku = optional("haiku", "sonnet", "fable", "opus") or utility
     return {
         "fable": fable,
         "opus": opus,
         "sonnet": sonnet,
-        "haiku": utility,
+        "haiku": haiku,
     }
 
 
@@ -3377,16 +3401,27 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
 
 def root_orchestration_guidance(
     policy: dict[str, Any],
+    profile: str,
     workers: list[dict[str, str]],
     *,
     openrouter_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
-    recommended_discovery = (
-        resolve_openrouter_route(policy, openrouter_root_route).model
-        if openrouter_root_route is not None
-        else discovery_model_from_workers(policy, workers)
-    )
+    # The guidance has to name the model a caller actually receives from
+    # `model=haiku`, which is the Haiku family slot rather than the discovery
+    # model. The two differ in a profile that seats a Claude model in that slot
+    # so Claude Code's own background work keeps working.
+    if openrouter_root_route is not None:
+        recommended_discovery: str | None = resolve_openrouter_route(
+            policy, openrouter_root_route
+        ).model
+    else:
+        try:
+            recommended_discovery = proxy_picker_models(
+                policy, profile, openrouter_root_route=openrouter_root_route
+            )["haiku"]
+        except AccessError:
+            recommended_discovery = None
     if openrouter_root_route is not None:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
@@ -3823,6 +3858,7 @@ def profile_guidance(
         ui_ux_guidance(policy, profile, enabled_workers),
         root_orchestration_guidance(
             policy,
+            profile,
             enabled_workers,
             openrouter_root_route=openrouter_root_route,
         ),

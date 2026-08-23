@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+## 0.1.0-beta.7 - 2026-08-23
+
+### Fixed
+
+- WebFetch and session titles now work in a hybrid session. Claude Code spends its Haiku family slot on its own background work, including the step where WebFetch reads the fetched page, and refuses a model ID it does not recognize before any request leaves the machine. Airlock seated the economical discovery model there, so a GPT or Grok ID silently broke both features. A hybrid profile now seats a Claude model in that slot, preferring Claude Haiku and falling back to the other enabled Claude routes. Discovery keeps its own `AIRLOCK_DISCOVERY_MODEL` channel, and named `airlock-*` Agents are unchanged. A pure OpenAI, Grok, or OpenRouter profile has no recognized model to offer, so WebFetch cannot work there.
+- The setup default for `AIRLOCK_ANTHROPIC_MODELS` now includes `haiku`, so the Haiku slot gets the cheapest Claude seat instead of falling back to a larger route.
+- `model=haiku` on a built-in Agent now resolves to the Haiku slot in a hybrid session, so the guidance and the Agent guard name the model the caller actually receives.
+- The session router no longer reports every upstream failure as a retryable `502`. A timeout or a dropped connection still is one. A refused credential, a redirect, or a malformed upstream response is reported as non-retryable and names its own reason, so Claude Code stops resending the whole conversation ten times against a failure that cannot succeed.
+
+### Changed
+
+- The Grok flagship route now uses `grok-4.6`. `airlock grok`, hybrid root `grok`, and worker `airlock-grok` all pin that ID. The previous `grok-4.5` ID remains accepted as an alias of the same route.
+- A `grok-4.6` root now declares its documented 500000-token window and compacts at 400000, so automatic compaction still has room for the summary request. OpenAI roots, Composer, and a user-exported window are unchanged.
+
 ## 0.1.0-beta.6 - 2026-08-22
 
 ### Fixed

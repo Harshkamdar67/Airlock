@@ -1,6 +1,17 @@
 # Stub-based native Windows checks. These tests do not use OAuth or a model.
 $ErrorActionPreference = 'Stop'
 
+# A suite that runs inside an Airlock session must not inherit that session's
+# helpers, saved depth, or armed Fast transition credentials.
+foreach ($name in @(
+  'AIRLOCK_ACCESS_HELPER', 'AIRLOCK_POLICY_HELPER', 'AIRLOCK_SESSION_ROUTER_URL',
+  'AIRLOCK_UPDATE_NOTICE_FILE', 'AIRLOCK_SESSION_SNAPSHOT',
+  'AIRLOCK_SESSION_SNAPSHOT_SHA256', 'AIRLOCK_AGENT_DEPTH',
+  'AIRLOCK_FAST_TRANSITION_CHANNEL', 'AIRLOCK_FAST_TRANSITION_NONCE'
+)) {
+  Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+}
+
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $PowerShellFiles = @(
   (Join-Path $Root 'bin\airlock.ps1'),
@@ -115,6 +126,7 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("SNAPSHOT_SHA256=" + (Environment.GetEnvironmentVariable("AIRLOCK_SESSION_SNAPSHOT_SHA256") ?? "unset"));
     Console.WriteLine("SNAPSHOT_EXISTS=" + (snapshot != null && File.Exists(snapshot) ? "yes" : "no"));
     Console.WriteLine("COMPACT_WINDOW=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW") ?? "unset"));
+    Console.WriteLine("MAX_CONTEXT=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_MAX_CONTEXT_TOKENS") ?? "unset"));
     for (int index = 0; index < args.Length; index++) {
       Console.WriteLine("ARG=" + args[index]);
       if (args[index] == "--settings" && index + 1 < args.Length) {
@@ -923,8 +935,8 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
     'DEFAULT_FABLE=gpt-5.6-sol',
     'DEFAULT_OPUS=claude-opus-5[1m]',
     'DEFAULT_SONNET=claude-sonnet-5[1m]',
-    'DEFAULT_HAIKU=gpt-5.6-luna',
-    'SMALL_FAST=gpt-5.6-luna'
+    'DEFAULT_HAIKU=claude-sonnet-5[1m]',
+    'SMALL_FAST=claude-sonnet-5[1m]'
   )) {
     if ($HybridLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedFamilyLine))$") {
       throw "Windows hybrid launch did not bind a validated family model: $($HybridLaunch.Output)"
@@ -1080,9 +1092,13 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   # Grok parity. The POSIX launcher never runs airlock-hybrid.py, so these
   # paths are only ever exercised here.
   $GrokLaunch = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test')
-  if ($GrokLaunch.Output -notmatch '(?m)^MODEL=grok-4\.5$' -or
+  if ($GrokLaunch.Output -notmatch '(?m)^MODEL=grok-4\.6$' -or
       $GrokLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=grok-pure$') {
     throw "Explicit Grok profile did not launch: $($GrokLaunch.Output)"
+  }
+  if ($GrokLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=400000$' -or
+      $GrokLaunch.Output -notmatch '(?m)^MAX_CONTEXT=500000$') {
+    throw "Grok 4.6 did not declare its window and compact headroom: $($GrokLaunch.Output)"
   }
   if ($GrokLaunch.Output -notmatch 'airlock-grok' -or $GrokLaunch.Output -notmatch 'airlock-composer') {
     throw "Grok-only session did not expose the Grok workers: $($GrokLaunch.Output)"
@@ -1091,8 +1107,8 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
     throw "Grok-only session leaked a non-Grok worker: $($GrokLaunch.Output)"
   }
   foreach ($ExpectedPickerLine in @(
-    'DEFAULT_FABLE=grok-4.5',
-    'DEFAULT_OPUS=grok-4.5',
+    'DEFAULT_FABLE=grok-4.6',
+    'DEFAULT_OPUS=grok-4.6',
     'DEFAULT_SONNET=grok-composer-2.5-fast',
     'DEFAULT_HAIKU=grok-composer-2.5-fast',
     'SMALL_FAST=grok-composer-2.5-fast'
@@ -1105,9 +1121,17 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   if ($GrokComposer.Output -notmatch '(?m)^MODEL=grok-composer-2\.5-fast$') {
     throw "Grok alias did not select Composer: $($GrokComposer.Output)"
   }
-  $GrokEquals = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.5', '-p', 'test')
-  if ($GrokEquals.Output -notmatch '(?m)^MODEL=grok-4\.5$') {
+  if ($GrokComposer.Output -notmatch '(?m)^COMPACT_WINDOW=272000$' -or
+      $GrokComposer.Output -notmatch '(?m)^MAX_CONTEXT=unset$') {
+    throw "Composer root lost the conservative window: $($GrokComposer.Output)"
+  }
+  $GrokEquals = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.6', '-p', 'test')
+  if ($GrokEquals.Output -notmatch '(?m)^MODEL=grok-4\.6$') {
     throw "Grok --model= form did not launch: $($GrokEquals.Output)"
+  }
+  $GrokLegacy = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.5', '-p', 'test')
+  if ($GrokLegacy.Output -notmatch '(?m)^MODEL=grok-4\.6$') {
+    throw "Grok --model=grok-4.5 alias did not map to grok-4.6: $($GrokLegacy.Output)"
   }
   # An unrecognized bare argument passes through to Claude Code, matching the
   # POSIX launcher; only an explicit --model names a route and can be rejected.
@@ -1117,7 +1141,7 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   }
   $HybridGrok = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'grok', '-p', 'test')
   if ($HybridGrok.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-grok-root$' -or
-      $HybridGrok.Output -notmatch '(?m)^CUSTOM_MODEL=grok-4\.5$') {
+      $HybridGrok.Output -notmatch '(?m)^CUSTOM_MODEL=grok-4\.6$') {
     throw "Hybrid Grok root did not launch: $($HybridGrok.Output)"
   }
   # Grok stays out of a hybrid session that did not ask for it.

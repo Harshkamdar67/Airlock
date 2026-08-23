@@ -8,10 +8,13 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-launcher-test.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 # The launcher keeps a window the user set themselves, so a suite that runs
 # inside an Airlock session would otherwise inherit that session's window and
-# read it back as the launcher's own choice.
+# read it back as the launcher's own choice. The same applies to the saved
+# Agent depth and to armed Fast transition credentials.
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL \
   AIRLOCK_UPDATE_NOTICE_FILE AIRLOCK_POLICY_HELPER AIRLOCK_SESSION_SNAPSHOT \
-  AIRLOCK_SESSION_SNAPSHOT_SHA256
+  AIRLOCK_SESSION_SNAPSHOT_SHA256 AIRLOCK_AGENT_DEPTH \
+  AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE \
+  AIRLOCK_ACCESS_HELPER
 # Build a legacy config without the saved-profile keys to verify that existing
 # installations keep their original OpenAI-only bare command.
 while IFS= read -r line; do
@@ -784,12 +787,12 @@ grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_openai_output"
-grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^FABLE_NAME=gpt-5.6-sol$' <<<"$hybrid_openai_output"
 grep -q '^OPUS_NAME=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SONNET_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^HAIKU_NAME=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^HAIKU_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
@@ -1072,8 +1075,8 @@ grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
-grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
-grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_anthropic_output"
@@ -1332,24 +1335,38 @@ fi
 grok_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok -p test)"
-grep -q '^MODEL=grok-4.5$' <<<"$grok_output"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_output"
 grep -q '^ACTIVE_PROFILE=grok-pure$' <<<"$grok_output"
 grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$grok_output"
 grep -q '^ALLOWED_AGENTS=airlock-composer,airlock-grok$' <<<"$grok_output"
-grep -q '^ALLOWED_MODELS=grok-4.5,grok-composer-2.5-fast$' <<<"$grok_output"
-grep -q '^DEFAULT_FABLE=grok-4.5$' <<<"$grok_output"
-grep -q '^DEFAULT_OPUS=grok-4.5$' <<<"$grok_output"
+grep -q '^ALLOWED_MODELS=grok-4.6,grok-composer-2.5-fast$' <<<"$grok_output"
+grep -q '^DEFAULT_FABLE=grok-4.6$' <<<"$grok_output"
+grep -q '^DEFAULT_OPUS=grok-4.6$' <<<"$grok_output"
 grep -q '^DEFAULT_SONNET=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^DEFAULT_HAIKU=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^SMALL_FAST=grok-composer-2.5-fast$' <<<"$grok_output"
-grep -q '^CUSTOM_NAME=Grok 4.5 (Grok subscription)$' <<<"$grok_output"
+grep -q '^CUSTOM_NAME=Grok 4.6 (Grok subscription)$' <<<"$grok_output"
+grep -q '^COMPACT_WINDOW=400000$' <<<"$grok_output"
+grep -q '^MAX_CONTEXT=500000$' <<<"$grok_output"
 [[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_output")" -eq 1 ]]
 
 grok_composer_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok composer -p test)"
 grep -q '^MODEL=grok-composer-2.5-fast$' <<<"$grok_composer_output"
+grep -q '^COMPACT_WINDOW=272000$' <<<"$grok_composer_output"
+grep -q '^MAX_CONTEXT=unset$' <<<"$grok_composer_output"
 [[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_composer_output")" -eq 1 ]]
+
+grok_new_id_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok --model=grok-4.6 -p test)"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_new_id_output"
+
+grok_legacy_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok --model=grok-4.5 -p test)"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_legacy_output"
 
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   "$launcher" grok --model=bogus -p test >/dev/null 2>&1; then
@@ -1362,8 +1379,10 @@ hybrid_grok_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" 
   AIRLOCK_GROK_WRAPPER_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid grok -p test)"
 grep -q '^ACTIVE_PROFILE=hybrid-grok-root$' <<<"$hybrid_grok_output"
-grep -Eq '^ROUTER_MODELS=.*grok-4\.5' <<<"$hybrid_grok_output"
+grep -Eq '^ROUTER_MODELS=.*grok-4\.6' <<<"$hybrid_grok_output"
 grep -Eq '^ROUTER_MODELS=.*claude-opus-5' <<<"$hybrid_grok_output"
+grep -q '^COMPACT_WINDOW=400000$' <<<"$hybrid_grok_output"
+grep -q '^MAX_CONTEXT=500000$' <<<"$hybrid_grok_output"
 
 # A hybrid session that did not ask for Grok must not gain Grok workers.
 hybrid_plain_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \

@@ -81,6 +81,7 @@ PROXY_VARIABLES = {
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
     "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK",
@@ -89,6 +90,9 @@ PROXY_VARIABLES = {
 
 
 DEFAULT_GPT_EFFORT_CAPABILITIES = "effort,xhigh_effort,max_effort"
+GROK_4_6_MODEL = "grok-4.6"
+GROK_4_6_HARD_LIMIT = "500000"
+GROK_4_6_COMPACT_THRESHOLD = "400000"
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -519,6 +523,14 @@ def build_child_environment(
             environment["AIRLOCK_EPHEMERAL_OPENAI_FAST"] = "1"
         else:
             environment.pop("AIRLOCK_EPHEMERAL_OPENAI_FAST", None)
+        apply_context_window(
+            environment,
+            profile=profile,
+            root_model=root_model,
+            context_window=context_window,
+            force_context_window=force_context_window,
+            user_context_window=user_context_window,
+        )
         return environment
 
     if profile == "openrouter-pure":
@@ -573,19 +585,14 @@ def build_child_environment(
     declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
-    # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
-    # tuning. Native Anthropic roots already carry real model-aware sizing. An
-    # explicit Airlock window wins; otherwise OpenAI and Grok roots keep the
-    # conservative saved fallback for the whole process.
-    if user_context_window:
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
-    elif force_context_window and context_window != "auto":
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
-    elif (
-        context_window != "auto"
-        and profile != "hybrid-anthropic-root"
-    ):
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+    apply_context_window(
+        environment,
+        profile=profile,
+        root_model=root_model,
+        context_window=context_window,
+        force_context_window=force_context_window,
+        user_context_window=user_context_window,
+    )
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
@@ -610,6 +617,46 @@ def validate_max_agents(raw: object) -> str:
     ):
         fail("max_agents must be off or an integer from 1 to 20", 2)
     return raw
+
+
+def apply_context_window(
+    environment: dict[str, str],
+    *,
+    profile: str,
+    root_model: str,
+    context_window: str,
+    force_context_window: bool,
+    user_context_window: str,
+) -> None:
+    """Declare the root window and compact threshold for this process.
+
+    grok-4.6 has a documented 500000-token window. Claude Code does not know
+    that ID, so CLAUDE_CODE_MAX_CONTEXT_TOKENS tells it the hard limit, and
+    the compact threshold stays at 80% so the summary request still fits.
+    Native Anthropic roots keep Claude Code's own sizing. Other OpenAI and
+    Grok roots keep the conservative saved fallback. A user-exported compact
+    window still wins.
+    """
+    if root_model == GROK_4_6_MODEL and not root_model.startswith("claude-"):
+        environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = GROK_4_6_HARD_LIMIT
+    else:
+        environment.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
+    if user_context_window:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
+        return
+    if force_context_window:
+        if context_window == "auto":
+            environment.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+        else:
+            environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+        return
+    if context_window == "auto" or profile == "hybrid-anthropic-root":
+        environment.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+        return
+    if root_model == GROK_4_6_MODEL:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = GROK_4_6_COMPACT_THRESHOLD
+        return
+    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
 
 
 def context_window_is_valid(value: str) -> bool:

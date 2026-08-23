@@ -133,9 +133,6 @@ def configured_family_models(
         if not model or model not in allowed_models or model in extra_models:
             return None
         family_models[family] = model
-    discovery_model = os.environ.get("AIRLOCK_DISCOVERY_MODEL")
-    if discovery_model and family_models["haiku"] != discovery_model:
-        return None
     return family_models
 
 
@@ -215,18 +212,24 @@ def main() -> int:
             deny("Airlock blocked Agent because the built-in family model map is invalid.")
             return 0
         if "model" not in tool_input:
-            discovery_model = os.environ.get("AIRLOCK_DISCOVERY_MODEL")
-            if discovery_model is None:
+            # The nudge names the model the caller actually receives, which is
+            # whatever the Haiku family slot holds. Reading it from the slot
+            # rather than from AIRLOCK_DISCOVERY_MODEL keeps the advice true by
+            # construction: a profile that has Claude routes seats a Claude
+            # model in that slot so Claude Code's own background work keeps
+            # running, and that model is not always the discovery model.
+            if os.environ.get("AIRLOCK_DISCOVERY_MODEL") is None:
                 return 0
+            haiku_model = family_models["haiku"]
             if (
                 subagent_type == "Explore"
-                and discovery_model
+                and haiku_model
                 and snapshot.root_model
-                and discovery_model != snapshot.root_model
+                and haiku_model != snapshot.root_model
             ):
                 deny(
                     "Airlock blocked unpinned Explore to avoid spending the orchestrator on routine discovery. "
-                    f'Retry with model: "haiku" ({discovery_model}).'
+                    f'Retry with model: "haiku" ({haiku_model}).'
                 )
                 return 0
             return 0

@@ -80,7 +80,19 @@ class InvalidRequestError(RouterError):
 
 
 class UpstreamError(RouterError):
-    pass
+    """An upstream failure.
+
+    ``retryable`` says whether sending the same request again could plausibly
+    succeed. A dropped connection or a timeout is worth another attempt. A
+    refused credential, a redirect, or a malformed upstream response is not:
+    the next attempt fails the same way. Claude Code retries a 5xx up to ten
+    times, and each attempt resends the whole conversation, so a deterministic
+    failure reported as 5xx costs ten full-size requests and still fails.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def load_policy_schema():
@@ -491,14 +503,25 @@ class RouterHandler(BaseHTTPRequestHandler):
             )
         except InvalidRequestError as exc:
             self.safe_error_response(400, "invalid_request_error", str(exc))
-        except UpstreamError:
+        except UpstreamError as exc:
+            # A retryable failure keeps the generic 502 so Claude Code can try
+            # again. A deterministic one returns a non-retryable status and
+            # names the reason, which stops ten pointless full-size retries and
+            # makes the cause visible. Every message here is a fixed string
+            # this file owns, so nothing from upstream is echoed back.
+            if exc.retryable:
+                status, error_type = 502, "api_error"
+                detail = "The selected model upstream is unavailable"
+                outcome = "upstream_error"
+            else:
+                status, error_type = 400, "invalid_request_error"
+                detail = str(exc)
+                outcome = "upstream_rejected"
             if provider is not None and model is not None:
                 self.record_request(
-                    provider, model, 502, body_size, 0, started, "upstream_error"
+                    provider, model, status, body_size, 0, started, outcome
                 )
-            self.safe_error_response(
-                502, "api_error", "The selected model upstream is unavailable"
-            )
+            self.safe_error_response(status, error_type, detail)
         except (ConnectionError, OSError, ssl.SSLError, http.client.HTTPException):
             if provider is not None and model is not None:
                 self.record_request(
@@ -582,7 +605,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             response = connection.getresponse()
             status = response.status
             if 300 <= status < 400:
-                raise UpstreamError("Upstream redirects are not allowed")
+                raise UpstreamError("Upstream redirects are not allowed", retryable=False)
             set_stream_timeout(connection, response)
             expected_length = response.getheader("content-length")
             content_type = (response.getheader("content-type") or "").lower()
@@ -651,7 +674,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         allowed_response_models = {model, route.canonical_slug}
         key = self.router.config.openrouter_key
         if key is None:
-            raise UpstreamError("OpenRouter credential is unavailable")
+            raise UpstreamError("OpenRouter credential is unavailable", retryable=False)
         connection = make_connection(upstream)
         headers = openrouter_headers(key, len(body))
         target = f"{upstream[3]}/messages"
@@ -668,7 +691,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             response = connection.getresponse()
             status = response.status
             if 300 <= status < 400:
-                raise UpstreamError("OpenRouter redirects are not allowed")
+                raise UpstreamError("OpenRouter redirects are not allowed", retryable=False)
             set_stream_timeout(connection, response)
             if not 200 <= status < 300:
                 local_status = status if 400 <= status <= 599 else 502
@@ -680,7 +703,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                 return local_status, 0, "upstream_error", None
             encoding = (response.getheader("content-encoding") or "").strip().lower()
             if encoding not in {"", "identity"}:
-                raise UpstreamError("OpenRouter response encoding is unsupported")
+                raise UpstreamError("OpenRouter response encoding is unsupported", retryable=False)
             content_type = (response.getheader("content-type") or "").lower()
             expected_length = response.getheader("content-length")
             observer.configure(content_type, encoding)
@@ -690,18 +713,20 @@ class RouterHandler(BaseHTTPRequestHandler):
                     chunk = response.read1(16 * 1024)
                     if not chunk:
                         raise UpstreamError(
-                            "OpenRouter stream ended before model identity"
+                            f"OpenRouter route {model} stream ended before model identity",
+                            retryable=False,
                         )
                     prefix.extend(chunk)
                     if len(prefix) > MAX_OPENROUTER_IDENTITY_PREFIX_BYTES:
                         raise UpstreamError(
-                            f"OpenRouter route {model} stream model identity is too large"
+                            f"OpenRouter route {model} stream model identity is too large",
+                            retryable=False,
                         )
                     response_model = openrouter_sse_model(bytes(prefix), model)
                     if response_model is None:
                         continue
                     if response_model not in allowed_response_models:
-                        raise UpstreamError("OpenRouter response model does not match")
+                        raise UpstreamError("OpenRouter response model does not match", retryable=False)
                     break
                 self.send_response(status, response.reason)
                 self.send_header("content-type", "text/event-stream")
@@ -729,26 +754,20 @@ class RouterHandler(BaseHTTPRequestHandler):
                             break
                         response_bytes += len(chunk)
                         if response_bytes > MAX_OPENROUTER_JSON_RESPONSE_BYTES:
-                            raise UpstreamError("OpenRouter JSON response is too large")
+                            raise UpstreamError("OpenRouter JSON response is too large", retryable=False)
                         spool.write(chunk)
                         observer.observe(chunk)
                     if expected_length is not None:
                         try:
                             if response_bytes != int(expected_length):
-                                raise UpstreamError(
-                                    "OpenRouter JSON response ended early"
-                                )
+                                raise UpstreamError("OpenRouter JSON response ended early", retryable=False)
                         except ValueError as exc:
-                            raise UpstreamError(
-                                "OpenRouter response length is invalid"
-                            ) from exc
+                            raise UpstreamError("OpenRouter response length is invalid", retryable=False) from exc
                     spool.seek(0)
                     try:
                         payload = strict_json_loads(spool.read())
                     except InvalidRequestError as exc:
-                        raise UpstreamError(
-                            "OpenRouter JSON response is invalid"
-                        ) from exc
+                        raise UpstreamError("OpenRouter JSON response is invalid", retryable=False) from exc
                     response_model = (
                         payload.get("model") if isinstance(payload, dict) else None
                     )
@@ -756,7 +775,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                         not isinstance(response_model, str)
                         or response_model not in allowed_response_models
                     ):
-                        raise UpstreamError("OpenRouter response model does not match")
+                        raise UpstreamError("OpenRouter response model does not match", retryable=False)
                     self.send_response(status, response.reason)
                     self.send_header("content-type", "application/json")
                     self.send_header("content-length", str(response_bytes))
@@ -772,7 +791,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
                     self.wfile.flush()
             else:
-                raise UpstreamError("OpenRouter response type is unsupported")
+                raise UpstreamError("OpenRouter response type is unsupported", retryable=False)
             observer.finish()
             return status, response_bytes, "completed", observer.snapshot()
         except UpstreamError:
@@ -1026,11 +1045,11 @@ def openrouter_sse_model(prefix: bytes, model: str | None = None) -> str | None:
                 data_lines.append(line[5:].lstrip())
         label = f"OpenRouter route {model}" if model else "OpenRouter"
         if not data_lines:
-            raise UpstreamError(f"{label} stream omitted event data")
+            raise UpstreamError(f"{label} stream omitted event data", retryable=False)
         try:
             payload = strict_json_loads(b"\n".join(data_lines))
         except InvalidRequestError as exc:
-            raise UpstreamError(f"{label} stream identity is invalid") from exc
+            raise UpstreamError(f"{label} stream identity is invalid", retryable=False) from exc
         payload_type = payload.get("type") if isinstance(payload, dict) else None
         # A ping carries no identity and may legitimately precede message_start.
         if event_name == b"ping" or payload_type == "ping":
@@ -1040,7 +1059,8 @@ def openrouter_sse_model(prefix: bytes, model: str | None = None) -> str | None:
         if event_name == b"error" or payload_type == "error":
             raise UpstreamError(
                 f"{label} upstream reported an error"
-                f"{openrouter_upstream_reason(payload)}"
+                f"{openrouter_upstream_reason(payload)}",
+                retryable=False,
             )
         if event_name != b"message_start" and payload_type != "message_start":
             observed = payload_type if isinstance(payload_type, str) else (
@@ -1048,12 +1068,13 @@ def openrouter_sse_model(prefix: bytes, model: str | None = None) -> str | None:
             )
             raise UpstreamError(
                 f"{label} stream did not start with message_start "
-                f"(first event: {observed[:64]})"
+                f"(first event: {observed[:64]})",
+                retryable=False,
             )
         message = payload.get("message")
         model = message.get("model") if isinstance(message, dict) else None
         if not isinstance(model, str) or not model:
-            raise UpstreamError(f"{label} stream model identity is missing")
+            raise UpstreamError(f"{label} stream model identity is missing", retryable=False)
         return model
     return None
 

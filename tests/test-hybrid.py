@@ -91,6 +91,15 @@ class RouterStartReasonTests(unittest.TestCase):
 
 
 class HybridLauncherTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # A suite run inside an Airlock session can inherit armed Fast
+        # transition credentials; launcher tests must start without them.
+        patcher = patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(HYBRID.FAST_TRANSITION_CHANNEL_ENV, None)
+        os.environ.pop(HYBRID.FAST_TRANSITION_NONCE_ENV, None)
+
     def test_hybrid_environment_uses_router_profile_depth_cap_and_allowlists(self) -> None:
         with patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18765",
@@ -195,6 +204,7 @@ class HybridLauncherTests(unittest.TestCase):
 
     def test_bare_sol_root_keeps_the_conservative_window(self) -> None:
         environment = self.build("hybrid-openai-root", "gpt-5.6-sol")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
     def test_explicit_airlock_window_can_override_a_bare_sol_root(self) -> None:
@@ -206,9 +216,24 @@ class HybridLauncherTests(unittest.TestCase):
         )
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
-    def test_bare_proxy_root_keeps_the_conservative_auto_compact_window(self) -> None:
-        environment = self.build("hybrid-grok-root", "grok-4.5")
+    def test_grok_4_6_declares_its_window_and_leaves_compaction_headroom(self) -> None:
+        environment = self.build("hybrid-grok-root", "grok-4.6")
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
+
+    def test_composer_root_keeps_the_conservative_auto_compact_window(self) -> None:
+        environment = self.build("hybrid-grok-root", "grok-composer-2.5-fast")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
+
+    def test_user_compact_window_still_wins_on_grok_4_6(self) -> None:
+        environment = self.build(
+            "hybrid-grok-root",
+            "grok-4.6",
+            preset_environment={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000"},
+        )
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
     def test_auto_context_window_never_sets_the_variable(self) -> None:
         environment = self.build(
@@ -1174,15 +1199,24 @@ class FastTransitionBridgeTests(unittest.TestCase):
 
 
 class GrokProfileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Same hermetic default as the launcher tests: no inherited Fast
+        # transition credentials.
+        patcher = patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(HYBRID.FAST_TRANSITION_CHANNEL_ENV, None)
+        os.environ.pop(HYBRID.FAST_TRANSITION_NONCE_ENV, None)
+
     ROUTE_POLICY = {
         "routes": {
             "claude-opus-5": "anthropic",
             "gpt-5.6-sol": "openai",
-            "grok-4.5": "grok",
+            "grok-4.6": "grok",
             "grok-composer-2.5-fast": "grok",
         },
         "model_ids": [
-            "claude-opus-5", "gpt-5.6-sol", "grok-4.5", "grok-composer-2.5-fast",
+            "claude-opus-5", "gpt-5.6-sol", "grok-4.6", "grok-composer-2.5-fast",
         ],
         "agent_names": [
             "airlock-composer", "airlock-grok", "airlock-opus", "airlock-sol",
@@ -1190,8 +1224,8 @@ class GrokProfileTests(unittest.TestCase):
         "extra_model_ids": [],
         "extra_agent_names": [],
         "picker_models": {
-            "fable": "grok-4.5",
-            "opus": "grok-4.5",
+            "fable": "grok-4.6",
+            "opus": "grok-4.6",
             "sonnet": "grok-composer-2.5-fast",
             "haiku": "grok-composer-2.5-fast",
         },
@@ -1204,7 +1238,7 @@ class GrokProfileTests(unittest.TestCase):
                 "off",
                 proxy_url="http://127.0.0.1:18765",
                 root_model=root_model,
-                root_name="Grok 4.5",
+                root_name="Grok 4.6",
                 context_window="272000",
                 route_policy=self.ROUTE_POLICY,
                 router_url=router_url,
@@ -1212,31 +1246,33 @@ class GrokProfileTests(unittest.TestCase):
 
     def test_grok_pure_talks_to_the_proxy_without_a_router(self) -> None:
         environment = self.build(
-            "grok-pure", "grok-4.5", None,
+            "grok-pure", "grok-4.6", None,
             ANTHROPIC_BASE_URL="http://127.0.0.1:18765",
-            ANTHROPIC_MODEL="grok-4.5",
+            ANTHROPIC_MODEL="grok-4.6",
             ANTHROPIC_DEFAULT_FABLE_MODEL="claude-fable-5",
             ANTHROPIC_SMALL_FAST_MODEL="gpt-5.6-sol",
         )
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18765")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "grok-4.5")
-        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "grok-4.5")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "grok-4.6")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "grok-4.6")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "grok-pure")
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
         for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
             self.assertNotIn(marker, environment)
 
     def test_grok_pure_rejects_a_router(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.build("grok-pure", "grok-4.5", "http://127.0.0.1:28471")
+            self.build("grok-pure", "grok-4.6", "http://127.0.0.1:28471")
 
     def test_grok_root_declares_effort_capabilities(self) -> None:
         # Claude Code matches Anthropic ID patterns to decide whether a model
         # supports effort. A Grok ID matches nothing, so /effort would vanish
         # without an explicit declaration.
-        environment = self.build("hybrid-grok-root", "grok-4.5", "http://127.0.0.1:28471")
+        environment = self.build("hybrid-grok-root", "grok-4.6", "http://127.0.0.1:28471")
         self.assertEqual(
             environment["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"],
             "effort,xhigh_effort,max_effort",
@@ -1244,7 +1280,7 @@ class GrokProfileTests(unittest.TestCase):
 
     def test_hybrid_grok_root_sets_only_its_own_marker(self) -> None:
         environment = self.build(
-            "hybrid-grok-root", "grok-4.5", "http://127.0.0.1:28471",
+            "hybrid-grok-root", "grok-4.6", "http://127.0.0.1:28471",
             AIRLOCK_HYBRID="1", AIRLOCK_GPT_HYBRID="1",
         )
         self.assertEqual(environment["AIRLOCK_GROK_HYBRID"], "1")
@@ -1253,12 +1289,12 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:28471")
 
     def test_grok_workers_reach_the_allowlists(self) -> None:
-        environment = self.build("hybrid-grok-root", "grok-4.5", "http://127.0.0.1:28471")
+        environment = self.build("hybrid-grok-root", "grok-4.6", "http://127.0.0.1:28471")
         self.assertEqual(
             environment["AIRLOCK_ALLOWED_AGENT_NAMES"],
             "airlock-composer,airlock-grok,airlock-opus,airlock-sol",
         )
-        self.assertIn("grok-4.5", environment["AIRLOCK_ALLOWED_AGENT_MODELS"])
+        self.assertIn("grok-4.6", environment["AIRLOCK_ALLOWED_AGENT_MODELS"])
 
 
 if __name__ == "__main__":

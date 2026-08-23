@@ -159,7 +159,7 @@ A named Agent has no per-call effort field. It follows the session effort by def
 Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact models in the active policy. This prevents inherited shell values from sending a built-in Agent to a disabled or cross-provider route:
 
 - OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna. A missing route falls back to the closest enabled OpenAI model.
-- Grok Fable and Opus use Grok 4.5, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
+- Grok Fable and Opus use Grok 4.6, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
 - Hybrid profiles use the strongest eligible route for Fable, Opus, and Sonnet, while Haiku always uses the economical discovery route.
 - A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
 - The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
@@ -218,7 +218,7 @@ Luna can also implement code when each shard has:
 - no dependency on another shard
 - acceptance checks
 
-A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, Haiku, and Grok 4.5 are not multiplied automatically.
+A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, and synthesizes the full result. Sol, Terra, Opus, Sonnet, Fable, Haiku, and Grok 4.6 are not multiplied automatically.
 
 A session is only told about the routes it actually enabled. A Grok-only session is not given Luna army instructions, and a session with no economical high-volume route is told plainly that it has no automatic swarm route.
 
@@ -286,7 +286,7 @@ A managed SessionStart hook reads that file on a new, resumed, or cleared Airloc
 
 ## Context sizing
 
-Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI and Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. That fallback also affects named workers in the same process.
+Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI roots and undocumented Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. `grok-4.6` is documented at 500000 tokens, so Airlock declares that hard limit and compacts at 400000. That process-wide pair also affects named workers in the same session.
 
 A user-exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` has highest priority. An explicitly exported numeric `AIRLOCK_CONTEXT_WINDOW` also wins, while `AIRLOCK_CONTEXT_WINDOW=auto` removes the override. Any explicit numeric value applies to the root and every worker because Claude Code has no per-Agent compaction variable.
 

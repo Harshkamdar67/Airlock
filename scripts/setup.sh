@@ -305,7 +305,7 @@ read_config_value AIRLOCK_ANTHROPIC_PLAN unknown
 default_claude_plan="$CONFIG_VALUE"
 read_config_value AIRLOCK_OPENAI_CAPACITY auto
 default_openai_capacity="$CONFIG_VALUE"
-read_config_value AIRLOCK_ANTHROPIC_MODELS 'opus,sonnet'
+read_config_value AIRLOCK_ANTHROPIC_MODELS 'opus,sonnet,haiku'
 default_anthropic_models="$CONFIG_VALUE"
 read_config_value AIRLOCK_OPENAI_MODELS 'sol,terra,luna'
 default_openai_models="$CONFIG_VALUE"
@@ -399,7 +399,7 @@ set_model_info() {
     5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex'; MODEL_DETAIL='Supported Codex root.' ;;
     spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
     5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2'; MODEL_DETAIL='Supported OpenAI root.' ;;
-    grok) MODEL_TITLE='Grok 4.5'; MODEL_ID='grok-4.5'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
+    grok) MODEL_TITLE='Grok 4.6'; MODEL_ID='grok-4.6'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
     composer) MODEL_TITLE='Grok Composer 2.5 Fast'; MODEL_ID='grok-composer-2.5-fast'; MODEL_DETAIL='Discovery, triage, and bounded mechanical work. Economical usage.' ;;
     *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
   esac
@@ -1287,7 +1287,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
   if [[ "$default_profile" == 'grok' ]]; then
     print_question 'Default orchestrator' 'Grok-only sessions can still use exact Grok workers.'
     choose_rich_option "${grok_model:-$default_grok_model}" grok \
-      'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.' \
       'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
     grok_model="$CHOICE"
     main_model="$default_main_model"
@@ -1305,7 +1305,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
       hybrid_options+=(
-        'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.'
+        'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.'
         'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
       )
     fi
@@ -1388,8 +1388,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
     esac
     print_question 'Which Grok workers should the orchestrator be allowed to use?' 'These run on your Grok subscription through the local proxy.'
     choose_rich_option "$current_grok_preset" both \
-      'both|Grok 4.5 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
-      'grok|Grok 4.5 only|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'both|Grok 4.6 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
+      'grok|Grok 4.6 only|grok-4.6|Difficult implementation and debugging. Premium usage.' \
       'composer|Grok Composer 2.5 Fast only|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
     case "$CHOICE" in
       both) grok_models='grok,composer' ;;

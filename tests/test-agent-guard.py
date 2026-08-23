@@ -25,10 +25,10 @@ MARKER = "Extra usage authorized: yes"
 ROOT_MODELS = {
     "openrouter-pure": "anthropic/claude-sonnet-4.5",
     "openai-pure": "gpt-5.6-sol",
-    "grok-pure": "grok-4.5",
+    "grok-pure": "grok-4.6",
     "hybrid-openai-root": "gpt-5.6-sol",
     "hybrid-anthropic-root": "claude-sonnet-5[1m]",
-    "hybrid-grok-root": "grok-4.5",
+    "hybrid-grok-root": "grok-4.6",
 }
 FAMILY_VARIABLES = {
     "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
