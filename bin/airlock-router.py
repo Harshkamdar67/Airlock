@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import socketserver
 import ssl
@@ -487,7 +488,15 @@ class RouterHandler(BaseHTTPRequestHandler):
                         "OpenRouter supports only the Messages operation in this release"
                     )
                 openrouter_route = self.router.config.openrouter_routes[model]
-                body = prepare_openrouter_request(body, model, openrouter_route)
+                body, stripped_tools = prepare_openrouter_request(
+                    body, model, openrouter_route
+                )
+                if stripped_tools:
+                    self.router.record_diagnostic({
+                        "kind": "openrouter_server_tools_stripped",
+                        "model": model,
+                        "removed": stripped_tools,
+                    })
             status, response_bytes, outcome, usage = self.forward(
                 provider, model, body
             )
@@ -958,9 +967,96 @@ def _normalize_openrouter_system_messages(payload: dict[str, Any]) -> None:
     payload["system"] = system_blocks + lifted
 
 
+# Anthropic server tools (web search, code execution, and friends) execute
+# inside Anthropic's API. Pinned OpenRouter upstreams do not speak that
+# dialect, so a forwarded declaration or history block would bounce with an
+# opaque upstream rejection. Strip them before forwarding: fresh sessions are
+# steered to Airlock's local web tools by managed settings, and stale sessions
+# lose declarations the route could never honor anyway.
+SERVER_TOOL_TYPE_PATTERN = re.compile(
+    r"^(?:web_search|web_fetch|code_execution|computer|text_editor|bash|memory)"
+    r"_\d{8}$"
+)
+SERVER_TOOL_RESULT_SUFFIX = "_tool_result"
+KEEP_SERVER_TOOLS_VARIABLE = "AIRLOCK_OPENROUTER_KEEP_SERVER_TOOLS"
+
+
+def _is_server_tool_declaration(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    tool_type = tool.get("type")
+    if not isinstance(tool_type, str):
+        return False
+    return SERVER_TOOL_TYPE_PATTERN.match(tool_type) is not None
+
+
+def _is_server_tool_result_block(block: Any) -> bool:
+    if not isinstance(block, dict):
+        return False
+    block_type = block.get("type")
+    if not isinstance(block_type, str):
+        return False
+    if block_type == "server_tool_use":
+        return True
+    # Client tool results are typed exactly "tool_result"; every prefixed
+    # "<server tool>_tool_result" variant comes from server-side execution.
+    return (
+        block_type != "tool_result" and block_type.endswith(SERVER_TOOL_RESULT_SUFFIX)
+    )
+
+
+def strip_anthropic_server_tools(payload: dict[str, Any]) -> list[str]:
+    """Remove server-tool declarations and history blocks in place.
+
+    Returns the removed entry names and block types so the caller can record
+    a diagnostic event instead of failing silently.
+    """
+    removed: list[str] = []
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        kept = [tool for tool in tools if not _is_server_tool_declaration(tool)]
+        if len(kept) != len(tools):
+            removed.extend(
+                str(tool.get("name") or tool.get("type"))
+                for tool in tools
+                if _is_server_tool_declaration(tool)
+            )
+            if kept:
+                payload["tools"] = kept
+            else:
+                payload.pop("tools", None)
+                payload.pop("tool_choice", None)
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            kept_blocks = [
+                block for block in content if not _is_server_tool_result_block(block)
+            ]
+            if len(kept_blocks) == len(content):
+                continue
+            removed.extend(
+                str(block.get("type"))
+                for block in content
+                if _is_server_tool_result_block(block)
+            )
+            if kept_blocks:
+                message["content"] = kept_blocks
+            else:
+                message["content"] = [{
+                    "type": "text",
+                    "text": "[server tool exchange removed for this route]",
+                }]
+    return removed
+
+
 def prepare_openrouter_request(
     body: bytes, model: str, route: OpenRouterRoute
-) -> bytes:
+) -> tuple[bytes, list[str]]:
     payload = request_payload(body)
     if payload.get("model") != model:
         raise InvalidRequestError("OpenRouter request model does not match its route")
@@ -981,6 +1077,13 @@ def prepare_openrouter_request(
     if "stream" in payload and type(payload["stream"]) is not bool:
         raise InvalidRequestError("OpenRouter stream must be a boolean")
     _normalize_openrouter_system_messages(payload)
+    stripped: list[str] = []
+    if os.environ.get(KEEP_SERVER_TOOLS_VARIABLE, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        stripped = strip_anthropic_server_tools(payload)
     payload["provider"] = {
         "only": [route.provider_slug],
         "quantizations": [route.quantization],
@@ -988,13 +1091,16 @@ def prepare_openrouter_request(
         "require_parameters": False,
     }
     try:
-        return json.dumps(
-            payload,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        ).encode("ascii")
+        return (
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii"),
+            stripped,
+        )
     except (TypeError, ValueError) as exc:
         raise InvalidRequestError("OpenRouter request body is invalid") from exc
 

@@ -14,6 +14,7 @@ AIRLOCK_GROK_MODEL=grok
 # `airlock hybrid grok` enable grok,composer themselves, since naming a Grok
 # root is an explicit request for that provider.
 # AIRLOCK_GROK_MODELS=grok,composer
+AIRLOCK_GROK_MODELS=
 # AIRLOCK_EFFORT_GROK=inherit
 # AIRLOCK_EFFORT_COMPOSER=inherit
 # OpenRouter is not configured through this file. It stays off by default and
@@ -50,7 +51,7 @@ AIRLOCK_SWARM_FAST=auto
 AIRLOCK_FAILOVER_POLICY=ask
 AIRLOCK_ANTHROPIC_PLAN=unknown
 AIRLOCK_OPENAI_CAPACITY=auto
-AIRLOCK_ANTHROPIC_MODELS=opus,sonnet
+AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku
 AIRLOCK_OPENAI_MODELS=sol,terra,luna
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable
 AIRLOCK_OPENAI_EXTRA_MODELS=

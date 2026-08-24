@@ -16,13 +16,16 @@ unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROU
   AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE \
   AIRLOCK_ACCESS_HELPER
 # Build a legacy config without the saved-profile keys to verify that existing
-# installations keep their original OpenAI-only bare command.
+# installations keep their original OpenAI-only bare command. The Anthropic
+# pool stays at the pre-Haiku default so the sonnet fallback seat keeps
+# coverage; the new default seat is asserted separately below.
 while IFS= read -r line; do
   case "$line" in
-    AIRLOCK_DEFAULT_PROFILE=*|AIRLOCK_HYBRID_MODEL=*) continue ;;
+    AIRLOCK_DEFAULT_PROFILE=*|AIRLOCK_HYBRID_MODEL=*|AIRLOCK_ANTHROPIC_MODELS=*) continue ;;
   esac
   printf '%s\n' "$line"
 done < "$repo_root/config/airlock.conf.example" > "$tmp_dir/config"
+printf 'AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n' >> "$tmp_dir/config"
 cat > "$tmp_dir/access.json" <<'EOF'
 {
   "schema_version": 1,
@@ -399,6 +402,9 @@ grep -q "^UPDATE_NOTICE=$PWD/relative-notice-config/update-notice.json$" <<<"$re
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$normal_output"
 grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
+# The classifier rides the small fast seat (luna), not the premium sol root.
+grep -q '^AUTO_MODE_MODEL=gpt-5.6-luna$' <<<"$normal_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$normal_output"
 grep -q '^ARG=high$' <<<"$normal_output"
 grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
@@ -431,6 +437,8 @@ custom_config="$repo_root/tests/fixtures/custom.conf"
 configured_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^MODEL=gpt-5.6-terra$' <<<"$configured_output"
 grep -q '^SMALL_FAST=gpt-5.4-mini$' <<<"$configured_output"
+# A configured small fast model becomes the classifier seat too.
+grep -q '^AUTO_MODE_MODEL=gpt-5.4-mini$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
 # The saved OpenAI fallback remains conservative until a >300k proof passes.
 grep -q '^COMPACT_WINDOW=200000$' <<<"$configured_output"
@@ -454,11 +462,16 @@ if grep -q '^Worker descendants:' <<<"$config_output"; then
 fi
 
 pure_profile="$normal_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["pure_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" not in trust_context
@@ -498,7 +511,10 @@ assert "Agent" not in allowed and "Agent(*)" not in allowed and "Agent(airlock-*
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
 assert "Skill(claude-api)" in args
 assert "Skill(claude-api *)" in args
-guidance = args[args.index("--append-system-prompt") + 1]
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
 assert "claude-api skill is blocked" in guidance
 assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose accept Claude Code's" in guidance
 assert "pass `model=haiku` (resolved to gpt-5.6-luna)" in guidance and "Omit `model` only when inheriting the orchestrator" in guidance
@@ -541,15 +557,22 @@ grep -q '^SPAWN_DEPTH=1$' <<<"$normal_output"
 
 custom_prompt_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" --append-system-prompt 'first custom instruction' --append-system-prompt='second custom instruction' -p test)"
 custom_prompt_profile="$custom_prompt_output" python - <<'PY'
+import base64
 import json
 import os
+from pathlib import Path
 lines = os.environ["custom_prompt_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-assert args.count("--append-system-prompt") == 1
-prompt = args[args.index("--append-system-prompt") + 1]
-assert prompt.startswith("first custom instruction\n\nsecond custom instruction\n\n")
-assert prompt.endswith("The claude-api skill is blocked by default because its large attachment can overflow an Agent context during model routing. Native routing through Airlock is not Claude API application development; do not retry that skill unless the session was launched with AIRLOCK_ALLOW_CLAUDE_API_SKILL=1.")
-assert args.index("-p") < args.index("--append-system-prompt")
+assert args.count("--append-system-prompt-file") == 1
+prompt = Path(args[args.index("--append-system-prompt-file") + 1])
+assert prompt.name.startswith("guidance-") and prompt.suffix == ".txt"
+prompt_text = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert prompt_text.startswith("first custom instruction\n\nsecond custom instruction\n\n")
+assert prompt_text.endswith("The claude-api skill is blocked by default because its large attachment can overflow an Agent context during model routing. Native routing through Airlock is not Claude API application development; do not retry that skill unless the session was launched with AIRLOCK_ALLOW_CLAUDE_API_SKILL=1.")
+assert "-p" in args and "--append-system-prompt-file" in args
 PY
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" --append-system-prompt >/dev/null 2>&1; then
   printf 'test: missing appended-system-prompt value unexpectedly launched Claude\n' >&2
@@ -726,12 +749,18 @@ grep -q '^DEFAULT_OPUS=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^DEFAULT_SONNET=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^DEFAULT_HAIKU=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^SMALL_FAST=moonshotai/kimi-k3$' <<<"$opr_output"
-grep -q '^FABLE_CAPS=unset$' <<<"$opr_output"
-grep -q '^CUSTOM_CAPS=unset$' <<<"$opr_output"
+grep -q '^FABLE_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^HAIKU_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$opr_output"
+grep -q '^AUTO_MODE_MODEL=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^COMPACT_WINDOW=unset$' <<<"$opr_output"
 grep -q '^ARG=-r$' <<<"$opr_output"
 grep -q '^ARG=high$' <<<"$opr_output"
 opr_profile="$opr_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["opr_profile"].splitlines()
@@ -744,7 +773,20 @@ assert "extra-usage authorization" in agents["airlock-or-deepseek-v4-flash-0731"
 assert args.count("--model") == 1
 assert args[args.index("--model") + 1] == "moonshotai/kimi-k3"
 assert "-r" in args
+# The OpenRouter-only root receives the web tools server through a real
+# --mcp-config file, and the launcher removes that file after Claude exits.
+assert args.count("--mcp-config") == 1
+from pathlib import Path
+mcp_arg = Path(args[args.index("--mcp-config") + 1])
+assert mcp_arg.name.startswith("airlock-mcp-") and mcp_arg.suffix == ".json"
+assert mcp_arg.exists() is False
 PY
+opr_mcp_path="$(awk 'found {sub(/^ARG=/, ""); print; exit} /^ARG=--mcp-config$/ {found=1}' <<<"$opr_output")"
+if [[ -z "$opr_mcp_path" || -e "$opr_mcp_path" ]]; then
+  printf 'test: OpenRouter-only MCP config path missing or not cleaned up\n' >&2
+  exit 1
+fi
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$opr_output"
 opr_snapshot="$(grep '^SESSION_SNAPSHOT=' <<<"$opr_output" | cut -d= -f2-)"
 if [[ -z "$opr_snapshot" || -e "$opr_snapshot" ]]; then
   printf 'test: OpenRouter-only snapshot was not removed after Claude exited\n' >&2
@@ -789,6 +831,8 @@ grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+# The classifier rides the small fast seat, which prefers native Claude here.
+grep -q '^AUTO_MODE_MODEL=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^FABLE_NAME=gpt-5.6-sol$' <<<"$hybrid_openai_output"
 grep -q '^OPUS_NAME=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SONNET_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
@@ -798,11 +842,16 @@ grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,ai
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
 grep -q '^ROUTER_MODELS=claude-opus-5,claude-opus-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
 hybrid_profile="$hybrid_openai_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["hybrid_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
@@ -832,7 +881,10 @@ for value in args[start:]:
 expected_allowed = ["Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)", *[f"Agent({name})" for name in sorted(agents)]]
 assert allowed == expected_allowed, (allowed, expected_allowed)
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
-guidance = args[args.index("--append-system-prompt") + 1]
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
 assert "one session-scoped loopback router keeps every enabled provider inside the same Claude Code process" in guidance.replace("One session", "one session")
 # Grok is off unless the config or an explicit Grok root enables it, so this
 # session must be told the route does not exist rather than left to guess.
@@ -1077,15 +1129,29 @@ grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
+# An Anthropic root serves the stock classifier target, so the knob stays clear.
+grep -q '^AUTO_MODE_MODEL=unset$' <<<"$hybrid_anthropic_output"
+# With Haiku enabled, which is the setup default now, the family slot prefers
+# the cheapest Claude route instead of falling back to Sonnet.
+hybrid_haiku_seat_output="$(AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sonnet -p test)"
+grep -q '^DEFAULT_HAIKU=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^SMALL_FAST=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^HAIKU_NAME=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^AUTO_MODE_MODEL=unset$' <<<"$hybrid_haiku_seat_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_anthropic_output"
 hybrid_profile="$hybrid_anthropic_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["hybrid_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
@@ -1124,11 +1190,16 @@ reduced_config="$tmp_dir/reduced.conf"
 printf '%s\n' 'AIRLOCK_ANTHROPIC_MODELS=sonnet' 'AIRLOCK_OPENAI_MODELS=sol,luna' 'AIRLOCK_ANTHROPIC_EXTRA_MODELS=' 'AIRLOCK_OPENAI_EXTRA_MODELS=' >"$reduced_config"
 reduced_output="$(AIRLOCK_CONFIG_FILE="$reduced_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
 reduced_profile="$reduced_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["reduced_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
 assert "airlock-luna, airlock-sol, airlock-sonnet" in trust_context
@@ -1171,7 +1242,10 @@ done
 # The bash that macOS ships as /bin/bash rejects a bare expansion of an empty
 # array under set -u, so both entry points need a no-argument run here.
 bare_hybrid_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus)"
-grep -Fq '"--effort", "high", "--model", "claude-opus-5[1m]", "--append-system-prompt"' <<<"$bare_hybrid_output"
+# File-backed flags land early in argv and user passthrough lands last, so the
+# effort/model pair and the guidance flag are checked as independent elements.
+grep -Fq '"--effort", "high", "--model", "claude-opus-5[1m]"' <<<"$bare_hybrid_output"
+grep -Fq '"--append-system-prompt-file"' <<<"$bare_hybrid_output"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$bare_hybrid_output"
 # Claude Code detects effort support for real Claude IDs on its own. Declaring
 # capabilities here would disable everything left off the list.
@@ -1199,7 +1273,10 @@ for rejected_window in 50000 99999 1000001 2000000 0272000 +272000 ' 272000 ' no
   fi
 done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
-grep -Fq '"--model", "gpt-5.6-sol", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
+# File-backed flags land early in argv and user passthrough lands last, so the
+# model/effort pair and the guidance flag are checked as independent elements.
+grep -Fq '"--model", "gpt-5.6-sol", "--effort", "high"' <<<"$bare_openai_output"
+grep -Fq '"--append-system-prompt-file"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
 # OpenAI roots keep the conservative fallback because no long-context proof passed.
 grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_openai_output"
@@ -1346,9 +1423,73 @@ grep -q '^DEFAULT_SONNET=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^DEFAULT_HAIKU=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^SMALL_FAST=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^CUSTOM_NAME=Grok 4.6 (Grok subscription)$' <<<"$grok_output"
+# Classifications ride the economical Composer seat instead of the flagship root.
+grep -q '^AUTO_MODE_MODEL=grok-composer-2.5-fast$' <<<"$grok_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$grok_output"
 grep -q '^COMPACT_WINDOW=400000$' <<<"$grok_output"
 grep -q '^MAX_CONTEXT=500000$' <<<"$grok_output"
 [[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_output")" -eq 1 ]]
+# The bundled web tools server rides in managed settings for a Grok root,
+# together with guidance steering it away from the Anthropic-only built-ins.
+# Settings arrive through the stub's parsed SETTINGS_JSON line, so assertions
+# read the decoded object instead of matching dump formatting.
+grok_profile="$grok_output" python - <<'PY'
+import base64
+import json
+import os
+
+lines = os.environ["grok_profile"].splitlines()
+settings = json.loads(next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+))
+assert set(settings["mcpServers"]) == {"airlock-web-tools"}
+assert settings["permissions"]["allow"] == [
+    "mcp__airlock-web-tools__web_search",
+    "mcp__airlock-web-tools__fetch_page",
+]
+assert settings["permissions"]["deny"] == ["WebSearch", "WebFetch"]
+# The composed guidance reaches Claude as a base64 file-backed flag, so the
+# steering paragraph is asserted against the decoded prompt.
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance:" in guidance
+PY
+# The same server definition reaches Claude through a real --mcp-config file,
+# because Claude Code does not start mcpServers entries from --settings.
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$grok_output"
+
+web_tools_off_output="$(AIRLOCK_WEB_TOOLS=off AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok -p test)"
+if grep -q 'airlock-web-tools' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off still registered the web tools server\n' >&2
+  exit 1
+fi
+if grep -q '^MCP_SERVERS=' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off still passed an --mcp-config file\n' >&2
+  exit 1
+fi
+if grep -q '"permissions"' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off kept the web tool denials\n' >&2
+  exit 1
+fi
+# The off switch must also omit the steering paragraph from the composed
+# guidance, which the stub only reports in its base64 encoded form.
+web_tools_off_profile="$web_tools_off_output" python - <<'PY'
+import base64
+import os
+
+lines = os.environ["web_tools_off_profile"].splitlines()
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance" not in guidance
+assert "airlock-web-tools" not in guidance
+PY
 
 grok_composer_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
@@ -1383,6 +1524,29 @@ grep -Eq '^ROUTER_MODELS=.*grok-4\.6' <<<"$hybrid_grok_output"
 grep -Eq '^ROUTER_MODELS=.*claude-opus-5' <<<"$hybrid_grok_output"
 grep -q '^COMPACT_WINDOW=400000$' <<<"$hybrid_grok_output"
 grep -q '^MAX_CONTEXT=500000$' <<<"$hybrid_grok_output"
+# The Grok-rooted hybrid keeps working built-in WebFetch, so only WebSearch is denied.
+hybrid_grok_profile="$hybrid_grok_output" python - <<'PY'
+import json
+import os
+
+lines = os.environ["hybrid_grok_profile"].splitlines()
+settings = json.loads(next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+))
+assert set(settings["mcpServers"]) == {"airlock-web-tools"}
+assert settings["permissions"]["allow"] == [
+    "mcp__airlock-web-tools__web_search",
+    "mcp__airlock-web-tools__fetch_page",
+]
+assert settings["permissions"]["deny"] == ["WebSearch"]
+PY
+# The hybrid Grok root also receives the web tools through --mcp-config.
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$hybrid_grok_output"
+if grep -Fq '"WebFetch"' <<<"$hybrid_grok_output"; then
+  printf 'test: hybrid Grok root denied working built-in WebFetch\n' >&2
+  exit 1
+fi
 
 # A hybrid session that did not ask for Grok must not gain Grok workers.
 hybrid_plain_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
@@ -1391,6 +1555,34 @@ if grep -q 'airlock-grok' <<<"$hybrid_plain_output"; then
   printf 'test: hybrid session enabled Grok without an explicit opt-in\n' >&2
   exit 1
 fi
+# An Anthropic-rooted hybrid keeps Claude Code exactly as shipped: no web tools
+# server, no denials, and no steering paragraph.
+if grep -q '"permissions"' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session received web tool denials\n' >&2
+  exit 1
+fi
+if grep -q '"mcpServers"' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session registered the web tools server\n' >&2
+  exit 1
+fi
+if grep -q '^MCP_SERVERS=' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session passed an --mcp-config file\n' >&2
+  exit 1
+fi
+# The composed guidance of an Anthropic-rooted session carries no web tools
+# paragraph; the stub reports it in base64 encoded form.
+hybrid_plain_profile="$hybrid_plain_output" python - <<'PY'
+import base64
+import os
+
+lines = os.environ["hybrid_plain_profile"].splitlines()
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance" not in guidance
+assert "airlock-web-tools" not in guidance
+PY
 
 if AIRLOCK_SESSION_ROUTER_URL= "$launcher" session-usage >/dev/null 2>"$tmp_dir/session-usage.err"; then
   printf 'test: session usage succeeded outside a hybrid session\n' >&2

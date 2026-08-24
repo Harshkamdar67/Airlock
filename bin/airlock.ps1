@@ -466,6 +466,7 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/hooks/hooks.json=$(Join-Path $PluginDir 'hooks\hooks.json')",
     '--component', "plugins/airlock/skills/usage/SKILL.md=$(Join-Path $PluginDir 'skills\usage\SKILL.md')",
     '--component', "plugins/airlock/skills/airlock-fast/SKILL.md=$(Join-Path $PluginDir 'skills\airlock-fast\SKILL.md')",
+    '--component', "plugins/airlock/mcp-server/airlock_web_tools.py=$(Join-Path $PluginDir 'mcp-server\airlock_web_tools.py')",
     '--component', "plugins/airlock/scripts/fast-session-end.sh=$(Join-Path $PluginDir 'scripts\fast-session-end.sh')",
     '--component', "plugins/airlock/scripts/fast-session-end.py=$(Join-Path $PluginDir 'scripts\fast-session-end.py')",
     '--component', "plugins/airlock/scripts/agent-guard.sh=$(Join-Path $PluginDir 'scripts\agent-guard.sh')",

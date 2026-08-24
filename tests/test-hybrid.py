@@ -391,12 +391,85 @@ class HybridLauncherTests(unittest.TestCase):
         for family in ("FABLE", "OPUS", "SONNET", "HAIKU"):
             variable = f"ANTHROPIC_DEFAULT_{family}_MODEL"
             self.assertEqual(environment[variable], ORP_ROOT_MODEL)
-            self.assertNotIn(f"{variable}_SUPPORTED_CAPABILITIES", environment)
-        self.assertNotIn("ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES", environment)
-        self.assertNotIn("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", environment)
+            self.assertEqual(
+                environment[f"{variable}_SUPPORTED_CAPABILITIES"],
+                HYBRID.DEFAULT_GPT_EFFORT_CAPABILITIES,
+            )
+        self.assertEqual(
+            environment["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"],
+            HYBRID.DEFAULT_GPT_EFFORT_CAPABILITIES,
+        )
+        self.assertEqual(environment["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"], "1")
+        # Auto mode's classifier hard-codes Claude Sonnet 5, which this route
+        # cannot serve. The route serves only its root, so that root is also
+        # the cheapest available classifier target.
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_MODE_MODEL"], ORP_ROOT_MODEL)
         self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
         self.assertNotIn("AIRLOCK_HYBRID", environment)
         self.assertEqual(environment["AIRLOCK_EXTRA_USAGE_AGENT_NAMES"], "airlock-or-extra")
+
+    def test_openrouter_auto_mode_model_knob(self) -> None:
+        common = dict(
+            proxy_url=None,
+            root_model=ORP_ROOT_MODEL,
+            root_name="OpenRouter root",
+            context_window="272000",
+            route_policy=ORP_ROUTE_POLICY,
+            router_url="http://127.0.0.1:28471",
+        )
+        cases = [
+            ({}, ORP_ROOT_MODEL),
+            ({"AIRLOCK_AUTO_MODE_MODEL": ""}, ORP_ROOT_MODEL),
+            ({"AIRLOCK_AUTO_MODE_MODEL": "gpt-5.6-sol"}, "gpt-5.6-sol"),
+            ({"AIRLOCK_AUTO_MODE_MODEL": "off"}, None),
+            ({"AIRLOCK_AUTO_MODE_MODEL": "none"}, None),
+        ]
+        for inherited, expected in cases:
+            with self.subTest(inherited=sorted(inherited)):
+                with patch.dict(os.environ, inherited, clear=True):
+                    environment = build_child_environment(
+                        "openrouter-pure", "off", **common
+                    )
+                if expected is None:
+                    self.assertNotIn("CLAUDE_CODE_AUTO_MODE_MODEL", environment)
+                else:
+                    self.assertEqual(environment["CLAUDE_CODE_AUTO_MODE_MODEL"], expected)
+
+    def test_auto_mode_classifier_prefers_the_small_seat_over_the_root(self) -> None:
+        # A GPT-rooted hybrid serves the economical Luna model through the
+        # small fast seat. Classifications are frequent background work, so
+        # they must ride that seat instead of burning the premium root.
+        environment = self.build("hybrid-openai-root", "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "gpt-5.6-luna")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_MODE_MODEL"], "gpt-5.6-luna")
+
+    def test_auto_mode_classifier_stays_stock_for_an_anthropic_root(self) -> None:
+        # The stock classifier target is Claude Sonnet 5, which an Anthropic
+        # route serves natively, so no override is needed or wanted.
+        environment = self.build("hybrid-anthropic-root", "claude-opus-5")
+        self.assertNotIn("CLAUDE_CODE_AUTO_MODE_MODEL", environment)
+
+    def test_auto_mode_classifier_falls_back_to_discovery_then_root(self) -> None:
+        # The launcher helpers normally seat a small fast model before this
+        # runs. The chain still has to hold when a route serves nothing
+        # smaller than its root.
+        cases = [
+            (
+                {"ANTHROPIC_SMALL_FAST_MODEL": "gpt-5.6-luna"},
+                "gpt-5.6-luna",
+            ),
+            (
+                {"ANTHROPIC_DEFAULT_HAIKU_MODEL": "grok-composer-2.5-fast"},
+                "grok-composer-2.5-fast",
+            ),
+            ({"AIRLOCK_DISCOVERY_MODEL": "gpt-5.6-luna"}, "gpt-5.6-luna"),
+            ({}, "vendor/root-model"),
+        ]
+        for inherited, expected in cases:
+            with self.subTest(inherited=sorted(inherited)):
+                environment = dict(inherited)
+                HYBRID.apply_auto_mode_model(environment, "vendor/root-model")
+                self.assertEqual(environment["CLAUDE_CODE_AUTO_MODE_MODEL"], expected)
 
     def test_openrouter_environment_rejects_proxy_upstream(self) -> None:
         with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -458,6 +531,9 @@ class HybridLauncherTests(unittest.TestCase):
                 return artifact_access.write_session_artifact(
                     content, prefix, suffix, runtime
                 )
+
+            def write_web_tools_mcp_config(self, script, profile=None):
+                return ""
 
             def delete_session_artifact(self, path, digest, size):
                 artifact_access.delete_session_artifact(
@@ -549,6 +625,120 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(command.count("--model"), 1)
         self.assertEqual(command[command.index("--model") + 1], ORP_ROOT_MODEL)
         self.assertIn("-r", command)
+
+    def test_launch_hands_web_tools_to_mcp_config_and_cleans_up(self) -> None:
+        artifact_access = HYBRID.load_access_module()
+        request = {
+            "profile": "openai-pure",
+            "plugin_dir": str(ROOT / "plugins" / "airlock"),
+            "max_agents": "off",
+            "proxy_url": "http://127.0.0.1:18765",
+            "root_model": "gpt-5.6-sol",
+            "root_name": "GPT-5.6 Sol",
+            "context_window": "272000",
+            "fast_mode": "off",
+            "claude": sys.executable,
+            "catalog_files": {},
+            "args": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "runtime"
+
+            class Access:
+                def __init__(self) -> None:
+                    self.deleted_artifacts: list[Path] = []
+                    self.mcp_calls: list[tuple[str, str | None]] = []
+
+                @staticmethod
+                def load_or_refresh_policy():
+                    return object()
+
+                @staticmethod
+                def session_route_policy(received_policy, profile, **kwargs):
+                    return ROUTE_POLICY
+
+                @staticmethod
+                def profile_guidance(received_policy, profile, **kwargs):
+                    return "routing guidance"
+
+                @staticmethod
+                def write_session_artifact(content, prefix, suffix):
+                    return artifact_access.write_session_artifact(
+                        content, prefix, suffix, runtime
+                    )
+
+                def write_web_tools_mcp_config(self, script, profile=None):
+                    self.mcp_calls.append((script, profile))
+                    payload = json.dumps(
+                        {"mcpServers": {"airlock-web-tools": {
+                            "command": sys.executable,
+                            "args": [script],
+                        }}}
+                    ).encode("utf-8")
+                    path, digest, size = artifact_access.write_session_artifact(
+                        payload, "airlock-mcp-", ".json", runtime
+                    )
+                    return f"{path}\t{digest}\t{size}"
+
+                def delete_session_artifact(self, path, digest, size):
+                    artifact_access.delete_session_artifact(
+                        path, digest, size, runtime
+                    )
+                    self.deleted_artifacts.append(path)
+
+                @staticmethod
+                def delete_session_snapshot(path, digest):
+                    artifact_access.delete_session_snapshot(path, digest)
+
+                @staticmethod
+                def write_session_snapshot(*args, **kwargs):
+                    runtime.mkdir(parents=True, exist_ok=True)
+                    path = runtime / "snapshot-openai-pure.json"
+                    path.write_text("{}", encoding="utf-8")
+                    return path, SNAPSHOT_DIGEST
+
+            access = Access()
+            captured: dict[str, object] = {}
+
+            completed = subprocess.CompletedProcess(args=[], returncode=0)
+
+            def launch_claude(command, **kwargs):
+                captured["command"] = list(command)
+                index = command.index("--mcp-config")
+                mcp_path = Path(command[index + 1])
+                captured["mcp_path"] = mcp_path
+                captured["mcp_content"] = mcp_path.read_text(encoding="utf-8")
+                return completed
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(HYBRID, "resolve_managed_request", return_value=Path("request.json")))
+                stack.enter_context(patch.object(HYBRID, "read_request", return_value=request))
+                stack.enter_context(patch.object(HYBRID, "validate_plugin_path", return_value=ROOT / "plugins" / "airlock"))
+                stack.enter_context(patch.object(HYBRID, "load_access_module", return_value=access))
+                stack.enter_context(patch.object(HYBRID, "render_agents", return_value='{"airlock-sol":{}}'))
+                stack.enter_context(patch.object(HYBRID, "managed_agent_permissions", return_value=(ROUTE_POLICY["agent_names"], ["Agent(airlock-sol)"])))
+                stack.enter_context(patch.object(HYBRID, "managed_session_settings", return_value="{}"))
+                stack.enter_context(patch.object(HYBRID, "validate_policy_helper_path", return_value=POLICY_HELPER))
+                stack.enter_context(patch.object(HYBRID, "build_child_environment", return_value={}))
+                run_claude = stack.enter_context(patch.object(HYBRID.subprocess, "run", side_effect=launch_claude))
+                stack.enter_context(patch.object(sys, "argv", ["airlock-hybrid.py", "--request-file", "request.json"]))
+                self.assertEqual(HYBRID.main(), 0)
+
+            expected_script = str(
+                ROOT / "plugins" / "airlock" / "mcp-server" / "airlock_web_tools.py"
+            )
+            self.assertEqual(access.mcp_calls, [(expected_script, "openai-pure")])
+            command = run_claude.call_args.args[0]
+            self.assertEqual(command.count("--mcp-config"), 1)
+            self.assertEqual(
+                command[command.index("--mcp-config") + 1],
+                str(captured["mcp_path"]),
+            )
+            self.assertIn('"airlock-web-tools"', captured["mcp_content"])
+            # All three managed artifacts are removed after the child exits.
+            self.assertEqual(len(access.deleted_artifacts), 3)
+            self.assertFalse(Path(captured["mcp_path"]).exists())
 
     def test_plain_openai_stays_direct_and_off_removes_only_cap(self) -> None:
         with patch.dict(os.environ, {
@@ -702,6 +892,55 @@ class HybridLauncherTests(unittest.TestCase):
                 access, agents_json, "invalid", policy
             )
 
+    def test_managed_session_settings_validate_the_web_tools_matrix(self) -> None:
+        access = HYBRID.load_access_module()
+        policy = access.default_policy()
+        agents_json = '{"airlock-luna":{}}'
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "airlock_web_tools.py"
+            script.write_text("# server\n", encoding="utf-8")
+
+            pure = json.loads(HYBRID.managed_session_settings(
+                access, agents_json, "inherit", policy,
+                web_tools_script=str(script), profile="grok-pure",
+            ))
+            self.assertEqual(pure["permissions"], {
+                "allow": [
+                    "mcp__airlock-web-tools__web_search",
+                    "mcp__airlock-web-tools__fetch_page",
+                ],
+                "deny": ["WebSearch", "WebFetch"],
+            })
+            self.assertEqual(
+                pure["mcpServers"]["airlock-web-tools"]["args"],
+                [str(Path(script).resolve())],
+            )
+
+            hybrid = json.loads(HYBRID.managed_session_settings(
+                access, agents_json, "inherit", policy,
+                web_tools_script=str(script), profile="hybrid-grok-root",
+            ))
+            self.assertEqual(hybrid["permissions"], {
+                "allow": [
+                    "mcp__airlock-web-tools__web_search",
+                    "mcp__airlock-web-tools__fetch_page",
+                ],
+                "deny": ["WebSearch"],
+            })
+
+            anthropic = json.loads(HYBRID.managed_session_settings(
+                access, agents_json, "inherit", policy,
+                web_tools_script=str(script), profile="hybrid-anthropic-root",
+            ))
+            self.assertNotIn("permissions", anthropic)
+            self.assertNotIn("mcpServers", anthropic)
+
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                HYBRID.managed_session_settings(
+                    access, agents_json, "inherit", policy,
+                    web_tools_script=str(script), profile="not-a-profile",
+                )
+
     def test_openrouter_permissions_use_the_loaded_policy(self) -> None:
         access = HYBRID.load_access_module()
         policy = access.default_policy()
@@ -824,6 +1063,10 @@ class HybridLauncherTests(unittest.TestCase):
                     content, prefix, suffix, runtime
                 )
 
+            @staticmethod
+            def write_web_tools_mcp_config(script, profile=None):
+                return ""
+
             def delete_session_artifact(self, path, digest, size):
                 artifact_access.delete_session_artifact(path, digest, size, runtime)
                 self.deleted.append(path)
@@ -914,6 +1157,10 @@ class HybridLauncherTests(unittest.TestCase):
                         return artifact_access.write_session_artifact(
                             content, prefix, suffix, runtime
                         )
+
+                    @staticmethod
+                    def write_web_tools_mcp_config(script, profile=None):
+                        return ""
 
                     def delete_session_artifact(self, path, digest, size):
                         artifact_access.delete_session_artifact(
@@ -1044,6 +1291,10 @@ class FastTransitionBridgeTests(unittest.TestCase):
                 return artifact_access.write_session_artifact(
                     content, prefix, suffix, runtime
                 )
+
+            @staticmethod
+            def write_web_tools_mcp_config(script, profile=None):
+                return ""
 
             @staticmethod
             def delete_session_artifact(path, digest, size):
@@ -1276,6 +1527,13 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(
             environment["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"],
             "effort,xhigh_effort,max_effort",
+        )
+
+    def test_grok_classifier_rides_the_composer_seat(self) -> None:
+        environment = self.build("hybrid-grok-root", "grok-4.6", "http://127.0.0.1:28471")
+        self.assertEqual(
+            environment["CLAUDE_CODE_AUTO_MODE_MODEL"],
+            "grok-composer-2.5-fast",
         )
 
     def test_hybrid_grok_root_sets_only_its_own_marker(self) -> None:

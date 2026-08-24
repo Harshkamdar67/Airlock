@@ -71,7 +71,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.22.2"
+MANAGED_BUNDLE_VERSION = "2026.08.24.1"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -3703,6 +3703,7 @@ def profile_guidance(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    web_tools_script: str | None = None,
 ) -> str:
     if profile not in PROFILE_COMPONENTS:
         raise AccessError(f"unknown session profile: {profile}")
@@ -3821,6 +3822,32 @@ def profile_guidance(
             + " Named airlock-* Agents use their exact model. Built-in Explore, Plan, and general-purpose inherit the "
             "orchestrator model unless a schema-valid family alias owned by this profile is supplied."
         )
+    if (
+        PROFILE_ROOT_PROVIDERS[profile] == "anthropic"
+        or web_tools_server_entry(web_tools_script) is None
+    ):
+        web_tools_guidance = None
+    else:
+        label = {
+            "openai": "GPT",
+            "grok": "Grok",
+            "openrouter": "OpenRouter",
+        }[PROFILE_ROOT_PROVIDERS[profile]]
+        seat_note = (
+            "Built-in WebFetch still works here because the Haiku family slot seats a Claude model."
+            if profile.startswith("hybrid-")
+            else
+            "Built-in WebFetch cannot run either, because no Claude model is available for its "
+            "Haiku family slot, so Airlock has disabled it here as well."
+        )
+        web_tools_guidance = (
+            f"Web tool guidance: built-in WebSearch executes on Anthropic's API, so this {label} root cannot "
+            f"run it and Airlock has disabled it for this session. {seat_note} Use the local airlock-web-tools "
+            "MCP server instead: its web_search tool searches DuckDuckGo and returns ranked links with "
+            "descriptions, and its fetch_page tool reads one public page into context without a background "
+            "model. Both tools make their own outbound requests to the public web and refuse private network "
+            "addresses."
+        )
     metadata = (
         "Native Agent handoff: send the selected worker one natural, self-contained query. Do not add task kind, risk, "
         "or selection markers, and do not request transport JSON. Named airlock-* Agents already bind their exact model; "
@@ -3848,6 +3875,7 @@ def profile_guidance(
             "preference is advisory and never overrides explicit choices, access, or confirmation."
         ),
         boundary,
+        *((web_tools_guidance,) if web_tools_guidance else ()),
         metadata,
         failure_policy,
         portfolio_guidance(
@@ -4134,13 +4162,110 @@ def managed_agent_names_json(
     return managed_agent_names(rendered, policy)
 
 
+def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
+    """Build the stdio MCP entry for the Airlock web tools, or None.
+
+    The server ships with the plugin, but it only joins the session settings
+    when its file exists at launch time, so an older installation without it
+    keeps launching unchanged. Setting AIRLOCK_WEB_TOOLS=off turns the whole
+    feature off for users who prefer no extra outbound-capable helper.
+    """
+
+    if os.environ.get("AIRLOCK_WEB_TOOLS", "").strip().lower() == "off":
+        return None
+    if not script:
+        return None
+    path = Path(script)
+    if path.is_symlink() or not path.is_file():
+        return None
+    return {"command": sys.executable, "args": [str(path.resolve())]}
+
+
+def web_tools_active_for(profile: str) -> bool:
+    """Whether the local web tools server belongs to this profile.
+
+    An Anthropic root already has working built-in WebSearch and WebFetch, so
+    it receives neither our server nor any denial: its session stays exactly
+    as Claude Code shipped it.
+    """
+
+    return PROFILE_ROOT_PROVIDERS.get(profile) != "anthropic"
+
+
+def built_in_web_tool_denials(profile: str) -> list[str]:
+    """Managed permissions.deny entries for broken built-in web tools.
+
+    Built-in WebSearch executes on Anthropic's API, so every non-Anthropic
+    root gets it denied outright instead of letting the model burn a turn on
+    a call that cannot succeed. A pure profile also has no Claude model for
+    WebFetch's Haiku family slot; hybrid sessions keep WebFetch working
+    through the seated Claude Haiku and deny only WebSearch.
+    """
+
+    if not web_tools_active_for(profile):
+        return []
+    if profile.startswith("hybrid-"):
+        return ["WebSearch"]
+    return ["WebSearch", "WebFetch"]
+
+
+def web_tool_allowances() -> list[str]:
+    """Managed permissions.allow entries for the local web tools.
+
+    Non-interactive sessions auto-deny every tool that needs a prompt, so
+    the session's sanctioned web path must be pre-allowed or even an
+    interactive user could not approve it in print mode. The names follow
+    Claude Code's mcp__<server>__<tool> rule format.
+    """
+
+    return [
+        "mcp__airlock-web-tools__web_search",
+        "mcp__airlock-web-tools__fetch_page",
+    ]
+
+
+def write_web_tools_mcp_config(
+    script: str | None, profile: str | None = None
+) -> str:
+    """Write the web tools server as an standalone MCP config file handle.
+
+    Claude Code does not start mcpServers entries carried in --settings on
+    every supported version, so launchers also hand this file to
+    --mcp-config. The file names the helper interpreter and the plugin server
+    script; it holds no credentials. An Anthropic root, the off switch, or a
+    missing server script returns an empty string instead of a file so
+    launchers can skip the flag entirely.
+    """
+
+    if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
+        raise AccessError(f"unknown session profile: {profile}")
+    entry = web_tools_server_entry(script)
+    if entry is None or (
+        profile is not None and not web_tools_active_for(profile)
+    ):
+        return ""
+    payload = json.dumps(
+        {"mcpServers": {"airlock-web-tools": entry}},
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    path, digest, size = write_session_artifact(
+        payload.encode("utf-8"), "airlock-mcp-", ".json"
+    )
+    return f"{path}\t{digest}\t{size}"
+
+
 def managed_session_settings_json(
     serialized: str,
     fast_mode: str = "inherit",
     policy: dict[str, Any] | None = None,
+    web_tools_script: str | None = None,
+    profile: str | None = None,
 ) -> str:
     if fast_mode not in {"inherit", "on", "off"}:
         raise AccessError("managed session Fast mode must be inherit, on, or off")
+    if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
+        raise AccessError(f"unknown session profile: {profile}")
     names = managed_agent_names_json(serialized, policy)
     enabled = set(names)
     services: list[str] = []
@@ -4177,6 +4302,17 @@ def managed_session_settings_json(
     settings: dict[str, object] = {"autoMode": {"environment": ["$defaults", context]}}
     if fast_mode != "inherit":
         settings["fastMode"] = fast_mode == "on"
+    web_tools = web_tools_server_entry(web_tools_script)
+    denials = built_in_web_tool_denials(profile) if (
+        profile is not None and web_tools is not None
+    ) else []
+    if denials:
+        settings["permissions"] = {
+            "allow": web_tool_allowances(),
+            "deny": denials,
+        }
+    if web_tools is not None and (profile is None or web_tools_active_for(profile)):
+        settings["mcpServers"] = {"airlock-web-tools": web_tools}
     return json.dumps(settings, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -4454,6 +4590,22 @@ def main() -> int:
     session_settings.add_argument(
         "--fast-mode", choices=("inherit", "on", "off"), default="inherit"
     )
+    session_settings.add_argument("--web-tools-script")
+    session_settings.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
+    )
+    mcp_file = subparsers.add_parser("managed-web-tools-mcp-file")
+    mcp_file.add_argument("--web-tools-script")
+    mcp_file.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
+    )
+    artifact_delete = subparsers.add_parser("session-artifact-delete")
+    artifact_delete.add_argument("--artifact", type=Path, required=True)
+    artifact_delete.add_argument("--digest", required=True)
+    artifact_delete.add_argument("--size", type=int, required=True)
+    artifact_create = subparsers.add_parser("session-artifact-create")
+    artifact_create.add_argument("--prefix", required=True)
+    artifact_create.add_argument("--suffix", required=True)
     session_routes = subparsers.add_parser("session-routes")
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument("--openrouter-root-route")
@@ -4474,6 +4626,7 @@ def main() -> int:
     profile_help = subparsers.add_parser("profile-guidance")
     profile_help.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     profile_help.add_argument("--openrouter-root-route")
+    profile_help.add_argument("--web-tools-script")
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
@@ -4504,8 +4657,27 @@ def main() -> int:
         if args.command == "managed-session-settings":
             policy = load_policy()
             print(managed_session_settings_json(
-                args.agents_json, args.fast_mode, policy
+                args.agents_json, args.fast_mode, policy,
+                web_tools_script=args.web_tools_script,
+                profile=args.profile,
             ))
+            return 0
+        if args.command == "managed-web-tools-mcp-file":
+            output = write_web_tools_mcp_config(
+                args.web_tools_script, profile=args.profile
+            )
+            if output:
+                print(output)
+            return 0
+        if args.command == "session-artifact-delete":
+            delete_session_artifact(args.artifact, args.digest, args.size)
+            return 0
+        if args.command == "session-artifact-create":
+            content = sys.stdin.buffer.read()
+            artifact_path, artifact_digest, artifact_size = (
+                write_session_artifact(content, args.prefix, args.suffix)
+            )
+            print(f"{artifact_path}\t{artifact_digest}\t{artifact_size}")
             return 0
         if args.command == "refresh":
             policy = refresh_policy()
@@ -4645,6 +4817,7 @@ def main() -> int:
                 policy,
                 args.profile,
                 openrouter_root_route=args.openrouter_root_route,
+                web_tools_script=args.web_tools_script,
             ))
             return 0
         if args.command == "render-agents":

@@ -130,6 +130,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_ANTHROPIC_FAST) config_anthropic_fast="$config_value" ;;
       AIRLOCK_EXTRA_USAGE_POLICY) config_extra_usage="$config_value" ;;
       AIRLOCK_GPT_EFFORT_CAPABILITIES) config_gpt_effort_capabilities="$config_value" ;;
+      AIRLOCK_AUTO_MODE_MODEL) config_auto_mode_model="$config_value" ;;
     esac
   done < "$config_file"
 fi
@@ -186,6 +187,8 @@ gpt_effort_capabilities="${AIRLOCK_GPT_EFFORT_CAPABILITIES:-${config_gpt_effort_
 # The hybrid launcher rebuilds these declarations itself, so hand it the
 # resolved value rather than letting it fall back to the built-in default.
 export AIRLOCK_GPT_EFFORT_CAPABILITIES="$gpt_effort_capabilities"
+auto_mode_model="${AIRLOCK_AUTO_MODE_MODEL:-${config_auto_mode_model:-}}"
+export AIRLOCK_AUTO_MODE_MODEL="$auto_mode_model"
 default_profile="${AIRLOCK_DEFAULT_PROFILE:-${config_default_profile:-openai}}"
 default_hybrid_model="${AIRLOCK_HYBRID_MODEL:-${config_hybrid_model:-sonnet}}"
 default_openai_model="${AIRLOCK_MODEL:-${config_model:-sol}}"
@@ -371,6 +374,7 @@ validate_managed_bundle() {
     --component "plugins/airlock/hooks/hooks.json=$plugin_dir/hooks/hooks.json"
     --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
     --component "plugins/airlock/skills/airlock-fast/SKILL.md=$plugin_dir/skills/airlock-fast/SKILL.md"
+    --component "plugins/airlock/mcp-server/airlock_web_tools.py=$plugin_dir/mcp-server/airlock_web_tools.py"
     --component "plugins/airlock/scripts/fast-session-end.sh=$plugin_dir/scripts/fast-session-end.sh"
     --component "plugins/airlock/scripts/fast-session-end.py=$plugin_dir/scripts/fast-session-end.py"
     --component "plugins/airlock/scripts/agent-guard.sh=$plugin_dir/scripts/agent-guard.sh"
@@ -680,6 +684,37 @@ declare_gpt_effort_capabilities() {
   export "${variable}_SUPPORTED_CAPABILITIES=$gpt_effort_capabilities"
 }
 
+# Claude Code's auto mode permission classifier hard-codes Claude Sonnet 5 as
+# its model and ignores the family slots. On any root that does not serve
+# that exact ID the classifier cannot run and every tool call that needs
+# classification fails closed. Classifications are frequent background work,
+# so point them at the cheapest model this session serves rather than at the
+# premium root: the small fast seat first, then the discovery model, then the
+# root itself only when nothing smaller is routed. AIRLOCK_AUTO_MODE_MODEL
+# passes through verbatim, and off or none keeps Claude Code's native behavior.
+apply_auto_mode_model() {
+  local root_model="$1"
+  local small_model=''
+  case "$auto_mode_model" in
+    off|none)
+      unset CLAUDE_CODE_AUTO_MODE_MODEL
+      return 0
+      ;;
+    ?*)
+      export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
+      return 0
+      ;;
+  esac
+  case "$root_model" in
+    claude-*|'') unset CLAUDE_CODE_AUTO_MODE_MODEL; return 0 ;;
+  esac
+  small_model="${ANTHROPIC_SMALL_FAST_MODEL:-${ANTHROPIC_DEFAULT_HAIKU_MODEL:-${AIRLOCK_DISCOVERY_MODEL:-}}}"
+  if [[ -z "$small_model" ]]; then
+    small_model="$root_model"
+  fi
+  export CLAUDE_CODE_AUTO_MODE_MODEL="$small_model"
+}
+
 configure_proxy_model_picker() {
   local profile="$1"
   local raw_models="$2"
@@ -716,9 +751,7 @@ configure_proxy_model_picker() {
     export "${variable}_NAME=$model"
     export "${variable}_DESCRIPTION=Airlock exact route for Claude Code's $family_name slot"
     unset "${variable}_SUPPORTED_CAPABILITIES"
-    if [[ "$profile" != 'openrouter-pure' ]]; then
-      declare_gpt_effort_capabilities "$variable" "$model"
-    fi
+    declare_gpt_effort_capabilities "$variable" "$model"
   done
   if [[ "$profile" == 'grok-pure' || "$profile" == hybrid-* || -z "${ANTHROPIC_SMALL_FAST_MODEL:-}" ]]; then
     export ANTHROPIC_SMALL_FAST_MODEL="$haiku_model"
@@ -807,6 +840,7 @@ clear_proxy_environment() {
   unset ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES
   unset CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_CODE_MAX_CONTEXT_TOKENS
   unset CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
+  unset CLAUDE_CODE_AUTO_MODE_MODEL
   unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
   unset CLAUDE_CODE_SUBAGENT_MODEL AIRLOCK_SESSION_ROUTER_URL
 }
@@ -913,6 +947,8 @@ set_openrouter_environment() {
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (OpenRouter route)"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected exact OpenRouter root ($root_model)"
+  declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
+  export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
   export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
 }
@@ -954,7 +990,9 @@ compose_append_system_prompt() {
   if (( have_custom )) && [[ -n "$custom" ]]; then
     combined="$custom"$'\n\n'"$guidance"
   fi
-  AIRLOCK_COMPOSED_CLAUDE_ARGS+=(--append-system-prompt "$combined")
+  # The composed text reaches Claude through --append-system-prompt-file so
+  # long routing guidance never rides in the process argument list.
+  AIRLOCK_COMBINED_SYSTEM_PROMPT="$combined"
 }
 
 run_claude_with_stable_owner() {
@@ -1117,8 +1155,11 @@ launch_session() {
     confirm_anthropic_fast || exit $?
     fast_mode='on'
   fi
-  session_settings="$(run_access managed-session-settings --agents-json "$agents_json" --fast-mode "$fast_mode")" || exit $?
+  session_settings="$(run_access managed-session-settings --agents-json "$agents_json" --fast-mode "$fast_mode" \
+    --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
+    --profile "$profile")" || exit $?
   guidance="$(run_access profile-guidance --profile "$profile" \
+    --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
     ${openrouter_root_args[@]+"${openrouter_root_args[@]}"})"
   claude_bin="${AIRLOCK_REAL_CLAUDE:-}"
   [[ -n "$claude_bin" ]] || claude_bin="$(command -v claude || true)"
@@ -1186,6 +1227,9 @@ launch_session() {
     printf 'airlock: %s model picker map is invalid.\n' "$profile" >&2
     exit 1
   fi
+  # The classifier seat is chosen after the picker so a hybrid or OpenRouter
+  # profile can ride the small model the picker seated rather than its root.
+  apply_auto_mode_model "$session_model"
   transition_channel=''
   transition_nonce=''
   launcher_pid=''
@@ -1236,19 +1280,118 @@ launch_session() {
   else
     unset AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE
   fi
+  # Windows rejects an exec once quoted argv plus environment cross its
+  # command-line ceiling, and Claude Code does not start mcpServers entries
+  # carried in --settings on every supported version. Settings, composed
+  # guidance, and the web tools server therefore reach Claude as real
+  # artifact files, staged last so no earlier failure path can leak them.
+  local -a file_backed_args=()
+  local -a mcp_config_args=()
+  local artifact_output='' artifact_rest=''
+  local settings_path='' settings_digest='' settings_size=''
+  local prompt_path='' prompt_digest='' prompt_size=''
+  local mcp_file_output='' mcp_config_rest=''
+  local mcp_config_path='' mcp_config_digest='' mcp_config_size=''
+  stage_managed_session_artifact() {
+    if ! artifact_output="$(printf '%s' "$1" | run_access session-artifact-create --prefix "$2" --suffix "$3")"; then
+      run_access session-snapshot-delete \
+        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
+        >/dev/null 2>&1 || true
+      printf 'airlock: %s could not be staged.\n' "$4" >&2
+      return 1
+    fi
+    artifact_a_path="${artifact_output%%$'\t'*}"
+    artifact_rest="${artifact_output#*$'\t'}"
+    artifact_a_digest="${artifact_rest%%$'\t'*}"
+    artifact_a_size="${artifact_rest#*$'\t'}"
+    if [[ -z "$artifact_a_path" || ${#artifact_a_digest} -ne 64 || \
+          "$artifact_a_digest" =~ [^0-9a-f] || -z "$artifact_a_size" || \
+          "$artifact_a_size" =~ [^0-9] ]]; then
+      run_access session-snapshot-delete \
+        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
+        >/dev/null 2>&1 || true
+      printf 'airlock: %s staging returned an invalid result.\n' "$4" >&2
+      return 1
+    fi
+  }
+  local artifact_a_path='' artifact_a_digest='' artifact_a_size=''
+  stage_managed_session_artifact \
+    "$session_settings" 'settings-' '.json' 'managed session settings' || exit 1
+  settings_path="$artifact_a_path"
+  settings_digest="$artifact_a_digest"
+  settings_size="$artifact_a_size"
+  file_backed_args+=(--settings "$settings_path")
+  stage_managed_session_artifact \
+    "$AIRLOCK_COMBINED_SYSTEM_PROMPT" 'guidance-' '.txt' 'routing guidance' || exit 1
+  prompt_path="$artifact_a_path"
+  prompt_digest="$artifact_a_digest"
+  prompt_size="$artifact_a_size"
+  file_backed_args+=(--append-system-prompt-file "$prompt_path")
+  if mcp_file_output="$(run_access managed-web-tools-mcp-file \
+      --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
+      --profile "$profile")"; then
+    if [[ -n "$mcp_file_output" ]]; then
+      mcp_config_path="${mcp_file_output%%$'\t'*}"
+      mcp_config_rest="${mcp_file_output#*$'\t'}"
+      mcp_config_digest="${mcp_config_rest%%$'\t'*}"
+      mcp_config_size="${mcp_config_rest#*$'\t'}"
+      if [[ -z "$mcp_config_path" || -z "$mcp_config_digest" || \
+            ${#mcp_config_digest} -ne 64 || "$mcp_config_digest" =~ [^0-9a-f] || \
+            -z "$mcp_config_size" || "$mcp_config_size" =~ [^0-9] ]]; then
+        run_access session-snapshot-delete \
+          --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
+          >/dev/null 2>&1 || true
+        printf 'airlock: web tools MCP config helper returned an invalid result.\n' >&2
+        exit 1
+      fi
+      mcp_config_args=(--mcp-config "$mcp_config_path")
+    fi
+  else
+    run_access session-snapshot-delete \
+      --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
+      >/dev/null 2>&1 || true
+    printf 'airlock: web tools MCP config could not be created.\n' >&2
+    exit 1
+  fi
   # skill_guard is empty when the claude-api skill is allowed. Bash 3.2, which
   # is what macOS still ships as /bin/bash, treats "${array[@]}" on an empty
   # array as an unbound variable under set -u, so every expansion that can be
   # empty uses the ${array[@]+...} form. Bash 4 and later behave identically.
   local -a claude_command=(
-    "$claude_bin" --settings "$session_settings" --plugin-dir "$plugin_dir"
+    "$claude_bin" --plugin-dir "$plugin_dir"
+    ${file_backed_args[@]+"${file_backed_args[@]}"}
     --agents "$agents_json" --allowedTools "${allowed_tools[@]}"
+    ${mcp_config_args[@]+"${mcp_config_args[@]}"}
     ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
   )
   if run_claude_with_stable_owner "${claude_command[@]}"; then
     snapshot_extra=0
   else
     snapshot_extra=$?
+  fi
+  local cleanup_target='' cleanup_path=''
+  local cleanup_rest='' cleanup_digest='' cleanup_size=''
+  for cleanup_target in \
+    "$settings_path"$'\t'"$settings_digest"$'\t'"$settings_size" \
+    "$prompt_path"$'\t'"$prompt_digest"$'\t'"$prompt_size"; do
+    cleanup_path="${cleanup_target%%$'\t'*}"
+    cleanup_rest="${cleanup_target#*$'\t'}"
+    cleanup_digest="${cleanup_rest%%$'\t'*}"
+    cleanup_size="${cleanup_rest#*$'\t'}"
+    if [[ -n "$cleanup_path" ]] && ! run_access session-artifact-delete \
+        --artifact "$cleanup_path" --digest "$cleanup_digest" \
+        --size "$cleanup_size" >/dev/null 2>&1; then
+      printf 'airlock: warning: managed session file cleanup failed: %s\n' \
+        "$cleanup_path" >&2
+    fi
+  done
+  if [[ -n "$mcp_config_path" ]]; then
+    if ! run_access session-artifact-delete \
+        --artifact "$mcp_config_path" --digest "$mcp_config_digest" \
+        --size "$mcp_config_size" >/dev/null 2>&1; then
+      printf 'airlock: warning: web tools MCP config cleanup failed: %s\n' \
+        "$mcp_config_path" >&2
+    fi
   fi
   if ! run_access session-snapshot-delete \
     --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \

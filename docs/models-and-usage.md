@@ -309,6 +309,30 @@ AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
 
 Anything left off that list is turned off for GPT roots, so remove entries only on purpose.
 
+### Effort on Grok and OpenRouter roots
+
+The same problem applies to any model ID that Claude Code does not recognize, so Grok roots and OpenRouter roots get the same treatment: every family slot the profile fills and the custom model option declare the effort capability tokens, and Airlock sets `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`. That switch tells Claude Code to show `/effort` even when the ID matches nothing it knows. An OpenRouter root therefore has a working effort knob without needing an entry in the capabilities variable, because the always-on switch covers IDs Airlock cannot predict.
+
+If you export your own `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`, your value wins.
+
+## Auto mode classifier model
+
+Claude Code runs a small permission classifier on tool calls that are not obviously safe, deciding whether to auto-approve them. That classifier ignores the session's model slots and hard-codes `claude-sonnet-5`. On a GPT, Grok, or OpenRouter root no route serves that exact ID, so every classified call failed closed and asked you to approve it by hand.
+
+Airlock now seats the cheapest model the session serves in the undocumented `CLAUDE_CODE_AUTO_MODE_MODEL` knob on non-Anthropic roots. Classifications are constant background work, so they ride the small fast seat rather than the premium root: a hybrid session prefers Claude Haiku when one is enabled, a pure OpenAI session rides Luna, and a pure Grok session rides Composer. An OpenRouter root uses what its preset serves; a single-model preset has nothing smaller than its own root, which still beats failing closed. Anthropic roots keep stock behaviour with the knob cleared. You can override the choice:
+
+```bash
+# pin any exact model ID for the classifier
+AIRLOCK_AUTO_MODE_MODEL=gpt-5.6-luna airlock hybrid sonnet
+
+# turn the override off and go back to stock behaviour
+AIRLOCK_AUTO_MODE_MODEL=off airlock opr
+```
+
+The same value works in the config file as `auto_mode_model`. Setting it to `off` or `none` clears the knob for that launch.
+
+Note for Windows PowerShell users: explicit overrides travel through the exported environment variable. A value saved in the config file is applied by the bash launcher; the PowerShell path still gets the default policy, which picks the small seat automatically.
+
 ## OpenAI usage
 
 ```bash
@@ -390,3 +414,32 @@ airlock session-usage --json
 ```
 
 This reads only the active loopback router's sanitized cumulative summary. It shows per-provider/model request outcomes and provider-reported input, cache-write, cache-read, and output totals. It does not rewrite provider responses, spoof Claude model IDs, estimate missing values, or claim to be a bill. Provider-pure profiles have no router and fail clearly rather than guessing.
+
+## Web search and page fetch
+
+Claude Code's built-in WebSearch runs on Anthropic's API. In a session whose root is GPT, Grok, or an OpenRouter route, that tool cannot run at all. A pure profile also cannot run built-in WebFetch, because no Claude model is available for its Haiku family slot. Hybrid sessions keep both built-in tools working by seating Claude Haiku there.
+
+For an OpenRouter root specifically, the router now also removes Anthropic server-tool declarations from forwarded requests. Without that, an upstream rejects the whole request with a 400 naming `web_search_20250305` before generating anything. The strip keeps the rest of a request working when a model tries WebSearch anyway; it does not execute searches, so use the local tools below instead.
+
+Airlock gives each profile exactly one working web path:
+
+| Root | Built-in WebSearch | Built-in WebFetch | Local airlock-web-tools |
+|---|---|---|---|
+| Hybrid with an Anthropic root | works | works | not registered |
+| Hybrid with a GPT, Grok, or OpenRouter root | denied | works (seated Claude Haiku) | registered |
+| Pure GPT, Grok, or OpenRouter root | denied | denied | registered |
+
+Denied means the tool is refused through managed permissions before the model wastes a turn on a call that cannot succeed. The managed guidance paragraph tells non-Anthropic roots why the built-ins are gone and names the local tools instead.
+
+The launcher hands the server to Claude Code through an `--mcp-config` file that is created at launch and deleted when the session ends, because Claude Code does not start `mcpServers` entries carried in `--settings`. The managed settings JSON keeps the same entry for forward compatibility.
+
+The local server needs only Python 3 and ships inside the plugin. It exposes two tools:
+
+- `web_search` takes `query` and optional `max_results` (1 to 12, default 6). It queries DuckDuckGo's HTML endpoint and returns ranked links with short descriptions. Follow up with `fetch_page` to read any result.
+- `fetch_page` takes `url` and optional `max_chars`. It downloads one public page and returns readable text without sending it through any model.
+
+Both tools contact the public web directly from your machine. They accept only http and https, resolve every address and refuse private, loopback, and link-local targets, follow redirects only while each hop passes the same checks, cap responses at 2 MB and 20 seconds, and truncate returned text to 20000 characters (up to 100000 when asked).
+
+DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
+
+Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.

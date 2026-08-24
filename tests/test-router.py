@@ -551,6 +551,125 @@ class RouterProtocolTests(unittest.TestCase):
             "require_parameters": False,
         })
 
+    def test_openrouter_strips_server_tools_and_records_diagnostic(self) -> None:
+        original = {
+            "model": "vendor/model-test",
+            "max_tokens": 1024,
+            "system": "synthetic system text",
+            "messages": [
+                {"role": "user", "content": "search for it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "partial answer"},
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_01",
+                            "name": "web_search",
+                            "input": {"query": "earlier query"},
+                        },
+                        {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": "srvtoolu_01",
+                            "content": [{"type": "text", "text": "old result"}],
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "client_01", "content": "kept"},
+                        {"type": "text", "text": "and continue"},
+                    ],
+                },
+            ],
+            "tools": [
+                {
+                    "name": "lookup",
+                    "description": "synthetic tool",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"type": "web_fetch_20250910", "name": "web_fetch"},
+            ],
+            "stream": False,
+        }
+        body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+        status, _response, _elapsed = self.request(
+            "vendor/model-test", body=body
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        payload.pop("provider")
+        self.assertEqual(payload["tools"], [original["tools"][0]])
+        assistant = payload["messages"][1]
+        self.assertEqual(
+            [block["type"] for block in assistant["content"]], ["text"]
+        )
+        # Client tool results survive; only the server-side variants go.
+        user_blocks = payload["messages"][2]["content"]
+        self.assertEqual(len(user_blocks), 2)
+        _diagnostics_status, diagnostics = self.get_json("/diagnostics")
+        stripped_events = [
+            event for event in diagnostics["events"]
+            if event.get("kind") == "openrouter_server_tools_stripped"
+        ]
+        self.assertEqual(len(stripped_events), 1)
+        self.assertEqual(
+            stripped_events[0]["removed"],
+            ["web_search", "web_fetch", "server_tool_use", "web_search_tool_result"],
+        )
+
+    def test_openrouter_server_only_tools_are_dropped_entirely(self) -> None:
+        original = {
+            "model": "vendor/model-test",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "code_execution_20250825", "name": "code_execution"}],
+            "stream": False,
+        }
+        body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+        status, _response, _elapsed = self.request(
+            "vendor/model-test", body=body
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        payload.pop("provider")
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+
+    def test_openrouter_keep_server_tools_switch_preserves_declarations(self) -> None:
+        original = {
+            "model": "vendor/model-test",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {
+                    "name": "lookup",
+                    "description": "synthetic tool",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                {"type": "web_search_20250305", "name": "web_search"},
+            ],
+            "stream": False,
+        }
+        body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+        previous = os.environ.get(router.KEEP_SERVER_TOOLS_VARIABLE)
+        os.environ[router.KEEP_SERVER_TOOLS_VARIABLE] = "1"
+        try:
+            status, response, _elapsed = self.request(
+                "vendor/model-test", body=body
+            )
+        finally:
+            if previous is None:
+                os.environ.pop(router.KEEP_SERVER_TOOLS_VARIABLE, None)
+            else:
+                os.environ[router.KEEP_SERVER_TOOLS_VARIABLE] = previous
+        self.assertEqual(status, 200)
+        payload = json.loads(self.openrouter.requests[0]["body"])
+        payload.pop("provider")
+        self.assertEqual(payload["tools"], original["tools"])
+
     def test_openrouter_lifts_native_system_role_into_system_blocks(self) -> None:
         original_system = [{
             "type": "text",

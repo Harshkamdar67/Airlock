@@ -238,6 +238,28 @@ Do not retry the same failing search. Use one of these paths:
 
 The error does not mean that Opus, the public website, or provider login failed. It is an effort mismatch at the Web Search helper boundary.
 
+## Every tool call asks for manual approval
+
+On a GPT, Grok, or OpenRouter root, almost every Bash, Edit, or Write call stops with a permission prompt even though auto mode should have approved it.
+
+Claude Code runs a small permission classifier on calls that are not obviously safe. That classifier ignores your session's models and always asks for `claude-sonnet-5`. No route serves that exact ID on a non-Anthropic root, so every classified call fails closed into a prompt.
+
+Airlock seats your session's cheapest served model in the classifier knob automatically, so new sessions do not hit this. If you still see it:
+
+- confirm you launched through `airlock` or `airlock.ps1` and not raw `claude`
+- start a new session; existing sessions keep the environment they started with
+- pin a specific model yourself with `AIRLOCK_AUTO_MODE_MODEL=<exact-id>`
+- set `AIRLOCK_AUTO_MODE_MODEL=off` to return to stock Claude Code behaviour
+
+## WebSearch fails with `cannot run Anthropic server-side tools`
+
+An OpenRouter-rooted session calls built-in WebSearch and the request dies with a 400 naming `web_search_20250305` or a similar server tool type.
+
+Built-in WebSearch and WebFetch are features of Anthropic's API. The router forwards requests verbatim to OpenRouter, and an OpenRouter upstream rejects any request carrying those tool declarations before generating anything.
+
+Airlock now strips those declarations and their history blocks before forwarding, so the rest of the request succeeds. This does not make WebSearch work: the router cannot execute searches or invent results, because server-side execution belongs to Anthropic's API, not to this machine. A non-Anthropic root should use the managed `airlock-web-tools` MCP server (`web_search` and `fetch_page`) instead. Set `AIRLOCK_OPENROUTER_KEEP_SERVER_TOOLS=1` if you need the old pass-through behaviour back.
+
+
 ## `/model` shows provider models under Claude family slots
 
 Claude Code always presents Fable, Opus, Sonnet, and Haiku slots. In an OpenAI-only or Grok-only Airlock session, leaving those slots on native Claude IDs would send unsupported IDs to the subscription proxy. Airlock maps them to distinct enabled models from the active provider and labels each entry with its exact model ID. The launch command's exact root also stays available as the custom option.
@@ -366,6 +388,16 @@ airlock mode
 ```
 
 Use several top-level native Agent calls when the work is truly independent. Do not build hidden descendant trees.
+
+## A Grok session says `Unknown model "grok-4.6"`
+
+Airlock pins the Grok flagship route to `grok-4.6`. The local subscription proxy translates that ID for grok.com, and older proxy builds only list `grok-4.5`. Upgrade `claude-code-proxy` so its catalog carries `grok-4.6`, then start a fresh session. Check what the installed build accepts with:
+
+```bash
+claude-code-proxy models
+```
+
+Composer is unaffected: `grok-composer-2.5-fast` exists in every current proxy catalog.
 
 ## Windows says the Claude Code launch command is too long
 

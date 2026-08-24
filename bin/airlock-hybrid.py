@@ -125,6 +125,35 @@ def declare_non_claude_effort_capabilities(
 declare_gpt_effort_capabilities = declare_non_claude_effort_capabilities
 
 
+def apply_auto_mode_model(environment: dict[str, str], root_model: str) -> None:
+    """Point auto mode's permission classifier at a model this route serves.
+
+    Claude Code hard-codes Claude Sonnet 5 for the classifier and ignores the
+    family slots, so on any root that does not serve that exact ID every
+    classification fails closed. Classifications are frequent background work,
+    so default to the cheapest served model rather than the premium root: the
+    small fast seat first, then the discovery model, then the root itself only
+    when nothing smaller is routed. AIRLOCK_AUTO_MODE_MODEL passes through
+    verbatim, and off or none keeps Claude Code's native behavior.
+    """
+    configured = (environment.get("AIRLOCK_AUTO_MODE_MODEL") or "").strip()
+    environment.pop("CLAUDE_CODE_AUTO_MODE_MODEL", None)
+    if configured.lower() in {"off", "none"}:
+        return
+    if configured:
+        environment["CLAUDE_CODE_AUTO_MODE_MODEL"] = configured
+        return
+    if not root_model or root_model.startswith("claude-"):
+        return
+    small_model = (
+        environment.get("ANTHROPIC_SMALL_FAST_MODEL")
+        or environment.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+        or environment.get("AIRLOCK_DISCOVERY_MODEL")
+        or root_model
+    )
+    environment["CLAUDE_CODE_AUTO_MODE_MODEL"] = small_model
+
+
 def configure_proxy_model_picker(
     environment: dict[str, str], profile: str, picker_models: object
 ) -> None:
@@ -148,8 +177,7 @@ def configure_proxy_model_picker(
             f"Airlock exact route for Claude Code's {family.title()} slot"
         )
         environment.pop(f"{variable}_SUPPORTED_CAPABILITIES", None)
-        if profile != "openrouter-pure":
-            declare_non_claude_effort_capabilities(environment, variable, model)
+        declare_non_claude_effort_capabilities(environment, variable, model)
     if (
         profile in {"grok-pure", "openrouter-pure"}
         or profile in HYBRID_PROFILES
@@ -268,19 +296,60 @@ def managed_session_settings(
     agents_json: str,
     fast_mode: str,
     policy: dict[str, object],
+    web_tools_script: str | None = None,
+    profile: str = "",
 ) -> str:
     try:
         settings = access.managed_session_settings_json(
-            agents_json, fast_mode, policy=policy
+            agents_json, fast_mode, policy=policy,
+            web_tools_script=web_tools_script,
+            profile=profile or None,
         )
         parsed = json.loads(settings)
     except Exception as error:
         fail(f"managed Auto-mode settings are invalid: {error}")
-    allowed_keys = {"autoMode"} if fast_mode == "inherit" else {"autoMode", "fastMode"}
+    if profile and profile not in access.PROFILE_ROOT_PROVIDERS:
+        fail("managed session settings received an unknown profile")
+    allowed_keys = {"autoMode"}
+    if fast_mode != "inherit":
+        allowed_keys.add("fastMode")
+    web_tools_entry = access.web_tools_server_entry(web_tools_script)
+    web_tools_join = (
+        web_tools_entry is not None
+        and (not profile or access.web_tools_active_for(profile))
+    )
+    expected_denials = access.built_in_web_tool_denials(profile) if (
+        profile and web_tools_entry is not None
+    ) else []
+    if web_tools_join:
+        allowed_keys.add("mcpServers")
+    if expected_denials:
+        allowed_keys.add("permissions")
     if not isinstance(parsed, dict) or set(parsed) != allowed_keys:
         fail("managed session settings have an unexpected shape")
     if fast_mode != "inherit" and parsed.get("fastMode") is not (fast_mode == "on"):
         fail("managed session Fast setting is invalid")
+    servers = parsed.get("mcpServers")
+    if servers is not None and not (
+        isinstance(servers, dict)
+        and set(servers) == {"airlock-web-tools"}
+        and isinstance(servers["airlock-web-tools"], dict)
+        and isinstance(servers["airlock-web-tools"].get("command"), str)
+        and servers["airlock-web-tools"].get("args") == [str(Path(web_tools_script).resolve())]
+    ):
+        fail("managed session web tools entry is invalid")
+    permissions = parsed.get("permissions")
+    if permissions is not None and not (
+        isinstance(permissions, dict)
+        and set(permissions) == {"allow", "deny"}
+        and isinstance(permissions["allow"], list)
+        and all(isinstance(entry, str) for entry in permissions["allow"])
+        and permissions["allow"] == access.web_tool_allowances()
+        and isinstance(permissions["deny"], list)
+        and all(isinstance(entry, str) for entry in permissions["deny"])
+        and set(permissions["deny"]) == set(expected_denials)
+    ):
+        fail("managed session web tool permissions are invalid")
     return settings
 
 
@@ -531,6 +600,8 @@ def build_child_environment(
             force_context_window=force_context_window,
             user_context_window=user_context_window,
         )
+        apply_auto_mode_model(environment, root_model)
+        environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
         return environment
 
     if profile == "openrouter-pure":
@@ -554,6 +625,11 @@ def build_child_environment(
         environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
             f"Selected exact OpenRouter root ({root_model})"
         )
+        declare_non_claude_effort_capabilities(
+            environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
+        )
+        apply_auto_mode_model(environment, root_model)
+        environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
         environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
         environment.pop("AIRLOCK_HYBRID", None)
@@ -593,6 +669,7 @@ def build_child_environment(
         force_context_window=force_context_window,
         user_context_window=user_context_window,
     )
+    apply_auto_mode_model(environment, root_model)
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
@@ -875,7 +952,11 @@ def main(
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")
         session_settings = managed_session_settings(
-            access, agents_json, fast_mode, policy
+            access, agents_json, fast_mode, policy,
+            web_tools_script=str(
+                plugin_dir / "mcp-server" / "airlock_web_tools.py"
+            ),
+            profile=profile,
         )
         guidance = access.profile_guidance(
             policy,
@@ -902,6 +983,7 @@ def main(
         router = validate_router_path(request.get("router_helper"))
 
     artifacts: list[tuple[str, Path, str, int]] = []
+    mcp_config_path: Path | None = None
     snapshot_path: Path | None = None
     snapshot_digest: str | None = None
     return_code = 1
@@ -922,6 +1004,22 @@ def main(
                 combined_guidance.encode("utf-8"), "guidance-", ".txt"
             )
             artifacts.append(("routing guidance", *guidance_artifact))
+            # Claude Code does not start mcpServers entries from --settings on
+            # every supported version, so the same single-server definition is
+            # handed to --mcp-config as a real artifact file.
+            web_tools_script = str(
+                plugin_dir / "mcp-server" / "airlock_web_tools.py"
+            )
+            mcp_output = access.write_web_tools_mcp_config(
+                web_tools_script, profile=profile
+            )
+            if mcp_output:
+                mcp_path, mcp_digest, mcp_size = mcp_output.split("\t", 2)
+                mcp_config_path = Path(mcp_path)
+                artifacts.append((
+                    "web tools MCP config",
+                    mcp_config_path, mcp_digest, int(mcp_size),
+                ))
         except Exception as error:
             fail(f"managed session launch files could not be created: {error}")
 
@@ -933,6 +1031,8 @@ def main(
             "--plugin-dir", str(plugin_dir), "--agents", agents_json,
             "--allowedTools", *allowed_tools, *child_args,
         ]
+        if mcp_config_path is not None:
+            command.extend(["--mcp-config", str(mcp_config_path)])
         validate_windows_command_line(command)
 
         try:

@@ -48,6 +48,8 @@ else
   printf 'AUTH_TOKEN_SET=no\n'
 fi
 printf 'EFFORT_ENV=%s\n' "${CLAUDE_CODE_EFFORT_LEVEL:-unset}"
+printf 'ALWAYS_EFFORT=%s\n' "${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-unset}"
+printf 'AUTO_MODE_MODEL=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL:-unset}"
 printf 'ACTIVE_PROFILE=%s\n' "${AIRLOCK_ACTIVE_PROFILE:-unset}"
 printf 'UPDATE_NOTICE=%s\n' "${AIRLOCK_UPDATE_NOTICE_FILE:-unset}"
 printf 'ROOT_MODEL=%s\n' "${AIRLOCK_ROOT_MODEL:-unset}"
@@ -92,15 +94,60 @@ fi
 python - "$@" <<'PY'
 import json
 import sys
+from pathlib import Path
 arguments = sys.argv[1:]
 print("ARGS_JSON=" + json.dumps(arguments))
+settings = None
 if "--settings" in arguments:
     index = arguments.index("--settings")
-    settings = json.loads(arguments[index + 1])
+    raw_settings = arguments[index + 1]
+    try:
+        settings = json.loads(raw_settings)
+    except ValueError:
+        try:
+            settings = json.loads(
+                Path(raw_settings).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            settings = None
+    if settings is not None:
+        print("SETTINGS_JSON=" + json.dumps(settings, sort_keys=True))
+    else:
+        print("SETTINGS_JSON=unreadable")
+if settings is not None:
     fast_mode = settings.get("fastMode", "inherit")
     if isinstance(fast_mode, bool):
         fast_mode = "on" if fast_mode else "off"
     print("FAST_MODE=" + str(fast_mode))
+if "--append-system-prompt-file" in arguments:
+    index = arguments.index("--append-system-prompt-file")
+    try:
+        prompt_text = Path(arguments[index + 1]).read_text(encoding="utf-8")
+        encoded = __import__("base64").b64encode(
+            prompt_text.encode("utf-8")
+        ).decode("ascii")
+        print("APPEND_SYSTEM_PROMPT_B64=" + encoded)
+    except OSError:
+        print("APPEND_SYSTEM_PROMPT_B64=unreadable")
+elif "--append-system-prompt" in arguments:
+    index = arguments.index("--append-system-prompt")
+    encoded = __import__("base64").b64encode(
+        arguments[index + 1].encode("utf-8")
+    ).decode("ascii")
+    print("APPEND_SYSTEM_PROMPT_B64=" + encoded)
+elif "--append-system-prompt" in arguments:
+    index = arguments.index("--append-system-prompt")
+    print("APPEND_SYSTEM_PROMPT=" + arguments[index + 1])
+if "--mcp-config" in arguments:
+    index = arguments.index("--mcp-config")
+    try:
+        payload = json.loads(
+            Path(arguments[index + 1]).read_text(encoding="utf-8")
+        )
+        servers = sorted(payload.get("mcpServers", {}))
+        print("MCP_SERVERS=" + ",".join(servers))
+    except (OSError, ValueError):
+        print("MCP_SERVERS=unreadable")
 PY
 for argument in "$@"; do
   printf 'ARG=%s\n' "$argument"

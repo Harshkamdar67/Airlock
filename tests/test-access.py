@@ -913,6 +913,118 @@ for line in sys.stdin:
         with self.assertRaises(ACCESS.AccessError):
             ACCESS.managed_session_settings_json(json.dumps({"airlock-opus": {}}), "maybe")
 
+    def test_managed_session_settings_web_tools_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "airlock_web_tools.py"
+            script.write_text("# server\n", encoding="utf-8")
+            agents = json.dumps({"airlock-luna": {}})
+
+            pure = json.loads(ACCESS.managed_session_settings_json(
+                agents, web_tools_script=str(script), profile="grok-pure",
+            ))
+            self.assertEqual(set(pure), {"autoMode", "permissions", "mcpServers"})
+            self.assertEqual(
+                pure["permissions"],
+                {
+                    "allow": [
+                        "mcp__airlock-web-tools__web_search",
+                        "mcp__airlock-web-tools__fetch_page",
+                    ],
+                    "deny": ["WebSearch", "WebFetch"],
+                },
+            )
+            self.assertEqual(
+                pure["mcpServers"]["airlock-web-tools"]["command"],
+                sys.executable,
+            )
+
+            hybrid = json.loads(ACCESS.managed_session_settings_json(
+                agents, web_tools_script=str(script), profile="hybrid-grok-root",
+            ))
+            self.assertEqual(set(hybrid), {"autoMode", "permissions", "mcpServers"})
+            self.assertEqual(hybrid["permissions"], {
+                "allow": [
+                    "mcp__airlock-web-tools__web_search",
+                    "mcp__airlock-web-tools__fetch_page",
+                ],
+                "deny": ["WebSearch"],
+            })
+
+            anthropic = json.loads(ACCESS.managed_session_settings_json(
+                agents, web_tools_script=str(script), profile="hybrid-anthropic-root",
+            ))
+            self.assertEqual(set(anthropic), {"autoMode"})
+            self.assertNotIn("permissions", anthropic)
+            self.assertNotIn("mcpServers", anthropic)
+
+            with patch.dict(os.environ, {"AIRLOCK_WEB_TOOLS": "off"}):
+                disabled = json.loads(ACCESS.managed_session_settings_json(
+                    agents, web_tools_script=str(script), profile="grok-pure",
+                ))
+            self.assertEqual(set(disabled), {"autoMode"})
+
+            with self.assertRaises(ACCESS.AccessError):
+                ACCESS.managed_session_settings_json(
+                    agents, web_tools_script=str(script), profile="not-a-profile",
+                )
+
+    def test_web_tools_mcp_config_file_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "airlock_web_tools.py"
+            script.write_text("# server\n", encoding="utf-8")
+            runtime = Path(temp) / "runtime"
+            environment = {
+                "AIRLOCK_SESSION_RUNTIME_DIR": str(runtime),
+            }
+
+            with patch.dict(os.environ, environment):
+                output = ACCESS.write_web_tools_mcp_config(
+                    str(script), profile="openrouter-pure"
+                )
+            self.assertNotIn("\n", output)
+            path_text, digest, size_text = output.split("\t")
+            self.assertEqual(len(digest), 64)
+            self.assertGreater(int(size_text), 0)
+            payload = json.loads(
+                Path(path_text).read_text(encoding="utf-8")
+            )
+            entry = payload["mcpServers"]["airlock-web-tools"]
+            self.assertEqual(entry["command"], sys.executable)
+            self.assertEqual(entry["args"], [str(script.resolve())])
+            with patch.dict(os.environ, environment):
+                ACCESS.delete_session_artifact(
+                    Path(path_text), digest, int(size_text)
+                )
+            self.assertFalse(Path(path_text).exists())
+
+            with patch.dict(os.environ, environment):
+                empty = ACCESS.write_web_tools_mcp_config(
+                    str(script), profile="hybrid-anthropic-root"
+                )
+            self.assertEqual(empty, "")
+
+            with patch.dict(os.environ, {
+                **environment,
+                "AIRLOCK_WEB_TOOLS": "off",
+            }):
+                disabled = ACCESS.write_web_tools_mcp_config(
+                    str(script), profile="grok-pure"
+                )
+            self.assertEqual(disabled, "")
+
+            missing = str(Path(temp) / "absent-server.py")
+            with patch.dict(os.environ, environment):
+                absent = ACCESS.write_web_tools_mcp_config(
+                    missing, profile="grok-pure"
+                )
+            self.assertEqual(absent, "")
+
+            with patch.dict(os.environ, environment):
+                with self.assertRaises(ACCESS.AccessError):
+                    ACCESS.write_web_tools_mcp_config(
+                        str(script), profile="not-a-profile"
+                    )
+
 
 class FastTransitionTests(unittest.TestCase):
     def setUp(self) -> None:
