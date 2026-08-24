@@ -564,6 +564,39 @@ for line in sys.stdin:
             "gpt-5.6-luna",
         )
 
+    def test_auto_hybrid_root_never_selects_extra_or_unavailable_models(self) -> None:
+        policy = ACCESS.default_policy()
+        # Fresh policy state: Fable is unavailable and Opus is unknown, so the
+        # reserved auto root lands on Opus without touching the network.
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "opus")
+        policy["providers"]["anthropic"]["models"]["fable"]["access"] = "included"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "fable")
+
+        # An extra-class model never wins, even when extra usage is allowed
+        # outright, because a family alias cannot carry a confirmation marker.
+        policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
+        policy["policies"]["extra_usage"] = "allow"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "opus")
+        policy["providers"]["anthropic"]["models"]["opus"]["access"] = "extra"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "sonnet")
+
+        # Sonnet is the unconditional final fallback whatever its own class.
+        policy["providers"]["anthropic"]["models"]["sonnet"]["access"] = "unavailable"
+        self.assertEqual(ACCESS.default_hybrid_root(policy), "sonnet")
+
+        rendered = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "airlock-access.py"), "hybrid-default-root"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=dict(os.environ),
+            check=False,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        # The subprocess reads the same empty access state as the default
+        # policy above, so it prints Opus.
+        self.assertEqual(rendered.stdout.strip(), "opus")
+
     def test_openai_catalog_is_bare_and_claude_window_suffixes_remain(self) -> None:
         openai_models = [profile["model"] for profile in ACCESS.MODEL_PROFILES["openai"].values()]
         self.assertTrue(openai_models)
@@ -1700,6 +1733,160 @@ class SessionUsageTests(unittest.TestCase):
         payload["raw_response"] = "must-not-be-accepted"
         with self.assertRaises(ACCESS.AccessError):
             ACCESS.session_usage_report(payload)
+
+    def test_session_usage_accepts_and_bounds_rate_limit_cooldowns(self) -> None:
+        # Older routers omit the key entirely.
+        report = ACCESS.session_usage_report(self.payload())
+        self.assertEqual(report["cooldowns"], [])
+        payload = self.payload()
+        payload["rate_limit_cooldowns"] = ["gpt-5.6-luna", "gpt-5.6-luna", "grok-test"]
+        report = ACCESS.session_usage_report(payload)
+        self.assertEqual(report["cooldowns"], ["gpt-5.6-luna", "grok-test"])
+        lines = "\n".join(ACCESS.session_usage_lines(report))
+        self.assertIn("Cooling down after rate limits", lines)
+        self.assertIn("gpt-5.6-luna, grok-test", lines)
+        quiet = "\n".join(ACCESS.session_usage_lines(self.report_without_cds()))
+        self.assertNotIn("Cooling down", quiet)
+
+    def report_without_cds(self) -> dict[str, object]:
+        return ACCESS.session_usage_report(self.payload())
+
+    def test_session_usage_rejects_invalid_cooldown_entries(self) -> None:
+        for cooldowns in (
+            "gpt-5.6-luna",
+            [42],
+            ["bad model name with spaces"],
+            ["x" * 200],
+            ["ok"] * 33,
+        ):
+            payload = self.payload()
+            payload["rate_limit_cooldowns"] = cooldowns
+            with self.subTest(cooldowns=cooldowns), self.assertRaises(
+                ACCESS.AccessError
+            ):
+                ACCESS.session_usage_report(payload)
+
+
+class FailoverChainTests(unittest.TestCase):
+    """Rate-limit failover chains stay inside a cost category."""
+
+    def policy(self, *, failover="ask", extra_usage="ask") -> dict[str, object]:
+        return {
+            "policies": {
+                "failover": failover,
+                "extra_usage": extra_usage,
+            }
+        }
+
+    def worker(self, route, model, provider, cost, access="included"):
+        return {
+            "route": route,
+            "agent": f"airlock-{route}",
+            "model": model,
+            "provider": provider,
+            "access": access,
+            "cost": cost,
+        }
+
+    def routes(self):
+        return {
+            "gpt-5.6-luna": "openai",
+            "grok-composer-2.5-fast": "grok",
+            "claude-haiku-4-5-20251001": "anthropic",
+            "gpt-5.6-sol": "openai",
+            "claude-opus-5[1m]": "anthropic",
+            "claude-opus-5": "anthropic",
+            "vendor/model-test": "openrouter",
+        }
+
+    def test_economical_models_chain_within_their_category(self) -> None:
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
+            self.worker(
+                "haiku", "claude-haiku-4-5-20251001", "anthropic", "economical"
+            ),
+        ]
+        chains = ACCESS.session_failover_chains(
+            self.policy(), workers, self.routes()
+        )
+        self.assertEqual(chains["gpt-5.6-luna"], [
+            "grok-composer-2.5-fast",
+            "claude-haiku-4-5-20251001",
+        ])
+        self.assertEqual(chains["grok-composer-2.5-fast"], [
+            "gpt-5.6-luna",
+            "claude-haiku-4-5-20251001",
+        ])
+
+    def test_premium_and_standard_categories_do_not_mix(self) -> None:
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
+            self.worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+            self.worker("terra", "gpt-5.6-terra", "openai", "standard"),
+        ]
+        chains = ACCESS.session_failover_chains(
+            self.policy(), workers, self.routes()
+        )
+        self.assertEqual(chains["gpt-5.6-sol"], ["claude-opus-5"])
+        self.assertEqual(chains["claude-opus-5[1m]"], ["gpt-5.6-sol"])
+        self.assertEqual(chains["claude-opus-5"], ["gpt-5.6-sol"])
+        # A lone standard worker has no same-category peer and no chain.
+        self.assertNotIn("gpt-5.6-terra", chains)
+        self.assertNotIn("gpt-5.6-luna", chains)
+
+    def test_extra_gated_targets_require_the_allow_policy(self) -> None:
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker(
+                "or-a", "vendor/model-a", "openrouter", "unknown", access="extra"
+            ),
+            self.worker(
+                "or-b", "vendor/model-b", "openrouter", "unknown", access="extra"
+            ),
+        ]
+        routes = {
+            "gpt-5.6-luna": "openai",
+            "vendor/model-a": "openrouter",
+            "vendor/model-b": "openrouter",
+        }
+        ask = ACCESS.session_failover_chains(
+            self.policy(extra_usage="ask"), workers, routes
+        )
+        # Under ask the extra-gated pair is excluded and luna is alone in its
+        # category, so no chain forms at all.
+        self.assertEqual(ask, {})
+        allow = ACCESS.session_failover_chains(
+            self.policy(extra_usage="allow"), workers, routes
+        )
+        # Under allow the two extra-gated models of one category chain to
+        # each other; luna still has no same-category peer.
+        self.assertEqual(allow["vendor/model-a"], ["vendor/model-b"])
+        self.assertEqual(allow["vendor/model-b"], ["vendor/model-a"])
+        self.assertNotIn("gpt-5.6-luna", allow)
+
+    def test_never_policy_disables_all_chains(self) -> None:
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
+        ]
+        chains = ACCESS.session_failover_chains(
+            self.policy(failover="never"), workers, self.routes()
+        )
+        self.assertEqual(chains, {})
+
+    def test_peers_outside_the_route_table_are_dropped(self) -> None:
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
+        ]
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            workers,
+            {"gpt-5.6-luna": "openai"},
+        )
+        self.assertEqual(chains, {})
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.24.1"
+MANAGED_BUNDLE_VERSION = "2026.08.25.1"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -218,6 +218,11 @@ PROFILE_COMPONENTS = {
         ("openai", "openai_wrappers"),
         ("anthropic", "anthropic_wrappers"),
     ),
+    "hybrid-openrouter-root": (
+        ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_wrappers"),
+        ("grok", "grok_wrappers"),
+    ),
 }
 PROFILE_ROOT_PROVIDERS = {
     "openrouter-pure": "openrouter",
@@ -226,6 +231,7 @@ PROFILE_ROOT_PROVIDERS = {
     "hybrid-openai-root": "openai",
     "hybrid-anthropic-root": "anthropic",
     "hybrid-grok-root": "grok",
+    "hybrid-openrouter-root": "openrouter",
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
@@ -1986,6 +1992,22 @@ def model_access(policy: dict[str, Any], provider: str, route: str) -> str:
     return policy["providers"][provider]["models"][route]["access"]
 
 
+def default_hybrid_root(policy: dict[str, Any]) -> str:
+    """Resolve the reserved ``auto`` hybrid root under the local access policy.
+
+    Fable wins when its Anthropic access class is neither ``extra`` nor
+    ``unavailable``, otherwise Opus wins under the same rule, and Sonnet is
+    the final fallback. Auto selection therefore never picks an extra-class
+    model and never creates silent metered spend, whatever the extra-usage
+    policy says.
+    """
+    for route in ("fable", "opus"):
+        access = model_access(policy, "anthropic", route)
+        if access not in ("extra", "unavailable"):
+            return route
+    return "sonnet"
+
+
 def delegation_error(policy: dict[str, Any], provider: str, route: str, effort: str, extra_authorized: bool) -> tuple[str, str] | None:
     if effort not in VALID_EFFORTS:
         return "invalid_effort", "Effort must be low, medium, high, xhigh, or max"
@@ -2077,6 +2099,12 @@ def _validate_openrouter_root_route(
     if profile == "openrouter-pure":
         if openrouter_root_route is None:
             raise AccessError("openrouter-pure requires an exact OpenRouter root route")
+        return resolve_openrouter_route(policy, openrouter_root_route)
+    if profile == "hybrid-openrouter-root":
+        if openrouter_root_route is None:
+            raise AccessError(
+                "hybrid-openrouter-root requires an exact OpenRouter root route"
+            )
         return resolve_openrouter_route(policy, openrouter_root_route)
     if openrouter_root_route is not None:
         raise AccessError(
@@ -2217,6 +2245,64 @@ def discovery_model_from_workers(
         if model:
             return model
     return None
+
+
+FAILOVER_CHAIN_LIMIT = 8
+
+
+def _failover_route_preference(route: str) -> tuple[int, int, str]:
+    """Rank routes so failover chains keep a stable, cheap-first order."""
+    try:
+        return (0, DISCOVERY_ROUTES.index(route), route)
+    except ValueError:
+        return (1, 0, route)
+
+
+def session_failover_chains(
+    policy: dict[str, Any],
+    workers: list[dict[str, str]],
+    routes: dict[str, str],
+) -> dict[str, list[str]]:
+    """Map every routed model to same-category replacements for rate limits.
+
+    When an upstream answers 429 the router retries the same request on the
+    next healthy model from the same cost category instead of letting Claude
+    Code back off against one exhausted model, which is what made WebFetch
+    appear to hang. Chains stay inside a cost category on purpose: a handoff
+    must not quietly spend more than the model it replaces. Extra-usage gated
+    models only serve as targets when the extra-usage policy is allow,
+    mirroring how worker selection treats them.
+    """
+    if policy["policies"]["failover"] == "never":
+        return {}
+    allow_extra = policy["policies"]["extra_usage"] == "allow"
+    eligible = [
+        worker for worker in workers if allow_extra or worker["access"] != "extra"
+    ]
+    groups: dict[str, list[dict[str, str]]] = {}
+    for worker in eligible:
+        groups.setdefault(worker["cost"], []).append(worker)
+    routed = set(routes)
+    chains: dict[str, list[str]] = {}
+    for members in groups.values():
+        ordered = sorted(
+            members, key=lambda w: _failover_route_preference(w["route"])
+        )
+        for worker in ordered:
+            peers: list[str] = []
+            for other in ordered:
+                if other is worker:
+                    continue
+                peer = wire_model_id(other["model"])
+                if peer in routed and peer not in peers:
+                    peers.append(peer)
+            if not peers:
+                continue
+            entry = peers[:FAILOVER_CHAIN_LIMIT]
+            for form in {worker["model"], wire_model_id(worker["model"])}:
+                if form in routed:
+                    chains[form] = entry
+    return dict(sorted(chains.items()))
 
 
 def discovery_model(
@@ -2453,6 +2539,7 @@ def build_session_snapshot(
             "routes": routes,
             "agents": agents,
             "openrouter": openrouter,
+            "failover": session_failover_chains(policy, workers, routes),
         })
     except POLICY_SCHEMA.PolicyValidationError as exc:
         raise AccessError(f"session policy snapshot is invalid: {exc}") from exc
@@ -3150,7 +3237,11 @@ def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
 
 def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and retain only cumulative counts from router diagnostics."""
-    if set(payload) != {"instance_id", "events", "summary"}:
+    # Routers that know about rate-limit failover also report which models are
+    # cooling down; older routers omit that key and stay equally valid.
+    required = {"instance_id", "events", "summary"}
+    allowed = required | {"rate_limit_cooldowns"}
+    if not required <= set(payload) or set(payload) - allowed:
         raise AccessError("active Airlock session diagnostics have an invalid shape")
     instance_id = payload.get("instance_id")
     events = payload.get("events")
@@ -3200,12 +3291,24 @@ def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
             raise AccessError("active Airlock session usage counts are inconsistent")
         groups.append({"provider": provider, "model": model, **counts})
     groups.sort(key=lambda group: (group["provider"], group["model"]))
+    raw_cooldowns = payload.get("rate_limit_cooldowns", [])
+    if not isinstance(raw_cooldowns, list) or len(raw_cooldowns) > 32:
+        raise AccessError("active Airlock session rate-limit cooldowns are invalid")
+    cooldowns: list[str] = []
+    for model in raw_cooldowns:
+        if not isinstance(model, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:+\-\[\]]{0,127}", model
+        ):
+            raise AccessError("active Airlock session rate-limit cooldowns are invalid")
+        if model not in cooldowns:
+            cooldowns.append(model)
     return {
         "source": "airlock-router",
         "scope": "current-session",
         "billing": False,
         "bounded_event_window": len(events),
         "groups": groups,
+        "cooldowns": sorted(cooldowns),
     }
 
 
@@ -3227,6 +3330,12 @@ def session_usage_lines(report: dict[str, Any]) -> list[str]:
                 f"cache-read={group['cache_read_input_tokens']}, "
                 f"output={group['output_tokens']}"
             )
+    cooldowns = report.get("cooldowns")
+    if isinstance(cooldowns, list) and cooldowns:
+        lines.append(
+            "Cooling down after rate limits (failover skips these): "
+            + ", ".join(cooldowns)
+        )
     lines.append(
         "OpenRouter usage is not included because it belongs to a separate account."
     )
@@ -3407,11 +3516,14 @@ def root_orchestration_guidance(
     openrouter_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
-    # The guidance has to name the model a caller actually receives from
-    # `model=haiku`, which is the Haiku family slot rather than the discovery
-    # model. The two differ in a profile that seats a Claude model in that slot
-    # so Claude Code's own background work keeps working.
-    if openrouter_root_route is not None:
+    # Only openrouter-pure maps every family alias to the selected root. A
+    # hybrid OpenRouter root keeps normal wrapper-backed family slots, and the
+    # guidance must name the model a caller actually receives from the Haiku
+    # slot rather than the separate discovery route.
+    pure_openrouter_root = (
+        profile == "openrouter-pure" and openrouter_root_route is not None
+    )
+    if pure_openrouter_root:
         recommended_discovery: str | None = resolve_openrouter_route(
             policy, openrouter_root_route
         ).model
@@ -3422,7 +3534,7 @@ def root_orchestration_guidance(
             )["haiku"]
         except AccessError:
             recommended_discovery = None
-    if openrouter_root_route is not None:
+    if pure_openrouter_root:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
             f"Airlock resolves every alias to the exact selected OpenRouter root model {recommended_discovery}. "
@@ -3728,11 +3840,19 @@ def profile_guidance(
         if provider in enabled_providers and provider in policy.get("providers", {})
     )
     if "openrouter" in enabled_providers:
-        openrouter_signal = (
-            "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
-            if profile == "openrouter-pure"
-            else "openrouter(registry=pinned/key=separate/usage=extra)"
-        )
+        if profile == "openrouter-pure":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
+            )
+        elif profile == "hybrid-openrouter-root":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=selected-hybrid-root/"
+                "other-routes=extra)"
+            )
+        else:
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/usage=extra)"
+            )
         signals = ", ".join(filter(None, (signals, openrouter_signal)))
     if profile == "openrouter-pure":
         selected = resolve_openrouter_route(policy, str(openrouter_root_route))
@@ -3800,6 +3920,14 @@ def profile_guidance(
                 "Exact user-declared OpenRouter IDs go only to OpenRouter through the single "
                 "endpoint provider pinned in the local registry. OpenRouter uses a separate key; "
                 "Airlock does not infer these models' capability, context window, or relative cost."
+            )
+        if profile == "hybrid-openrouter-root":
+            selected = resolve_openrouter_route(policy, str(openrouter_root_route))
+            routes.append(
+                f"The root itself is the user-selected OpenRouter route {selected.route} with model "
+                f"{selected.model} through endpoint provider {selected.endpoint_provider}. The fable, opus, "
+                "sonnet, and haiku family aliases stay wrapper backed and never carry an OpenRouter model; "
+                "Claude Code's single custom model option carries the root."
             )
         excluded = [
             label
@@ -4024,14 +4152,17 @@ def render_openrouter_agents(
         profile,
         openrouter_root_route=openrouter_root_route,
     ):
-        selected_root = (
-            profile == "openrouter-pure"
-            and worker["access"] == "included"
-        )
-        if selected_root:
+        selected_root = worker["access"] == "included"
+        if selected_root and profile == "openrouter-pure":
             usage_sentence = (
                 "This is the explicitly selected route for normal root traffic; its named "
                 "Agent uses the same route without extra-usage gating."
+            )
+        elif selected_root:
+            usage_sentence = (
+                "This is the explicitly selected route and this session's hybrid root model; its "
+                "named Agent uses the same route without extra-usage gating, while the wrapper-backed "
+                "family aliases never resolve to an OpenRouter model."
             )
         elif requires_confirmation:
             usage_sentence = (
@@ -4630,6 +4761,7 @@ def main() -> int:
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
+    subparsers.add_parser("hybrid-default-root")
     bundle_check = subparsers.add_parser("bundle-check")
     bundle_check.add_argument("--bundle", type=Path, required=True)
     bundle_check.add_argument("--platform", choices=("posix", "windows"), required=True)
@@ -4774,6 +4906,9 @@ def main() -> int:
                 separators=(",", ":"),
                 ensure_ascii=True,
             ))
+            return 0
+        if args.command == "hybrid-default-root":
+            print(default_hybrid_root(policy))
             return 0
         if args.command == "session-snapshot":
             snapshot_path, snapshot_digest = write_session_snapshot(

@@ -114,6 +114,11 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("DEFAULT_SONNET=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_SONNET_MODEL") ?? "unset"));
     Console.WriteLine("DEFAULT_HAIKU=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_HAIKU_MODEL") ?? "unset"));
     Console.WriteLine("SMALL_FAST=" + (Environment.GetEnvironmentVariable("ANTHROPIC_SMALL_FAST_MODEL") ?? "unset"));
+    Console.WriteLine("AUTO_MODE_MODEL=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_MODE_MODEL") ?? "unset"));
+    Console.WriteLine("OPENROUTER_BRIDGE=" + (Environment.GetEnvironmentVariable("AIRLOCK_OPENROUTER_HYBRID") ?? "unset"));
+    Console.WriteLine("OPENROUTER_KEY_SET=" + (
+      String.IsNullOrEmpty(Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")) ? "no" : "yes"
+    ));
     Console.WriteLine("FABLE_NAME=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME") ?? "unset"));
     Console.WriteLine("ACTIVE_PROFILE=" + (Environment.GetEnvironmentVariable("AIRLOCK_ACTIVE_PROFILE") ?? "unset"));
     Console.WriteLine("UPDATE_NOTICE=" + (Environment.GetEnvironmentVariable("AIRLOCK_UPDATE_NOTICE_FILE") ?? "unset"));
@@ -360,7 +365,7 @@ try {
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, composer',
-    'Hybrid root aliases: sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+    'Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
@@ -775,20 +780,36 @@ import airlock_policy as policy
 
 policy.write_openrouter_registry(sys.argv[2], {
     "schema_version": 1,
-    "models": [{
-        "route": "kimi-k3",
-        "model": "moonshotai/kimi-k3",
-        "endpoint_provider": "digitalocean",
-        "provider_name": "DigitalOcean",
-        "provider_slug": "digitalocean",
-        "quantization": "unknown",
-        "canonical_slug": "moonshotai/kimi-k3-20260715",
-        "alias_target": None,
-        "supported_parameters": ["tool_choice", "tools"],
-        "expiration_date": None,
-        "checked_at": int(time.time()),
-        "enabled": True,
-    }],
+    "models": [
+        {
+            "route": "kimi-k3",
+            "model": "moonshotai/kimi-k3",
+            "endpoint_provider": "digitalocean",
+            "provider_name": "DigitalOcean",
+            "provider_slug": "digitalocean",
+            "quantization": "unknown",
+            "canonical_slug": "moonshotai/kimi-k3-20260715",
+            "alias_target": None,
+            "supported_parameters": ["tool_choice", "tools"],
+            "expiration_date": None,
+            "checked_at": int(time.time()),
+            "enabled": True,
+        },
+        {
+            "route": "ox-alpha",
+            "model": "stealth/ox-alpha",
+            "endpoint_provider": "stealth",
+            "provider_name": "Stealth",
+            "provider_slug": "stealth",
+            "quantization": "unknown",
+            "canonical_slug": "stealth/ox-alpha",
+            "alias_target": None,
+            "supported_parameters": ["tool_choice", "tools"],
+            "expiration_date": None,
+            "checked_at": int(time.time()),
+            "enabled": True,
+        },
+    ],
 })
 '@
   [IO.File]::WriteAllText(
@@ -839,6 +860,52 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   }
   if ($LASTEXITCODE -ne 0) {
     throw 'Windows test could not store a synthetic OpenRouter credential.'
+  }
+
+  # Exercise the full Windows OpenRouter hybrid-root launch with an isolated
+  # DPAPI key, protected registry, real bridge and router, and a Claude stub.
+  # No provider request is made. The root must stay exact while every family
+  # alias remains wrapper backed and the separate key stays out of the child.
+  $HybridOpenRouterLaunch = Invoke-LauncherProcess `
+    $InstalledLauncher @('hybrid', 'ox-alpha', '-p', 'test') $true @{
+      AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+      LOCALAPPDATA = $OpenRouterAppData
+      OPENROUTER_API_KEY = 'synthetic-should-not-reach-child'
+    }
+  foreach ($ExpectedHybridOpenRouterLine in @(
+    'CUSTOM_MODEL=stealth/ox-alpha',
+    'ACTIVE_PROFILE=hybrid-openrouter-root',
+    'ROOT_MODEL=stealth/ox-alpha',
+    'DEFAULT_OPUS=claude-opus-5[1m]',
+    'DEFAULT_SONNET=claude-sonnet-5[1m]',
+    'DEFAULT_HAIKU=claude-sonnet-5[1m]',
+    'SMALL_FAST=claude-sonnet-5[1m]',
+    'AUTO_MODE_MODEL=claude-sonnet-5[1m]',
+    'OPENROUTER_BRIDGE=1',
+    'OPENROUTER_KEY_SET=no'
+  )) {
+    if ($HybridOpenRouterLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedHybridOpenRouterLine))$") {
+      throw "Windows OpenRouter hybrid root lost '${ExpectedHybridOpenRouterLine}': $($HybridOpenRouterLaunch.Output)"
+    }
+  }
+  if ($HybridOpenRouterLaunch.Output -notmatch '(?ms)^ARG=--model\nARG=stealth/ox-alpha$') {
+    throw "Windows OpenRouter hybrid root did not pin its exact model argument: $($HybridOpenRouterLaunch.Output)"
+  }
+  $HybridOpenRouterSnapshot = [regex]::Match(
+    $HybridOpenRouterLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$'
+  )
+  if (-not $HybridOpenRouterSnapshot.Success -or
+      (Test-Path -LiteralPath $HybridOpenRouterSnapshot.Groups[1].Value -PathType Leaf)) {
+    throw "Windows OpenRouter hybrid snapshot remained after Claude exited: $($HybridOpenRouterLaunch.Output)"
+  }
+  $MismatchedHybridOpenRouter = Invoke-LauncherProcess `
+    $InstalledLauncher @('hybrid', 'ox-alpha', '--model', 'moonshotai/kimi-k3', '-p', 'test') $false @{
+      AIRLOCK_OPENROUTER_REGISTRY_FILE = $OpenRouterRegistry
+      LOCALAPPDATA = $OpenRouterAppData
+    }
+  if ($MismatchedHybridOpenRouter.ExitCode -ne 2 -or
+      $MismatchedHybridOpenRouter.Error -notmatch 'forwarded --model disagrees with the selected OpenRouter root route') {
+    throw 'Windows OpenRouter hybrid root accepted a mismatched model override.'
   }
 
   $ResumeLaunch = Invoke-LauncherProcess `

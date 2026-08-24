@@ -149,7 +149,7 @@ After an intentional launcher, helper, Agent catalog, or plugin change, refresh 
 python scripts/update-bundle.py
 ```
 
-Review the marker change before committing it.
+The script also syncs the marker's version with `MANAGED_BUNDLE_VERSION` in `bin/airlock-access.py`, so bumping the version needs no hand edit of the JSON. Review the marker change before committing it.
 
 ## Router protocol tests
 
@@ -164,7 +164,11 @@ It verifies:
 - token-count routing
 - unknown, malformed, and oversized request rejection
 - redirect rejection with a sanitized upstream error
-- upstream status and error-body pass-through
+- retryable upstream failures surfacing as 502s that keep a bounded, printable reason
+- deterministic redirects, credential failures, malformed responses, and OpenRouter identity mismatches surfacing as non-retryable 400s; identity mismatches retain only the bounded printable model identity needed for diagnosis
+- OpenRouter requests stripping Anthropic server-side tools and matching history blocks before forwarding, with an opt-out for explicit compatibility testing
+- same-category rate limit handoff on HTTP 429 and 529, with cooldown memory, Retry-After parsing, a three-hop cap, no upstream contact for cooling routes, honest sanitized 429s when every peer is limited, provider-pin removal when a hop leaves OpenRouter, snapshot chain validation, and diagnostics outcomes
+- upstream status and error-body pass-through for statuses other than the failover codes
 - streamed bytes arriving before upstream completion
 - stream timeout separation from the shorter connection timeout
 - upstream header and stream timeout handling

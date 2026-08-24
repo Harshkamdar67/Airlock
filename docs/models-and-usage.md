@@ -46,6 +46,7 @@ Mixed-provider sessions:
 ```bash
 airlock hybrid
 airlock hybrid choose
+airlock hybrid auto
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
@@ -67,6 +68,8 @@ airlock grok composer
 Grok needs its own login with `airlock proxy grok auth login`, and its routes stay off until the saved configuration enables them or you name a Grok root. `airlock usage` does not cover Grok, because there is no documented plan-window method Airlock can read safely.
 
 `airlock hybrid` uses the saved hybrid root. `airlock hybrid choose` opens the full picker. An explicit OpenAI alias such as `airlock terra` stays OpenAI-only even when bare `airlock` is saved as hybrid.
+
+The saved root can be the reserved value `auto`, which is what a fresh setup writes. `auto` resolves at every launch under your local access policy: Fable when its access class is neither extra nor unavailable, otherwise Opus, otherwise Sonnet. It never selects a model that needs confirmed extra usage, so no launch under an ask or never policy can start metered spend on its own. An existing config that never had a saved hybrid root keeps Sonnet instead of moving to `auto` on its own; switching is a deliberate choice with `./scripts/setup.sh --hybrid-model auto` or `airlock hybrid auto`.
 
 Model access depends on your account and can change. A model supported by the proxy may still be unavailable on your plan.
 
@@ -223,6 +226,28 @@ Extra usage authorized: yes
 
 Provider billing settings are final. If paid credits are enabled on the account, a local routing preference cannot promise zero paid usage.
 
+## Rate limit failover
+
+```bash
+airlock mode failover ask
+airlock mode failover never
+airlock mode failover allow
+```
+
+When an upstream behind the session router answers HTTP 429 or 529, Airlock immediately retries that request on another enabled model of the same cost category instead of hanging or failing. Premium models hand off among Opus, Sol, and Grok. Standard models hand off between Sonnet and Terra. Economy models hand off among Luna, Composer, and Haiku. Luna Fast sits in its own category, Fable stays alone because it is metered separately, and OpenRouter routes form their own category and can hand off only among themselves.
+
+The replacement order inside a category is fixed and cheap first. A model that just answered 429 or 529 goes on a short cooldown: 60 seconds by default, or the provider's `Retry-After` hint bounded between 1 second and 5 minutes. Later requests skip every cooling route without spending a round trip. One request tries at most three hops. If every same-category peer is also limited, the client receives an honest 429 with a fixed Airlock message, and no upstream body is reflected.
+
+Policies:
+
+- `ask`, the default, builds chains among included models only. Automatic healing never starts a model that would need confirmed extra usage.
+- `never` disables failover entirely and builds no chains.
+- `allow` also lets extra-usage models act as failover targets for their own category.
+
+`airlock mode budget` sets failover to `never` along with its other limits.
+
+Inside an active hybrid session, `airlock session-usage` lists models that are currently cooling down. The router's local diagnostics record `upstream_rate_limited`, `rate_limit_cooldown_skip`, and `rate_limit_exhausted` outcomes, and completed requests carry the model they originally targeted under `failover_from`.
+
 ## OpenRouter routes
 
 OpenRouter routes are not in the model roles table above because Airlock does not rank them. Add any supported exact route yourself with `airlock openrouter models add ROUTE MODEL ENDPOINT`, or start from one of four managed presets:
@@ -250,9 +275,13 @@ The Kimi K3, DeepSeek V4 Flash 0731, and Qwen 3.6 27B guidance was reviewed on 2
 
 Ox Alpha is a stealth preview rather than a named vendor model. OpenRouter lists it at zero cost for prompt and completion tokens and routes it through a single `stealth` endpoint, and it says the anonymous provider retains prompts and completions without training on them. Treat it the way you would treat any route that sends your repository to a third party you cannot name: keep private or regulated code off it, and expect the free window to close. If the catalog entry is renamed or withdrawn when the provider is revealed, `airlock openrouter models refresh` fails for that route, and its verified metadata expires 30 days after the last check, which stops every Airlock session until you refresh it or run `airlock openrouter models remove ox-alpha`.
 
-All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers, or it can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
+All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers. It can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
 
-Because Airlock does not evaluate a declared model's real capability, context window, or cost, an OpenRouter route usually follows `AIRLOCK_EXTRA_USAGE_POLICY` like any other extra-usage worker: it needs `Extra usage authorized: yes` under `ask`, runs without asking under `allow`, and is not offered under `never`. The one route you explicitly select as the `airlock opr` root is the exception: it carries that session's normal traffic and is not itself gated by the extra-usage policy, the same as an explicit hybrid root. Any other declared route that becomes available in that same `opr` session still follows the extra-usage policy normally. `airlock session-usage` and `airlock usage` do not cover OpenRouter, since it is a separate account with its own billing.
+A declared route can also lead a full mixed session as the hybrid root. Pass its declared route name directly, as in `airlock hybrid ox-alpha`, or select it for one launch with `airlock hybrid choose` option 10. Neither command changes the saved default; guided setup saves only a built-in hybrid alias or `auto`. The selected route behaves like an explicit `airlock opr` root: it carries normal session traffic without extra-usage gating. The difference is what surrounds it. Every other family slot stays wrapper backed, so Sonnet, Opus, Sol, Terra, Luna, Grok, and any other enabled worker keep their exact models, and every other declared OpenRouter route still follows `AIRLOCK_EXTRA_USAGE_POLICY` normally. An OpenRouter model never fills a Claude Code family slot, so named Agents and family aliases keep working.
+
+Because Airlock does not evaluate a declared model's real capability, context window, or cost, an OpenRouter route usually follows `AIRLOCK_EXTRA_USAGE_POLICY` like any other extra-usage worker: it needs `Extra usage authorized: yes` under `ask`, runs without asking under `allow`, and is not offered under `never`. The one route you explicitly select as the `airlock opr` or hybrid OpenRouter root is the exception: it carries that session's normal traffic and is not itself gated by the extra-usage policy, the same as an explicit hybrid root. Any other declared route that becomes available in that same session still follows the extra-usage policy normally. `airlock session-usage` and `airlock usage` do not cover OpenRouter, since it is a separate account with its own billing.
+
+The reserved `auto` hybrid root never resolves to an OpenRouter route. It picks only among Fable, Opus, and Sonnet, so enabling OpenRouter cannot change what `auto` launches.
 
 Read [How it works](how-it-works.md#openrouter-routes-optional) for the full explanation, including `airlock opr`, the 30-day metadata expiry, and the credential storage backends.
 
@@ -419,7 +448,7 @@ This reads only the active loopback router's sanitized cumulative summary. It sh
 
 Claude Code's built-in WebSearch runs on Anthropic's API. In a session whose root is GPT, Grok, or an OpenRouter route, that tool cannot run at all. A pure profile also cannot run built-in WebFetch, because no Claude model is available for its Haiku family slot. Hybrid sessions keep both built-in tools working by seating Claude Haiku there.
 
-For an OpenRouter root specifically, the router now also removes Anthropic server-tool declarations from forwarded requests. Without that, an upstream rejects the whole request with a 400 naming `web_search_20250305` before generating anything. The strip keeps the rest of a request working when a model tries WebSearch anyway; it does not execute searches, so use the local tools below instead.
+For an OpenRouter route, the router also removes Anthropic server-tool declarations from the forwarded request. Without that, the upstream rejects the whole request with a 400 naming `web_search_20250305` before generating anything. The strip keeps the rest of the request working when a model tries WebSearch anyway; it does not execute searches, so use the local tools below instead.
 
 Airlock gives each profile exactly one working web path:
 

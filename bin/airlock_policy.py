@@ -10,7 +10,7 @@ exception.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import errno
 import hashlib
@@ -28,6 +28,8 @@ from typing import Any, Mapping
 MAX_POLICY_BYTES = 128 * 1024
 MAX_OPENROUTER_ENTRIES = 10
 MAX_SNAPSHOT_AGENTS = 20
+MAX_SNAPSHOT_FAILOVER_ENTRIES = 32
+MAX_SNAPSHOT_FAILOVER_PEERS = 8
 MAX_SUPPORTED_PARAMETERS = 64
 CHECKED_AT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CHECKED_AT_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
@@ -95,6 +97,7 @@ _SNAPSHOT_FIELDS = frozenset({
     "routes",
     "agents",
     "openrouter",
+    "failover",
 })
 _AGENT_FIELDS = frozenset({"model", "provider", "extra_usage"})
 _OPENROUTER_SNAPSHOT_FIELDS = frozenset({
@@ -227,6 +230,9 @@ class SessionSnapshot:
     routes: Mapping[str, str]
     agents: Mapping[str, SnapshotAgent]
     openrouter: Mapping[str, SnapshotOpenRouterRoute]
+    # Ordered same-category replacement models per routed model ID. Snapshots
+    # written before rate-limit failover existed carry an empty map.
+    failover: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -242,6 +248,9 @@ class SessionSnapshot:
             "openrouter": {
                 model: metadata.to_dict()
                 for model, metadata in self.openrouter.items()
+            },
+            "failover": {
+                model: list(peers) for model, peers in self.failover.items()
             },
         }
 
@@ -1299,6 +1308,12 @@ def _validate_model_for_provider(value: Any, provider: str, location: str) -> st
 def validate_session_snapshot(value: Any) -> SessionSnapshot:
     """Validate a generic, table-independent session snapshot schema v1."""
 
+    if type(value) is not dict:
+        raise PolicyValidationError("snapshot must be an object")
+    # Snapshots rendered before rate-limit failover existed are still valid;
+    # they simply carry no failover chains.
+    if "failover" not in value:
+        value = {**value, "failover": {}}
     snapshot = _require_exact_fields(value, _SNAPSHOT_FIELDS, "snapshot")
     schema_version = _require_integer(snapshot["schema_version"], "schema_version")
     if schema_version != 1:
@@ -1429,6 +1444,48 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             f"OpenRouter routes and metadata must agree; missing {missing!r}"
         )
 
+    raw_failover = snapshot["failover"]
+    if type(raw_failover) is not dict:
+        raise PolicyValidationError("failover must be an object")
+    if len(raw_failover) > MAX_SNAPSHOT_FAILOVER_ENTRIES:
+        raise PolicyValidationError(
+            f"failover must contain at most {MAX_SNAPSHOT_FAILOVER_ENTRIES} entries"
+        )
+    failover: dict[str, tuple[str, ...]] = {}
+    for raw_model, raw_peers in raw_failover.items():
+        if type(raw_model) is not str or not raw_model:
+            raise PolicyValidationError("failover keys must be model IDs")
+        if raw_model not in routes:
+            raise PolicyValidationError(
+                f"failover key {raw_model!r} does not reference a route"
+            )
+        if type(raw_peers) is not list or not (
+            1 <= len(raw_peers) <= MAX_SNAPSHOT_FAILOVER_PEERS
+        ):
+            raise PolicyValidationError(
+                f"failover[{raw_model!r}] must list 1-{MAX_SNAPSHOT_FAILOVER_PEERS} model IDs"
+            )
+        peers: list[str] = []
+        for raw_peer in raw_peers:
+            if type(raw_peer) is not str or not raw_peer:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] entries must be model IDs"
+                )
+            if raw_peer == raw_model:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] must not chain to itself"
+                )
+            if raw_peer in peers:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] repeats a peer"
+                )
+            if raw_peer not in routes:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] references unknown route {raw_peer!r}"
+                )
+            peers.append(raw_peer)
+        failover[raw_model] = tuple(peers)
+
     canonical_references = referenced_models | {root_model}
     wire_aliases = {
         model.removesuffix("[1m]")
@@ -1452,6 +1509,7 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         routes=MappingProxyType(dict(routes)),
         agents=MappingProxyType(dict(agents)),
         openrouter=MappingProxyType(dict(openrouter)),
+        failover=MappingProxyType(failover),
     )
     if len(result.canonical_bytes()) > MAX_POLICY_BYTES:
         raise PolicyValidationError("canonical snapshot exceeds the 128 KiB limit")

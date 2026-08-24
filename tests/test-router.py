@@ -35,6 +35,7 @@ def write_test_snapshot(
     profile: str = "openai-pure",
     openrouter: dict[str, dict[str, str]] | None = None,
     agents: dict[str, dict[str, object]] | None = None,
+    failover: dict[str, list[str]] | None = None,
 ) -> tuple[Path, str]:
     routes = routes or {"gpt-test": "openai"}
     root_model, root_provider = next(iter(routes.items()))
@@ -53,6 +54,7 @@ def write_test_snapshot(
             }
         },
         "openrouter": openrouter or {},
+        "failover": failover or {},
     })
     path = Path(directory) / "session.json"
     path.write_bytes(snapshot.canonical_bytes())
@@ -81,6 +83,7 @@ class RecordingServer(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.active = 0
         self.max_active = 0
+        self.rate_limited_models: set[str] = set()
 
 
 class RecordingHandler(BaseHTTPRequestHandler):
@@ -96,6 +99,10 @@ class RecordingHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers["content-length"])
         body = self.rfile.read(length)
+        try:
+            requested_model = json.loads(body).get("model")
+        except ValueError:
+            requested_model = None
         with self.recorder.lock:
             self.recorder.requests.append({
                 "path": self.path,
@@ -104,6 +111,22 @@ class RecordingHandler(BaseHTTPRequestHandler):
                 },
                 "body": body,
             })
+            limited = requested_model in self.recorder.rate_limited_models
+        if limited:
+            payload = json.dumps({
+                "type": "error",
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "slow down",
+                },
+            }, separators=(",", ":")).encode("utf-8")
+            self.send_response(429)
+            self.send_header("content-type", "application/json")
+            self.send_header("retry-after", "30")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.recorder.mode.startswith("or_"):
             request = json.loads(body)
             response_model = request["model"]
@@ -846,9 +869,10 @@ class RouterProtocolTests(unittest.TestCase):
         status, response, _elapsed = self.request("vendor/model-test")
         # A malformed or mismatched upstream response fails the same way every
         # time, so the router reports it as non-retryable instead of letting
-        # Claude Code resend the whole conversation ten times.
+        # Claude Code resend the whole conversation ten times. The bounded,
+        # printable received identity remains available for diagnosis.
         self.assertEqual(status, 400)
-        self.assertNotIn("different-model", response.decode("utf-8"))
+        self.assertIn("different-model", response.decode("utf-8"))
         self.openrouter.mode = "or_malformed"
         status, response, _elapsed = self.request("vendor/model-test")
         self.assertEqual(status, 400)
@@ -863,7 +887,9 @@ class RouterProtocolTests(unittest.TestCase):
                 self.assertEqual(
                     json.loads(response)["error"]["type"], "invalid_request_error"
                 )
-                self.assertNotIn("vendor/model-test", response.decode("utf-8"))
+                # Naming the expected route is intended; the malformed
+                # upstream value itself is still never reflected.
+                self.assertIn("no model identity", response.decode("utf-8"))
 
     def test_openrouter_accepts_only_routable_or_canonical_sse_model(self) -> None:
         self.openrouter.mode = "or_stream"
@@ -877,7 +903,9 @@ class RouterProtocolTests(unittest.TestCase):
         self.openrouter.mode = "or_mismatch_stream"
         status, response, _elapsed = self.request("vendor/model-test")
         self.assertEqual(status, 400)
-        self.assertNotIn("different-model", response.decode("utf-8"))
+        # The bounded, printable received identity is named on purpose so a
+        # masked or wrong upstream response is diagnosable from the session.
+        self.assertIn("different-model", response.decode("utf-8"))
 
     def test_openrouter_rejects_compressed_success_before_forwarding(self) -> None:
         self.openrouter.mode = "gzip_usage_json"
@@ -890,9 +918,11 @@ class RouterProtocolTests(unittest.TestCase):
     def test_openrouter_error_body_is_not_reflected(self) -> None:
         self.openrouter.mode = "error"
         status, response, _elapsed = self.request("vendor/model-test")
+        # A 429 stays a 429 for Claude Code's backoff, carrying Airlock's
+        # bounded wording instead of reflected upstream text.
         self.assertEqual(status, 429)
-        self.assertNotIn("rate_limit_error", response.decode("utf-8"))
-        self.assertIn("rejected the request", response.decode("utf-8"))
+        self.assertIn("rate limited right now", response.decode("utf-8"))
+        self.assertNotIn("rejected the request", response.decode("utf-8"))
 
     def test_grok_route_is_recorded_with_its_own_provider_label(self) -> None:
         # Grok and Codex share an upstream, so the diagnostics label is the only
@@ -978,6 +1008,9 @@ class RouterProtocolTests(unittest.TestCase):
     def test_upstream_status_and_error_body_pass_through(self) -> None:
         self.anthropic.mode = "error"
         status, response, _elapsed = self.request("claude-test")
+        # A 429 stays a 429 so Claude Code's own backoff still applies, but
+        # the body carries Airlock's bounded wording rather than reflected
+        # upstream text.
         self.assertEqual(status, 429)
         self.assertEqual(json.loads(response)["error"]["type"], "rate_limit_error")
 
@@ -991,7 +1024,8 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertEqual(status, 502)
         payload = json.loads(response)
         self.assertEqual(payload["error"]["type"], "api_error")
-        self.assertNotIn("timed out", payload["error"]["message"].lower())
+        # The bounded reason survives so a slow upstream stays diagnosable.
+        self.assertIn("timed out", payload["error"]["message"].lower())
 
     def test_malformed_and_oversized_requests_never_reach_upstream(self) -> None:
         status, response, _elapsed = self.request("claude-test", body=b"{")
@@ -1711,6 +1745,321 @@ class OpenRouterStreamIdentityTests(unittest.TestCase):
         self.assertIsNone(
             router.openrouter_sse_model(b"event: message_start\ndata: {", self.MODEL)
         )
+
+
+class RateLimitFailoverTests(unittest.TestCase):
+    """Rate-limit handoff: 429s retry on a healthy same-category peer."""
+
+    def setUp(self) -> None:
+        self.openai = RecordingServer()
+        self.anthropic = RecordingServer()
+        self.threads = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in (self.openai, self.anthropic)
+        ]
+        for thread in self.threads:
+            thread.start()
+        self.config = router.RouterConfig(
+            {
+                "gpt-test": "openai",
+                "grok-test": "grok",
+                "claude-test": "anthropic",
+            },
+            f"http://127.0.0.1:{self.openai.server_address[1]}",
+            f"http://127.0.0.1:{self.anthropic.server_address[1]}",
+            production=False,
+        )
+
+    def tearDown(self) -> None:
+        if getattr(self, "gateway", None) is not None:
+            self.gateway.shutdown()
+            self.gateway.server_close()
+        for server in (self.openai, self.anthropic):
+            server.shutdown()
+            server.server_close()
+
+    def start_gateway(self, failover: dict[str, tuple[str, ...]]) -> None:
+        rebuilt = router.RouterConfig(
+            {
+                "gpt-test": "openai",
+                "grok-test": "grok",
+                "claude-test": "anthropic",
+            },
+            f"http://127.0.0.1:{self.openai.server_address[1]}",
+            f"http://127.0.0.1:{self.anthropic.server_address[1]}",
+            production=False,
+            failover=failover,
+        )
+        self.gateway = router.RouterServer(("127.0.0.1", 0), rebuilt)
+        threading.Thread(
+            target=self.gateway.serve_forever, daemon=True
+        ).start()
+
+    def request(self, model: str) -> tuple[int, bytes]:
+        body = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=5
+        )
+        connection.request(
+            "POST",
+            "/v1/messages?beta=true",
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "authorization": "Bearer synthetic-claude-oauth",
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        response = connection.getresponse()
+        payload = response.read()
+        status = response.status
+        response.close()
+        connection.close()
+        return status, payload
+
+    def diagnostics(self) -> list[dict[str, object]]:
+        return list(self.gateway.diagnostic_report()["events"])
+
+    def wait_for_events(self, count: int) -> list[dict[str, object]]:
+        """Wait for the server thread to finish recording after a response.
+
+        The router streams the response before it records the request event,
+        so a client that has the full body can still race the bookkeeping.
+        """
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            events = self.diagnostics()
+            if len(events) >= count:
+                return events
+            time.sleep(0.02)
+        return self.diagnostics()
+
+    def test_rate_limit_fails_over_to_the_next_same_category_peer(self) -> None:
+        self.start_gateway({"gpt-test": ("grok-test",)})
+        self.openai.rate_limited_models = {"gpt-test"}
+        status, payload = self.request("gpt-test")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(payload)["ok"])
+        served = [json.loads(r["body"])["model"] for r in self.openai.requests]
+        self.assertEqual(served, ["gpt-test", "grok-test"])
+        outcomes = [
+            (e["model"], e["outcome"]) for e in self.wait_for_events(2)
+        ]
+        self.assertIn(("gpt-test", "upstream_rate_limited"), outcomes)
+        completed = [
+            e for e in self.diagnostics() if e["outcome"] == "completed"
+        ]
+        self.assertEqual(completed[0]["model"], "grok-test")
+        self.assertEqual(completed[0]["failover_from"], "gpt-test")
+
+    def test_cooldown_skips_the_limited_model_on_later_requests(self) -> None:
+        self.start_gateway({"gpt-test": ("grok-test",)})
+        self.openai.rate_limited_models = {"gpt-test"}
+        first_status, _ = self.request("gpt-test")
+        self.assertEqual(first_status, 200)
+        self.wait_for_events(2)
+        before = len(self.openai.requests)
+        second_status, _ = self.request("gpt-test")
+        self.assertEqual(second_status, 200)
+        # The cooled-down model is not contacted again; only the peer is.
+        self.assertEqual(len(self.openai.requests), before + 1)
+        self.assertEqual(
+            json.loads(self.openai.requests[-1]["body"])["model"], "grok-test"
+        )
+        outcomes = [e["outcome"] for e in self.wait_for_events(4)]
+        self.assertIn("rate_limit_cooldown_skip", outcomes)
+
+    def test_rate_limit_exhaustion_answers_429_with_a_clear_type(self) -> None:
+        self.start_gateway({"gpt-test": ("grok-test",)})
+        self.openai.rate_limited_models = {"gpt-test", "grok-test"}
+        status, payload = self.request("gpt-test")
+        self.assertEqual(status, 429)
+        self.assertIn(b"rate_limit_error", payload)
+        outcomes = [
+            e["outcome"] for e in self.wait_for_events(3)
+        ]
+        self.assertEqual(outcomes.count("upstream_rate_limited"), 2)
+        self.assertIn("rate_limit_exhausted", outcomes)
+
+    def test_exhausted_cooldowns_make_no_later_upstream_request(self) -> None:
+        self.start_gateway({"gpt-test": ("grok-test",)})
+        self.openai.rate_limited_models = {"gpt-test", "grok-test"}
+        first_status, _ = self.request("gpt-test")
+        self.assertEqual(first_status, 429)
+        self.wait_for_events(3)
+        before = len(self.openai.requests)
+
+        second_status, payload = self.request("gpt-test")
+        self.assertEqual(second_status, 429)
+        self.assertIn(b"rate_limit_error", payload)
+        self.assertEqual(len(self.openai.requests), before)
+        later_outcomes = [
+            event["outcome"] for event in self.wait_for_events(5)[3:]
+        ]
+        self.assertIn("rate_limit_cooldown_skip", later_outcomes)
+        self.assertIn("rate_limit_exhausted", later_outcomes)
+        self.assertNotIn("upstream_rate_limited", later_outcomes)
+
+    def test_without_chains_a_rate_limit_is_sanitized_not_reflected(self) -> None:
+        self.start_gateway({})
+        self.openai.rate_limited_models = {"gpt-test"}
+        status, payload = self.request("gpt-test")
+        # No chain configured: the client still sees a real 429 so its own
+        # backoff applies, but the upstream body is not reflected and the
+        # message names the situation plainly.
+        self.assertEqual(status, 429)
+        self.assertIn(b"rate limited right now", payload)
+        self.assertNotIn(b"slow down", payload)
+        outcomes = [e["outcome"] for e in self.wait_for_events(2)]
+        self.assertIn("upstream_rate_limited", outcomes)
+        self.assertIn("rate_limit_exhausted", outcomes)
+
+    def test_hop_off_openrouter_strips_the_provider_pin(self) -> None:
+        or_server = RecordingServer()
+        or_thread = threading.Thread(target=or_server.serve_forever, daemon=True)
+        or_thread.start()
+        try:
+            rebuilt = router.RouterConfig(
+                {
+                    "qwen/qwen3.6-27b": "openrouter",
+                    "gpt-test": "openai",
+                },
+                f"http://127.0.0.1:{self.openai.server_address[1]}",
+                f"http://127.0.0.1:{self.anthropic.server_address[1]}",
+                production=False,
+                openrouter={
+                    "qwen/qwen3.6-27b": router.OpenRouterRoute(
+                        endpoint_provider="chutes/fp8",
+                        provider_name="Chutes",
+                        provider_slug="chutes",
+                        quantization="fp8",
+                        canonical_slug="qwen/qwen3.6-27b-20260422",
+                    ),
+                },
+                openrouter_key=b"sk-or-v1-SENTINEL_ROUTER_KEY_123456",
+                openrouter_url=(
+                    f"http://127.0.0.1:{or_server.server_address[1]}/api/v1"
+                ),
+                failover={"qwen/qwen3.6-27b": ("gpt-test",)},
+            )
+            self.gateway = router.RouterServer(("127.0.0.1", 0), rebuilt)
+            threading.Thread(
+                target=self.gateway.serve_forever, daemon=True
+            ).start()
+            or_server.rate_limited_models = {"qwen/qwen3.6-27b"}
+            status, payload = self.request("qwen/qwen3.6-27b")
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(payload)["ok"])
+            forwarded = json.loads(self.openai.requests[-1]["body"])
+            self.assertEqual(forwarded["model"], "gpt-test")
+            self.assertNotIn("provider", forwarded)
+        finally:
+            or_server.shutdown()
+            or_server.server_close()
+
+
+class FailoverPlumbingTests(unittest.TestCase):
+    """Unit coverage for Retry-After parsing and cooldown bookkeeping."""
+
+    def test_retry_after_accepts_bounded_delta_seconds(self) -> None:
+        self.assertIsNone(router.parse_retry_after(None))
+        self.assertIsNone(router.parse_retry_after(""))
+        self.assertIsNone(router.parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"))
+        self.assertIsNone(router.parse_retry_after("-5"))
+        self.assertIsNone(router.parse_retry_after("nan"))
+        self.assertIsNone(router.parse_retry_after("9" * 40))
+        self.assertEqual(router.parse_retry_after("30"), 30.0)
+        self.assertEqual(
+            router.parse_retry_after("99999"),
+            router.MAX_RATE_LIMIT_COOLDOWN_SECONDS,
+        )
+
+    def test_cooldowns_expire_after_their_window(self) -> None:
+        cooldowns = router.RateLimitCooldowns()
+        now = time.monotonic()
+        with mock.patch.object(router.time, "monotonic", return_value=now):
+            cooldowns.mark("m-a", None)
+            cooldowns.mark("m-b", 2.0)
+            self.assertTrue(cooldowns.active("m-a"))
+            self.assertEqual(cooldowns.active_models(), ["m-a", "m-b"])
+        with mock.patch.object(
+            router.time, "monotonic", return_value=now + 30
+        ):
+            self.assertTrue(cooldowns.active("m-a"))
+            self.assertFalse(cooldowns.active("m-b"))
+        with mock.patch.object(
+            router.time,
+            "monotonic",
+            return_value=now + router.DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS + 1,
+        ):
+            self.assertFalse(cooldowns.active("m-a"))
+            self.assertEqual(cooldowns.active_models(), [])
+
+
+class SnapshotFailoverValidationTests(unittest.TestCase):
+    """The snapshot schema bounds failover chains to real routed models."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, failover):
+        return write_test_snapshot(
+            self.tmp.name,
+            routes={"gpt-test": "openai", "claude-test": "anthropic"},
+            agents={
+                "airlock-test": {
+                    "model": "gpt-test",
+                    "provider": "openai",
+                    "extra_usage": False,
+                },
+                "airlock-other": {
+                    "model": "claude-test",
+                    "provider": "anthropic",
+                    "extra_usage": False,
+                },
+            },
+            failover=failover,
+        )
+
+    def test_valid_chain_round_trips(self) -> None:
+        path, digest = self.write({"gpt-test": ["claude-test"]})
+        snapshot = POLICY.load_session_snapshot(str(path), digest)
+        self.assertEqual(snapshot.failover["gpt-test"], ("claude-test",))
+
+    def test_missing_failover_defaults_to_empty(self) -> None:
+        raw = POLICY.validate_session_snapshot({
+            "schema_version": 1,
+            "protocol_version": 1,
+            "profile": "openai-pure",
+            "root_model": "gpt-test",
+            "root_provider": "openai",
+            "routes": {"gpt-test": "openai"},
+            "agents": {
+                "airlock-test": {
+                    "model": "gpt-test",
+                    "provider": "openai",
+                    "extra_usage": False,
+                }
+            },
+            "openrouter": {},
+        })
+        self.assertEqual(dict(raw.failover), {})
+
+    def test_self_chains_unknown_peers_and_duplicates_are_rejected(self) -> None:
+        for bad in (
+            {"gpt-test": ["gpt-test"]},
+            {"gpt-test": ["not-a-route"]},
+            {"gpt-test": ["claude-test", "claude-test"]},
+            {"unknown-model": ["claude-test"]},
+            {"gpt-test": []},
+            {"gpt-test": "claude-test"},
+        ):
+            with self.assertRaises(POLICY.PolicyValidationError):
+                self.write(bad)
 
 
 if __name__ == "__main__":

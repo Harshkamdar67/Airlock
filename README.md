@@ -12,14 +12,14 @@ An airlock is a chamber where two environments meet without mixing. That is the 
 Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy) and a small local router for mixed-provider sessions.
 
 ```bash
-airlock                 # Saved default, new setups recommend GPT-5.6 Sol hybrid
+airlock                 # Saved default, new setups recommend the auto hybrid root
 airlock openai          # Saved OpenAI-only root, no mixed-provider router
 airlock fast -r         # One-session gpt-5.6-sol-fast root, without saving Fast mode
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
+airlock hybrid ox-alpha # A declared OpenRouter route drives the mixed session
 airlock grok            # Saved Grok-only root, needs a separate Grok login
 ```
-
 > [!NOTE]
 > This project is in beta. It does not replace Claude Code, Codex, or `claude-code-proxy`. The mixed-provider gateway works, but Anthropic does not officially support non-Claude models behind a Claude Code gateway. Read [Known limits](#known-limits) before relying on it for important work.
 
@@ -53,7 +53,7 @@ Claude Code
           `-- exact claude-* ID   --> Anthropic
 ```
 
-The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with GPT-5.6 Sol. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command.
+The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with the reserved root `auto`, which resolves at launch to Fable when it is included on your plan, otherwise Opus, otherwise Sonnet, and never picks a model that needs confirmed extra usage. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command.
 
 Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`.
 

@@ -354,6 +354,22 @@ class HybridLauncherTests(unittest.TestCase):
                     router_url="http://127.0.0.1:28471",
                 )
 
+    def test_hybrid_environment_keeps_openrouter_key_router_only(self) -> None:
+        with patch.dict(
+            os.environ, {"OPENROUTER_API_KEY": "synthetic-openrouter"}, clear=True
+        ):
+            environment = build_child_environment(
+                "hybrid-openai-root",
+                "off",
+                proxy_url="http://127.0.0.1:18765",
+                root_model="gpt-5.6-sol",
+                root_name="GPT-5.6 Sol",
+                context_window="272000",
+                route_policy=ROUTE_POLICY,
+                router_url="http://127.0.0.1:28471",
+            )
+        self.assertNotIn("OPENROUTER_API_KEY", environment)
+
     def test_openrouter_environment_is_router_only_and_credential_free(self) -> None:
         inherited = {
             "ANTHROPIC_API_KEY": "synthetic-anthropic",
@@ -1447,6 +1463,137 @@ class FastTransitionBridgeTests(unittest.TestCase):
         request = dict(self.request, fast_transition_nonce=self.nonce)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             HYBRID.main(request, object())
+
+
+class OpenRouterHybridRootTests(unittest.TestCase):
+    ROUTE_POLICY = {
+        "routes": {
+            "claude-opus-5": "anthropic",
+            "gpt-5.6-sol": "openai",
+            ORP_ROOT_MODEL: "openrouter",
+            "vendor/extra-model": "openrouter",
+        },
+        "model_ids": [
+            "claude-opus-5", "gpt-5.6-sol", ORP_ROOT_MODEL, "vendor/extra-model",
+        ],
+        "agent_names": [
+            "airlock-opus", "airlock-or-extra", "airlock-or-root", "airlock-sol",
+        ],
+        "extra_model_ids": ["vendor/extra-model"],
+        "extra_agent_names": ["airlock-or-extra"],
+        "discovery_model": "gpt-5.6-sol",
+        "picker_models": {
+            "fable": "gpt-5.6-sol",
+            "opus": "claude-opus-5",
+            "sonnet": "gpt-5.6-sol",
+            "haiku": "gpt-5.6-sol",
+        },
+    }
+
+    def build(self, root_name: str = "OpenRouter root", **environment: str):
+        with patch.dict(os.environ, environment, clear=True):
+            return build_child_environment(
+                "hybrid-openrouter-root",
+                "off",
+                proxy_url="http://127.0.0.1:18765",
+                root_model=ORP_ROOT_MODEL,
+                root_name=root_name,
+                context_window="272000",
+                route_policy=self.ROUTE_POLICY,
+                router_url="http://127.0.0.1:28471",
+            )
+
+    def test_environment_keeps_the_router_and_pops_every_credential(self) -> None:
+        inherited = {
+            "ANTHROPIC_AUTH_TOKEN": "unused",
+            "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-oauth",
+            "OPENAI_API_KEY": "synthetic-openai",
+            "CODEX_API_KEY": "synthetic-codex",
+            "XAI_API_KEY": "synthetic-xai",
+            "GROK_API_KEY": "synthetic-grok",
+            "OPENROUTER_API_KEY": "synthetic-openrouter",
+            "AIRLOCK_HYBRID": "1",
+            "AIRLOCK_GPT_HYBRID": "1",
+        }
+        environment = self.build("OpenRouter root", **inherited)
+        for variable in HYBRID.ORP_CREDENTIAL_VARIABLES | {"ANTHROPIC_API_KEY"}:
+            self.assertNotIn(variable, environment)
+        self.assertEqual(environment["ANTHROPIC_BASE_URL"], "http://127.0.0.1:28471")
+        self.assertEqual(environment["AIRLOCK_OPENROUTER_HYBRID"], "1")
+        for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
+            self.assertNotIn(marker, environment)
+        # Hybrid sessions keep routing by argv model ID; only the custom option
+        # carries the OpenRouter root.
+        self.assertNotIn("ANTHROPIC_MODEL", environment)
+        self.assertEqual(environment["ANTHROPIC_CUSTOM_MODEL_OPTION"], ORP_ROOT_MODEL)
+        self.assertEqual(
+            environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"],
+            "OpenRouter root (OpenRouter hybrid root)",
+        )
+        self.assertEqual(
+            environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"],
+            f"Selected OpenRouter hybrid root ({ORP_ROOT_MODEL})",
+        )
+        # A vendor ID matches no Anthropic pattern, so effort must be declared.
+        self.assertEqual(
+            environment["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"],
+            "effort,xhigh_effort,max_effort",
+        )
+        # Family slots stay wrapper backed and never resolve to OpenRouter.
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_OPUS_MODEL"], "claude-opus-5")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.6-sol")
+        self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-sol")
+
+    def test_forwarded_model_must_restate_the_selected_root(self) -> None:
+        HYBRID.reject_openrouter_model_overrides(["--model", ORP_ROOT_MODEL], ORP_ROOT_MODEL)
+        HYBRID.reject_openrouter_model_overrides(["-m", ORP_ROOT_MODEL], ORP_ROOT_MODEL)
+        HYBRID.reject_openrouter_model_overrides([f"--model={ORP_ROOT_MODEL}"], ORP_ROOT_MODEL)
+        for arguments in (
+            ["--model", "vendor/other-model"],
+            [f"--model={ORP_ROOT_MODEL}x"],
+            ["--model"],
+        ):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                HYBRID.reject_openrouter_model_overrides(arguments, ORP_ROOT_MODEL)
+
+    def test_request_shape_requires_route_and_proxy_but_no_root_fields(self) -> None:
+        base_request = {
+            "profile": "hybrid-openrouter-root",
+            "plugin_dir": str(ROOT / "plugins" / "airlock"),
+            "max_agents": "off",
+            "context_window": "272000",
+            "fast_mode": "off",
+            "claude": sys.executable,
+            "catalog_files": {},
+            "router_helper": str(ROOT / "bin" / "airlock-router.py"),
+            "args": ["-r"],
+        }
+        cases = (
+            (
+                dict(base_request, proxy_url="http://127.0.0.1:18765"),
+                "requires an exact OpenRouter root route",
+            ),
+            (
+                dict(
+                    base_request,
+                    proxy_url="http://127.0.0.1:18765",
+                    openrouter_root_route="root",
+                    root_model=ORP_ROOT_MODEL,
+                ),
+                "must not include root_model",
+            ),
+            (
+                dict(base_request, openrouter_root_route="root"),
+                "OpenAI proxy URL is invalid",
+            ),
+        )
+        with patch.dict(os.environ, {"AIRLOCK_OPENROUTER_HYBRID": "1"}, clear=True):
+            for request, expected in cases:
+                stderr = io.StringIO()
+                with self.subTest(expected=expected), contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    HYBRID.main(dict(request), _allow_transition=False)
+                self.assertIn(expected, stderr.getvalue())
 
 
 class GrokProfileTests(unittest.TestCase):

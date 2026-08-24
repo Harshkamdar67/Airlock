@@ -11,7 +11,7 @@ airlock grok            # saved Grok-only root
 airlock hybrid          # saved hybrid root
 ```
 
-The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with GPT-5.6 Sol. Existing configs without the profile key retain the original OpenAI-only bare command.
+The setup wizard writes `AIRLOCK_DEFAULT_PROFILE` and saves one root for each profile. New setups recommend hybrid with the reserved root `auto`, which resolves at launch: Fable when its access class is neither extra nor unavailable, otherwise Opus, otherwise Sonnet, checked against your local access policy at every start. `auto` never selects a model that needs confirmed extra usage, so no launch can begin metered spend on its own under any extra-usage policy. Existing configs without a saved hybrid root keep Sonnet, which is what both launchers already used; moving an existing root to `auto` is a deliberate choice. Existing configs without the profile key retain the original OpenAI-only bare command.
 
 The OpenAI-only profile points Claude Code directly at the local `claude-code-proxy` endpoint on `127.0.0.1`. It starts with an enabled OpenAI model and exposes only enabled OpenAI Agent models. No mixed-provider router is needed.
 
@@ -43,6 +43,8 @@ On an Anthropic route, the router preserves Claude Code capability and Agent att
 On an OpenAI route, it removes incoming Claude authorization, API-key, cookie, proxy authorization, and OAuth capability headers before calling the local proxy. Claude credentials are never sent to OpenAI.
 
 The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes a bounded in-memory event list plus cumulative per-provider/model request and token totals for the current session. Token counts are read from the response that was already forwarded, so observation never changes, delays, or buffers the stream. When an upstream sends no usage, the event has no token counts and the summary records that usage was absent rather than inventing a zero.
+
+When an upstream answers HTTP 429 or 529 and the session carries failover chains, the router retries that one request on an enabled same-cost-category peer, marks the limited model with a short cooldown, and reports what happened through the diagnostics outcomes. The chains are frozen into the session snapshot from the saved policy, so routing decisions never read credentials or make new policy calls mid-session. See [Models and usage](models-and-usage.md) for the category rules and the `airlock mode failover` policy.
 
 ## Native Agents
 
@@ -108,6 +110,10 @@ The registry also records when each route was last verified. A route older than 
 
 A declared route becomes a named Agent, `airlock-or-ROUTE`, inside a hybrid session (`airlock hybrid ...`), where it can run alongside your OpenAI and Claude workers. `airlock openai`, `airlock grok`, and their pure profiles never include OpenRouter routes.
 
+A declared route can also lead the mixed-provider profile itself. `airlock hybrid ROUTE` accepts an exact declared route name, and `airlock hybrid choose` offers declared routes for that launch without changing the saved default. The guided setup saves only built-in hybrid aliases or `auto`. The OpenRouter-rooted launch starts the same session router as any other hybrid root, adds the selected OpenRouter model as the root, and keeps every other family slot wrapper backed: Sonnet, Opus, Sol, Terra, Luna, Grok, and the rest keep their exact models. No OpenRouter model ever fills a Claude Code family alias slot, so built-in Agent spawning stays intact. The route you pick is not gated by `AIRLOCK_EXTRA_USAGE_POLICY`, exactly like an explicit `opr` root, while every other declared route in that session still follows it.
+
+The reserved `auto` hybrid root resolves only among Fable, Opus, and Sonnet. Declaring or selecting an OpenRouter root never changes what `auto` launches.
+
 A declared route can also become the exclusive session root with `airlock opr`:
 
 ```bash
@@ -122,7 +128,9 @@ An `airlock opr` session is OpenRouter-only. It does not start, require, or read
 
 Every request, whether to the `opr` root or to a hybrid-session `airlock-or-ROUTE` worker, constrains OpenRouter to the verified provider-registry slug and endpoint quantization, with fallback routing turned off. Airlock rejects a catalog where that pair identifies more than one endpoint. It requires catalog support for `tools` and `tool_choice`, but it does not require the endpoint to advertise every optional field in Claude Code's native Messages payload. Claude Code may put its custom-model notice in a `messages` entry with the non-standard `system` role. Before an OpenRouter request is sent, Airlock moves that text into the Anthropic Messages API's top-level `system` field so strict endpoints receive the same instruction in the documented form. Other native fields remain unchanged. A successful response is forwarded only when its model is the exact routable ID or the frozen canonical slug; a response for any other model is rejected rather than passed through. OpenRouter's `count_tokens` operation is not available on these routes; Airlock does not invent a token estimate for a model it has not verified.
 
-Because Airlock does not evaluate an OpenRouter model's real capability, context window, or cost, an OpenRouter Agent is normally treated as extra usage: under the default `ask` policy it needs the same `Extra usage authorized: yes` confirmation as any other extra-usage worker before it can run, under `allow` it runs without asking, and under `never` it is not offered at all. The route you explicitly select as the `airlock opr` root is the one exception: it carries the session's normal root traffic and is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. If other routes are also declared, they can still appear as additional `airlock-or-ROUTE` Agents inside that same `opr` session, and those additional routes follow the normal extra-usage policy.
+Because Airlock does not evaluate an OpenRouter model's real capability, context window, or cost, an OpenRouter Agent is normally treated as extra usage: under the default `ask` policy it needs the same `Extra usage authorized: yes` confirmation as any other extra-usage worker before it can run, under `allow` it runs without asking, and under `never` it is not offered at all. The route you explicitly select as the `airlock opr` root, or as the hybrid OpenRouter root with `airlock hybrid ROUTE`, is the one exception: it carries the session's normal root traffic and is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. If other routes are also declared, they can still appear as additional `airlock-or-ROUTE` Agents inside that same session, and those additional routes follow the normal extra-usage policy.
+
+A forwarded `--model` or `-m` must agree exactly with the selected OpenRouter root route's model in a hybrid OpenRouter-rooted session, the way `airlock opr` rejects model overrides outright. A disagreeing value fails closed before any request is sent.
 
 Read [Security](../SECURITY.md) and the [threat model](threat-model.md) for the credential storage and registry trust boundary.
 
@@ -134,7 +142,7 @@ Airlock keeps the exact built-in Agent types:
 - Plan for read-only technical design
 - general-purpose for multi-step work
 
-Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the `haiku` family slot from the generated session guidance. Airlock resolves that slot to the economical discovery model. If an unpinned Explore would inherit a different premium root, the guard blocks it and gives a schema-valid retry.
+Plan and general-purpose inherit the orchestrator when the call omits `model`. Routine Explore should use the `haiku` family slot from the generated session guidance. Pure OpenAI and Grok profiles resolve that slot to their economical discovery model. Hybrid profiles keep a recognized Claude model there so Claude Code's built-in WebFetch continues to work; the separate `AIRLOCK_DISCOVERY_MODEL` channel can still name a cheaper non-Claude route.
 
 For one built-in call, the main model may pass a Claude Code family alias:
 
@@ -147,7 +155,7 @@ The session guard resolves the alias and checks its exact target before Claude C
 
 - Every profile defines all four schema-valid aliases: `fable`, `opus`, `sonnet`, and `haiku`.
 - Every alias points to an exact model already enabled in that session.
-- The `haiku` alias always points to the session's economical discovery model.
+- The `haiku` alias points to the economical discovery model in pure OpenAI and Grok profiles. Hybrid profiles use the cheapest enabled Claude route there so Claude Code accepts the slot for built-in background work and WebFetch.
 - Disabled, cross-profile, confirmation-required, and ineligible Fast routes cannot appear behind an alias.
 - Omitting `model` keeps normal inheritance for Plan and general-purpose. Explore also inherits when the root is already the economical discovery route; otherwise routine unpinned Explore is rejected with `model="haiku"` and the exact resolved target.
 - Named `airlock-*` Agents remain the exact-model interface.
@@ -160,7 +168,7 @@ Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact 
 
 - OpenAI Fable and Opus use Sol, Sonnet uses Terra, and Haiku uses Luna. A missing route falls back to the closest enabled OpenAI model.
 - Grok Fable and Opus use Grok 4.6, while Sonnet and Haiku use Composer. A missing route falls back to the enabled Grok model.
-- Hybrid profiles use the strongest eligible route for Fable, Opus, and Sonnet, while Haiku always uses the economical discovery route.
+- Hybrid profiles use the strongest eligible route for Fable, Opus, and Sonnet. Haiku uses the cheapest enabled Claude route so built-in background work remains recognized, while `AIRLOCK_DISCOVERY_MODEL` keeps the separate economical route available to session guidance.
 - A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
 - The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
 

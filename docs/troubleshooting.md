@@ -179,6 +179,27 @@ Then reinstall and start a fresh session. Do not set a gateway API token by hand
 
 The router chooses an unused `127.0.0.1` port and exits with its launcher. It is not expected to remain running between sessions.
 
+## A model hits a rate limit
+
+Sessions using Airlock's router handle this automatically when a failover peer is available. When an upstream answers 429 or 529, the router retries the same request on another enabled model of the same cost category, at most three hops. A limited model also goes on a short cooldown, so later requests skip it instead of waiting on it. If every same-category peer is limited too, the request ends with an honest 429 and a fixed Airlock message without contacting a route that is still cooling.
+
+Nothing about failover changes your saved models. The handoff lasts for one request and later requests return to the normal route once the cooldown expires.
+
+To see what happened inside an active session:
+
+```bash
+airlock session-usage
+```
+
+The output lists models that are currently cooling down. To check that failover is enabled, and change it:
+
+```bash
+airlock mode
+airlock mode failover ask
+```
+
+Under the default `ask` policy only included models act as failover targets, so healing never starts extra usage on its own.
+
 ## Explore, Plan, or general-purpose is blocked
 
 Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpose` Agent types.

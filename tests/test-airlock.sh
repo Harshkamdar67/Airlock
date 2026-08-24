@@ -817,8 +817,106 @@ fi
 [[ "$opr_bare_status" -eq 2 ]]
 grep -q 'OpenRouter route is required outside an interactive terminal' "$tmp_dir/opr-bare.err"
 
-hybrid_openai_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid terra -p test)"
+# A hybrid OpenRouter root must keep the resolved registry route after the
+# resolver function returns. This is an isolated launcher test: the fake router
+# accepts only hybrid arguments, the Claude stub makes no model request, and no
+# real credential backend is read.
+hybrid_opr_registry="$tmp_dir/hybrid-opr-private/openrouter-registry.json"
+python - "$repo_root/bin" "$hybrid_opr_registry" <<'PY'
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import airlock_policy as policy
+policy.write_openrouter_registry(sys.argv[2], {
+    "schema_version": 1,
+    "models": [{
+        "route": "ox-alpha",
+        "model": "stealth/ox-alpha",
+        "endpoint_provider": "stealth",
+        "provider_name": "Stealth",
+        "provider_slug": "stealth",
+        "quantization": "unknown",
+        "canonical_slug": "stealth/ox-alpha",
+        "alias_target": None,
+        "supported_parameters": ["tool_choice", "tools"],
+        "expiration_date": None,
+        "checked_at": int(time.time()),
+        "enabled": True,
+    }],
+})
+PY
+hybrid_opr_router="$tmp_dir/hybrid-opr-router.py"
+cat > "$hybrid_opr_router" <<'PY'
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) < 2 or sys.argv[1] != "start" or "--openai-url" not in sys.argv:
+    raise SystemExit(71)
+print("http://127.0.0.1:28473")
+PY
+chmod +x "$hybrid_opr_router"
+hybrid_opr_bundle="$tmp_dir/hybrid-opr-managed-bundle.json"
+python - "$repo_root/config/managed-bundle.json" "$hybrid_opr_bundle" "$hybrid_opr_router" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+bundle = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+bundle["components"]["bin/airlock-router.py"] = hashlib.sha256(
+    Path(sys.argv[3]).read_bytes()
+).hexdigest()
+Path(sys.argv[2]).write_text(json.dumps(bundle), encoding="utf-8")
+PY
+hybrid_opr_output="$(
+  OPENAI_API_KEY=synthetic GROK_API_KEY=synthetic \
+  OPENROUTER_API_KEY=synthetic CLAUDE_CODE_OAUTH_TOKEN=synthetic \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$hybrid_opr_registry" \
+  AIRLOCK_MANAGED_BUNDLE_FILE="$hybrid_opr_bundle" \
+  AIRLOCK_ROUTER_HELPER="$hybrid_opr_router" AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 \
+    "$launcher" hybrid ox-alpha -p test
+)"
+grep -q '^ACTIVE_PROFILE=hybrid-openrouter-root$' <<<"$hybrid_opr_output"
+grep -q '^ROOT_MODEL=stealth/ox-alpha$' <<<"$hybrid_opr_output"
+grep -q '^MODEL=unset$' <<<"$hybrid_opr_output"
+grep -q '^CUSTOM_NAME=OpenRouter ox-alpha (OpenRouter hybrid root)$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^AUTO_MODE_MODEL=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^OPENROUTER_KEY_SET=no$' <<<"$hybrid_opr_output"
+grep -q '^ARG=stealth/ox-alpha$' <<<"$hybrid_opr_output"
+hybrid_opr_profile="$hybrid_opr_output" python - <<'PY'
+import json
+import os
+lines = os.environ["hybrid_opr_profile"].splitlines()
+args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
+agents = json.loads(args[args.index("--agents") + 1])
+assert args.count("--model") == 1
+assert args[args.index("--model") + 1] == "stealth/ox-alpha"
+assert agents["airlock-or-ox-alpha"]["model"] == "stealth/ox-alpha"
+assert "hybrid root model" in agents["airlock-or-ox-alpha"]["description"]
+assert all(
+    value != "stealth/ox-alpha"
+    for key, value in (
+        ("fable", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_FABLE="))),
+        ("opus", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_OPUS="))),
+        ("sonnet", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_SONNET="))),
+        ("haiku", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_HAIKU="))),
+    )
+), "OpenRouter root leaked into a family alias"
+PY
+if AIRLOCK_OPENROUTER_REGISTRY_FILE="$hybrid_opr_registry" \
+  "$launcher" hybrid ox-alpha --model moonshotai/kimi-k3 -p test \
+  >/dev/null 2>"$tmp_dir/hybrid-opr-mismatch.err"; then
+  printf 'test: hybrid OpenRouter root accepted a mismatched --model\n' >&2
+  exit 1
+fi
+grep -q 'forwarded --model disagrees with the selected OpenRouter root route' \
+  "$tmp_dir/hybrid-opr-mismatch.err"
+
+hybrid_openai_output="$(OPENROUTER_API_KEY=synthetic AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid terra -p test)"
 grep -q '^MODEL=unset$' <<<"$hybrid_openai_output"
+grep -q '^OPENROUTER_KEY_SET=no$' <<<"$hybrid_openai_output"
 grep -Eq '^BASE_URL=http://127\.0\.0\.1:[1-9][0-9]*$' <<<"$hybrid_openai_output"
 if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_openai_output"; then
   printf 'test: hybrid OpenAI root bypassed the native router\n' >&2

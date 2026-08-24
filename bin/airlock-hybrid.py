@@ -32,6 +32,7 @@ PROFILES = {
     "hybrid-openai-root",
     "hybrid-anthropic-root",
     "hybrid-grok-root",
+    "hybrid-openrouter-root",
 }
 PROXY_PURE_PROFILES = {"openai-pure", "grok-pure"}
 PROXY_PURE_ROOT_PREFIXES = {"openai-pure": "gpt-", "grok-pure": "grok-"}
@@ -39,6 +40,7 @@ HYBRID_PROFILES = {
     "hybrid-openai-root",
     "hybrid-anthropic-root",
     "hybrid-grok-root",
+    "hybrid-openrouter-root",
 }
 ROUTER_BACKED_PROFILES = HYBRID_PROFILES | {"openrouter-pure"}
 ORP_CREDENTIAL_VARIABLES = {
@@ -363,12 +365,41 @@ def validate_child_args(raw_args: object) -> list[str]:
     return raw_args
 
 
-def reject_openrouter_model_overrides(child_args: list[str]) -> None:
-    for argument in child_args:
-        if argument in {"--model", "-m"} or argument.startswith("--model="):
+def reject_openrouter_model_overrides(
+    child_args: list[str], root_model: str | None = None
+) -> None:
+    """Reject forwarded --model flags on OpenRouter-rooted sessions.
+
+    openrouter-pure forbids them outright: the route is the only selector. A
+    hybrid OpenRouter root accepts a forwarded flag only when it restates the
+    resolved root model exactly; anything else would let one argv move traffic
+    off the route the user selected.
+    """
+    index = 0
+    while index < len(child_args):
+        argument = child_args[index]
+        flagged = argument in {"--model", "-m"}
+        valued = argument.startswith("--model=")
+        if not flagged and not valued:
+            index += 1
+            continue
+        if root_model is None:
             fail(
                 "OpenRouter roots are selected by exact registry route; "
                 "--model and -m cannot be forwarded",
+                2,
+            )
+        if flagged:
+            if index + 1 >= len(child_args):
+                fail("--model requires a value", 2)
+            value = child_args[index + 1]
+            index += 2
+        else:
+            value = argument.split("=", 1)[1]
+            index += 1
+        if value != root_model:
+            fail(
+                "forwarded --model disagrees with the selected OpenRouter root route",
                 2,
             )
 
@@ -588,6 +619,7 @@ def build_child_environment(
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment.pop("AIRLOCK_GROK_HYBRID", None)
+        environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
         if ephemeral_openai_fast:
             environment["AIRLOCK_EPHEMERAL_OPENAI_FAST"] = "1"
         else:
@@ -635,6 +667,7 @@ def build_child_environment(
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment.pop("AIRLOCK_GROK_HYBRID", None)
+        environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
         return environment
 
     if environment.get("ANTHROPIC_API_KEY") or environment.get("ANTHROPIC_AUTH_TOKEN") not in {None, "", "unused"}:
@@ -644,20 +677,30 @@ def build_child_environment(
         )
     if router_url is None:
         fail("hybrid native routing is missing its loopback router")
-    for variable in PROXY_VARIABLES:
+    # An OpenRouter root keeps its key out of the Claude Code process exactly
+    # like every proxy-backed provider; wrapper traffic is routed by the loopback
+    # router either way.
+    # OpenRouter credentials are loaded by the loopback router from protected
+    # storage and never belong in any Claude Code child process.
+    environment_variables = PROXY_VARIABLES | {"OPENROUTER_API_KEY"}
+    if profile == "hybrid-openrouter-root":
+        environment_variables |= ORP_CREDENTIAL_VARIABLES
+    for variable in environment_variables:
         environment.pop(variable, None)
     environment["ANTHROPIC_BASE_URL"] = router_url
     environment["AIRLOCK_SESSION_ROUTER_URL"] = router_url
     configure_proxy_model_picker(
         environment, profile, route_policy.get("picker_models")
     )
+    if profile == "hybrid-openrouter-root":
+        option_name = f"{root_name} (OpenRouter hybrid root)"
+        option_description = f"Selected OpenRouter hybrid root ({root_model})"
+    else:
+        option_name = f"{root_name} (native hybrid route)"
+        option_description = f"Selected Airlock hybrid root ({root_model})"
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
-    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
-        f"{root_name} (native hybrid route)"
-    )
-    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
-        f"Selected Airlock hybrid root ({root_model})"
-    )
+    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = option_name
+    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = option_description
     declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
@@ -676,12 +719,15 @@ def build_child_environment(
     environment.pop("AIRLOCK_HYBRID", None)
     environment.pop("AIRLOCK_GPT_HYBRID", None)
     environment.pop("AIRLOCK_GROK_HYBRID", None)
+    environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
     if profile == "hybrid-anthropic-root":
         environment["AIRLOCK_HYBRID"] = "1"
     elif profile == "hybrid-openai-root":
         environment["AIRLOCK_GPT_HYBRID"] = "1"
     elif profile == "hybrid-grok-root":
         environment["AIRLOCK_GROK_HYBRID"] = "1"
+    elif profile == "hybrid-openrouter-root":
+        environment["AIRLOCK_OPENROUTER_HYBRID"] = "1"
     return environment
 
 
@@ -759,6 +805,8 @@ def validate_launch_marker(profile: str) -> None:
         expected = "AIRLOCK_GPT_HYBRID"
     elif profile == "hybrid-grok-root":
         expected = "AIRLOCK_GROK_HYBRID"
+    elif profile == "hybrid-openrouter-root":
+        expected = "AIRLOCK_OPENROUTER_HYBRID"
     else:
         return
     if os.environ.get(expected) != "1":
@@ -841,6 +889,7 @@ def validate_root_route(
         "hybrid-openai-root": "openai",
         "hybrid-anthropic-root": "anthropic",
         "hybrid-grok-root": "grok",
+        "hybrid-openrouter-root": "openrouter",
     }.get(profile)
     if not isinstance(routes, dict):
         fail("session route policy is invalid", 2)
@@ -891,6 +940,22 @@ def main(
         proxy_url: str | None = None
         root_model = ""
         root_name = ""
+    elif profile == "hybrid-openrouter-root":
+        raw_route = request.get("openrouter_root_route")
+        if not isinstance(raw_route, str) or not raw_route:
+            fail("hybrid-openrouter-root requires an exact OpenRouter root route", 2)
+        openrouter_root_route = raw_route
+        for forbidden in ("root_model", "root_name"):
+            if forbidden in request:
+                fail(
+                    f"hybrid-openrouter-root launch request must not include {forbidden}",
+                    2,
+                )
+        # The wrapper catalogs keep GPT and Grok routes in the snapshot, and the
+        # router refuses to start without a subscription endpoint for them.
+        proxy_url = required_request_string(request, "proxy_url", "OpenAI proxy URL")
+        root_model = ""
+        root_name = ""
     else:
         if "openrouter_root_route" in request:
             fail("OpenRouter root route is not valid for this session profile", 2)
@@ -928,12 +993,14 @@ def main(
     access = _access if _access is not None else load_access_module()
     try:
         policy = _policy if _policy is not None else access.load_or_refresh_policy()
-        if profile == "openrouter-pure":
+        if profile in ("openrouter-pure", "hybrid-openrouter-root"):
             root_entry = access.resolve_openrouter_route(
                 policy, str(openrouter_root_route)
             )
             root_model = root_entry.model
             root_name = f"OpenRouter {root_entry.route}"
+        if profile == "hybrid-openrouter-root":
+            reject_openrouter_model_overrides(child_args, root_model)
         agents_json = render_agents(
             request.get("catalog_files"),
             profile,

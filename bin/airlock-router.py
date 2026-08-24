@@ -38,7 +38,13 @@ MAX_USAGE_LINE_BYTES = 256 * 1024
 MAX_USAGE_BODY_BYTES = 1024 * 1024
 MAX_OPENROUTER_IDENTITY_PREFIX_BYTES = 256 * 1024
 MAX_UPSTREAM_REASON_CHARS = 200
+MAX_UPSTREAM_DETAIL_CHARS = 320
 MAX_OPENROUTER_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
+RATE_LIMIT_STATUS_CODES = frozenset({429, 529})
+MAX_FAILOVER_HOPS = 3
+DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
+MAX_RATE_LIMIT_COOLDOWN_SECONDS = 300.0
+MAX_FAILOVER_PEERS_PER_MODEL = 8
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = "https://github.com/Harshkamdar67/Airlock"
 OPENROUTER_TITLE = "Airlock"
@@ -94,6 +100,80 @@ class UpstreamError(RouterError):
     def __init__(self, message: str, *, retryable: bool = True) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+class RateLimitedError(RouterError):
+    """The upstream answered 429 or 529 before any response body was sent.
+
+    Carrying the status and Retry-After hint lets the handler cool the model
+    down and retry the same request on a healthy same-category peer instead of
+    forwarding the rate limit to Claude Code, whose own backoff loop is what
+    made background calls such as WebFetch appear to hang for minutes.
+    """
+
+    def __init__(self, status: int, retry_after: float | None) -> None:
+        super().__init__(f"upstream returned HTTP {status}")
+        self.status = status
+        self.retry_after = retry_after
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Return a bounded cooldown hint from a Retry-After header value."""
+    if not value:
+        return None
+    text = value.strip()
+    if not text or len(text) > 32:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        # HTTP-date form is intentionally ignored; the default applies.
+        return None
+    if seconds < 0 or seconds != seconds:
+        return None
+    return min(seconds, MAX_RATE_LIMIT_COOLDOWN_SECONDS)
+
+
+class RateLimitCooldowns:
+    """Tracks models that recently answered 429 so later requests skip them.
+
+    A cooled-down model is not contacted again until the window expires, which
+    turns a repeated multi-minute backoff hang into a one-time cost. Entries
+    live only in router process memory; a restarted session starts clean.
+    """
+
+    def __init__(self) -> None:
+        self._until: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def mark(self, model: str, retry_after: float | None) -> float:
+        seconds = (
+            DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+            if retry_after is None
+            else max(retry_after, 1.0)
+        )
+        with self._lock:
+            self._until[model] = time.monotonic() + seconds
+        return seconds
+
+    def active(self, model: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            deadline = self._until.get(model)
+            if deadline is None:
+                return False
+            if deadline <= now:
+                del self._until[model]
+                return False
+            return True
+
+    def active_models(self) -> list[str]:
+        now = time.monotonic()
+        with self._lock:
+            expired = [m for m, d in self._until.items() if d <= now]
+            for m in expired:
+                del self._until[m]
+            return sorted(self._until)
 
 
 def load_policy_schema():
@@ -314,6 +394,7 @@ class RouterConfig:
         openrouter: dict[str, OpenRouterRoute] | None = None,
         openrouter_key: bytes | None = None,
         openrouter_url: str = OPENROUTER_URL,
+        failover: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         if not routes or any(
             not isinstance(model, str)
@@ -322,6 +403,20 @@ class RouterConfig:
             for model, provider in routes.items()
         ):
             raise RouterError("router model routes are invalid")
+        failover_map: dict[str, tuple[str, ...]] = {}
+        for source, peers in dict(failover or {}).items():
+            peer_list = tuple(peers)
+            if (
+                source not in routes
+                or not peer_list
+                or len(peer_list) > MAX_FAILOVER_PEERS_PER_MODEL
+                or len(set(peer_list)) != len(peer_list)
+                or any(
+                    peer == source or peer not in routes for peer in peer_list
+                )
+            ):
+                raise RouterError("failover chains are invalid")
+            failover_map[source] = peer_list
         openrouter_routes = {
             model for model, provider in routes.items() if provider == "openrouter"
         }
@@ -333,6 +428,7 @@ class RouterConfig:
         if openrouter_routes and openrouter_key is None:
             raise RouterError("OpenRouter credential is missing")
         self.routes = dict(routes)
+        self.failover = failover_map
         self.openrouter_routes = metadata
         self.openrouter_key = bytes(openrouter_key) if openrouter_key is not None else None
         # GPT (Codex) and Grok subscription models share the loopback proxy;
@@ -364,6 +460,7 @@ class RouterServer(ThreadingHTTPServer):
         super().__init__(address, RouterHandler)
         self.config = config
         self.instance_id = secrets.token_hex(8)
+        self.rate_limits = RateLimitCooldowns()
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
@@ -417,6 +514,7 @@ class RouterServer(ThreadingHTTPServer):
         with self.diagnostics_lock:
             return {
                 "instance_id": self.instance_id,
+                "rate_limit_cooldowns": self.rate_limits.active_models(),
                 "events": [dict(event) for event in self.diagnostics],
                 "summary": [
                     dict(self.usage_summary[key])
@@ -482,14 +580,15 @@ class RouterHandler(BaseHTTPRequestHandler):
             provider = self.router.config.routes.get(model)
             if provider is None:
                 raise InvalidRequestError("Model is not enabled for this session")
+            if provider == "openrouter" and path != "/v1/messages":
+                raise InvalidRequestError(
+                    "OpenRouter supports only the Messages operation in this release"
+                )
             if provider == "openrouter":
-                if path != "/v1/messages":
-                    raise InvalidRequestError(
-                        "OpenRouter supports only the Messages operation in this release"
-                    )
-                openrouter_route = self.router.config.openrouter_routes[model]
                 body, stripped_tools = prepare_openrouter_request(
-                    body, model, openrouter_route
+                    body,
+                    model,
+                    self.router.config.openrouter_routes[model],
                 )
                 if stripped_tools:
                     self.router.record_diagnostic({
@@ -497,30 +596,107 @@ class RouterHandler(BaseHTTPRequestHandler):
                         "model": model,
                         "removed": stripped_tools,
                     })
-            status, response_bytes, outcome, usage = self.forward(
-                provider, model, body
-            )
+            attempt_model = model
+            attempt_provider = provider
+            working_body = body
+            visited = {model}
+            hops = 0
+            failover_from: str | None = None
+            while True:
+                # A model still cooling down from an earlier 429 is skipped
+                # outright, so repeated background calls pay no doomed round
+                # trip once one limit has been seen.
+                if self.router.rate_limits.active(attempt_model):
+                    skipped = (
+                        self.next_failover_model(attempt_model, visited)
+                        if hops < MAX_FAILOVER_HOPS
+                        else None
+                    )
+                    self.record_request(
+                        attempt_provider,
+                        attempt_model,
+                        429,
+                        body_size,
+                        0,
+                        started,
+                        "rate_limit_cooldown_skip",
+                    )
+                    if skipped is None:
+                        raise RateLimitedError(429, None)
+                    working_body = self.retarget_request_body(
+                        working_body, skipped
+                    )
+                    visited.add(skipped)
+                    failover_from = failover_from or model
+                    attempt_model = skipped
+                    attempt_provider = self.router.config.routes[skipped]
+                    hops += 1
+                    continue
+                try:
+                    status, response_bytes, outcome, usage = self.forward(
+                        attempt_provider, attempt_model, working_body
+                    )
+                    break
+                except RateLimitedError as exc:
+                    self.router.rate_limits.mark(attempt_model, exc.retry_after)
+                    self.record_request(
+                        attempt_provider,
+                        attempt_model,
+                        exc.status,
+                        body_size,
+                        0,
+                        started,
+                        "upstream_rate_limited",
+                    )
+                    nxt = (
+                        self.next_failover_model(attempt_model, visited)
+                        if hops < MAX_FAILOVER_HOPS
+                        else None
+                    )
+                    if nxt is None:
+                        raise
+                    working_body = self.retarget_request_body(working_body, nxt)
+                    visited.add(nxt)
+                    failover_from = failover_from or model
+                    attempt_model = nxt
+                    attempt_provider = self.router.config.routes[nxt]
+                    hops += 1
             self.record_request(
-                provider,
-                model,
+                attempt_provider,
+                attempt_model,
                 status,
                 body_size,
                 response_bytes,
                 started,
                 outcome,
                 usage,
+                extra=(
+                    {"failover_from": failover_from} if failover_from else None
+                ),
+            )
+        except RateLimitedError:
+            if provider is not None and model is not None:
+                self.record_request(
+                    provider, model, 429, body_size, 0, started,
+                    "rate_limit_exhausted",
+                )
+            self.safe_error_response(
+                429,
+                "rate_limit_error",
+                "Every model in this request's category is rate limited right"
+                " now; retry shortly or switch models.",
             )
         except InvalidRequestError as exc:
             self.safe_error_response(400, "invalid_request_error", str(exc))
         except UpstreamError as exc:
-            # A retryable failure keeps the generic 502 so Claude Code can try
-            # again. A deterministic one returns a non-retryable status and
-            # names the reason, which stops ten pointless full-size retries and
-            # makes the cause visible. Every message here is a fixed string
-            # this file owns, so nothing from upstream is echoed back.
+            # Retryable failures stay 502 so Claude Code can try again.
+            # Deterministic failures return a non-retryable status, which stops
+            # ten pointless full-size retries. Messages are fixed strings from
+            # this file or bounded printable model identities; arbitrary
+            # upstream response bodies are never reflected.
             if exc.retryable:
                 status, error_type = 502, "api_error"
-                detail = "The selected model upstream is unavailable"
+                detail = upstream_failure_message(exc)
                 outcome = "upstream_error"
             else:
                 status, error_type = 400, "invalid_request_error"
@@ -550,6 +726,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         started: float,
         outcome: str,
         usage: dict[str, int] | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         event: dict[str, object] = {
             "provider": provider,
@@ -562,7 +739,57 @@ class RouterHandler(BaseHTTPRequestHandler):
         }
         if usage:
             event["usage"] = dict(usage)
+        if extra:
+            event.update(extra)
         self.router.record_diagnostic(event)
+
+    def next_failover_model(self, source: str, visited: set[str]) -> str | None:
+        """Return the first healthy same-category peer for a rate-limited model."""
+        for peer in self.router.config.failover.get(source, ()):
+            if peer in visited or peer not in self.router.config.routes:
+                continue
+            if self.router.rate_limits.active(peer):
+                continue
+            return peer
+        return None
+
+    def retarget_request_body(self, body: bytes, target_model: str) -> bytes:
+        """Rewrite an already validated request onto another routed model.
+
+        The OpenRouter ``provider`` pin belongs to the route that produced it,
+        so it is dropped before the new transport prepares its own. Hopping
+        onto an OpenRouter route runs the same preparation every direct
+        request to that route would receive.
+        """
+        payload = request_payload(body)
+        payload.pop("provider", None)
+        payload["model"] = target_model
+        try:
+            cleaned = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(
+                "Request body could not be re-targeted"
+            ) from exc
+        if self.router.config.routes[target_model] == "openrouter":
+            prepared, stripped_tools = prepare_openrouter_request(
+                cleaned,
+                target_model,
+                self.router.config.openrouter_routes[target_model],
+            )
+            if stripped_tools:
+                self.router.record_diagnostic({
+                    "kind": "openrouter_server_tools_stripped",
+                    "model": target_model,
+                    "removed": stripped_tools,
+                })
+            return prepared
+        return cleaned
 
     def safe_error_response(self, status: int, kind: str, message: str) -> None:
         try:
@@ -613,6 +840,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             connection.request("POST", target, body=body, headers=headers)
             response = connection.getresponse()
             status = response.status
+            if status in RATE_LIMIT_STATUS_CODES:
+                raise RateLimitedError(
+                    status, parse_retry_after(response.getheader("retry-after"))
+                )
             if 300 <= status < 400:
                 raise UpstreamError("Upstream redirects are not allowed", retryable=False)
             set_stream_timeout(connection, response)
@@ -699,6 +930,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             connection.request("POST", target, body=body, headers=headers)
             response = connection.getresponse()
             status = response.status
+            if status in RATE_LIMIT_STATUS_CODES:
+                raise RateLimitedError(
+                    status, parse_retry_after(response.getheader("retry-after"))
+                )
             if 300 <= status < 400:
                 raise UpstreamError("OpenRouter redirects are not allowed", retryable=False)
             set_stream_timeout(connection, response)
@@ -735,7 +970,10 @@ class RouterHandler(BaseHTTPRequestHandler):
                     if response_model is None:
                         continue
                     if response_model not in allowed_response_models:
-                        raise UpstreamError("OpenRouter response model does not match", retryable=False)
+                        raise UpstreamError(
+                            openrouter_model_mismatch(model, response_model),
+                            retryable=False,
+                        )
                     break
                 self.send_response(status, response.reason)
                 self.send_header("content-type", "text/event-stream")
@@ -784,7 +1022,10 @@ class RouterHandler(BaseHTTPRequestHandler):
                         not isinstance(response_model, str)
                         or response_model not in allowed_response_models
                     ):
-                        raise UpstreamError("OpenRouter response model does not match", retryable=False)
+                        raise UpstreamError(
+                            openrouter_model_mismatch(model, response_model),
+                            retryable=False,
+                        )
                     self.send_response(status, response.reason)
                     self.send_header("content-type", "application/json")
                     self.send_header("content-length", str(response_bytes))
@@ -1105,6 +1346,68 @@ def prepare_openrouter_request(
         raise InvalidRequestError("OpenRouter request body is invalid") from exc
 
 
+def openrouter_server_tools(payload: Any) -> list[str]:
+    """Return the sorted server-side tool types declared in a request.
+
+    A client tool carries no type, or the explicit "custom" type. Anything else
+    is executed by the provider rather than by Claude Code, which OpenRouter
+    routes cannot do.
+    """
+
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    if not isinstance(tools, list):
+        return []
+    found: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        kind = tool.get("type")
+        if isinstance(kind, str) and kind and kind != "custom":
+            cleaned = "".join(
+                character
+                for character in kind
+                if character.isascii() and 0x20 <= ord(character) < 0x7F
+            ).strip()
+            found.add(cleaned[:64] if cleaned else "unnamed")
+    return sorted(found)
+
+
+def openrouter_model_mismatch(expected: str, received: Any) -> str:
+    """Describe a response whose model is not the declared route.
+
+    The received value comes from the provider, so it is bounded and stripped
+    to printable ASCII before it reaches operator output.
+    """
+
+    if isinstance(received, str):
+        cleaned = "".join(
+            character
+            for character in received
+            if character.isascii() and 0x20 <= ord(character) < 0x7F
+        ).strip()
+    else:
+        cleaned = ""
+    got = cleaned[:MAX_UPSTREAM_REASON_CHARS] if cleaned else "no model identity"
+    return (
+        f"OpenRouter response model does not match route {expected} "
+        f"(received {got})"
+    )
+
+
+def upstream_failure_message(exc: BaseException) -> str:
+    """Return a bounded, printable 502 message that keeps the real reason."""
+
+    base = "The selected model upstream is unavailable"
+    detail = "".join(
+        character
+        for character in str(exc)
+        if character.isascii() and 0x20 <= ord(character) < 0x7F
+    ).strip()
+    if not detail:
+        return base
+    return f"{base}: {detail[:MAX_UPSTREAM_DETAIL_CHARS]}"
+
+
 def openrouter_upstream_reason(payload: Any) -> str:
     """Return a short, printable reason from an upstream SSE error event.
 
@@ -1374,6 +1677,9 @@ def router_config_from_snapshot(
         production=True,
         openrouter=openrouter,
         openrouter_key=key,
+        failover={
+            model: tuple(peers) for model, peers in snapshot.failover.items()
+        },
     )
 
 

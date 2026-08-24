@@ -47,6 +47,11 @@ if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
 else
   printf 'AUTH_TOKEN_SET=no\n'
 fi
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  printf 'OPENROUTER_KEY_SET=yes\n'
+else
+  printf 'OPENROUTER_KEY_SET=no\n'
+fi
 printf 'EFFORT_ENV=%s\n' "${CLAUDE_CODE_EFFORT_LEVEL:-unset}"
 printf 'ALWAYS_EFFORT=%s\n' "${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-unset}"
 printf 'AUTO_MODE_MODEL=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL:-unset}"
