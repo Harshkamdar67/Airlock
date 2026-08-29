@@ -24,7 +24,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 
@@ -71,10 +71,14 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.25.1"
+MANAGED_BUNDLE_VERSION = "2026.08.26.1"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
+MAX_MODELS_FILE_BYTES = 128 * 1024
+MAX_CUSTOM_MODELS = 32
+MAX_FAILOVER_FILE_BYTES = 128 * 1024
+MAX_FAILOVER_CHAIN_SOURCES = 64
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
 MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
@@ -89,7 +93,10 @@ FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
 FAST_TRANSITION_ENV_CHANNEL = "AIRLOCK_FAST_TRANSITION_CHANNEL"
 FAST_TRANSITION_ENV_NONCE = "AIRLOCK_FAST_TRANSITION_NONCE"
 SESSION_DIAGNOSTICS_TIMEOUT_SECONDS = 3
+STATUS_DIAGNOSTICS_TIMEOUT_SECONDS = 0.5
 MAX_SESSION_DIAGNOSTIC_EVENTS = 256
+MAX_STATUS_LINES = 10
+NO_SESSION_ROUTER_MESSAGE = "no Airlock router is running for this terminal"
 SESSION_USAGE_FIELDS = (
     "input_tokens",
     "cache_creation_input_tokens",
@@ -99,12 +106,25 @@ SESSION_USAGE_FIELDS = (
 APP_SERVER_TIMEOUT_SECONDS = 15
 VALID_ACCESS = {"included", "extra", "unavailable", "unknown"}
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+VALID_CUSTOM_MODEL_PROVIDERS = frozenset({"grok", "codex", "openrouter"})
+VALID_CUSTOM_MODEL_COSTS = frozenset({"premium", "standard", "economical"})
+CUSTOM_MODEL_FIELDS = frozenset({
+    "id", "provider", "effort_ceiling", "context_window", "cost", "enabled",
+})
+CUSTOM_MODELS_FIELDS = frozenset({"schema_version", "models"})
+CUSTOM_PROVIDER_ROUTES = {"codex": "openai", "grok": "grok", "openrouter": "openrouter"}
+CUSTOM_MODEL_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:/\-]{0,159}\Z", re.ASCII)
+CUSTOM_OPENROUTER_SEGMENT_RE = re.compile(
+    r"[a-z0-9]+(?:[._:-][a-z0-9]+)*\Z", re.ASCII
+)
+EFFORT_RANK = {effort: index for index, effort in enumerate(VALID_EFFORTS)}
 # A worker with no effort of its own inherits the session level, so /effort moves
 # the root and every worker together. A named level pins that worker instead.
 INHERIT_EFFORT = "inherit"
 VALID_WORKER_EFFORTS = (INHERIT_EFFORT,) + VALID_EFFORTS
 VALID_EXTRA_POLICIES = {"ask", "never", "allow"}
 VALID_FAILOVER_POLICIES = {"ask", "never", "allow"}
+VALID_OVERFLOW_SHRINK_POLICIES = {"auto", "truncate", "summarize", "off"}
 VALID_DESCENDANT_POLICIES = {"bounded", "off"}
 VALID_ROUTING_POLICIES = {"balanced", "quality", "economy"}
 VALID_SWARM_FAST_POLICIES = {"auto", "on", "off"}
@@ -121,7 +141,7 @@ DEFAULT_DESCENDANT_POLICY = "bounded"
 DEFAULT_MAX_DESCENDANTS = "2"
 DEFAULT_MAX_CONCURRENT_DESCENDANTS = "3"
 DEFAULT_MAX_REPAIR_ROUNDS = "2"
-MAX_CONFIGURED_SUBAGENTS = 20
+MAX_CONFIGURED_SUBAGENTS = 64
 MAX_REPAIR_ROUNDS = 5
 USAGE_FRESH_SECONDS = 15 * 60
 OPENAI_PLAN_MAP_VERSION = "2026-07"
@@ -173,6 +193,7 @@ MODE_CONFIG_KEYS = {
     "anthropic_fast": "AIRLOCK_ANTHROPIC_FAST",
     "swarm_fast": "AIRLOCK_SWARM_FAST",
     "failover": "AIRLOCK_FAILOVER_POLICY",
+    "overflow_shrink": "AIRLOCK_OVERFLOW_SHRINK",
     "agent_depth": "AIRLOCK_AGENT_DEPTH",
     "descendants": "AIRLOCK_DESCENDANT_POLICY",
     "max_descendants": "AIRLOCK_MAX_DESCENDANTS_PER_WORKER",
@@ -242,69 +263,87 @@ CATALOG_EXPECTED_AGENTS = {
     "grok_wrappers": {"airlock-grok", "airlock-composer"},
 }
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
-MAX_RENDERED_AGENTS_BYTES = 24 * 1024
+MAX_RENDERED_AGENTS_BYTES = 64 * 1024
 MODEL_PROFILES = {
     # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
     # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com,
     # and Airlock always points it at the session router. The [1m] suffix is
     # the one lever that still reaches 1M from behind the router. Haiku 4.5 is
-    # a genuine 200000 model and must not carry the suffix.
+    # a genuine 200000 model and must not carry the suffix. The "window" value
+    # is the context size used for overflow-aware handoff pre-screening; a
+    # model without one is attempted regardless of conversation size.
     "anthropic": {
         "opus": {
             "agent": "airlock-opus", "model": "claude-opus-5[1m]", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
+            "capability": "frontier", "cost": "premium", "window": 1000000,
             "strength": "difficult architecture, UI/UX design and visual direction, product-flow and design-system work, long-horizon planning, complex debugging, security reasoning, high-impact review, and synthesis",
         },
         "sonnet": {
             "agent": "airlock-sonnet", "model": "claude-sonnet-5[1m]", "effort": "high",
-            "capability": "general", "cost": "standard",
+            "capability": "general", "cost": "standard", "window": 1000000,
             "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
         },
         "fable": {
             "agent": "airlock-fable", "model": "claude-fable-5[1m]", "effort": "high",
-            "capability": "frontier-efficient", "cost": "metered",
+            "capability": "frontier-efficient", "cost": "metered", "window": 1000000,
             "strength": "efficient frontier implementation, orchestration, and analysis when the route is enabled or explicitly selected",
         },
         "haiku": {
             "agent": "airlock-haiku", "model": "claude-haiku-4-5-20251001", "effort": "medium",
-            "capability": "utility", "cost": "economical",
+            "capability": "utility", "cost": "economical", "window": 200000,
             "strength": "fast bounded utility work when the route is enabled or explicitly selected",
         },
     },
     "openai": {
         "sol": {
             "agent": "airlock-sol", "model": "gpt-5.6-sol", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
+            "capability": "frontier", "cost": "premium", "window": 272000,
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },
         "terra": {
             "agent": "airlock-terra", "model": "gpt-5.6-terra", "effort": "high",
-            "capability": "general", "cost": "standard",
+            "capability": "general", "cost": "standard", "window": 272000,
             "strength": "independent second opinions, adversarial review, competing designs, and debugging hypotheses",
         },
         "luna": {
             "agent": "airlock-luna", "model": "gpt-5.6-luna", "effort": "max",
-            "capability": "utility", "cost": "economical",
+            "capability": "utility", "cost": "economical", "window": 272000,
             "strength": "high-volume discovery, webpage reading, extraction, lookup, summarization, test or log triage, and small mechanical work",
         },
         "luna-fast": {
             "agent": "airlock-luna-fast", "model": "gpt-5.6-luna-fast", "effort": "max",
-            "capability": "utility", "cost": "economical-fast",
+            "capability": "utility", "cost": "economical-fast", "window": 272000,
             "strength": "priority-processed high-volume discovery, reading, extraction, lookup, summarization, and triage on eligible OpenAI plans",
         },
     },
     "grok": {
         "grok": {
             "agent": "airlock-grok", "model": "grok-4.6", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
-            "strength": "long-running agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, interactive and visual work, and token-efficient execution on a Grok subscription",
+            "capability": "frontier", "cost": "premium", "window": 500000,
+            "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
         },
         "composer": {
             "agent": "airlock-composer", "model": "grok-composer-2.5-fast", "effort": "high",
-            "capability": "general", "cost": "economical",
+            "capability": "general", "cost": "economical", "window": 256000,
             "strength": "fast low-latency agentic coding loops, automated debugging, web implementation, and bounded multi-step edits that need speed more than depth",
         },
     },
+}
+# Economy workers tried in order per provider when an overflowing handoff
+# needs its history compacted before a smaller-window peer can serve it.
+PROVIDER_COMPACTOR_ROUTES = {
+    "anthropic": ("haiku",),
+    "openai": ("luna", "luna-fast"),
+    "grok": ("composer",),
+}
+SHIPPED_MODEL_EFFORT_CEILINGS = {
+    **{
+        profile["model"]: "max"
+        for provider in ("anthropic", "openai")
+        for profile in MODEL_PROFILES[provider].values()
+    },
+    "grok-4.6": "xhigh",
+    "grok-composer-2.5-fast": "high",
 }
 MANAGED_AGENT_NAMES = frozenset(
     profile["agent"]
@@ -325,6 +364,37 @@ PLAN_KEYS = ("plan", "tier", "subscriptionPlan", "subscriptionTier")
 
 class AccessError(RuntimeError):
     pass
+
+
+class CustomModelEntry(NamedTuple):
+    """One validated entry from the user-owned models.json catalog."""
+
+    model_id: str
+    provider: str
+    effort_ceiling: str
+    context_window: int | None
+    cost: str
+    enabled: bool
+    agent_name: str
+
+    @property
+    def routed_provider(self) -> str:
+        return CUSTOM_PROVIDER_ROUTES[self.provider]
+
+    @property
+    def route(self) -> str:
+        return self.agent_name.removeprefix("airlock-")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.model_id,
+            "provider": self.provider,
+            "effort_ceiling": self.effort_ceiling,
+            "context_window": self.context_window,
+            "cost": self.cost,
+            "enabled": self.enabled,
+            "agent": self.agent_name,
+        }
 
 
 def config_path() -> Path:
@@ -355,6 +425,319 @@ def config_path() -> Path:
     if not standard_parent.exists() and os.access(home, os.W_OK):
         return standard_root / "config"
     return fallback_root / "config"
+
+
+def models_path() -> Path:
+    configured = os.environ.get("AIRLOCK_MODELS_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "models.json"
+
+
+def failover_path() -> Path:
+    configured = os.environ.get("AIRLOCK_FAILOVER_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "failover.json"
+
+
+def _custom_model_agent_name(provider: str, model_id: str) -> str:
+    prefix = f"airlock-custom-{provider}-"
+    slug = re.sub(r"[^a-z0-9]+", "-", model_id.lower(), flags=re.ASCII).strip("-")
+    if not slug:
+        raise AccessError("model ID cannot produce a safe Agent slug")
+    available = 64 - len(prefix)
+    if len(slug) > available:
+        digest = hashlib.sha256(model_id.encode("ascii")).hexdigest()[:8]
+        slug = f"{slug[:available - 9].rstrip('-')}-{digest}"
+    return prefix + slug
+
+
+def _validate_custom_model_id(value: object, provider: str, location: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or CUSTOM_MODEL_ID_RE.fullmatch(value) is None
+    ):
+        raise AccessError(
+            f"{location}.id must be a 1-160 character lower-case exact model ID"
+        )
+    if provider == "codex" and not value.startswith("gpt-"):
+        raise AccessError(f"{location}.id must be a canonical Codex gpt-* model ID")
+    if provider == "grok" and not value.startswith("grok-"):
+        raise AccessError(f"{location}.id must be a canonical Grok grok-* model ID")
+    if provider == "openrouter":
+        segments = value.split("/")
+        if (
+            len(segments) != 2
+            or any(CUSTOM_OPENROUTER_SEGMENT_RE.fullmatch(item) is None for item in segments)
+        ):
+            raise AccessError(
+                f"{location}.id must be an exact two-segment OpenRouter model ID"
+            )
+    return value
+
+
+def validate_custom_models(value: object) -> tuple[CustomModelEntry, ...]:
+    if not isinstance(value, dict) or set(value) != CUSTOM_MODELS_FIELDS:
+        raise AccessError(
+            "models.json must contain exactly schema_version and models"
+        )
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise AccessError("models.json schema_version must be 1")
+    raw_models = value.get("models")
+    if not isinstance(raw_models, list):
+        raise AccessError("models.json models must be an array")
+    if len(raw_models) > MAX_CUSTOM_MODELS:
+        raise AccessError(f"models.json models must contain at most {MAX_CUSTOM_MODELS} entries")
+
+    entries: list[CustomModelEntry] = []
+    model_locations: dict[str, str] = {}
+    agent_locations: dict[str, str] = {}
+    for index, raw in enumerate(raw_models):
+        location = f"models[{index}]"
+        if not isinstance(raw, dict) or set(raw) != CUSTOM_MODEL_FIELDS:
+            raise AccessError(
+                f"{location} must contain exactly id, provider, effort_ceiling, "
+                "context_window, cost, enabled"
+            )
+        provider = raw.get("provider")
+        if provider not in VALID_CUSTOM_MODEL_PROVIDERS:
+            raise AccessError(
+                f"{location}.provider must be grok, codex, or openrouter"
+            )
+        model_id = _validate_custom_model_id(raw.get("id"), provider, location)
+        if model_id in model_locations:
+            raise AccessError(
+                f"{location}.id duplicates {model_locations[model_id]}.id: {model_id}"
+            )
+        effort_ceiling = raw.get("effort_ceiling")
+        if effort_ceiling not in VALID_EFFORTS:
+            raise AccessError(
+                f"{location}.effort_ceiling must be low, medium, high, xhigh, or max"
+            )
+        context_window = raw.get("context_window")
+        if context_window is not None and (
+            type(context_window) is not int
+            or not 1 <= context_window <= 10_000_000
+        ):
+            raise AccessError(
+                f"{location}.context_window must be null or an integer from 1 to 10000000"
+            )
+        cost = raw.get("cost")
+        if cost not in VALID_CUSTOM_MODEL_COSTS:
+            raise AccessError(
+                f"{location}.cost must be premium, standard, or economical"
+            )
+        enabled = raw.get("enabled")
+        if type(enabled) is not bool:
+            raise AccessError(f"{location}.enabled must be a boolean")
+        agent_name = _custom_model_agent_name(provider, model_id)
+        if agent_name in agent_locations:
+            raise AccessError(
+                f"{location}.id produces the same Agent name as "
+                f"{agent_locations[agent_name]}.id"
+            )
+        model_locations[model_id] = location
+        agent_locations[agent_name] = location
+        entries.append(CustomModelEntry(
+            model_id=model_id,
+            provider=provider,
+            effort_ceiling=effort_ceiling,
+            context_window=context_window,
+            cost=cost,
+            enabled=enabled,
+            agent_name=agent_name,
+        ))
+    return tuple(entries)
+
+
+def load_custom_models(path: Path | None = None) -> tuple[CustomModelEntry, ...]:
+    target = path or models_path()
+    try:
+        if not target.exists():
+            return ()
+        if target.is_symlink() or not target.is_file():
+            raise AccessError("models.json is not a safe regular file")
+        size = target.stat().st_size
+        if size > MAX_MODELS_FILE_BYTES:
+            raise AccessError(
+                f"models.json exceeds the {MAX_MODELS_FILE_BYTES}-byte limit"
+            )
+        raw = target.read_bytes()
+        if not raw.strip():
+            return ()
+        value = POLICY_SCHEMA.load_json_bytes(raw, max_bytes=MAX_MODELS_FILE_BYTES)
+        return validate_custom_models(value)
+    except AccessError:
+        raise
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
+        raise AccessError(f"models.json is invalid: {exc}") from exc
+
+
+def known_failover_model_ids() -> frozenset[str]:
+    """Every model ID a declared failover chain may legally name.
+
+    Shipped profiles, user-declared custom models, and enabled OpenRouter
+    routes. Validation is deliberately global so one failover.json works
+    across profiles; whether a named model actually participates in one
+    session is decided later from that session's own worker table.
+    """
+    ids: set[str] = set()
+    for provider_profiles in MODEL_PROFILES.values():
+        for profile in provider_profiles.values():
+            ids.add(profile["model"])
+            ids.add(wire_model_id(profile["model"]))
+    for entry in load_custom_models():
+        ids.add(entry.model_id)
+        ids.add(wire_model_id(entry.model_id))
+    try:
+        registry = load_openrouter_registry()
+    except AccessError:
+        registry = None
+    for entry in getattr(registry, "models", ()):
+        if getattr(entry, "enabled", False):
+            ids.add(entry.model)
+            ids.add(wire_model_id(entry.model))
+    return frozenset(ids)
+
+
+def validate_failover_chains(value: object) -> dict[str, tuple[str, ...]]:
+    """Validate the user-owned failover.json chain map.
+
+    Keys are source model IDs and each value is the exact peer order to try
+    on a rate limit. An empty peer list opts that source out of handoff.
+    Names must reference shipped, custom-declared, or enabled OpenRouter
+    models so a typo fails closed here instead of silently dropping a hop.
+    """
+    if not isinstance(value, dict) or set(value) != {"schema_version", "chains"}:
+        raise AccessError(
+            "failover.json must contain exactly schema_version and chains"
+        )
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise AccessError("failover.json schema_version must be 1")
+    raw_chains = value.get("chains")
+    if not isinstance(raw_chains, dict):
+        raise AccessError("failover.json chains must be an object")
+    if len(raw_chains) > MAX_FAILOVER_CHAIN_SOURCES:
+        raise AccessError(
+            f"failover.json chains must contain at most "
+            f"{MAX_FAILOVER_CHAIN_SOURCES} sources"
+        )
+    known = known_failover_model_ids()
+    chains: dict[str, tuple[str, ...]] = {}
+    for raw_source, raw_peers in raw_chains.items():
+        location = f'chains["{raw_source}"]'
+        if (
+            not isinstance(raw_source, str)
+            or not raw_source
+            or not raw_source.isascii()
+            or len(raw_source) > 200
+        ):
+            raise AccessError("failover.json chain keys must be exact model IDs")
+        source_forms = {raw_source, wire_model_id(raw_source)}
+        if not any(form in known for form in source_forms):
+            raise AccessError(f"failover.json {location} names an unknown model")
+        if not isinstance(raw_peers, list):
+            raise AccessError(f"failover.json {location} must be an array of peers")
+        if len(raw_peers) > FAILOVER_CHAIN_LIMIT:
+            raise AccessError(
+                f"failover.json {location} must list at most "
+                f"{FAILOVER_CHAIN_LIMIT} peers"
+            )
+        seen_wire_forms: set[str] = set()
+        peers: list[str] = []
+        for raw_peer in raw_peers:
+            peer_location = f'{location}[{len(peers)}]'
+            if (
+                not isinstance(raw_peer, str)
+                or not raw_peer
+                or not raw_peer.isascii()
+                or len(raw_peer) > 200
+            ):
+                raise AccessError(
+                    f"failover.json {peer_location} must be an exact model ID"
+                )
+            peer_forms = {raw_peer, wire_model_id(raw_peer)}
+            if not any(form in known for form in peer_forms):
+                raise AccessError(
+                    f"failover.json {peer_location} names an unknown model: "
+                    f"{raw_peer}"
+                )
+            wire_peer = wire_model_id(raw_peer)
+            if wire_peer in source_forms:
+                raise AccessError(
+                    f"failover.json {peer_location} would chain "
+                    f"{raw_source} to itself"
+                )
+            if wire_peer in seen_wire_forms:
+                raise AccessError(
+                    f"failover.json {peer_location} repeats an earlier peer"
+                )
+            seen_wire_forms.add(wire_peer)
+            peers.append(raw_peer)
+        chains[raw_source] = tuple(peers)
+    return chains
+
+
+def load_failover_chains(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    target = path or failover_path()
+    try:
+        if not target.exists():
+            return {}
+        if target.is_symlink() or not target.is_file():
+            raise AccessError("failover.json is not a safe regular file")
+        size = target.stat().st_size
+        if size > MAX_FAILOVER_FILE_BYTES:
+            raise AccessError(
+                f"failover.json exceeds the {MAX_FAILOVER_FILE_BYTES}-byte limit"
+            )
+        raw = target.read_bytes()
+        if not raw.strip():
+            return {}
+        value = POLICY_SCHEMA.load_json_bytes(raw, max_bytes=MAX_FAILOVER_FILE_BYTES)
+        return validate_failover_chains(value)
+    except AccessError:
+        raise
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
+        raise AccessError(f"failover.json is invalid: {exc}") from exc
+
+
+def enabled_custom_models(policy: dict[str, Any]) -> tuple[CustomModelEntry, ...]:
+    entries = policy.get("_custom_models", ())
+    return tuple(
+        entry for entry in entries
+        if isinstance(entry, CustomModelEntry) and entry.enabled
+    )
+
+
+def custom_model_fields(
+    policy: dict[str, Any],
+    model_id: str,
+    provider: str | None = None,
+) -> dict[str, object] | None:
+    """Return one enabled exact declaration for launcher-side resolution."""
+
+    if not isinstance(model_id, str):
+        raise AccessError("custom model ID is invalid")
+    matches = [
+        entry for entry in enabled_custom_models(policy)
+        if entry.model_id == model_id
+        and (provider is None or entry.provider == provider)
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise AccessError(f"custom model declaration is ambiguous: {model_id}")
+    entry = matches[0]
+    result = {
+        **entry.to_dict(),
+        "routed_provider": entry.routed_provider,
+        "route": entry.route,
+    }
+    if entry.provider == "openrouter":
+        result["openrouter_route"] = _custom_openrouter_route(policy, entry).route
+    return result
 
 
 def openrouter_registry_path() -> Path:
@@ -404,6 +787,7 @@ def default_policy() -> dict[str, Any]:
             "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
             "swarm_fast": DEFAULT_SWARM_FAST,
             "failover": "ask",
+            "overflow_shrink": "auto",
             "descendants": "bounded",
             "max_descendants": 2,
             "max_concurrent_descendants": 3,
@@ -503,6 +887,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
         "swarm_fast": DEFAULT_SWARM_FAST,
         "failover": "ask",
+        "overflow_shrink": "auto",
         "agent_depth": DEFAULT_AGENT_DEPTH,
         "descendants": DEFAULT_DESCENDANT_POLICY,
         "max_descendants": DEFAULT_MAX_DESCENDANTS,
@@ -517,6 +902,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
         "swarm_fast": VALID_SWARM_FAST_POLICIES,
         "failover": VALID_FAILOVER_POLICIES,
+        "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         "agent_depth": VALID_AGENT_DEPTHS,
         "descendants": VALID_DESCENDANT_POLICIES,
         "max_descendants": _valid_positive_limit,
@@ -569,6 +955,7 @@ def mode_state() -> dict[str, object]:
         "effective_anthropic_fast": effective["anthropic_fast"],
         "effective_swarm_fast": effective["swarm_fast"],
         "effective_failover": effective["failover"],
+        "effective_overflow_shrink": effective["overflow_shrink"],
         "effective_agent_depth": effective["agent_depth"],
         "effective_descendants": effective["descendants"],
         "effective_max_descendants": effective["max_descendants"],
@@ -612,6 +999,7 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         f"Routing: {state['effective_routing']} ({routing_note})",
         f"Extra usage: {state['effective_extra_usage']} ({extra_note})",
         f"Failover: {state['effective_failover']}",
+        f"Overflow handoff: {state['effective_overflow_shrink']}",
         f"Max concurrent top-level subagents: {state['effective_max_agents']} ({max_note})",
         f"OpenAI Fast routes: {state['effective_openai_fast']} ({openai_fast_note})",
         f"Anthropic Fast startup: {state['effective_anthropic_fast']} ({anthropic_fast_note})",
@@ -660,6 +1048,7 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["anthropic_fast"]: VALID_PROVIDER_FAST_POLICIES,
         MODE_CONFIG_KEYS["swarm_fast"]: VALID_SWARM_FAST_POLICIES,
         MODE_CONFIG_KEYS["failover"]: VALID_FAILOVER_POLICIES,
+        MODE_CONFIG_KEYS["overflow_shrink"]: VALID_OVERFLOW_SHRINK_POLICIES,
         MODE_CONFIG_KEYS["agent_depth"]: VALID_AGENT_DEPTHS,
         MODE_CONFIG_KEYS["descendants"]: VALID_DESCENDANT_POLICIES,
         MODE_CONFIG_KEYS["max_descendants"]: _valid_positive_limit,
@@ -814,6 +1203,11 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         "anthropic-fast": ("anthropic_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
         "swarm-fast": ("swarm_fast", VALID_SWARM_FAST_POLICIES, "auto|on|off"),
         "failover": ("failover", VALID_FAILOVER_POLICIES, "ask|never|allow"),
+        "overflow": (
+            "overflow_shrink",
+            VALID_OVERFLOW_SHRINK_POLICIES,
+            "auto|truncate|summarize|off",
+        ),
         "depth": ("agent_depth", VALID_AGENT_DEPTHS, "1|2"),
     }
     if action in simple_actions:
@@ -832,7 +1226,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
     if action == "set":
         if value:
             raise AccessError(
-                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE]"
+                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE] [--overflow-shrink VALUE]"
             )
         validators: dict[str, object] = {
             "routing": VALID_ROUTING_POLICIES,
@@ -842,6 +1236,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
             "swarm_fast": VALID_SWARM_FAST_POLICIES,
             "failover": VALID_FAILOVER_POLICIES,
+            "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         }
         for name, validator in validators.items():
             candidate = getattr(args, name, None)
@@ -855,7 +1250,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             raise AccessError("mode set requires at least one option")
         return updates
     raise AccessError(
-        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|max-agents|set]"
+        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|overflow|max-agents|set]"
     )
 
 
@@ -1061,6 +1456,7 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
     anthropic_fast = config.get("AIRLOCK_ANTHROPIC_FAST")
     swarm_fast = config.get("AIRLOCK_SWARM_FAST")
     failover = config.get("AIRLOCK_FAILOVER_POLICY")
+    overflow_shrink = config.get("AIRLOCK_OVERFLOW_SHRINK")
     descendants = config.get("AIRLOCK_DESCENDANT_POLICY")
     max_descendants = config.get("AIRLOCK_MAX_DESCENDANTS_PER_WORKER")
     max_total_descendants = config.get("AIRLOCK_MAX_CONCURRENT_DESCENDANTS")
@@ -1080,6 +1476,8 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
         policy["policies"]["swarm_fast"] = swarm_fast
     if failover in VALID_FAILOVER_POLICIES:
         policy["policies"]["failover"] = failover
+    if overflow_shrink in VALID_OVERFLOW_SHRINK_POLICIES:
+        policy["policies"]["overflow_shrink"] = overflow_shrink
     if descendants in VALID_DESCENDANT_POLICIES:
         policy["policies"]["descendants"] = descendants
     if _valid_positive_limit(max_descendants):
@@ -1156,6 +1554,7 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
 def load_policy(path: Path | None = None) -> dict[str, Any]:
     policy = apply_runtime_overrides(load_cached_policy(path))
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_custom_models"] = load_custom_models()
     return policy
 
 
@@ -1495,6 +1894,7 @@ def refresh_policy(path: Path | None = None) -> dict[str, Any]:
     _write_policy(policy, target)
     policy = apply_runtime_overrides(policy)
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_custom_models"] = load_custom_models()
     return policy
 
 
@@ -2142,6 +2542,7 @@ def enabled_openrouter_workers(
             "agent": entry.agent_name,
             "model": entry.model,
             "effort": INHERIT_EFFORT,
+            "effort_ceiling": "high",
             "access": "included" if selected_root else "extra",
             "capability": "unverified",
             "cost": "unknown",
@@ -2154,6 +2555,78 @@ def enabled_openrouter_workers(
             "provider_slug": entry.provider_slug,
             "quantization": entry.quantization,
             "canonical_slug": entry.canonical_slug,
+        })
+    return workers
+
+
+def _custom_openrouter_route(policy: dict[str, Any], model: CustomModelEntry) -> Any:
+    registry = policy.get("_openrouter_registry")
+    matches = [
+        entry for entry in getattr(registry, "models", ())
+        if entry.enabled and entry.model == model.model_id
+    ]
+    if len(matches) != 1:
+        reason = "no enabled route" if not matches else "more than one enabled route"
+        raise AccessError(
+            f"models.json entry {model.model_id!r} has {reason} in the OpenRouter registry"
+        )
+    return matches[0]
+
+
+def enabled_custom_workers(
+    policy: dict[str, Any],
+    profile: str,
+    provider: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> list[dict[str, str]]:
+    """Render enabled models.json entries into the matching profile machinery."""
+
+    if provider not in {"openai", "grok", "openrouter"}:
+        return []
+    root_entry = _validate_openrouter_root_route(
+        policy, profile, openrouter_root_route
+    )
+    workers: list[dict[str, str]] = []
+    for model in enabled_custom_models(policy):
+        if model.routed_provider != provider:
+            continue
+        base = {
+            "provider": provider,
+            "route": model.route,
+            "agent": model.agent_name,
+            "model": model.model_id,
+            "effort": model.effort_ceiling,
+            "effort_ceiling": model.effort_ceiling,
+            "capability": "unverified",
+            "cost": model.cost,
+            "strength": "user-declared exact model with no inferred capability or availability",
+            "declaration_provider": model.provider,
+        }
+        if provider != "openrouter":
+            workers.append({**base, "access": "included"})
+            continue
+
+        route = _custom_openrouter_route(policy, model)
+        selected_root = root_entry is not None and route.route == root_entry.route
+        if not selected_root and policy["policies"]["extra_usage"] == "never":
+            continue
+        # OpenRouter routes keep the shipped portable ceiling of high. A user
+        # declaration may explicitly relax it to xhigh or max for that exact ID.
+        route_ceiling = (
+            model.effort_ceiling
+            if EFFORT_RANK[model.effort_ceiling] > EFFORT_RANK["high"]
+            else "high"
+        )
+        workers.append({
+            **base,
+            "access": "included" if selected_root else "extra",
+            "effort_ceiling": route_ceiling,
+            "endpoint_provider": route.endpoint_provider,
+            "provider_name": route.provider_name,
+            "provider_slug": route.provider_slug,
+            "quantization": route.quantization,
+            "canonical_slug": route.canonical_slug,
         })
     return workers
 
@@ -2185,16 +2658,30 @@ def enabled_profile_workers(
                 "agent": model_profile["agent"],
                 "model": model_profile["model"],
                 "effort": policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT),
+                "effort_ceiling": SHIPPED_MODEL_EFFORT_CEILINGS[model_profile["model"]],
                 "access": access,
                 "capability": model_profile["capability"],
                 "cost": model_profile["cost"],
                 "strength": model_profile["strength"],
             })
+        workers.extend(enabled_custom_workers(
+            policy,
+            profile,
+            provider,
+            openrouter_root_route=openrouter_root_route,
+        ))
     workers.extend(enabled_openrouter_workers(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
     ))
+    if profile == "openrouter-pure" or profile.startswith("hybrid-"):
+        workers.extend(enabled_custom_workers(
+            policy,
+            profile,
+            "openrouter",
+            openrouter_root_route=openrouter_root_route,
+        ))
     if len(workers) > MAX_CONFIGURED_SUBAGENTS:
         raise AccessError(
             f"{profile} enables more than {MAX_CONFIGURED_SUBAGENTS} named Agents"
@@ -2262,16 +2749,27 @@ def session_failover_chains(
     policy: dict[str, Any],
     workers: list[dict[str, str]],
     routes: dict[str, str],
+    *,
+    declared: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, list[str]]:
     """Map every routed model to same-category replacements for rate limits.
 
     When an upstream answers 429 the router retries the same request on the
     next healthy model from the same cost category instead of letting Claude
     Code back off against one exhausted model, which is what made WebFetch
-    appear to hang. Chains stay inside a cost category on purpose: a handoff
-    must not quietly spend more than the model it replaces. Extra-usage gated
-    models only serve as targets when the extra-usage policy is allow,
-    mirroring how worker selection treats them.
+    appear to hang. Chains stay inside a cost category by default so a
+    handoff cannot quietly spend more than the model it replaces.
+
+    A user-owned ``$AIRLOCK_CONFIG_DIR/failover.json`` (override with
+    ``AIRLOCK_FAILOVER_FILE``) may declare exact chains per model:
+    ``{"schema_version": 1, "chains": {"claude-opus-5": ["gpt-5.6-sol"]}}``.
+    A declared source REPLACES its derived chain verbatim -- any order, any
+    mix of providers and cost categories, since writing the file is itself
+    the deliberate upspend decision. An empty peer list opts that source out
+    of handoff entirely. Declared chains never receive the automatic
+    OpenRouter last-resort peer; name it explicitly if you want it.
+    Extra-usage gated peers still only serve when the extra-usage policy is
+    allow, mirroring how worker selection treats them.
     """
     if policy["policies"]["failover"] == "never":
         return {}
@@ -2279,6 +2777,28 @@ def session_failover_chains(
     eligible = [
         worker for worker in workers if allow_extra or worker["access"] != "extra"
     ]
+    openrouter_models = {
+        form
+        for worker in workers
+        if worker["provider"] == "openrouter"
+        for form in {worker["model"], wire_model_id(worker["model"])}
+    }
+    append_openrouter_peer = (
+        os.environ.get("AIRLOCK_OPENROUTER_CHAIN_PEER", "").strip().lower()
+        != "off"
+    )
+    ox_alpha_peer = None
+    if append_openrouter_peer:
+        ox_alpha_peer = next(
+            (
+                wire_model_id(worker["model"])
+                for worker in eligible
+                if worker["provider"] == "openrouter"
+                and wire_model_id(worker["model"]) == "stealth/ox-alpha"
+                and wire_model_id(worker["model"]) in routes
+            ),
+            None,
+        )
     groups: dict[str, list[dict[str, str]]] = {}
     for worker in eligible:
         groups.setdefault(worker["cost"], []).append(worker)
@@ -2289,20 +2809,129 @@ def session_failover_chains(
             members, key=lambda w: _failover_route_preference(w["route"])
         )
         for worker in ordered:
+            source_forms = {worker["model"], wire_model_id(worker["model"])}
             peers: list[str] = []
             for other in ordered:
                 if other is worker:
                     continue
                 peer = wire_model_id(other["model"])
+                if peer in source_forms:
+                    continue
                 if peer in routed and peer not in peers:
                     peers.append(peer)
-            if not peers:
+            add_ox_alpha = (
+                ox_alpha_peer is not None
+                and not source_forms.intersection(openrouter_models)
+                and ox_alpha_peer not in source_forms
+            )
+            if add_ox_alpha:
+                peers = [peer for peer in peers if peer != ox_alpha_peer]
+                entry = peers[:FAILOVER_CHAIN_LIMIT - 1] + [ox_alpha_peer]
+            else:
+                entry = peers[:FAILOVER_CHAIN_LIMIT]
+            if not entry:
                 continue
-            entry = peers[:FAILOVER_CHAIN_LIMIT]
-            for form in {worker["model"], wire_model_id(worker["model"])}:
+            for form in source_forms:
                 if form in routed:
                     chains[form] = entry
+
+    declared_chains = load_failover_chains() if declared is None else declared
+    if declared_chains:
+        access_by_form: dict[str, str] = {}
+        for worker in workers:
+            for form in {worker["model"], wire_model_id(worker["model"])}:
+                access_by_form.setdefault(form, worker["access"])
+        for raw_source, raw_peers in declared_chains.items():
+            source_forms = {raw_source, wire_model_id(raw_source)}
+            forms = {form for form in source_forms if form in routed}
+            if not forms:
+                continue
+            if not raw_peers:
+                for form in forms:
+                    chains.pop(form, None)
+                continue
+            entry: list[str] = []
+            seen: set[str] = set()
+            for raw_peer in raw_peers:
+                peer = wire_model_id(raw_peer)
+                if peer in source_forms or peer in seen:
+                    continue
+                access = access_by_form.get(peer)
+                if access is None or peer not in routed:
+                    continue
+                if access == "extra" and not allow_extra:
+                    continue
+                seen.add(peer)
+                entry.append(peer)
+            # A declaration that filters to nothing still owns the source:
+            # the user named the only acceptable targets, so keep no chain.
+            for form in forms:
+                chains[form] = entry
     return dict(sorted(chains.items()))
+
+
+def session_context_windows(
+    policy: dict[str, Any],
+    routes: dict[str, str],
+) -> dict[str, int]:
+    """Map routed models to their known context-window sizes.
+
+    Shipped profiles carry curated window values, and user-declared
+    models.json entries carry whatever ``context_window`` the user wrote.
+    Models without a known size are simply absent: the router then never
+    pre-screens them and attempts every handoff regardless of size.
+    """
+    windows: dict[str, int] = {}
+    for provider_profiles in MODEL_PROFILES.values():
+        for profile in provider_profiles.values():
+            # Failover chains name peers by their wire ID, so a window filed
+            # only under the "[1m]" form would never be found for the peer the
+            # router actually retargets to, and every 1M Claude model would
+            # look size-unknown to the overflow pre-screen.
+            for form in {profile["model"], wire_model_id(profile["model"])}:
+                if form in routes:
+                    windows[form] = profile["window"]
+    for declaration in enabled_custom_models(policy):
+        for form in {declaration.model_id, wire_model_id(declaration.model_id)}:
+            if form in routes and declaration.context_window:
+                windows[form] = declaration.context_window
+    return dict(sorted(windows.items()))
+
+
+def session_compactors(
+    policy: dict[str, Any],
+    workers: list[dict[str, str]],
+    routes: dict[str, str],
+) -> dict[str, str]:
+    """Pick one economy worker per provider for overflow compaction.
+
+    When no failover peer can fit an overflowing conversation, the router
+    compresses its history through the destination provider's own economy
+    model before retrying. Only workers already enabled in the session are
+    eligible, and extra-usage gated workers serve only under the allow
+    policy, mirroring how failover peers are chosen. OpenRouter has no
+    shipped economy worker, so those targets fall back to truncation.
+    """
+    allow_extra = policy["policies"]["extra_usage"] == "allow"
+    by_route = {
+        worker["route"]: worker
+        for worker in workers
+        if worker.get("declaration_provider") is None
+    }
+    compactors: dict[str, str] = {}
+    for provider, candidates in PROVIDER_COMPACTOR_ROUTES.items():
+        for route in candidates:
+            worker = by_route.get(route)
+            if worker is None:
+                continue
+            model = wire_model_id(worker["model"])
+            if model not in routes:
+                continue
+            if worker["access"] == "extra" and not allow_extra:
+                continue
+            compactors[provider] = model
+            break
+    return dict(sorted(compactors.items()))
 
 
 def discovery_model(
@@ -2450,9 +3079,9 @@ def session_route_policy(
     )
     return {
         "routes": {model: routes[model] for model in sorted(routes)},
-        "model_ids": sorted(model_ids),
+        "model_ids": sorted(set(model_ids)),
         "agent_names": sorted(agent_names),
-        "extra_model_ids": sorted(extra_model_ids),
+        "extra_model_ids": sorted(set(extra_model_ids)),
         "extra_agent_names": sorted(extra_agent_names),
         "picker_models": proxy_picker_models(
             policy,
@@ -2525,6 +3154,7 @@ def build_session_snapshot(
             "provider_slug": worker["provider_slug"],
             "quantization": worker["quantization"],
             "canonical_slug": worker["canonical_slug"],
+            "effort_ceiling": worker["effort_ceiling"],
         }
         for worker in workers
         if worker["provider"] == "openrouter"
@@ -2540,6 +3170,9 @@ def build_session_snapshot(
             "agents": agents,
             "openrouter": openrouter,
             "failover": session_failover_chains(policy, workers, routes),
+            "context_windows": session_context_windows(policy, routes),
+            "compactors": session_compactors(policy, workers, routes),
+            "overflow_shrink": policy["policies"]["overflow_shrink"],
         })
     except POLICY_SCHEMA.PolicyValidationError as exc:
         raise AccessError(f"session policy snapshot is invalid: {exc}") from exc
@@ -3206,11 +3839,13 @@ def validate_session_router_url(raw_url: str) -> tuple[str, int]:
     return "127.0.0.1", port
 
 
-def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
+def fetch_session_diagnostics(
+    router_url: str,
+    *,
+    timeout: float = SESSION_DIAGNOSTICS_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     host, port = validate_session_router_url(router_url)
-    connection = http.client.HTTPConnection(
-        host, port, timeout=SESSION_DIAGNOSTICS_TIMEOUT_SECONDS
-    )
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         connection.request("GET", "/diagnostics", headers={"Accept": "application/json"})
         response = connection.getresponse()
@@ -3235,12 +3870,269 @@ def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
     return payload
 
 
+def status_model(value: object) -> str | None:
+    if isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:+/\-\[\]]{0,127}", value
+    ):
+        return value
+    return None
+
+
+def _status_bounded_int(value: object, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if minimum <= value <= maximum else None
+    return None
+
+
+def status_provider(value: object) -> str | None:
+    if isinstance(value, str) and value in {
+        "anthropic", "openai", "grok", "openrouter"
+    }:
+        return value
+    return None
+
+
+def status_effort(value: object) -> str | None:
+    if isinstance(value, str) and value in VALID_EFFORTS:
+        return value
+    return None
+
+
+def status_timestamp(value: object) -> str | None:
+    if not isinstance(value, str) or re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value
+    ) is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return value[11:19] + "Z"
+
+
+def status_event_kind(value: object) -> str | None:
+    if (
+        isinstance(value, str)
+        and 1 <= len(value) <= 64
+        and all(" " <= character <= "~" for character in value)
+    ):
+        return value
+    return None
+
+
+def status_event_sentence(kind: str, event: dict[str, Any]) -> str | None:
+    model = status_model(event.get("model"))
+    if kind == "session_model_pinned":
+        provider = status_provider(event.get("provider"))
+        if model is not None and provider is not None:
+            return f"Pinned {model} ({provider}) as the session root."
+    elif kind == "rate_limit_failover_attempted":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} hit a rate limit; trying {target}."
+    elif kind == "rate_limit_failover_succeeded":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} hit a rate limit; continued on {target}."
+    elif kind == "rate_limit_chain_exhausted":
+        count = event.get("models_considered")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 32
+        ):
+            noun = "model" if count == 1 else "models"
+            line = f"The failover chain for {model} exhausted {count} {noun}."
+            wait = _status_bounded_int(event.get("retry_after"), 1, 300)
+            if wait is not None:
+                line += f" Retry in about {wait}s."
+            return line
+    elif kind == "rate_limit_cooldown_skipped":
+        if model is not None:
+            return f"Skipped {model} because its rate-limit cooldown is active."
+    elif kind == "rate_limit_provider_cooldown":
+        provider = status_provider(event.get("provider"))
+        if provider is not None and model is not None:
+            return (
+                f"{model} was the second {provider} model to hit a rate limit,"
+                " so the whole subscription is cooling down."
+            )
+        return None
+    elif kind == "anthropic_rate_limit_passthrough":
+        if model is not None:
+            return (
+                f"{model} hit an Anthropic rate limit; passed it to Claude"
+                " Code unchanged instead of handing off."
+            )
+        return None
+    elif kind == "background_model_substituted":
+        requested = status_model(event.get("requested"))
+        if requested is not None and model is not None:
+            return (
+                f"{requested} is not enabled here, so Claude Code's background"
+                f" request was served by {model}."
+            )
+        return None
+    elif kind == "model_not_enabled":
+        if model is not None:
+            return f"Refused a request for {model}: not enabled in this session."
+        return None
+    elif kind == "upstream_context_overflow":
+        if model is None:
+            return None
+        prompt = _status_bounded_int(event.get("prompt_tokens"), 1, 100_000_000)
+        limit = _status_bounded_int(event.get("limit_tokens"), 1, 100_000_000)
+        if prompt is not None and limit is not None:
+            return (
+                f"{model} rejected the request: {prompt} tokens exceed its"
+                f" {limit}-token context window."
+            )
+        return f"{model} rejected the request because it exceeds the context window."
+    elif kind == "failover_overflow_skipped":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        estimated = _status_bounded_int(event.get("estimated_tokens"), 1, 100_000_000)
+        if source is not None and target is not None and estimated is not None:
+            return (
+                f"Skipped {target}: about {estimated} tokens will not fit its"
+                " context window."
+            )
+        return None
+    elif kind == "failover_overflow_attempted":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} could not fit the conversation; trying {target}."
+        return None
+    elif kind == "failover_overflow_succeeded":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} overflowed; continued on {target}."
+        return None
+    elif kind == "failover_shrink_compacted":
+        target = status_model(event.get("target_model"))
+        compactor = status_model(event.get("compactor_model"))
+        if target is not None and compactor is not None:
+            return f"Condensed earlier history through {compactor} before retrying on {target}."
+        return None
+    elif kind == "failover_shrink_truncated":
+        target = status_model(event.get("target_model"))
+        if target is not None:
+            return f"Trimmed older history so the handoff fits {target}."
+        return None
+    elif kind == "failover_shrink_failed":
+        target = status_model(event.get("target_model"))
+        if target is not None:
+            return f"Could not shrink the conversation for {target}; the handoff failed."
+        return None
+    elif kind == "overflow_chain_exhausted":
+        count = event.get("models_considered")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 32
+        ):
+            noun = "model" if count == 1 else "models"
+            return (
+                f"No enabled model could fit the conversation after {count}"
+                f" {noun} were tried."
+            )
+    elif kind == "openrouter_effort_clamped":
+        requested = status_effort(event.get("requested"))
+        forwarded = status_effort(event.get("forwarded"))
+        ceiling = status_effort(event.get("ceiling"))
+        if (
+            model is not None
+            and requested is not None
+            and forwarded is not None
+        ):
+            # Routers older than the per-route ceilings recorded no ceiling;
+            # never invent one, so those events keep the shorter line.
+            if ceiling is None:
+                return (
+                    f"Clamped OpenRouter effort for {model} from {requested} to "
+                    f"{forwarded}."
+                )
+            return (
+                f"Clamped OpenRouter effort for {model} from {requested} to "
+                f"{forwarded} (route ceiling {ceiling})."
+            )
+    elif kind == "sanitized_error_substituted":
+        provider = status_provider(event.get("provider"))
+        if model is not None and provider is not None:
+            return (
+                f"Replaced the {provider} error for {model} with a safe local message."
+            )
+    elif kind == "openrouter_server_tools_stripped":
+        count = event.get("removed_count")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 64
+        ):
+            noun = "tool" if count == 1 else "tools"
+            return f"Removed {count} unsupported OpenRouter server {noun} for {model}."
+    return None
+
+
+def router_status_lines(payload: dict[str, Any]) -> list[str]:
+    profile = payload.get("profile")
+    root_model = status_model(payload.get("root_model"))
+    root_provider = status_provider(payload.get("root_provider"))
+    events = payload.get("events")
+    if (
+        not isinstance(profile, str)
+        or re.fullmatch(
+            r"[a-z0-9]+(?:[._-][a-z0-9]+)*", profile, re.ASCII
+        ) is None
+        or len(profile) > 64
+        or root_model is None
+        or root_provider is None
+        or not isinstance(events, list)
+        or len(events) > MAX_SESSION_DIAGNOSTIC_EVENTS
+    ):
+        raise AccessError("active Airlock router status is invalid")
+
+    actions: list[str] = []
+    for raw_event in events:
+        if not isinstance(raw_event, dict):
+            continue
+        timestamp = status_timestamp(raw_event.get("timestamp"))
+        kind = status_event_kind(raw_event.get("kind"))
+        if timestamp is None or kind is None:
+            continue
+        sentence = status_event_sentence(kind, raw_event)
+        if sentence is None:
+            sentence = f"Router action: {kind}."
+        actions.append(f"{timestamp} - {sentence}")
+
+    lines = [
+        f"Airlock router: {profile} profile; root {root_model} ({root_provider})"
+    ]
+    if actions:
+        lines.extend(actions[-(MAX_STATUS_LINES - 1):])
+    else:
+        lines.append("No router actions have been recorded yet.")
+    return lines[:MAX_STATUS_LINES]
+
+
 def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and retain only cumulative counts from router diagnostics."""
     # Routers that know about rate-limit failover also report which models are
     # cooling down; older routers omit that key and stay equally valid.
     required = {"instance_id", "events", "summary"}
-    allowed = required | {"rate_limit_cooldowns"}
+    allowed = required | {
+        "profile",
+        "root_model",
+        "root_provider",
+        "rate_limit_cooldowns",
+    }
     if not required <= set(payload) or set(payload) - allowed:
         raise AccessError("active Airlock session diagnostics have an invalid shape")
     instance_id = payload.get("instance_id")
@@ -4217,6 +5109,74 @@ def render_openrouter_agents(
     return rendered
 
 
+def render_custom_agents(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> dict[str, Any]:
+    """Build native Agent definitions for enabled models.json declarations."""
+
+    declarations = {
+        entry.agent_name: entry for entry in enabled_custom_models(policy)
+    }
+    rendered: dict[str, Any] = {}
+    requires_confirmation = policy["policies"]["extra_usage"] == "ask"
+    for worker in enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    ):
+        declaration = declarations.get(worker["agent"])
+        if declaration is None:
+            continue
+        provider_name = (
+            "Codex" if declaration.provider == "codex"
+            else "Grok" if declaration.provider == "grok"
+            else "OpenRouter"
+        )
+        access_sentence = ""
+        if worker["access"] == "extra" and requires_confirmation:
+            access_sentence = " Automatic use requires explicit extra-usage confirmation."
+        context_sentence = (
+            "No context window was declared."
+            if declaration.context_window is None
+            else f"The user declared a {declaration.context_window}-token context window."
+        )
+        endpoint_sentence = ""
+        if declaration.provider == "openrouter":
+            endpoint_sentence = (
+                f" It uses the separately pinned OpenRouter endpoint "
+                f"{worker['endpoint_provider']}."
+            )
+        description = (
+            f"User-declared {provider_name} worker for exact model "
+            f"{declaration.model_id}. Airlock does not verify its availability or "
+            f"capability. {context_sentence} Declared effort ceiling: "
+            f"{declaration.effort_ceiling}; relative usage class: "
+            f"{declaration.cost}.{endpoint_sentence}{access_sentence}"
+        )
+        prompt = (
+            "Complete the assigned task with the available tools and return the full "
+            "technical result. This exact model was declared by the user. Keep the "
+            "assigned scope, do not change model or provider, do not expose credentials, "
+            "and do not infer provider guarantees."
+        )
+        definition: dict[str, Any] = {
+            "description": description,
+            "prompt": prompt,
+            "model": declaration.model_id,
+            "effort": declaration.effort_ceiling,
+        }
+        if policy["policies"].get("agent_depth") == "2":
+            definition["tools"] = ["*"]
+            definition["prompt"] = prompt + " " + NESTED_AGENT_RULE
+        else:
+            definition["disallowedTools"] = ["Agent"]
+        rendered[declaration.agent_name] = definition
+    return rendered
+
+
 def render_profile(
     policy: dict[str, Any],
     profile: str,
@@ -4247,6 +5207,15 @@ def render_profile(
     if duplicates:
         raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
     rendered.update(openrouter_agents)
+    custom_agents = render_custom_agents(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    duplicates = set(rendered).intersection(custom_agents)
+    if duplicates:
+        raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
+    rendered.update(custom_agents)
     if not rendered:
         raise AccessError("user policy disables every worker in this session profile")
     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
@@ -4261,6 +5230,7 @@ def managed_agent_name_set(policy: dict[str, Any] | None = None) -> set[str]:
         registry = policy.get("_openrouter_registry")
         entries = getattr(registry, "models", ())
         names.update(entry.agent_name for entry in entries if entry.enabled)
+        names.update(entry.agent_name for entry in enabled_custom_models(policy))
     return names
 
 
@@ -4480,6 +5450,7 @@ def status_lines(policy: dict[str, Any]) -> list[str]:
         f"Anthropic Fast startup: {policy['policies']['anthropic_fast']}",
         f"Luna swarm Fast selection: {policy['policies']['swarm_fast']}",
         f"Failover: {policy['policies']['failover']}",
+        f"Overflow handoff: {policy['policies']['overflow_shrink']}",
         agent_depth_note(policy["policies"]["agent_depth"]),
     ]
     for provider in ("anthropic", "openai"):
@@ -4658,6 +5629,9 @@ def main() -> int:
     mode_parser.add_argument("--anthropic-fast", choices=sorted(VALID_PROVIDER_FAST_POLICIES))
     mode_parser.add_argument("--swarm-fast", choices=sorted(VALID_SWARM_FAST_POLICIES))
     mode_parser.add_argument("--failover", choices=sorted(VALID_FAILOVER_POLICIES))
+    mode_parser.add_argument(
+        "--overflow-shrink", choices=sorted(VALID_OVERFLOW_SHRINK_POLICIES)
+    )
     mode_parser.add_argument("--descendants", choices=sorted(VALID_DESCENDANT_POLICIES))
     mode_parser.add_argument("--max-descendants")
     mode_parser.add_argument("--max-total-descendants")
@@ -4669,6 +5643,8 @@ def main() -> int:
     session_usage_parser = subparsers.add_parser("session-usage")
     session_usage_parser.add_argument("--router-url", required=True)
     session_usage_parser.add_argument("--json", action="store_true")
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--router-url")
     recommend_parser = subparsers.add_parser("recommend-effort")
     recommend_parser.add_argument("--provider", choices=sorted(PROVIDER_ROUTES), required=True)
     recommend_parser.add_argument("--risk", choices=VALID_RISKS, required=True)
@@ -4761,6 +5737,12 @@ def main() -> int:
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
+    subparsers.add_parser("custom-models")
+    custom_model_resolve = subparsers.add_parser("custom-model-resolve")
+    custom_model_resolve.add_argument("model_id")
+    custom_model_resolve.add_argument(
+        "--provider", choices=sorted(VALID_CUSTOM_MODEL_PROVIDERS)
+    )
     subparsers.add_parser("hybrid-default-root")
     bundle_check = subparsers.add_parser("bundle-check")
     bundle_check.add_argument("--bundle", type=Path, required=True)
@@ -4842,6 +5824,21 @@ def main() -> int:
             else:
                 print("\n".join(session_usage_lines(report)))
             return 0
+        if args.command == "status":
+            if not args.router_url:
+                print(NO_SESSION_ROUTER_MESSAGE)
+                return 0
+            try:
+                diagnostics = fetch_session_diagnostics(
+                    args.router_url,
+                    timeout=STATUS_DIAGNOSTICS_TIMEOUT_SECONDS,
+                )
+                lines = router_status_lines(diagnostics)
+            except AccessError:
+                print(NO_SESSION_ROUTER_MESSAGE)
+                return 0
+            print("\n".join(lines))
+            return 0
         if args.command == "recommend-effort":
             policy = load_policy()
             recommendation = recommend_effort(
@@ -4889,6 +5886,19 @@ def main() -> int:
             return 0
         if args.command == "session-snapshot-delete":
             delete_session_snapshot(args.snapshot, args.snapshot_sha256)
+            return 0
+        if args.command in {"custom-models", "custom-model-resolve"}:
+            policy = load_policy()
+            if args.command == "custom-models":
+                output = [
+                    custom_model_fields(policy, entry.model_id, entry.provider)
+                    for entry in enabled_custom_models(policy)
+                ]
+            else:
+                output = custom_model_fields(
+                    policy, args.model_id, args.provider
+                )
+            print(json.dumps(output, separators=(",", ":"), ensure_ascii=True))
             return 0
         policy = load_or_refresh_policy()
         if args.command == "openrouter-routes":
@@ -4974,7 +5984,9 @@ def main() -> int:
         return 0
     except AccessError as error:
         command_name = (
-            args.command if args.command in {"mode", "usage", "session-usage"} else "access"
+            args.command
+            if args.command in {"mode", "usage", "session-usage", "status"}
+            else "access"
         )
         print(f"airlock {command_name}: {error}", file=sys.stderr)
         return 1

@@ -426,6 +426,10 @@ install_managed_file "$repo_root/plugins/airlock/skills/airlock-fast/SKILL.md" "
 install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_web_tools.py" "$plugin_target/mcp-server/airlock_web_tools.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.sh" "$plugin_target/scripts/fast-session-end.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.py" "$plugin_target/scripts/fast-session-end.py" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-session-end.sh" "$plugin_target/scripts/router-session-end.sh" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-session-end.py" "$plugin_target/scripts/router-session-end.py" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-turn-notice.sh" "$plugin_target/scripts/router-turn-notice.sh" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-turn-notice.py" "$plugin_target/scripts/router-turn-notice.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.sh" "$plugin_target/scripts/agent-guard.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.py" "$plugin_target/scripts/agent-guard.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/secret-guard.sh" "$plugin_target/scripts/secret-guard.sh" 0755

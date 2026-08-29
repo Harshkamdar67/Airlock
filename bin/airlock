@@ -226,7 +226,7 @@ Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, c
   auto resolves to fable when Fable is neither extra nor unavailable, otherwise
   opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
-Other commands: fast, bg, mode, usage, session-usage, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
+Other commands: fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
 
 OpenRouter credential commands:
   airlock openrouter auth set-key     Store a key using a hidden prompt
@@ -269,6 +269,7 @@ Policy commands:
   airlock usage set --openai-capacity auto|1x|5x|20x
   airlock usage defaults           Clear capacity overrides
   airlock session-usage [--json]   Show router-observed token counts for this hybrid session
+  airlock status                   Show this terminal's router profile and recent actions
 
 Update commands:
   airlock version                  Show the installed Airlock version
@@ -379,6 +380,10 @@ validate_managed_bundle() {
     --component "plugins/airlock/mcp-server/airlock_web_tools.py=$plugin_dir/mcp-server/airlock_web_tools.py"
     --component "plugins/airlock/scripts/fast-session-end.sh=$plugin_dir/scripts/fast-session-end.sh"
     --component "plugins/airlock/scripts/fast-session-end.py=$plugin_dir/scripts/fast-session-end.py"
+    --component "plugins/airlock/scripts/router-session-end.sh=$plugin_dir/scripts/router-session-end.sh"
+    --component "plugins/airlock/scripts/router-session-end.py=$plugin_dir/scripts/router-session-end.py"
+    --component "plugins/airlock/scripts/router-turn-notice.sh=$plugin_dir/scripts/router-turn-notice.sh"
+    --component "plugins/airlock/scripts/router-turn-notice.py=$plugin_dir/scripts/router-turn-notice.py"
     --component "plugins/airlock/scripts/agent-guard.sh=$plugin_dir/scripts/agent-guard.sh"
     --component "plugins/airlock/scripts/agent-guard.py=$plugin_dir/scripts/agent-guard.py"
     --component "plugins/airlock/scripts/secret-guard.sh=$plugin_dir/scripts/secret-guard.sh"
@@ -446,13 +451,68 @@ validate_default_profile() {
   esac
 }
 
+CUSTOM_MODEL_ID=''
+CUSTOM_MODEL_PROVIDER=''
+CUSTOM_MODEL_ROUTED_PROVIDER=''
+CUSTOM_MODEL_AGENT=''
+CUSTOM_MODEL_EFFORT_CEILING=''
+CUSTOM_MODEL_COST=''
+CUSTOM_MODEL_CONTEXT_WINDOW=''
+CUSTOM_MODEL_OPENROUTER_ROUTE=''
+resolve_custom_model_declaration() {
+  local requested="$1"
+  local provider="$2"
+  local model_json parsed
+  model_json="$(run_access custom-model-resolve "$requested" --provider "$provider")" || return $?
+  model_json="${model_json%$'\r'}"
+  [[ "$model_json" != 'null' ]] || return 1
+  parsed="$("$python_bin" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    required = ("id", "provider", "routed_provider", "agent", "effort_ceiling", "cost")
+    if not isinstance(value, dict) or any(not isinstance(value.get(key), str) or not value[key] for key in required):
+        raise ValueError
+    context = value.get("context_window")
+    if context is not None and (isinstance(context, bool) or not isinstance(context, int) or context <= 0):
+        raise ValueError
+    route = value.get("openrouter_route")
+    if route is not None and (not isinstance(route, str) or not route):
+        raise ValueError
+    print("\t".join(value[key] for key in required) + "\t" + (str(context) if context is not None else "-") + "\t" + (route or "-"))
+except Exception:
+    raise SystemExit(1)
+' <<<"$model_json")" || {
+    printf 'airlock: custom model resolver returned an invalid result.\n' >&2
+    return 1
+  }
+  IFS=$'\t' read -r CUSTOM_MODEL_ID CUSTOM_MODEL_PROVIDER \
+    CUSTOM_MODEL_ROUTED_PROVIDER CUSTOM_MODEL_AGENT CUSTOM_MODEL_EFFORT_CEILING \
+    CUSTOM_MODEL_COST CUSTOM_MODEL_CONTEXT_WINDOW CUSTOM_MODEL_OPENROUTER_ROUTE <<<"$parsed"
+  if [[ "$CUSTOM_MODEL_ID" != "$requested" || "$CUSTOM_MODEL_PROVIDER" != "$provider" ]]; then
+    printf 'airlock: custom model resolver returned an invalid result.\n' >&2
+    return 1
+  fi
+  [[ "$CUSTOM_MODEL_CONTEXT_WINDOW" != '-' ]] || CUSTOM_MODEL_CONTEXT_WINDOW=''
+  [[ "$CUSTOM_MODEL_OPENROUTER_ROUTE" != '-' ]] || CUSTOM_MODEL_OPENROUTER_ROUTE=''
+}
+
 resolve_grok_model() {
   case "$1" in
+    # grok-4.6 is the shipped flagship route. The tested proxy catalog also
+    # lists grok-4.5, but Airlock runs one Grok flagship, so the older ID is
+    # an alias rather than a second route. A different exact ID reaches the
+    # proxy only when models.json declares it.
     grok|grok-4.6|grok-4.5) selected_model='grok-4.6'; model_name='Grok 4.6' ;;
     composer|grok-composer|grok-composer-2.5-fast) selected_model='grok-composer-2.5-fast'; model_name='Grok Composer 2.5 Fast' ;;
     *)
-      printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
-      return 1
+      if resolve_custom_model_declaration "$1" grok; then
+        selected_model="$CUSTOM_MODEL_ID"
+        model_name="Custom Grok ($CUSTOM_MODEL_ID)"
+      else
+        printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
+        return 1
+      fi
       ;;
   esac
 }
@@ -522,9 +582,14 @@ resolve_model() {
     spark|5.3-spark|gpt-5.3-codex-spark) selected_model='gpt-5.3-codex-spark'; model_name='GPT-5.3 Codex Spark' ;;
     5.2|gpt-5.2) selected_model='gpt-5.2'; model_name='GPT-5.2' ;;
     *)
-      printf "airlock: unsupported model '%s'\n" "$1" >&2
-      print_models >&2
-      return 1
+      if resolve_custom_model_declaration "$requested_model" codex; then
+        selected_model="$CUSTOM_MODEL_ID"
+        model_name="Custom Codex ($CUSTOM_MODEL_ID)"
+      else
+        printf "airlock: unsupported model '%s'\n" "$1" >&2
+        print_models >&2
+        return 1
+      fi
       ;;
   esac
 }
@@ -566,7 +631,23 @@ resolve_hybrid_alias() {
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
     grok|grok-4.6|grok-4.5) root_model='grok-4.6'; root_name='Grok 4.6'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
-    *) return 1 ;;
+    *)
+      if resolve_custom_model_declaration "$1" codex; then
+        root_model="$CUSTOM_MODEL_ID"
+        root_name="Custom Codex ($CUSTOM_MODEL_ID)"
+        root_provider='openai'
+      elif resolve_custom_model_declaration "$1" grok; then
+        root_model="$CUSTOM_MODEL_ID"
+        root_name="Custom Grok ($CUSTOM_MODEL_ID)"
+        root_provider='grok'
+      elif resolve_custom_model_declaration "$1" openrouter; then
+        root_model="$CUSTOM_MODEL_ID"
+        root_name="Custom OpenRouter ($CUSTOM_MODEL_ID)"
+        root_provider='openrouter'
+      else
+        return 1
+      fi
+      ;;
   esac
 }
 
@@ -1626,15 +1707,27 @@ if [[ "${1:-}" == 'orp' ]]; then
 fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    mode|usage|session-usage|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    mode|usage|session-usage|status|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*) set -- hybrid "$@" ;;
-    *) set -- hybrid "$default_hybrid_model" "$@" ;;
+    *)
+      if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_hybrid_alias "$1" >/dev/null 2>&1; then
+        set -- hybrid "$@"
+      else
+        set -- hybrid "$default_hybrid_model" "$@"
+      fi
+      ;;
   esac
 elif [[ "$default_profile" == 'grok' ]]; then
   case "${1:-}" in
-    mode|usage|session-usage|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    mode|usage|session-usage|status|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*) set -- grok "$@" ;;
-    *) set -- grok "$default_grok_model" "$@" ;;
+    *)
+      if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_grok_model "$1" >/dev/null 2>&1; then
+        set -- grok "$@"
+      else
+        set -- grok "$default_grok_model" "$@"
+      fi
+      ;;
   esac
 fi
 
@@ -1657,6 +1750,20 @@ if [[ "${1:-}" == 'session-usage' ]]; then
     exit 1
   fi
   run_access session-usage --router-url "$AIRLOCK_SESSION_ROUTER_URL" "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'status' ]]; then
+  shift
+  if (( $# )); then
+    printf 'airlock status: this command does not accept arguments.\n' >&2
+    exit 2
+  fi
+  if [[ -n "${AIRLOCK_SESSION_ROUTER_URL:-}" ]]; then
+    run_access status --router-url "$AIRLOCK_SESSION_ROUTER_URL"
+  else
+    run_access status
+  fi
   exit $?
 fi
 
@@ -1705,6 +1812,19 @@ if [[ "${1:-}" == 'bundle' ]]; then
   exit 0
 fi
 
+# Parse the user-owned catalog once the command is known to resolve models.
+# Renamed-command refusals, diagnostics, version, update, and bundle checks
+# must never depend on helper health. Exit code 2 means the helper predates
+# custom-models support and simply leaves the catalog empty; other nonzero
+# exits are the helper's own named diagnostics for a malformed user-owned
+# file and stay fatal.
+custom_models_status=0
+run_access custom-models >/dev/null 2>&1 || custom_models_status=$?
+case "$custom_models_status" in
+  0|2) ;;
+  *) exit "$custom_models_status" ;;
+esac
+
 if [[ "${1:-}" == 'hybrid' ]]; then
   shift
   choose_root=0
@@ -1721,7 +1841,14 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     root_alias='auto'
     shift
   elif resolve_hybrid_alias "$hybrid_candidate" 2>/dev/null; then
-    root_alias="$hybrid_candidate"
+    if [[ "$root_provider" == 'openrouter' ]]; then
+      hybrid_selected_route="$CUSTOM_MODEL_OPENROUTER_ROUTE"
+      OPR_SELECTED_ROUTE="$CUSTOM_MODEL_OPENROUTER_ROUTE"
+      OPR_ROOT_MODEL="$root_model"
+      OPR_ROOT_NAME="$root_name"
+    else
+      root_alias="$hybrid_candidate"
+    fi
     shift
   elif [[ -n "$hybrid_candidate" && "$hybrid_candidate" != -* ]] && \
        [[ "$hybrid_candidate" =~ ^[a-z0-9]+([._:-][a-z0-9]+)*$ ]]; then
@@ -1758,6 +1885,41 @@ if [[ "${1:-}" == 'hybrid' ]]; then
       break
     fi
   done
+
+  if [[ -n "$explicit_model" ]]; then
+    case "$explicit_model" in
+      gpt-*)
+        if ! resolve_model "$explicit_model" >/dev/null 2>&1; then
+          printf "airlock: model '%s' is not shipped or enabled in models.json.\n" "$explicit_model" >&2
+          exit 2
+        fi
+        ;;
+      grok-*)
+        if ! resolve_grok_model "$explicit_model" >/dev/null 2>&1; then
+          printf "airlock: Grok model '%s' is not shipped or enabled in models.json.\n" "$explicit_model" >&2
+          exit 2
+        fi
+        ;;
+      claude-*) ;;
+      *)
+        # A bare unrecognized ID may declare itself through models.json, but
+        # only when nothing else has chosen the root. With a root alias or
+        # route already selected, leave the verdict to the provider and
+        # OpenRouter mismatch checks below so their messages stay exact.
+        if [[ -z "$root_alias" && -z "$hybrid_selected_route" ]]; then
+          if resolve_custom_model_declaration "$explicit_model" openrouter; then
+            hybrid_selected_route="$CUSTOM_MODEL_OPENROUTER_ROUTE"
+            OPR_SELECTED_ROUTE="$CUSTOM_MODEL_OPENROUTER_ROUTE"
+            OPR_ROOT_MODEL="$CUSTOM_MODEL_ID"
+            OPR_ROOT_NAME="Custom OpenRouter ($CUSTOM_MODEL_ID)"
+          else
+            printf "airlock: model '%s' is not shipped or enabled in models.json.\n" "$explicit_model" >&2
+            exit 2
+          fi
+        fi
+        ;;
+    esac
+  fi
 
   if [[ -z "$hybrid_selected_route" && -z "$root_alias" && -z "$explicit_model" ]]; then
     if [[ "$choose_root" -eq 1 ]]; then
@@ -1884,6 +2046,9 @@ if [[ "${1:-}" == 'opr' ]]; then
     shift
   else
     select_openrouter_root || exit $?
+  fi
+  if resolve_custom_model_declaration "$OPR_SELECTED_ROUTE" openrouter; then
+    OPR_SELECTED_ROUTE="$CUSTOM_MODEL_OPENROUTER_ROUTE"
   fi
   resolve_openrouter_root "$OPR_SELECTED_ROUTE" || exit $?
   opr_args=("$@")
@@ -2089,6 +2254,12 @@ case "${1:-}" in
     requested_model='sol-fast'
     ;;
   sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
+  *)
+    if [[ $# -gt 0 && "$1" != -* ]] && resolve_model "$1" >/dev/null 2>&1; then
+      requested_model="$1"
+      shift
+    fi
+    ;;
 esac
 validate_effort "$selected_effort"
 resolve_model "$requested_model"

@@ -216,23 +216,25 @@ class HybridLauncherTests(unittest.TestCase):
         )
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
-    def test_grok_4_6_declares_its_window_and_leaves_compaction_headroom(self) -> None:
+    def test_grok_root_keeps_the_conservative_window(self) -> None:
+        # No shipped root declares a hard limit; the flagship Grok route keeps
+        # the conservative saved fallback like every other custom root.
         environment = self.build("hybrid-grok-root", "grok-4.6")
-        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
-        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
     def test_composer_root_keeps_the_conservative_auto_compact_window(self) -> None:
         environment = self.build("hybrid-grok-root", "grok-composer-2.5-fast")
         self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
-    def test_user_compact_window_still_wins_on_grok_4_6(self) -> None:
+    def test_user_compact_window_still_wins_on_the_grok_flagship(self) -> None:
         environment = self.build(
             "hybrid-grok-root",
             "grok-4.6",
             preset_environment={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000"},
         )
-        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
     def test_auto_context_window_never_sets_the_variable(self) -> None:
@@ -1657,8 +1659,8 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "grok-pure")
-        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
-        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
         for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
             self.assertNotIn(marker, environment)
 

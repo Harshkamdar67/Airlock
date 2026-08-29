@@ -1888,6 +1888,663 @@ class FailoverChainTests(unittest.TestCase):
         )
         self.assertEqual(chains, {})
 
+    def test_every_chain_peer_has_a_known_context_window(self) -> None:
+        """A peer the overflow pre-screen cannot size is a wasted round trip.
+
+        Chains name peers by wire ID, so a window filed only under the
+        ``[1m]`` form leaves the peer the router actually retargets to
+        looking size-unknown. That silently disabled the pre-screen for
+        every 1M Claude model, which are the most common premium peers.
+        This asserts the two maps agree rather than asserting any number,
+        so it keeps holding when windows change.
+        """
+        policy = ACCESS.load_policy()
+        for profile, root in (
+            ("hybrid-anthropic-root", "claude-opus-5[1m]"),
+            ("hybrid-openai-root", "gpt-5.6-sol"),
+        ):
+            with self.subTest(profile=profile):
+                snapshot = ACCESS.build_session_snapshot(policy, profile, root)
+                windows = snapshot.context_windows
+                missing = sorted({
+                    peer
+                    for peers in snapshot.failover.values()
+                    for peer in peers
+                    # A declared OpenRouter route has no window on purpose:
+                    # Airlock does not infer sizes it cannot verify.
+                    if snapshot.routes.get(peer) != "openrouter"
+                    and peer not in windows
+                })
+                self.assertEqual(missing, [])
+
+    def test_shipped_grok_routes_stay_inside_the_proxy_catalog(self) -> None:
+        """A rate-limited root must never fail over to an unknown Grok ID.
+
+        The tested claude-code-proxy 0.1.35 catalog lists grok-4.5, grok-4.6,
+        and grok-composer-2.5-fast. Pinning a flagship the installed proxy
+        does not carry makes every same-category failover hop onto that ID,
+        and the proxy then rejects the whole conversation with `Unknown
+        model`. That is what happened when beta.7 pinned grok-4.6 against a
+        0.1.22 proxy. This guard fails the suite the moment a profile or
+        managed agent pins something the catalog does not list.
+        """
+        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-composer-2.5-fast"}
+        shipped = [
+            profile["model"]
+            for provider in ACCESS.MODEL_PROFILES.values()
+            for profile in provider.values()
+            if profile["model"].startswith("grok-")
+        ]
+        self.assertEqual(set(shipped), {"grok-4.6", "grok-composer-2.5-fast"})
+        for model in shipped:
+            self.assertIn(model, proxy_catalog)
+        with open(
+            ROOT / "config" / "grok-agents.json",
+            encoding="utf-8",
+        ) as handle:
+            agents = json.load(handle)
+        managed = [
+            definition["model"]
+            for name, definition in agents.items()
+            if not name.startswith("_") and str(definition.get("model", "")).startswith("grok-")
+        ]
+        self.assertEqual(managed, ["grok-4.6", "grok-composer-2.5-fast"])
+
+    def test_premium_failover_chains_use_a_supported_grok_id(self) -> None:
+        """Opus hitting 429 must hop to an ID the installed proxy serves.
+
+        Regression for the installed-session failure where an Opus rate limit
+        failed over onto a Grok ID the proxy did not carry, the proxy answered
+        `Unknown model`, and that surfaced as a 400 on the conversation.
+        """
+        policy = {"policies": {"failover": "ask", "extra_usage": "ask"}}
+        providers = {
+            "opus": ("anthropic", ACCESS.MODEL_PROFILES["anthropic"]["opus"]),
+            "sol": ("openai", ACCESS.MODEL_PROFILES["openai"]["sol"]),
+            "grok": ("grok", ACCESS.MODEL_PROFILES["grok"]["grok"]),
+        }
+        workers = []
+        for route, (provider, profile) in providers.items():
+            workers.append({
+                "route": route,
+                "agent": profile["agent"],
+                "model": profile["model"],
+                "provider": provider,
+                "access": "included",
+                "cost": profile["cost"],
+            })
+        # A real session registers the Claude wire form alongside each full ID.
+        routes = {
+            "claude-opus-5[1m]": "anthropic",
+            "claude-opus-5": "anthropic",
+            "gpt-5.6-sol": "openai",
+            "grok-4.6": "grok",
+        }
+        chains = ACCESS.session_failover_chains(policy, workers, routes)
+        self.assertEqual(chains["claude-opus-5"], ["grok-4.6", "gpt-5.6-sol"])
+        self.assertEqual(chains["gpt-5.6-sol"], ["grok-4.6", "claude-opus-5"])
+        # Whatever the shipped pin is, every Grok hop a chain produces has to
+        # be an ID the tested proxy catalogs list.
+        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-composer-2.5-fast"}
+        for chain in chains.values():
+            for hop in chain:
+                if hop.startswith("grok-"):
+                    self.assertIn(hop, proxy_catalog)
+
+
+class DeclaredFailoverChainTests(unittest.TestCase):
+    """A user-owned failover.json replaces derived chains for its sources."""
+
+    def policy(self, *, failover="ask", extra_usage="ask") -> dict[str, object]:
+        return {
+            "policies": {
+                "failover": failover,
+                "extra_usage": extra_usage,
+            }
+        }
+
+    def worker(self, route, model, provider, cost, access="included"):
+        return {
+            "route": route,
+            "agent": f"airlock-{route}",
+            "model": model,
+            "provider": provider,
+            "access": access,
+            "cost": cost,
+        }
+
+    def routes(self):
+        return {
+            "gpt-5.6-luna": "openai",
+            "grok-composer-2.5-fast": "grok",
+            "claude-haiku-4-5-20251001": "anthropic",
+            "gpt-5.6-sol": "openai",
+            "claude-opus-5[1m]": "anthropic",
+            "claude-opus-5": "anthropic",
+            "vendor/model-test": "openrouter",
+        }
+
+    def workers(self):
+        return [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker(
+                "composer", "grok-composer-2.5-fast", "grok", "economical"
+            ),
+            self.worker(
+                "haiku", "claude-haiku-4-5-20251001", "anthropic", "economical"
+            ),
+            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
+            self.worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+        ]
+
+    def test_declared_chain_replaces_derived_verbatim(self) -> None:
+        declared = {"claude-opus-5[1m]": ("gpt-5.6-luna", "grok-composer-2.5-fast")}
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            self.workers(),
+            self.routes(),
+            declared=declared,
+        )
+        # Verbatim order wins over the derived premium chain.
+        self.assertEqual(chains["claude-opus-5[1m]"], [
+            "gpt-5.6-luna",
+            "grok-composer-2.5-fast",
+        ])
+        self.assertEqual(chains["claude-opus-5"], [
+            "gpt-5.6-luna",
+            "grok-composer-2.5-fast",
+        ])
+        # Undeclared sources keep their derived chains.
+        self.assertEqual(chains["gpt-5.6-sol"], ["claude-opus-5"])
+
+    def test_declared_chain_may_cross_categories_and_reverse_order(self) -> None:
+        declared = {
+            "gpt-5.6-sol": (
+                "claude-haiku-4-5-20251001",
+                "gpt-5.6-luna",
+                "claude-opus-5[1m]",
+            ),
+        }
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            self.workers(),
+            self.routes(),
+            declared=declared,
+        )
+        self.assertEqual(chains["gpt-5.6-sol"], [
+            "claude-haiku-4-5-20251001",
+            "gpt-5.6-luna",
+            "claude-opus-5",
+        ])
+
+    def test_empty_peer_list_opts_the_source_out(self) -> None:
+        declared = {"gpt-5.6-sol": ()}
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            self.workers(),
+            self.routes(),
+            declared=declared,
+        )
+        self.assertNotIn("gpt-5.6-sol", chains)
+        # Opting out one source does not strip it from other chains.
+        self.assertEqual(chains["claude-haiku-4-5-20251001"], [
+            "gpt-5.6-luna",
+            "grok-composer-2.5-fast",
+        ])
+
+    def test_extra_gated_peers_still_require_the_allow_policy(self) -> None:
+        workers = self.workers() + [
+            self.worker(
+                "or-a", "vendor/model-a", "openrouter", "unknown", access="extra"
+            ),
+        ]
+        routes = dict(self.routes(), **{"vendor/model-a": "openrouter"})
+        declared = {"claude-opus-5[1m]": ("vendor/model-a", "gpt-5.6-sol")}
+        ask = ACCESS.session_failover_chains(
+            self.policy(extra_usage="ask"), workers, routes, declared=declared
+        )
+        # The extra peer is filtered; the remaining named peer survives.
+        self.assertEqual(ask["claude-opus-5[1m]"], ["gpt-5.6-sol"])
+        allow = ACCESS.session_failover_chains(
+            self.policy(extra_usage="allow"), workers, routes, declared=declared
+        )
+        self.assertEqual(allow["claude-opus-5[1m]"], ["vendor/model-a", "gpt-5.6-sol"])
+
+    def test_never_policy_kills_declared_chains_too(self) -> None:
+        declared = {"gpt-5.6-sol": ("gpt-5.6-luna",)}
+        chains = ACCESS.session_failover_chains(
+            self.policy(failover="never"),
+            self.workers(),
+            self.routes(),
+            declared=declared,
+        )
+        self.assertEqual(chains, {})
+
+    def test_unrouted_sources_and_peers_are_dropped(self) -> None:
+        declared = {
+            "vendor/model-test": ("gpt-5.6-luna",),
+            "gpt-5.6-sol": ("grok-composer-2.5-fast",),
+        }
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            self.workers(),
+            {"gpt-5.6-luna": "openai", "gpt-5.6-sol": "openai"},
+            declared=declared,
+        )
+        # vendor/model-test is unrouted here so its declaration is inert;
+        # sol's composer peer is not a session worker and is filtered.
+        self.assertNotIn("vendor/model-test", chains)
+        self.assertEqual(chains["gpt-5.6-sol"], [])
+
+    def test_self_and_duplicate_peers_are_filtered_at_runtime(self) -> None:
+        declared = {
+            "gpt-5.6-sol": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-luna"),
+        }
+        chains = ACCESS.session_failover_chains(
+            self.policy(),
+            self.workers(),
+            self.routes(),
+            declared=declared,
+        )
+        self.assertEqual(chains["gpt-5.6-sol"], ["gpt-5.6-luna"])
+
+
+class FailoverFileTests(unittest.TestCase):
+    """failover.json loads with the same fail-closed rules as models.json."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "failover.json"
+
+    def load(self):
+        with patch.dict(os.environ, {"AIRLOCK_FAILOVER_FILE": str(self.path)}):
+            return ACCESS.load_failover_chains()
+
+    def test_missing_file_is_an_empty_catalog(self) -> None:
+        self.assertEqual(self.load(), {})
+
+    def test_valid_file_round_trips(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {
+                    "claude-opus-5[1m]": ["gpt-5.6-sol", "gpt-5.6-luna"],
+                    "gpt-5.6-sol": [],
+                },
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.load(),
+            {
+                "claude-opus-5[1m]": ("gpt-5.6-sol", "gpt-5.6-luna"),
+                "gpt-5.6-sol": (),
+            },
+        )
+
+    def test_unknown_source_fails_closed_naming_the_key(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {"totally-made-up": ["gpt-5.6-sol"]},
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "totally-made-up"):
+            self.load()
+
+    def test_unknown_peer_fails_closed_naming_the_index(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {"gpt-5.6-sol": ["nope/nope"]},
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, r"chains\[.gpt-5\.6-sol.\]\[0\]"):
+            self.load()
+
+    def test_wrong_schema_version_fails_closed(self) -> None:
+        self.path.write_text(
+            json.dumps({"schema_version": 2, "chains": {}}), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "schema_version"):
+            self.load()
+
+    def test_self_chain_fails_closed(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {"gpt-5.6-sol": ["gpt-5.6-sol"]},
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "itself"):
+            self.load()
+
+    def test_repeated_peer_fails_closed(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {
+                    "gpt-5.6-sol": ["gpt-5.6-luna", "gpt-5.6-luna"],
+                },
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "repeats"):
+            self.load()
+
+    def test_garbage_json_fails_closed(self) -> None:
+        self.path.write_text("{not json", encoding="utf-8")
+        with self.assertRaisesRegex(ACCESS.AccessError, "failover.json is invalid"):
+            self.load()
+
+    def test_symlink_refused(self) -> None:
+        target = Path(self.tmp.name) / "real.json"
+        target.write_text("{}", encoding="utf-8")
+        try:
+            self.path.symlink_to(target)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        with self.assertRaisesRegex(ACCESS.AccessError, "safe regular file"):
+            self.load()
+
+
+class DeclaredSnapshotIntegrationTests(unittest.TestCase):
+    """The snapshot mint picks up failover.json through the single call site."""
+
+    def test_session_failover_chains_lazy_loads_the_file(self) -> None:
+        workers = [
+            {
+                "route": "sol",
+                "agent": "airlock-sol",
+                "model": "gpt-5.6-sol",
+                "provider": "openai",
+                "access": "included",
+                "cost": "premium",
+            },
+            {
+                "route": "luna",
+                "agent": "airlock-luna",
+                "model": "gpt-5.6-luna",
+                "provider": "openai",
+                "access": "included",
+                "cost": "economical",
+            },
+        ]
+        routes = {"gpt-5.6-sol": "openai", "gpt-5.6-luna": "openai"}
+        policy = {"policies": {"failover": "ask", "extra_usage": "ask"}}
+        declared = {"gpt-5.6-sol": ("gpt-5.6-luna",)}
+        original = ACCESS.load_failover_chains
+        seen: list[bool] = []
+
+        def spy():
+            seen.append(True)
+            return declared
+
+        ACCESS.load_failover_chains = spy
+        try:
+            chains = ACCESS.session_failover_chains(policy, workers, routes)
+        finally:
+            ACCESS.load_failover_chains = original
+        self.assertEqual(seen, [True])
+        # sol's derived chain is replaced by the declared one; luna has no
+        # same-category peer and no declaration, so it keeps no chain.
+        self.assertEqual(chains["gpt-5.6-sol"], ["gpt-5.6-luna"])
+        self.assertNotIn("gpt-5.6-luna", chains)
+
+
+class OpenRouterLastResortPeerTests(unittest.TestCase):
+    """The declared OpenRouter root serves as a deliberate last-resort peer."""
+
+    @staticmethod
+    def _policy() -> dict[str, object]:
+        return {"policies": {"failover": "ask", "extra_usage": "ask"}}
+
+    @staticmethod
+    def _worker(route, model, provider, cost, access="included"):
+        return {
+            "route": route,
+            "agent": f"airlock-{route}",
+            "model": model,
+            "provider": provider,
+            "access": access,
+            "cost": cost,
+        }
+
+    def _workers(self):
+        return [
+            self._worker("grok", "grok-4.6", "grok", "premium"),
+            self._worker("sol", "gpt-5.6-sol", "openai", "premium"),
+            self._worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+            self._worker("ox", "stealth/ox-alpha", "openrouter", "standard"),
+        ]
+
+    def _routes(self):
+        return {
+            "grok-4.6": "grok",
+            "gpt-5.6-sol": "openai",
+            "claude-opus-5[1m]": "anthropic",
+            "claude-opus-5": "anthropic",
+            "stealth/ox-alpha": "openrouter",
+        }
+
+    def test_premium_chains_end_with_the_openrouter_peer(self) -> None:
+        chains = ACCESS.session_failover_chains(
+            self._policy(), self._workers(), self._routes()
+        )
+        self.assertEqual(
+            chains["claude-opus-5[1m]"],
+            ["grok-4.6", "gpt-5.6-sol", "stealth/ox-alpha"],
+        )
+        self.assertEqual(
+            chains["gpt-5.6-sol"],
+            ["grok-4.6", "claude-opus-5", "stealth/ox-alpha"],
+        )
+
+    def test_openrouter_sources_never_receive_the_peer(self) -> None:
+        chains = ACCESS.session_failover_chains(
+            self._policy(), self._workers(), self._routes()
+        )
+        self.assertNotIn("stealth/ox-alpha", chains)
+
+    def test_the_off_switch_removes_the_peer(self) -> None:
+        with patch.dict(os.environ, {"AIRLOCK_OPENROUTER_CHAIN_PEER": "off"}):
+            chains = ACCESS.session_failover_chains(
+                self._policy(), self._workers(), self._routes()
+            )
+        self.assertEqual(chains["claude-opus-5[1m]"], ["grok-4.6", "gpt-5.6-sol"])
+        self.assertNotIn("stealth/ox-alpha", json.dumps(chains))
+
+
+class CustomModelDeclarationTests(unittest.TestCase):
+    """models.json declarations validate strictly and render as agents."""
+
+    def _entry(self, **overrides):
+        entry = {
+            "id": "grok-4.7",
+            "provider": "grok",
+            "effort_ceiling": "xhigh",
+            "context_window": None,
+            "cost": "premium",
+            "enabled": True,
+        }
+        entry.update(overrides)
+        return entry
+
+    def _document(self, *entries):
+        return {"schema_version": 1, "models": list(entries)}
+
+    def test_a_valid_declaration_produces_a_safe_agent_name(self) -> None:
+        entries = ACCESS.validate_custom_models(self._document(self._entry()))
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].model_id, "grok-4.7")
+        self.assertEqual(entries[0].agent_name, "airlock-custom-grok-grok-4-7")
+        self.assertEqual(entries[0].effort_ceiling, "xhigh")
+
+    def test_disabled_entries_are_kept_but_marked(self) -> None:
+        entries = ACCESS.validate_custom_models(
+            self._document(self._entry(enabled=False))
+        )
+        self.assertFalse(entries[0].enabled)
+
+    def test_duplicate_ids_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ACCESS.AccessError, "duplicates"):
+            ACCESS.validate_custom_models(
+                self._document(self._entry(), self._entry())
+            )
+
+    def test_unknown_providers_and_ceilings_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ACCESS.AccessError, "provider"):
+            ACCESS.validate_custom_models(
+                self._document(self._entry(provider="anthropic"))
+            )
+        with self.assertRaisesRegex(ACCESS.AccessError, "effort_ceiling"):
+            ACCESS.validate_custom_models(
+                self._document(self._entry(effort_ceiling="ultra"))
+            )
+
+    def test_codex_ids_must_be_canonical_gpt_ids(self) -> None:
+        with self.assertRaisesRegex(ACCESS.AccessError, "gpt-"):
+            ACCESS.validate_custom_models(
+                self._document(self._entry(provider="codex"))
+            )
+
+    def test_openrouter_ids_must_have_two_segments(self) -> None:
+        with self.assertRaisesRegex(ACCESS.AccessError, "two-segment"):
+            ACCESS.validate_custom_models(
+                self._document(self._entry(provider="openrouter"))
+            )
+
+    def test_load_missing_file_yields_no_entries(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            target = Path(directory) / "models.json"
+            self.assertEqual(ACCESS.load_custom_models(target), ())
+
+    def test_load_reads_enabled_entries_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            target = Path(directory) / "models.json"
+            target.write_text(json.dumps(self._document(self._entry())), encoding="utf-8")
+            entries = ACCESS.load_custom_models(target)
+        self.assertEqual([entry.model_id for entry in entries], ["grok-4.7"])
+
+    def test_malformed_documents_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            target = Path(directory) / "models.json"
+            target.write_text("{ not json", encoding="utf-8")
+            with self.assertRaises(ACCESS.AccessError):
+                ACCESS.load_custom_models(target)
+
+    def test_enabled_filter_honors_the_flag(self) -> None:
+        entries = ACCESS.validate_custom_models(self._document(
+            self._entry(),
+            self._entry(id="x-ai/grok-5", provider="openrouter", enabled=False),
+        ))
+        policy = {"_custom_models": entries}
+        self.assertEqual(
+            [entry.model_id for entry in ACCESS.enabled_custom_models(policy)],
+            ["grok-4.7"],
+        )
+
+
+class RouterStatusLinesTests(unittest.TestCase):
+    """The status renderer stays honest about what each event recorded."""
+
+    @staticmethod
+    def _payload(events: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "profile": "hybrid-openai-root",
+            "root_model": "gpt-5.6-sol",
+            "root_provider": "openai",
+            "events": events,
+        }
+
+    def test_renders_each_recorded_event_shape(self) -> None:
+        lines = ACCESS.router_status_lines(self._payload([
+            {"timestamp": "2026-08-26T10:00:01Z", "kind": "session_model_pinned",
+             "model": "gpt-5.6-sol", "provider": "openai"},
+            {"timestamp": "2026-08-26T10:00:02Z", "kind": "openrouter_effort_clamped",
+             "model": "stealth/ox-alpha", "requested": "max", "forwarded": "high"},
+            {"timestamp": "2026-08-26T10:00:03Z", "kind": "openrouter_effort_clamped",
+             "model": "stealth/ox-alpha", "requested": "xhigh",
+             "forwarded": "high", "ceiling": "medium"},
+            {"timestamp": "2026-08-26T10:00:04Z", "kind": "future_action_v2",
+             "message": "SHOULD_NOT_PRINT", "credential": "SENTINEL_SECRET"},
+        ]))
+        self.assertEqual(lines, [
+            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
+            "10:00:01Z - Pinned gpt-5.6-sol (openai) as the session root.",
+            # Routers older than per-route ceilings recorded no ceiling; the
+            # line must not invent one.
+            "10:00:02Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high.",
+            "10:00:03Z - Clamped OpenRouter effort for stealth/ox-alpha from xhigh to high"
+            " (route ceiling medium).",
+            # Unknown kinds fall back to the kind alone and never to event fields.
+            "10:00:04Z - Router action: future_action_v2.",
+        ])
+
+    def test_keeps_only_the_newest_actions_within_the_bound(self) -> None:
+        events = [
+            {"timestamp": f"2026-08-26T10:00:{minute:02d}Z", "kind": "future_action_v1"}
+            for minute in range(12)
+        ]
+        lines = ACCESS.router_status_lines(self._payload(events))
+        self.assertEqual(len(lines), ACCESS.MAX_STATUS_LINES)
+        self.assertEqual(lines[1], "10:00:03Z - Router action: future_action_v1.")
+        self.assertEqual(lines[-1], "10:00:11Z - Router action: future_action_v1.")
+
+    def test_reports_an_empty_event_window_without_inventing_lines(self) -> None:
+        lines = ACCESS.router_status_lines(self._payload([]))
+        self.assertEqual(lines, [
+            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
+            "No router actions have been recorded yet.",
+        ])
+
+    def test_renders_the_handoff_and_cooldown_events(self) -> None:
+        # A recorded kind that has no label falls through to the bare kind
+        # name, which reads as a bug report rather than an explanation, so
+        # every handoff event the router emits is pinned here.
+        lines = ACCESS.router_status_lines(self._payload([
+            {"timestamp": "2026-08-26T10:00:01Z", "kind": "rate_limit_cooldown_skipped",
+             "model": "gpt-5.6-sol"},
+            {"timestamp": "2026-08-26T10:00:02Z", "kind": "rate_limit_provider_cooldown",
+             "model": "gpt-5.6-terra", "provider": "openai"},
+            {"timestamp": "2026-08-26T10:00:03Z", "kind": "rate_limit_provider_cooldown",
+             "model": "gpt-5.6-terra", "provider": "SENTINEL_PROVIDER"},
+            {"timestamp": "2026-08-26T10:00:04Z", "kind": "rate_limit_chain_exhausted",
+             "model": "gpt-5.6-sol", "models_considered": 2, "retry_after": 30},
+            {"timestamp": "2026-08-26T10:00:05Z", "kind": "rate_limit_chain_exhausted",
+             "model": "gpt-5.6-sol", "models_considered": 2, "retry_after": 99999},
+            {"timestamp": "2026-08-26T10:00:06Z",
+             "kind": "anthropic_rate_limit_passthrough",
+             "model": "claude-opus-5", "provider": "anthropic", "status": 429},
+        ]))
+        self.assertEqual(lines, [
+            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
+            "10:00:01Z - Skipped gpt-5.6-sol because its rate-limit cooldown is active.",
+            "10:00:02Z - gpt-5.6-terra was the second openai model to hit a rate limit,"
+            " so the whole subscription is cooling down.",
+            # An unknown provider is never reflected into the line.
+            "10:00:03Z - Router action: rate_limit_provider_cooldown.",
+            "10:00:04Z - The failover chain for gpt-5.6-sol exhausted 2 models."
+            " Retry in about 30s.",
+            # Out of range, so the line drops the hint rather than printing it.
+            "10:00:05Z - The failover chain for gpt-5.6-sol exhausted 2 models.",
+            "10:00:06Z - claude-opus-5 hit an Anthropic rate limit; passed it to"
+            " Claude Code unchanged instead of handing off.",
+        ])
+
+    def test_rejects_oversized_or_malformed_payloads(self) -> None:
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.router_status_lines(self._payload([
+                {"timestamp": "2026-08-26T10:00:01Z", "kind": "future_action_v1"},
+            ] * (ACCESS.MAX_SESSION_DIAGNOSTIC_EVENTS + 1)))
+        with self.assertRaises(ACCESS.AccessError):
+            ACCESS.router_status_lines({"profile": "", "root_model": "gpt-5.6-sol",
+                                        "root_provider": "openai", "events": []})
+
 
 if __name__ == "__main__":
     unittest.main()

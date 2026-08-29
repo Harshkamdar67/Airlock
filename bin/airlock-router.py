@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
+from collections import deque, OrderedDict
 import ctypes
+from datetime import datetime, timezone
+import gzip
+import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -40,14 +43,73 @@ MAX_OPENROUTER_IDENTITY_PREFIX_BYTES = 256 * 1024
 MAX_UPSTREAM_REASON_CHARS = 200
 MAX_UPSTREAM_DETAIL_CHARS = 320
 MAX_OPENROUTER_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
-RATE_LIMIT_STATUS_CODES = frozenset({429, 529})
+# 402 joins the rate-limit statuses because it means the same thing to a
+# router: this model cannot serve the request now, so try the next peer.
+# xAI answers 402 when a Grok subscription's usage balance is spent, and
+# OpenRouter answers it when credits run out. Neither is a rate limit in
+# the literal sense, and neither clears on its own the way a 429 does, so
+# the shared cooldown will keep re-testing a model that stays unavailable.
+RATE_LIMIT_STATUS_CODES = frozenset({402, 429, 529})
+# Statuses that can carry a context-overflow rejection. 413 is what the
+# subscription proxy answers for Codex context-window failures; most other
+# providers answer 400, so the body must agree before anything is classified.
+OVERFLOW_STATUS_CODES = frozenset({400, 413})
+MAX_OVERFLOW_PEEK_BYTES = 64 * 1024
+MAX_OVERFLOW_TEXT_CHARS = MAX_OVERFLOW_PEEK_BYTES
+# Curated, high-precision overflow phrases. A status alone is not enough:
+# an ordinary malformed-request 400 must keep breaking the chain exactly as
+# it always has, so the body has to name the context limit. LiteLLM's public
+# issue tracker documents how phrase-only matching misses provider variants;
+# status-first gating plus this list keeps false positives rare while real
+# overflows from every shipped route classify cleanly.
+OVERFLOW_PHRASES = (
+    "prompt is too long",
+    "context_length_exceeded",
+    "context length exceeded",
+    "maximum context length",
+    "request_too_large",
+    "context window",
+)
+PROMPT_TOO_LONG_COUNTS_RE = re.compile(
+    r"(\d[\d,]*)\s*tokens?\s*>\s*(\d[\d,]*)", re.ASCII
+)
+MAX_CONTEXT_LENGTH_COUNTS_RE = re.compile(
+    r"maximum context length is (\d[\d,]*) tokens", re.ASCII
+)
+REQUESTED_TOKENS_RE = re.compile(r"[Rr]equested (\d[\d,]*) tokens", re.ASCII)
 MAX_FAILOVER_HOPS = 3
+# Overflow-aware handoff: when no failover peer's context window fits the
+# conversation, the router compresses history through the destination
+# provider's economy worker (or truncates) and retries once.
+SHRINK_CHUNK_TARGET_TOKENS = 120_000
+SHRINK_OUTPUT_RESERVE_TOKENS = 16_000
+SHRINK_BRIEF_RESERVE_TOKENS = 12_000
+SHRINK_RECENT_TAIL_TOKENS = 24_000
+SHRINK_MAX_CHUNKS = 8
+SHRINK_MAX_EPISODE_INPUT_TOKENS = 900_000
+SHRINK_COMPACTOR_MAX_TOKENS = 8192
+SHRINK_MERGE_MAX_TOKENS = 8192
+SHRINK_CACHE_ENTRIES = 8
+SHRINK_CALL_TIMEOUT_SECONDS = 10 * 60
+SHRINK_PING_INTERVAL_SECONDS = 15.0
+SHRINK_TAIL_MIN_UNITS = 1
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
+# A subscription meters every model it serves from one usage pool, so a
+# limit on one of them usually means the rest are gone too and walking to
+# a same-provider peer buys nothing but a doomed round trip. OpenRouter
+# bills each route separately, so its routes stay independent.
+SUBSCRIPTION_PROVIDERS = frozenset({"anthropic", "openai", "grok"})
+# One rejection is not evidence of a shared pool, and skipping a model
+# that would have answered is worse than one wasted round trip. A second
+# distinct model of the same provider failing inside the window is the
+# evidence that escalates the cooldown to cover the whole provider.
+PROVIDER_COOLDOWN_MIN_MODELS = 2
 MAX_RATE_LIMIT_COOLDOWN_SECONDS = 300.0
 MAX_FAILOVER_PEERS_PER_MODEL = 8
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = "https://github.com/Harshkamdar67/Airlock"
 OPENROUTER_TITLE = "Airlock"
+OPENROUTER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 USAGE_FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -117,6 +179,32 @@ class RateLimitedError(RouterError):
         self.retry_after = retry_after
 
 
+class ContextOverflowError(RouterError):
+    """The upstream rejected the request because it cannot fit its window.
+
+    Raised before any response byte reaches the client so the handler can
+    walk the failover chain exactly as it does for rate limits, and shrink
+    the conversation when no peer is large enough either. Carrying the
+    parsed token counts lets the walk pre-skip peers whose known window is
+    already too small.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        prompt_tokens: int | None,
+        limit_tokens: int | None,
+    ) -> None:
+        super().__init__(f"upstream returned HTTP {status} context overflow")
+        self.status = status
+        self.prompt_tokens = prompt_tokens
+        self.limit_tokens = limit_tokens
+
+
+class ShrinkUnavailableError(RouterError):
+    """Overflow shrinking could not run or produce a usable request."""
+
+
 def parse_retry_after(value: str | None) -> float | None:
     """Return a bounded cooldown hint from a Retry-After header value."""
     if not value:
@@ -134,6 +222,47 @@ def parse_retry_after(value: str | None) -> float | None:
     return min(seconds, MAX_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
+def disclose_handoff(
+    system: object, source_model: str, target_model: str
+) -> object:
+    """Append a factual note that this request was handed to a replacement.
+
+    The caller's system prompt describes the model that was asked for, so a
+    replacement left uninformed answers in that model's name and reports the
+    wrong identity when asked directly. Both IDs come from the validated
+    route table, never from request content, so nothing here can be steered
+    by the conversation. The note is appended rather than inserted so any
+    cached prefix in front of it stays intact.
+    """
+    note = (
+        f"Routing note from Airlock: {source_model} was unavailable for this"
+        f" request, so it was handed to {target_model}, which is serving this"
+        " turn. Any earlier statement in this prompt about which model you are"
+        f" refers to {source_model}. You are {target_model}. If you are asked"
+        " which model you are, say so accurately."
+    )
+    if system is None:
+        return note
+    if isinstance(system, str):
+        return f"{system}\n\n{note}"
+    if isinstance(system, list):
+        return [*system, {"type": "text", "text": note}]
+    # An unexpected shape is left exactly as it is: a malformed system field
+    # is the upstream's business, and rewriting it could invalidate the call.
+    return system
+
+
+def retry_after_seconds(value: float | None) -> int | None:
+    """Round a cooldown hint into a whole-second header value.
+
+    Anything below a second becomes 1 rather than 0, because a zero would
+    invite an immediate retry into a limit that has not lifted yet.
+    """
+    if value is None or value != value or value < 0:
+        return None
+    return max(1, min(int(value + 0.5), int(MAX_RATE_LIMIT_COOLDOWN_SECONDS)))
+
+
 class RateLimitCooldowns:
     """Tracks models that recently answered 429 so later requests skip them.
 
@@ -144,21 +273,57 @@ class RateLimitCooldowns:
 
     def __init__(self) -> None:
         self._until: dict[str, float] = {}
+        self._provider_until: dict[str, float] = {}
+        # provider -> {model: deadline}, the evidence that a subscription's
+        # whole pool is spent rather than one model being busy.
+        self._witnessed: dict[str, dict[str, float]] = {}
         self._lock = threading.Lock()
 
-    def mark(self, model: str, retry_after: float | None) -> float:
+    def mark(
+        self,
+        model: str,
+        retry_after: float | None,
+        provider: str | None = None,
+    ) -> tuple[float, bool]:
+        """Cool ``model``, escalating to its provider once evidence allows.
+
+        Returns (seconds, escalated). Escalation happens only for a
+        subscription provider and only once a second distinct model of it
+        has been limited inside the window.
+        """
         seconds = (
             DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
             if retry_after is None
             else max(retry_after, 1.0)
         )
+        now = time.monotonic()
+        deadline = now + seconds
+        escalated = False
         with self._lock:
-            self._until[model] = time.monotonic() + seconds
-        return seconds
+            self._until[model] = deadline
+            if provider in SUBSCRIPTION_PROVIDERS:
+                seen = self._witnessed.setdefault(provider, {})
+                seen[model] = deadline
+                for stale in [m for m, d in seen.items() if d <= now]:
+                    del seen[stale]
+                if len(seen) >= PROVIDER_COOLDOWN_MIN_MODELS:
+                    previous = self._provider_until.get(provider)
+                    escalated = previous is None or previous <= now
+                    self._provider_until[provider] = max(
+                        deadline, previous or 0.0
+                    )
+        return seconds, escalated
 
-    def active(self, model: str) -> bool:
+    def active(self, model: str, provider: str | None = None) -> bool:
         now = time.monotonic()
         with self._lock:
+            if provider is not None:
+                provider_deadline = self._provider_until.get(provider)
+                if provider_deadline is not None:
+                    if provider_deadline > now:
+                        return True
+                    del self._provider_until[provider]
+                    self._witnessed.pop(provider, None)
             deadline = self._until.get(model)
             if deadline is None:
                 return False
@@ -167,6 +332,28 @@ class RateLimitCooldowns:
                 return False
             return True
 
+    def remaining(self, model: str, provider: str | None = None) -> float | None:
+        """Seconds until ``model`` is worth trying again, if it is cooling.
+
+        A skip decided from local cooldown state has no upstream header
+        behind it, so this is the only honest retry hint available for that
+        case. The provider deadline wins when it is the later of the two,
+        because a cooling subscription gates the model regardless.
+        """
+        now = time.monotonic()
+        with self._lock:
+            deadlines = [
+                deadline
+                for deadline in (
+                    self._until.get(model),
+                    self._provider_until.get(provider) if provider else None,
+                )
+                if deadline is not None and deadline > now
+            ]
+        if not deadlines:
+            return None
+        return max(deadlines) - now
+
     def active_models(self) -> list[str]:
         now = time.monotonic()
         with self._lock:
@@ -174,6 +361,15 @@ class RateLimitCooldowns:
             for m in expired:
                 del self._until[m]
             return sorted(self._until)
+
+    def active_providers(self) -> list[str]:
+        now = time.monotonic()
+        with self._lock:
+            expired = [p for p, d in self._provider_until.items() if d <= now]
+            for p in expired:
+                del self._provider_until[p]
+                self._witnessed.pop(p, None)
+            return sorted(self._provider_until)
 
 
 def load_policy_schema():
@@ -375,12 +571,19 @@ class UsageObserver:
         }
 
 
+class OpenRouterEffortClamp(NamedTuple):
+    requested: str
+    forwarded: str
+    ceiling: str
+
+
 class OpenRouterRoute(NamedTuple):
     endpoint_provider: str
     provider_name: str
     provider_slug: str
     quantization: str
     canonical_slug: str
+    effort_ceiling: str = "high"
 
 
 class RouterConfig:
@@ -395,6 +598,13 @@ class RouterConfig:
         openrouter_key: bytes | None = None,
         openrouter_url: str = OPENROUTER_URL,
         failover: dict[str, tuple[str, ...]] | None = None,
+        profile: str = "hybrid",
+        root_model: str | None = None,
+        context_windows: dict[str, int] | None = None,
+        compactors: dict[str, str] | None = None,
+        overflow_shrink: str = "auto",
+        anthropic_rate_limit: str = "native",
+        background_model: str | None = None,
     ) -> None:
         if not routes or any(
             not isinstance(model, str)
@@ -403,6 +613,18 @@ class RouterConfig:
             for model, provider in routes.items()
         ):
             raise RouterError("router model routes are invalid")
+        if (
+            not isinstance(profile, str)
+            or not 1 <= len(profile) <= 64
+            or re.fullmatch(
+                r"[a-z0-9]+(?:[._-][a-z0-9]+)*", profile, re.ASCII
+            ) is None
+        ):
+            raise RouterError("router profile is invalid")
+        if root_model is None:
+            root_model = next(iter(routes))
+        if root_model not in routes:
+            raise RouterError("router root model is invalid")
         failover_map: dict[str, tuple[str, ...]] = {}
         for source, peers in dict(failover or {}).items():
             peer_list = tuple(peers)
@@ -423,11 +645,18 @@ class RouterConfig:
         metadata = dict(openrouter or {})
         if set(metadata) != openrouter_routes:
             raise RouterError("OpenRouter routes and endpoint pins do not agree")
-        if any(not isinstance(route, OpenRouterRoute) for route in metadata.values()):
+        if any(
+            not isinstance(route, OpenRouterRoute)
+            or route.effort_ceiling not in OPENROUTER_EFFORT_LEVELS
+            for route in metadata.values()
+        ):
             raise RouterError("OpenRouter route metadata is invalid")
         if openrouter_routes and openrouter_key is None:
             raise RouterError("OpenRouter credential is missing")
         self.routes = dict(routes)
+        self.profile = profile
+        self.root_model = root_model
+        self.root_provider = routes[root_model]
         self.failover = failover_map
         self.openrouter_routes = metadata
         self.openrouter_key = bytes(openrouter_key) if openrouter_key is not None else None
@@ -450,6 +679,54 @@ class RouterConfig:
         self.openrouter = parse_upstream(
             openrouter_url, "openrouter", production=production
         )
+        windows: dict[str, int] = dict(context_windows or {})
+        for model, window in windows.items():
+            if (
+                model not in routes
+                or type(window) is not int
+                or isinstance(window, bool)
+                or not 1000 <= window <= 10_000_000
+            ):
+                raise RouterError("context windows are invalid")
+        compactors_map: dict[str, str] = dict(compactors or {})
+        for provider, model in compactors_map.items():
+            if (
+                provider not in {"anthropic", "openai", "grok"}
+                or model not in routes
+                or routes[model] != provider
+            ):
+                raise RouterError("compactor assignments are invalid")
+        if overflow_shrink not in {"auto", "truncate", "summarize", "off"}:
+            raise RouterError("overflow shrink mode is invalid")
+        self.context_windows = windows
+        self.compactors = compactors_map
+        self.overflow_shrink = overflow_shrink
+        # Claude Code handles Anthropic's own 429 natively: it recognizes a
+        # subscription limit, reports the reset, and can resume afterwards.
+        # Converting that into a handoff spends another provider to dodge a
+        # wait the client already knows how to sit out, and replacing the
+        # response hides the fields that handling reads. "native" therefore
+        # forwards an Anthropic 429 untouched. 529 and 402 still hand off,
+        # because an overloaded server or a spent balance is not a wait.
+        if anthropic_rate_limit not in {"native", "handoff"}:
+            raise RouterError("anthropic rate limit mode is invalid")
+        self.anthropic_rate_limit = anthropic_rate_limit
+        # No chains at all means this session does no handoff, either because
+        # the policy switched it off or because nothing has a peer. Either
+        # way there is nothing to walk, so a limit is left as the provider
+        # sent it rather than replaced with a local stand-in.
+        self.failover_disabled = not self.failover
+        # Claude Code runs compaction and other background steps on a Haiku
+        # model ID directly, ignoring the family slot Airlock seats for it. A
+        # session that does not enable Haiku as a worker has no such route, so
+        # those requests were refused and compaction died with nothing to show
+        # for it. This is the model such a request is served by instead: the
+        # same seat Claude Code was already told to use.
+        self.background_model = (
+            background_model
+            if background_model in self.routes
+            else None
+        )
 
 
 class RouterServer(ThreadingHTTPServer):
@@ -465,7 +742,18 @@ class RouterServer(ThreadingHTTPServer):
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
         self.usage_summary: dict[tuple[str, str], dict[str, object]] = {}
+        # Last observed per-response token totals, used to estimate an
+        # overflowing conversation's size when the upstream error body does
+        # not state exact counts.
+        self.last_usage: dict[tuple[str, str], dict[str, int]] = {}
+        self.shrink_cache: "OrderedDict[bytes, str]" = OrderedDict()
         self.diagnostics_lock = threading.Lock()
+        self.record_diagnostic({
+            "kind": "session_model_pinned",
+            "profile": config.profile,
+            "model": config.root_model,
+            "provider": config.root_provider,
+        })
 
     def server_bind(self) -> None:
         # http.server's own server_bind resolves the bound address with
@@ -481,11 +769,27 @@ class RouterServer(ThreadingHTTPServer):
         self.server_port = port
 
     def record_diagnostic(self, event: dict[str, object]) -> None:
+        stored = dict(event)
+        stored["timestamp"] = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
         with self.diagnostics_lock:
-            self.diagnostics.append(dict(event))
-            provider = event.get("provider")
-            model = event.get("model")
-            if not isinstance(provider, str) or not isinstance(model, str):
+            self.diagnostics.append(stored)
+            provider = stored.get("provider")
+            model = stored.get("model")
+            status = stored.get("status")
+            outcome = stored.get("outcome")
+            # Action events can name a provider and model, but only request
+            # events belong in cumulative usage totals.
+            if (
+                not isinstance(provider, str)
+                or not isinstance(model, str)
+                or isinstance(status, bool)
+                or not isinstance(status, int)
+                or not isinstance(outcome, str)
+            ):
                 return
             key = (provider, model)
             summary = self.usage_summary.setdefault(key, {
@@ -498,23 +802,35 @@ class RouterServer(ThreadingHTTPServer):
                 **{field: 0 for field in USAGE_FIELDS},
             })
             summary["requests"] += 1
-            if event.get("outcome") == "completed":
+            if outcome == "completed":
                 summary["completed"] += 1
             else:
                 summary["errors"] += 1
-            usage = event.get("usage")
+            usage = stored.get("usage")
             if isinstance(usage, dict):
                 summary["usage_events"] += 1
                 for field in USAGE_FIELDS:
                     value = usage.get(field)
                     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                         summary[field] += value
+                self.last_usage[key] = {
+                    field: int(usage[field])
+                    for field in USAGE_FIELDS
+                    if isinstance(usage.get(field), int)
+                    and not isinstance(usage.get(field), bool)
+                }
 
     def diagnostic_report(self) -> dict[str, object]:
         with self.diagnostics_lock:
             return {
                 "instance_id": self.instance_id,
+                "profile": self.config.profile,
+                "root_model": self.config.root_model,
+                "root_provider": self.config.root_provider,
                 "rate_limit_cooldowns": self.rate_limits.active_models(),
+                "rate_limit_provider_cooldowns": (
+                    self.rate_limits.active_providers()
+                ),
                 "events": [dict(event) for event in self.diagnostics],
                 "summary": [
                     dict(self.usage_summary[key])
@@ -573,19 +889,48 @@ class RouterHandler(BaseHTTPRequestHandler):
         body_size = 0
         model: str | None = None
         provider: str | None = None
+        attempt_model: str | None = None
+        visited: set[str] = set()
+        considered: set[str] = set()
+        # Initialized before the try because the terminal handlers consult it:
+        # a request rejected during validation never reaches the attempt loop,
+        # and no stream has been committed in that case.
+        shrunk_committed = False
         try:
             body = self.read_body()
+            original_body = body
             body_size = len(body)
             model = request_model(body)
             provider = self.router.config.routes.get(model)
             if provider is None:
-                raise InvalidRequestError("Model is not enabled for this session")
+                substitute = self.background_substitute(model)
+                if substitute is None:
+                    # Recorded before the refusal so an unroutable model is
+                    # diagnosable. Without this the request left no trace at
+                    # all and the only symptom was a bare 400 at the client.
+                    self.router.record_diagnostic({
+                        "kind": "model_not_enabled",
+                        "model": model,
+                    })
+                    raise InvalidRequestError(
+                        "Model is not enabled for this session"
+                    )
+                self.router.record_diagnostic({
+                    "kind": "background_model_substituted",
+                    "requested": model,
+                    "model": substitute,
+                })
+                body = self.retarget_request_body(body, substitute)
+                original_body = body
+                body_size = len(body)
+                model = substitute
+                provider = self.router.config.routes[model]
             if provider == "openrouter" and path != "/v1/messages":
                 raise InvalidRequestError(
                     "OpenRouter supports only the Messages operation in this release"
                 )
             if provider == "openrouter":
-                body, stripped_tools = prepare_openrouter_request(
+                body, stripped_tools, effort_clamp = prepare_openrouter_request(
                     body,
                     model,
                     self.router.config.openrouter_routes[model],
@@ -594,21 +939,32 @@ class RouterHandler(BaseHTTPRequestHandler):
                     self.router.record_diagnostic({
                         "kind": "openrouter_server_tools_stripped",
                         "model": model,
-                        "removed": stripped_tools,
+                        "removed_count": len(stripped_tools),
                     })
+                if effort_clamp:
+                    self.record_openrouter_effort_clamp(model, effort_clamp)
             attempt_model = model
             attempt_provider = provider
             working_body = body
             visited = {model}
+            considered = {model}
             hops = 0
             failover_from: str | None = None
+            failover_reason: str | None = None
+            shrunk_attempted = False
+            shrunk_committed = False
             while True:
                 # A model still cooling down from an earlier 429 is skipped
                 # outright, so repeated background calls pay no doomed round
                 # trip once one limit has been seen.
-                if self.router.rate_limits.active(attempt_model):
+                if self.router.rate_limits.active(attempt_model, attempt_provider):
+                    if shrunk_committed:
+                        raise RateLimitedError(429, None)
+                    self.record_cooldown_skip(attempt_model)
                     skipped = (
-                        self.next_failover_model(attempt_model, visited)
+                        self.next_failover_model(
+                            attempt_model, visited, considered
+                        )
                         if hops < MAX_FAILOVER_HOPS
                         else None
                     )
@@ -622,23 +978,47 @@ class RouterHandler(BaseHTTPRequestHandler):
                         "rate_limit_cooldown_skip",
                     )
                     if skipped is None:
-                        raise RateLimitedError(429, None)
+                        # No upstream answered, so the only honest retry hint
+                        # is how long the local cooldown still has to run.
+                        raise RateLimitedError(
+                            429,
+                            self.router.rate_limits.remaining(
+                                attempt_model, attempt_provider
+                            ),
+                        )
+                    self.record_failover_attempt(attempt_model, skipped)
                     working_body = self.retarget_request_body(
-                        working_body, skipped
+                        original_body, skipped, model
                     )
                     visited.add(skipped)
                     failover_from = failover_from or model
+                    failover_reason = failover_reason or "rate_limit"
                     attempt_model = skipped
                     attempt_provider = self.router.config.routes[skipped]
                     hops += 1
                     continue
                 try:
                     status, response_bytes, outcome, usage = self.forward(
-                        attempt_provider, attempt_model, working_body
+                        attempt_provider,
+                        attempt_model,
+                        working_body,
+                        skip_response_headers=shrunk_committed,
                     )
                     break
                 except RateLimitedError as exc:
-                    self.router.rate_limits.mark(attempt_model, exc.retry_after)
+                    if shrunk_committed:
+                        raise
+                    _seconds, escalated = self.router.rate_limits.mark(
+                        attempt_model, exc.retry_after, attempt_provider
+                    )
+                    if escalated:
+                        # A second model of this subscription failed, so
+                        # the pool itself is spent: stop probing its peers.
+                        self.router.record_diagnostic({
+                            "kind": "rate_limit_provider_cooldown",
+                            "provider": attempt_provider,
+                            "model": attempt_model,
+                        })
                     self.record_request(
                         attempt_provider,
                         attempt_model,
@@ -648,16 +1028,121 @@ class RouterHandler(BaseHTTPRequestHandler):
                         started,
                         "upstream_rate_limited",
                     )
+                    self.record_sanitized_error(
+                        attempt_provider, attempt_model, exc.status
+                    )
                     nxt = (
-                        self.next_failover_model(attempt_model, visited)
+                        self.next_failover_model(
+                            attempt_model, visited, considered
+                        )
                         if hops < MAX_FAILOVER_HOPS
                         else None
                     )
                     if nxt is None:
                         raise
-                    working_body = self.retarget_request_body(working_body, nxt)
+                    self.record_failover_attempt(attempt_model, nxt)
+                    working_body = self.retarget_request_body(
+                        original_body, nxt, model
+                    )
                     visited.add(nxt)
                     failover_from = failover_from or model
+                    failover_reason = failover_reason or "rate_limit"
+                    attempt_model = nxt
+                    attempt_provider = self.router.config.routes[nxt]
+                    hops += 1
+                except ContextOverflowError as exc:
+                    if shrunk_committed:
+                        raise
+                    estimate = self._overflow_estimate(
+                        attempt_provider, attempt_model, exc
+                    )
+                    overflow_event: dict[str, object] = {
+                        "kind": "upstream_context_overflow",
+                        "provider": attempt_provider,
+                        "model": attempt_model,
+                        "status": exc.status,
+                    }
+                    if exc.prompt_tokens is not None:
+                        overflow_event["prompt_tokens"] = exc.prompt_tokens
+                    if exc.limit_tokens is not None:
+                        overflow_event["limit_tokens"] = exc.limit_tokens
+                    self.router.record_diagnostic(overflow_event)
+                    self.record_request(
+                        attempt_provider,
+                        attempt_model,
+                        exc.status,
+                        body_size,
+                        0,
+                        started,
+                        "upstream_context_overflow",
+                    )
+                    nxt = (
+                        self.next_failover_model(
+                            attempt_model,
+                            visited,
+                            considered,
+                            min_window=estimate,
+                        )
+                        if hops < MAX_FAILOVER_HOPS
+                        else None
+                    )
+                    source_model = attempt_model
+                    if nxt is None and not shrunk_attempted:
+                        # Nothing left to walk toward: one chance to shrink
+                        # the conversation and retry the best candidate.
+                        target = self._shrink_target(
+                            model,
+                            visited,
+                            considered,
+                            estimate,
+                            overflowed_model=source_model,
+                        )
+                        if target is not None:
+                            shrunk_attempted = True
+                            shrunk_provider, shrunk_body, committed = (
+                                self._prepare_shrunk_request(
+                                    original_body,
+                                    provider,
+                                    model,
+                                    target,
+                                    estimate,
+                                )
+                            )
+                            if not shrunk_body and not committed:
+                                raise
+                            if not shrunk_body and committed:
+                                # The failure was already delivered inside
+                                # the committed SSE stream.
+                                return
+                            shrunk_committed = committed
+                            working_body = shrunk_body
+                            visited.add(target)
+                            considered.add(target)
+                            failover_from = failover_from or model
+                            failover_reason = "overflow"
+                            attempt_model = target
+                            attempt_provider = shrunk_provider
+                            hops += 1
+                            self.router.record_diagnostic({
+                                "kind": "failover_overflow_attempted",
+                                "from_model": source_model,
+                                "to_model": target,
+                                "shrunk": True,
+                            })
+                            continue
+                    if nxt is None:
+                        raise
+                    self.router.record_diagnostic({
+                        "kind": "failover_overflow_attempted",
+                        "from_model": source_model,
+                        "to_model": nxt,
+                    })
+                    working_body = self.retarget_request_body(
+                        original_body, nxt, model
+                    )
+                    visited.add(nxt)
+                    failover_from = failover_from or model
+                    failover_reason = "overflow"
                     attempt_model = nxt
                     attempt_provider = self.router.config.routes[nxt]
                     hops += 1
@@ -674,20 +1159,86 @@ class RouterHandler(BaseHTTPRequestHandler):
                     {"failover_from": failover_from} if failover_from else None
                 ),
             )
-        except RateLimitedError:
+            if (
+                failover_from is not None
+                and 200 <= status < 300
+                and outcome == "completed"
+            ):
+                self.router.record_diagnostic({
+                    "kind": (
+                        "failover_overflow_succeeded"
+                        if failover_reason == "overflow"
+                        else "rate_limit_failover_succeeded"
+                    ),
+                    "from_model": failover_from,
+                    "to_model": attempt_model,
+                    "hops": hops,
+                })
+        except RateLimitedError as exc:
+            hint = retry_after_seconds(exc.retry_after)
             if provider is not None and model is not None:
+                exhausted_event: dict[str, object] = {
+                    "kind": "rate_limit_chain_exhausted",
+                    "model": model,
+                    "last_model": attempt_model or model,
+                    "models_considered": max(1, len(considered)),
+                }
+                if hint is not None:
+                    exhausted_event["retry_after"] = hint
+                self.router.record_diagnostic(exhausted_event)
                 self.record_request(
                     provider, model, 429, body_size, 0, started,
                     "rate_limit_exhausted",
                 )
-            self.safe_error_response(
-                429,
-                "rate_limit_error",
-                "Every model in this request's category is rate limited right"
-                " now; retry shortly or switch models.",
+            # considered is seeded with the requested model, so anything above
+            # one means real peers existed and were all unusable.
+            if len(considered) > 1:
+                message = (
+                    "Every model in this request's category is rate limited"
+                    " right now; retry shortly or switch models."
+                )
+            else:
+                # Nothing was tried after the first model, so blaming the
+                # category would be false. A model alone in its category,
+                # such as a metered one, always lands here.
+                message = (
+                    "This model is rate limited and has no failover peer in"
+                    " its usage category; retry shortly or switch models."
+                )
+            if shrunk_committed:
+                self._emit_stream_error(429, "rate_limit_error", message)
+            else:
+                self.safe_error_response(429, "rate_limit_error", message, hint)
+        except ContextOverflowError:
+            if provider is not None and model is not None:
+                self.router.record_diagnostic({
+                    "kind": "overflow_chain_exhausted",
+                    "model": model,
+                    "last_model": attempt_model or model,
+                    "models_considered": max(1, len(considered)),
+                })
+                self.record_request(
+                    provider, model, 400, body_size, 0, started,
+                    "overflow_exhausted",
+                )
+            message = (
+                "The conversation does not fit any enabled model for this"
+                " request; compact the session or enable a larger-window"
+                " model."
             )
+            if shrunk_committed:
+                self._emit_stream_error(
+                    400, "invalid_request_error", message
+                )
+            else:
+                self.safe_error_response(
+                    400, "invalid_request_error", message
+                )
         except InvalidRequestError as exc:
-            self.safe_error_response(400, "invalid_request_error", str(exc))
+            if shrunk_committed:
+                self._emit_stream_error(400, "invalid_request_error", str(exc))
+            else:
+                self.safe_error_response(400, "invalid_request_error", str(exc))
         except UpstreamError as exc:
             # Retryable failures stay 502 so Claude Code can try again.
             # Deterministic failures return a non-retryable status, which stops
@@ -703,12 +1254,17 @@ class RouterHandler(BaseHTTPRequestHandler):
                 detail = str(exc)
                 outcome = "upstream_rejected"
             if provider is not None and model is not None:
+                self.record_sanitized_error(provider, model, status)
                 self.record_request(
                     provider, model, status, body_size, 0, started, outcome
                 )
-            self.safe_error_response(status, error_type, detail)
+            if shrunk_committed:
+                self._emit_stream_error(status, error_type, detail)
+            else:
+                self.safe_error_response(status, error_type, detail)
         except (ConnectionError, OSError, ssl.SSLError, http.client.HTTPException):
             if provider is not None and model is not None:
+                self.record_sanitized_error(provider, model, 502)
                 self.record_request(
                     provider, model, 502, body_size, 0, started, "upstream_error"
                 )
@@ -743,27 +1299,115 @@ class RouterHandler(BaseHTTPRequestHandler):
             event.update(extra)
         self.router.record_diagnostic(event)
 
-    def next_failover_model(self, source: str, visited: set[str]) -> str | None:
-        """Return the first healthy same-category peer for a rate-limited model."""
+    def record_openrouter_effort_clamp(
+        self, model: str, clamp: OpenRouterEffortClamp
+    ) -> None:
+        self.router.record_diagnostic({
+            "kind": "openrouter_effort_clamped",
+            "model": model,
+            "requested": clamp.requested,
+            "forwarded": clamp.forwarded,
+            "ceiling": clamp.ceiling,
+        })
+
+    def record_cooldown_skip(self, model: str) -> None:
+        self.router.record_diagnostic({
+            "kind": "rate_limit_cooldown_skipped",
+            "model": model,
+            "provider": self.router.config.routes[model],
+        })
+
+    def record_failover_attempt(self, source: str, target: str) -> None:
+        self.router.record_diagnostic({
+            "kind": "rate_limit_failover_attempted",
+            "from_model": source,
+            "to_model": target,
+        })
+
+    def record_sanitized_error(
+        self, provider: str, model: str, status: int
+    ) -> None:
+        self.router.record_diagnostic({
+            "kind": "sanitized_error_substituted",
+            "provider": provider,
+            "model": model,
+            "status": status,
+        })
+
+    def next_failover_model(
+        self,
+        source: str,
+        visited: set[str],
+        considered: set[str] | None = None,
+        *,
+        min_window: int | None = None,
+    ) -> str | None:
+        """Return the first healthy same-category peer for a rate-limited model.
+
+        When ``min_window`` carries an estimated conversation size, peers
+        whose known context window cannot hold it are skipped with a
+        dedicated diagnostic instead of being handed a doomed round trip.
+        Peers without known window metadata are always attempted.
+        """
         for peer in self.router.config.failover.get(source, ()):
-            if peer in visited or peer not in self.router.config.routes:
+            if peer not in self.router.config.routes:
                 continue
-            if self.router.rate_limits.active(peer):
+            if (
+                self.router.config.routes[peer] == "openrouter"
+                and urlsplit(self.path).path != "/v1/messages"
+            ):
+                continue
+            if considered is not None:
+                considered.add(peer)
+            if peer in visited:
+                continue
+            if (
+                min_window is not None
+                and peer in self.router.config.context_windows
+                and self.router.config.context_windows[peer] < min_window
+            ):
+                self.record_overflow_skip(source, peer, min_window)
+                continue
+            if self.router.rate_limits.active(
+                peer, self.router.config.routes.get(peer)
+            ):
+                self.record_cooldown_skip(peer)
                 continue
             return peer
         return None
 
-    def retarget_request_body(self, body: bytes, target_model: str) -> bytes:
+    def record_overflow_skip(
+        self, source: str, peer: str, estimated_tokens: int
+    ) -> None:
+        self.router.record_diagnostic({
+            "kind": "failover_overflow_skipped",
+            "from_model": source,
+            "to_model": peer,
+            "estimated_tokens": estimated_tokens,
+            "peer_window": self.router.config.context_windows.get(peer),
+        })
+
+    def retarget_request_body(
+        self, body: bytes, target_model: str, source_model: str | None = None
+    ) -> bytes:
         """Rewrite an already validated request onto another routed model.
 
         The OpenRouter ``provider`` pin belongs to the route that produced it,
         so it is dropped before the new transport prepares its own. Hopping
         onto an OpenRouter route runs the same preparation every direct
         request to that route would receive.
+
+        The replacement is also told that it is the replacement. Its system
+        prompt still describes the model that was asked for, so without this
+        it answers as that model and states its identity wrongly when asked.
         """
         payload = request_payload(body)
         payload.pop("provider", None)
         payload["model"] = target_model
+        if source_model is not None and source_model != target_model:
+            payload["system"] = disclose_handoff(
+                payload.get("system"), source_model, target_model
+            )
         try:
             cleaned = json.dumps(
                 payload,
@@ -777,7 +1421,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                 "Request body could not be re-targeted"
             ) from exc
         if self.router.config.routes[target_model] == "openrouter":
-            prepared, stripped_tools = prepare_openrouter_request(
+            prepared, stripped_tools, effort_clamp = prepare_openrouter_request(
                 cleaned,
                 target_model,
                 self.router.config.openrouter_routes[target_model],
@@ -786,16 +1430,688 @@ class RouterHandler(BaseHTTPRequestHandler):
                 self.router.record_diagnostic({
                     "kind": "openrouter_server_tools_stripped",
                     "model": target_model,
-                    "removed": stripped_tools,
+                    "removed_count": len(stripped_tools),
                 })
+            if effort_clamp:
+                self.record_openrouter_effort_clamp(target_model, effort_clamp)
             return prepared
         return cleaned
 
-    def safe_error_response(self, status: int, kind: str, message: str) -> None:
+    # Claude Code's own background steps, compaction most visibly, ask for a
+    # Haiku model by its exact ID instead of using the family slot Airlock
+    # seats. Only that family is substituted: anything else stays refused, so
+    # a session can never quietly answer as a model nobody enabled.
+    BACKGROUND_SUBSTITUTABLE = re.compile(
+        r"claude-haiku-[0-9][0-9A-Za-z.\-]{0,32}(\[1m\])?$", re.ASCII
+    )
+
+    def background_substitute(self, model: str) -> str | None:
+        """The seated background model to serve an unrouted Haiku request."""
+        target = self.router.config.background_model
+        if target is None or target == model:
+            return None
+        if self.BACKGROUND_SUBSTITUTABLE.fullmatch(model) is None:
+            return None
+        return target
+
+    def rate_limit_passes_through(
+        self, provider: str, status: int, stream_committed: bool
+    ) -> bool:
+        """Whether this response should reach the client untouched.
+
+        Two cases pass through, and neither may run once a committed shrink
+        stream owns the socket, because the client is mid-SSE there and a
+        JSON error body would corrupt the stream.
+
+        The first is Anthropic's own 429. Claude Code understands its own
+        provider's limits, so replacing that response removes handling that
+        already works.
+
+        The second is any Anthropic limit once handoff is switched off. With
+        no chain to walk there is nothing to gain by rewriting the answer, so
+        the client is left exactly as it would be without Airlock present.
+
+        Other providers are deliberately excluded even then. Their error
+        bodies are foreign text arriving at a client that expects Anthropic's
+        shape, and reflecting those is what the sanitizer exists to prevent.
+        They keep the safe local message, which now carries the upstream's
+        Retry-After, so the client still backs off on real timing.
+        """
+        if stream_committed or provider != "anthropic":
+            return False
+        if self.router.config.failover_disabled:
+            return status in RATE_LIMIT_STATUS_CODES
+        return (
+            status == 429
+            and self.router.config.anthropic_rate_limit == "native"
+        )
+
+    def safe_error_response(
+        self, status: int, kind: str, message: str, retry_after: int | None = None
+    ) -> None:
         try:
-            self.send_error_response(status, kind, message)
+            self.send_error_response(status, kind, message, retry_after)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             self.close_connection = True
+
+    # ------------------------------------------------------------------
+    # Overflow-aware handoff. When a classified context overflow survives
+    # the failover walk (no peer fits, or every fitting peer also
+    # overflowed), the conversation is compressed once and retried on the
+    # best remaining candidate: chunked compaction through the destination
+    # provider's own economy worker when one is enabled, else pairing-aware
+    # truncation. Every failure cascades downward to the honest terminal
+    # error; nothing ever loops.
+
+    def _overflow_estimate(
+        self,
+        provider: str,
+        model: str,
+        exc: ContextOverflowError | None,
+    ) -> int | None:
+        """Best available estimate of the conversation's prompt size."""
+        if exc is not None and exc.prompt_tokens:
+            return exc.prompt_tokens
+        last = self.router.last_usage.get((provider, model))
+        if last:
+            total = (
+                last.get("input_tokens", 0)
+                + last.get("cache_creation_input_tokens", 0)
+                + last.get("cache_read_input_tokens", 0)
+            )
+            if total > 0:
+                return total
+        return None
+
+    def _shrink_target(
+        self,
+        original_model: str,
+        visited: set[str],
+        considered: set[str],
+        estimated_tokens: int | None,
+        overflowed_model: str | None = None,
+    ) -> str | None:
+        """Pick the best remaining handoff candidate for a shrunk retry.
+
+        Bare-root overflow stays client-managed: with no peers in play there
+        is no handoff to save, and Claude Code already compacts against its
+        own window. Among chain candidates the largest known window wins so
+        the retry has the most room; unknown-window candidates come last.
+
+        The model that just overflowed is itself a candidate. A peer reached
+        after a rate limit is already in ``visited``, and rejecting it here
+        would strand the very case this feature exists for: a long
+        conversation whose root is rate limited, handed to a smaller peer
+        that cannot hold it. Having been tried at full size says nothing
+        about whether it fits once the history is condensed.
+        """
+        cfg = self.router.config
+        peers = {
+            peer
+            for source in considered
+            for peer in cfg.failover.get(source, ())
+            if peer != original_model
+        }
+        if not peers and overflowed_model in {None, original_model}:
+            return None
+
+        def window_rank(model: str) -> tuple[int, int]:
+            window = cfg.context_windows.get(model)
+            if window is None:
+                return 1, 0
+            too_small = (
+                1 if estimated_tokens is not None and window < estimated_tokens else 0
+            )
+            return 0, -window + too_small * 10_000_000
+
+        candidates: list[str] = []
+        if (
+            overflowed_model is not None
+            and overflowed_model != original_model
+            and overflowed_model in cfg.routes
+        ):
+            candidates.append(overflowed_model)
+        for source in considered:
+            for peer in cfg.failover.get(source, ()):
+                if (
+                    peer not in candidates
+                    and peer in cfg.routes
+                    and peer not in visited
+                    and peer != original_model
+                ):
+                    candidates.append(peer)
+        if not candidates:
+            return None
+        candidates.sort(key=window_rank)
+        return candidates[0]
+
+    def _unit_tokens(self, unit: list[Any]) -> int:
+        """Token estimate for one atomic unit, charging images a flat cost."""
+        raw = canonical_unit_bytes(unit)
+        images = sum(
+            1
+            for message in unit
+            if isinstance(message, dict)
+            for block in _message_blocks(message)
+            if isinstance(block, dict) and block.get("type") == "image"
+        )
+        return estimate_tokens_from_bytes(raw) + images * 1600
+
+    def _split_history(
+        self, payload: dict[str, Any]
+    ) -> tuple[Any, list[list[Any]]]:
+        """Return (system, units) from an Anthropic-shaped payload."""
+        system = payload.get("system")
+        messages = payload.get("messages")
+        units = message_units(messages) if isinstance(messages, list) else []
+        return system, units
+
+    def _tail_units(
+        self, units: list[list[Any]], budget_tokens: int
+    ) -> tuple[list[list[Any]], list[list[Any]]]:
+        """Split units into (dropped head, verbatim tail) within a budget.
+
+        The tail keeps whole units from the end while they fit. At least one
+        unit always remains so the request never becomes empty.
+        """
+        tail: list[list[Any]] = []
+        used = 0
+        index = len(units)
+        while index > SHRINK_TAIL_MIN_UNITS or (index > 0 and not tail):
+            unit = units[index - 1]
+            cost = sum(self._unit_tokens([m]) for m in unit if True)
+            if tail and used + cost > budget_tokens:
+                break
+            tail.append(unit)
+            used += cost
+            index -= 1
+            if used >= budget_tokens:
+                break
+        tail.reverse()
+        head = units[:index]
+        return head, tail
+
+    def _rebuild_payload(
+        self,
+        payload: dict[str, Any],
+        target_model: str,
+        brief_text: str | None,
+        tail: list[list[Any]],
+    ) -> dict[str, Any]:
+        """Assemble the shrunk payload: system verbatim, brief, recent tail."""
+        rebuilt: dict[str, Any] = strip_cache_control_deep(dict(payload))
+        messages: list[dict[str, Any]] = []
+        if brief_text:
+            messages.append({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "[Earlier conversation condensed due to context window "
+                        "limits. Details before this note may be summarized "
+                        f"or missing.]\n\n{brief_text}"
+                    ),
+                }],
+            })
+        for unit in tail:
+            for message in unit:
+                if not isinstance(message, dict):
+                    continue
+                entry = strip_cache_control_deep(dict(message))
+                content = entry.get("content")
+                if isinstance(content, list):
+                    blocks: list[Any] = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image":
+                            blocks.append({
+                                "type": "text",
+                                "text": "[image omitted during context compaction]",
+                            })
+                        else:
+                            blocks.append(block)
+                    entry["content"] = blocks
+                messages.append(entry)
+        if messages and messages[0].get("role") != "user":
+            messages.insert(0, {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "[Earlier turns omitted to fit the context window.]",
+                }],
+            })
+        rebuilt["messages"] = messages
+        rebuilt["model"] = target_model
+        return rebuilt
+
+    def _payload_bytes(self, payload: dict[str, Any]) -> bytes:
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+
+    def _truncate_for_window(
+        self, payload: dict[str, Any], target_model: str
+    ) -> bytes | None:
+        """Pairing-aware drop-oldest fallback sized to the target window."""
+        cfg = self.router.config
+        window = cfg.context_windows.get(target_model)
+        if window is None:
+            return None
+        max_tokens = payload.get("max_tokens")
+        headroom = max_tokens if isinstance(max_tokens, int) and 0 < max_tokens < window else 4096
+        budget = int(window * 0.85) - headroom - SHRINK_BRIEF_RESERVE_TOKENS
+        if budget < 1000:
+            return None
+        _system, units = self._split_history(payload)
+        if not units:
+            return None
+        _head, tail = self._tail_units(units, budget)
+        rebuilt = self._rebuild_payload(payload, target_model, None, tail)
+        return self._payload_bytes(rebuilt)
+
+    def _start_shrink_stream(self) -> "_StreamPinger":
+        """Open a 200 SSE response with keepalive pings for long compactions."""
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        pinger = _StreamPinger(
+            self.wfile, interval_seconds=SHRINK_PING_INTERVAL_SECONDS
+        )
+        pinger.start()
+        return pinger
+
+    def _emit_stream_error(self, status: int, kind: str, message: str) -> None:
+        """Deliver a terminal error inside an already-started SSE stream."""
+        payload = json.dumps({
+            "type": "error",
+            "error": {"type": kind, "message": message},
+        }).encode("ascii")
+        try:
+            self.wfile.write(
+                b"event: error\n"
+                b"data: " + payload + b"\n\n"
+            )
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            self.close_connection = True
+
+    def _call_compactor(
+        self,
+        provider: str,
+        model: str,
+        system_text: str,
+        user_text: str,
+    ) -> str:
+        """Run one bounded compactor round trip and return its text output."""
+        upstream = (
+            self.router.config.openai
+            if provider in {"openai", "grok"}
+            else self.router.config.anthropic
+        )
+        if upstream is None:
+            raise ShrinkUnavailableError("compactor upstream is unavailable")
+        body = self._payload_bytes({
+            "model": model,
+            "max_tokens": SHRINK_COMPACTOR_MAX_TOKENS,
+            "system": system_text,
+            "messages": [{"role": "user", "content": user_text}],
+        })
+        connection = make_connection(upstream)
+        headers = forwarded_headers(self.headers.items(), provider, len(body))
+        headers["content-type"] = "application/json"
+        target = upstream_path(upstream, "/v1/messages")
+        try:
+            connection.connect()
+            if connection.sock is not None:
+                connection.sock.settimeout(SHRINK_CALL_TIMEOUT_SECONDS)
+            connection.request("POST", target, body=body, headers=headers)
+            response = connection.getresponse()
+            raw = response.read(MAX_OPENROUTER_JSON_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_OPENROUTER_JSON_RESPONSE_BYTES:
+                raise ShrinkUnavailableError("compactor response is too large")
+            if not 200 <= response.status < 300:
+                raise ShrinkUnavailableError(
+                    f"compactor returned HTTP {response.status}"
+                )
+            payload = strict_json_loads(raw)
+            text_parts: list[str] = []
+            content = payload.get("content") if isinstance(payload, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                    ):
+                        text_parts.append(block["text"])
+            if not text_parts:
+                raise ShrinkUnavailableError("compactor returned no text")
+            return "\n".join(text_parts)
+        except ShrinkUnavailableError:
+            raise
+        except InvalidRequestError as exc:
+            raise ShrinkUnavailableError(str(exc)) from exc
+        except TimeoutError as exc:
+            raise ShrinkUnavailableError("compactor call timed out") from exc
+        except (ConnectionError, OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise ShrinkUnavailableError("compactor connection failed") from exc
+        finally:
+            connection.close()
+
+    COMPACTOR_SYSTEM_PROMPT = (
+        "You compress working transcripts so another model can continue the "
+        "work with minimal loss. Preserve facts, decisions, file paths, "
+        "commands, errors, and open questions. Never invent content."
+    )
+
+    def _compact_chunk_prompt(self, segment_json: str, prior_notes: str) -> str:
+        parts = [
+            "Compress the following transcript segment into dense structured",
+            "notes under these headings: Goal, Decisions, Files touched,",
+            "Commands run, Errors seen, Open threads.",
+        ]
+        if prior_notes:
+            parts.append(
+                "Notes from earlier segments follow; carry their key points "
+                "forward and merge them with this segment's notes.\n"
+                f"<earlier_notes>\n{prior_notes}\n</earlier_notes>"
+            )
+        parts.append(f"<segment>\n{segment_json}\n</segment>")
+        return "\n".join(parts)
+
+    def _merge_prompt(self, briefs: list[str], prior_brief: str | None) -> str:
+        joined = "\n\n---\n\n".join(briefs)
+        lines = [
+            "Merge the following sectioned notes into one concise brief that",
+            "lets another model continue this work. Keep the same headings:",
+            "Goal, Decisions, Files touched, Commands run, Errors seen, Open",
+            "threads. Remove repetition; never invent content.",
+        ]
+        if prior_brief:
+            lines.append(f"<previous_brief>\n{prior_brief}\n</previous_brief>")
+        lines.append(f"<notes>\n{joined}\n</notes>")
+        return "\n".join(lines)
+
+    def _chunk_units(
+        self,
+        head: list[list[dict[str, Any]]],
+        start: int,
+        chunk_budget: int,
+    ) -> tuple[list[tuple[list[dict[str, Any]], int | None]], int] | None:
+        """Group units from ``start`` onward into compactor-sized chunks.
+
+        Returns (chunks, episode_input_tokens), where each chunk pairs its
+        flat message list with the unit boundary its summary may be cached
+        at, or None when the chunk ends part way through a unit. Returns
+        None outright when one message alone overflows the compactor, which
+        leaves the request to the truncation fallback.
+        """
+        chunks: list[tuple[list[dict[str, Any]], int | None]] = []
+        current: list[dict[str, Any]] = []
+        current_total = 0
+        episode_input = 0
+        for position in range(start, len(head)):
+            unit = head[position]
+            unit_cost = sum(self._unit_tokens([m]) for m in unit if True)
+            episode_input += unit_cost
+            if current and current_total + unit_cost > chunk_budget:
+                # This flush lands exactly where the previous unit ended,
+                # so the summary covers whole units and can be cached.
+                chunks.append((current, position - 1))
+                current = []
+                current_total = 0
+            if unit_cost <= chunk_budget:
+                current.extend(unit)
+                current_total += unit_cost
+                continue
+            # A unit larger than one chunk still has to be summarized, and
+            # splitting it is safe: chunks reach the compactor as inert
+            # JSON, so tool pairing only has to survive in the reassembled
+            # request, never here.
+            for message in unit:
+                cost = self._unit_tokens([message])
+                if cost > chunk_budget:
+                    return None
+                if current and current_total + cost > chunk_budget:
+                    chunks.append((current, None))
+                    current = []
+                    current_total = 0
+                current.append(message)
+                current_total += cost
+        if current:
+            chunks.append((current, len(head) - 1))
+        return chunks, episode_input
+
+    def _compact_history(
+        self,
+        payload: dict[str, Any],
+        target_model: str,
+        compactor_model: str,
+        provider: str,
+    ) -> tuple[str, int] | None:
+        """Compress old history into one brief via parallel chunk summaries.
+
+        Returns (brief_text, input_tokens_spent) or None when the history
+        needs no compaction (nothing older than the retained tail).
+        """
+        window = self.router.config.context_windows.get(compactor_model)
+        chunk_budget = (
+            int(window * 0.8) - SHRINK_OUTPUT_RESERVE_TOKENS
+            if window
+            else SHRINK_CHUNK_TARGET_TOKENS
+        )
+        chunk_budget = min(chunk_budget, SHRINK_CHUNK_TARGET_TOKENS)
+        if chunk_budget < 4000:
+            return None
+        _system, units = self._split_history(payload)
+        if not units:
+            return None
+        tail_budget = SHRINK_RECENT_TAIL_TOKENS
+        head, tail = self._tail_units(units, tail_budget)
+        if not head:
+            return None
+
+        # Screen the whole head before spending anything on cache lookups:
+        # an episode too big to compact stays too big however much of it a
+        # previous turn already paid for.
+        prescreen = self._chunk_units(head, 0, chunk_budget)
+        if prescreen is None:
+            return None
+        prescreen_chunks, prescreen_input = prescreen
+        if len(prescreen_chunks) > SHRINK_MAX_CHUNKS:
+            return None
+        if prescreen_input > SHRINK_MAX_EPISODE_INPUT_TOKENS:
+            return None
+
+        # Cumulative hashes let a later turn reuse the brief already paid
+        # for over the units it shares with this episode: conversation
+        # growth only re-compacts the new tail, never the shared prefix.
+        sanitized_head = [sanitize_unit_for_compaction(unit) for unit in head]
+        rolling = hashlib.sha256(canonical_unit_bytes([
+            self.router.config.profile,
+            compactor_model,
+        ])).digest()
+        boundary_hashes: list[bytes] = []
+        for sanitized in sanitized_head:
+            rolling = hashlib.sha256(
+                rolling + canonical_unit_bytes(sanitized)
+            ).digest()
+            boundary_hashes.append(rolling)
+        prior_brief: str | None = None
+        start = 0
+        for boundary in range(len(head) - 1, -1, -1):
+            cached = self.router.shrink_cache.get(boundary_hashes[boundary])
+            if cached is not None:
+                self.router.shrink_cache.move_to_end(boundary_hashes[boundary])
+                prior_brief = cached
+                start = boundary + 1
+                break
+
+        selected = self._chunk_units(head, start, chunk_budget)
+        if selected is None:
+            return None
+        chunks, episode_input = selected
+        if len(chunks) > SHRINK_MAX_CHUNKS:
+            return None
+        if episode_input > SHRINK_MAX_EPISODE_INPUT_TOKENS:
+            return None
+        if not chunks and prior_brief is not None:
+            return prior_brief, 0
+
+        spent = 0
+        chunk_briefs: list[str] = []
+        for chunk_messages, cache_position in chunks:
+            sanitized = sanitize_unit_for_compaction(chunk_messages)
+            summary = self._call_compactor(
+                provider,
+                compactor_model,
+                self.COMPACTOR_SYSTEM_PROMPT,
+                self._compact_chunk_prompt(
+                    self._payload_bytes({"segment": sanitized}).decode("utf-8"),
+                    prior_brief or "",
+                ),
+            )
+            spent += sum(self._unit_tokens([m]) for m in chunk_messages if True)
+            if cache_position is not None:
+                # Only a chunk that ends on a unit boundary describes whole
+                # units, so only that one is safe to replay next turn.
+                key = boundary_hashes[cache_position]
+                self.router.shrink_cache[key] = summary
+                self.router.shrink_cache.move_to_end(key)
+                while len(self.router.shrink_cache) > SHRINK_CACHE_ENTRIES:
+                    self.router.shrink_cache.popitem(last=False)
+            chunk_briefs.append(summary)
+            prior_brief = summary
+
+        if not chunk_briefs:
+            return None
+        final_brief = self._call_compactor(
+            provider,
+            compactor_model,
+            self.COMPACTOR_SYSTEM_PROMPT,
+            self._merge_prompt(chunk_briefs, None),
+        )
+        return final_brief, spent
+
+    def _prepare_shrunk_request(
+        self,
+        original_body: bytes,
+        original_provider: str,
+        original_model: str,
+        target_model: str,
+        estimated_tokens: int | None,
+    ) -> tuple[str, bytes, bool]:
+        """Produce the shrunk request body for one retry on ``target_model``.
+
+        Returns (target_provider, body_bytes, committed_stream). A committed
+        stream means SSE headers and pings are already flowing to the client,
+        so any later failure must be reported inside the stream rather than
+        as an HTTP status.
+        """
+        cfg = self.router.config
+        mode = cfg.overflow_shrink
+        provider = cfg.routes[target_model]
+        if mode == "off":
+            # The knob promises an honest failure instead of silent history
+            # loss, so off never shrinks by any means.
+            return provider, b"", False
+        payload = request_payload(original_body)
+        compactor_model = (
+            cfg.compactors.get(provider) if mode in {"auto", "summarize"} else None
+        )
+        if compactor_model:
+            # Keepalive pings only make sense to a client that asked for a
+            # stream. A non-streaming caller expects one JSON body, so its
+            # response stays uncommitted and the compaction runs inline: it
+            # waits longer, but it receives the answer it asked for in the
+            # shape it asked for.
+            streaming = payload.get("stream") is True
+            pinger = self._start_shrink_stream() if streaming else None
+            result = None
+            try:
+                result = self._compact_history(
+                    payload, target_model, compactor_model, provider
+                )
+                if result is not None:
+                    brief_text, spent = result
+                    _system, units = self._split_history(payload)
+                    _head, tail = self._tail_units(units, SHRINK_RECENT_TAIL_TOKENS)
+                    rebuilt = self._rebuild_payload(
+                        payload, target_model, brief_text, tail
+                    )
+                    self.router.record_diagnostic({
+                        "kind": "failover_shrink_compacted",
+                        "target_model": target_model,
+                        "compactor_model": compactor_model,
+                        "estimated_input_tokens": spent,
+                    })
+                    body = self._payload_bytes(rebuilt)
+                    if pinger is not None:
+                        pinger.stop()
+                    return (
+                        provider,
+                        self.retarget_request_body(body, target_model),
+                        streaming,
+                    )
+            except ShrinkUnavailableError as exc:
+                pass
+            except (ConnectionError, OSError, ssl.SSLError, http.client.HTTPException, TimeoutError):
+                if pinger is not None:
+                    pinger.stop()
+                raise
+            if pinger is not None:
+                pinger.stop()
+            # Compaction unavailable or unnecessary: fall back to truncation.
+            # A streaming caller is already committed to its stream here; a
+            # non-streaming one still owns an unsent response.
+            truncated = self._truncate_for_window(payload, target_model)
+            if truncated is None:
+                self.router.record_diagnostic({
+                    "kind": "failover_shrink_failed",
+                    "target_model": target_model,
+                    "reason": "no_shrink_path",
+                })
+                if streaming:
+                    self._emit_stream_error(
+                        502,
+                        "api_error",
+                        "Context could not be compacted or reduced for this handoff",
+                    )
+                    return provider, b"", True
+                return provider, b"", False
+            self.router.record_diagnostic({
+                "kind": "failover_shrink_truncated",
+                "target_model": target_model,
+                "reason": "compactor_unavailable" if result is None and compactor_model else "tail_only",
+            })
+            return (
+                provider,
+                self.retarget_request_body(truncated, target_model),
+                streaming,
+            )
+        # No compactor: truncation path, nothing committed yet.
+        if mode == "summarize":
+            return provider, b"", False
+        truncated = self._truncate_for_window(payload, target_model)
+        if truncated is None:
+            return provider, b"", False
+        self.router.record_diagnostic({
+            "kind": "failover_shrink_truncated",
+            "target_model": target_model,
+            "reason": "no_compactor",
+        })
+        return (
+            provider,
+            self.retarget_request_body(truncated, target_model),
+            False,
+        )
+
 
     def read_body(self) -> bytes:
         if self.headers.get("transfer-encoding"):
@@ -815,10 +2131,17 @@ class RouterHandler(BaseHTTPRequestHandler):
         return body
 
     def forward(
-        self, provider: str, model: str, body: bytes
+        self,
+        provider: str,
+        model: str,
+        body: bytes,
+        *,
+        skip_response_headers: bool = False,
     ) -> tuple[int, int, str, dict[str, int] | None]:
         if provider == "openrouter":
-            return self.forward_openrouter(model, body)
+            return self.forward_openrouter(
+                model, body, skip_response_headers=skip_response_headers
+            )
         if provider in {"openai", "grok"}:
             upstream = self.router.config.openai
             if upstream is None:
@@ -829,7 +2152,10 @@ class RouterHandler(BaseHTTPRequestHandler):
         headers = forwarded_headers(self.headers.items(), provider, len(body))
         target = upstream_path(upstream, self.path)
         response: http.client.HTTPResponse | None = None
-        headers_sent = False
+        # A committed shrink stream already owns the client socket: its 200
+        # and SSE headers went out, so only body bytes may follow and any
+        # later failure must stay inside the stream.
+        headers_sent = skip_response_headers
         status = 502
         response_bytes = 0
         observer = UsageObserver()
@@ -840,28 +2166,67 @@ class RouterHandler(BaseHTTPRequestHandler):
             connection.request("POST", target, body=body, headers=headers)
             response = connection.getresponse()
             status = response.status
-            if status in RATE_LIMIT_STATUS_CODES:
+            prefix = b""
+            if self.rate_limit_passes_through(
+                provider, status, skip_response_headers
+            ):
+                # Fall through to the ordinary verbatim replay below, which
+                # forwards the status, every upstream header, and the body,
+                # so the client sees exactly what it would without Airlock.
+                self.router.record_diagnostic({
+                    "kind": "anthropic_rate_limit_passthrough",
+                    "provider": provider,
+                    "model": model,
+                    "status": status,
+                })
+            elif status in RATE_LIMIT_STATUS_CODES:
                 raise RateLimitedError(
                     status, parse_retry_after(response.getheader("retry-after"))
                 )
             if 300 <= status < 400:
                 raise UpstreamError("Upstream redirects are not allowed", retryable=False)
+            # A possible context overflow must be classified before any
+            # response byte reaches the client, so a bounded slice of the
+            # error body is read up front. Unrecognized bodies replay verbatim
+            # and stream exactly as they always have.
+            if status in OVERFLOW_STATUS_CODES:
+                peek = bytearray()
+                while len(peek) < MAX_OVERFLOW_PEEK_BYTES:
+                    chunk = response.read1(16 * 1024)
+                    if not chunk:
+                        break
+                    peek.extend(chunk)
+                counts = classify_overflow(
+                    status,
+                    decode_overflow_body(
+                        bytes(peek), response.getheader("content-encoding") or ""
+                    ),
+                )
+                if counts is not None:
+                    raise ContextOverflowError(status, counts[0], counts[1])
+                prefix = bytes(peek)
             set_stream_timeout(connection, response)
             expected_length = response.getheader("content-length")
             content_type = (response.getheader("content-type") or "").lower()
             observer.configure(
                 content_type, response.getheader("content-encoding") or ""
             )
-            self.send_response(status, response.reason)
-            for name, value in response.getheaders():
-                lowered = name.lower()
-                if lowered in HOP_BY_HOP_HEADERS or lowered == "server":
-                    continue
-                self.send_header(name, value)
-            self.send_header("connection", "close")
-            self.end_headers()
-            headers_sent = True
+            if not headers_sent:
+                self.send_response(status, response.reason)
+                for name, value in response.getheaders():
+                    lowered = name.lower()
+                    if lowered in HOP_BY_HOP_HEADERS or lowered == "server":
+                        continue
+                    self.send_header(name, value)
+                self.send_header("connection", "close")
+                self.end_headers()
+                headers_sent = True
             self.close_connection = True
+            if prefix:
+                response_bytes += len(prefix)
+                self.wfile.write(prefix)
+                self.wfile.flush()
+                observer.observe(prefix)
             while True:
                 chunk = response.read1(16 * 1024)
                 if not chunk:
@@ -907,7 +2272,11 @@ class RouterHandler(BaseHTTPRequestHandler):
             connection.close()
 
     def forward_openrouter(
-        self, model: str, body: bytes
+        self,
+        model: str,
+        body: bytes,
+        *,
+        skip_response_headers: bool = False,
     ) -> tuple[int, int, str, dict[str, int] | None]:
         upstream = self.router.config.openrouter
         route = self.router.config.openrouter_routes[model]
@@ -919,7 +2288,9 @@ class RouterHandler(BaseHTTPRequestHandler):
         headers = openrouter_headers(key, len(body))
         target = f"{upstream[3]}/messages"
         response: http.client.HTTPResponse | None = None
-        headers_sent = False
+        # Same committed-shrink rule as forward(): once the client owns an
+        # open SSE stream, never emit a second status line.
+        headers_sent = skip_response_headers
         status = 502
         response_bytes = 0
         observer = UsageObserver()
@@ -939,11 +2310,31 @@ class RouterHandler(BaseHTTPRequestHandler):
             set_stream_timeout(connection, response)
             if not 200 <= status < 300:
                 local_status = status if 400 <= status <= 599 else 502
-                self.send_error_response(
-                    local_status,
-                    "api_error",
-                    "The selected OpenRouter upstream rejected the request",
+                error_body = bytearray()
+                while len(error_body) < MAX_OVERFLOW_PEEK_BYTES:
+                    try:
+                        chunk = response.read1(16 * 1024)
+                    except (ConnectionError, OSError, ssl.SSLError, http.client.HTTPException):
+                        break
+                    if not chunk:
+                        break
+                    error_body.extend(chunk)
+                counts = classify_overflow(
+                    status,
+                    decode_overflow_body(
+                        bytes(error_body),
+                        response.getheader("content-encoding") or "",
+                    ),
                 )
+                if counts is not None:
+                    raise ContextOverflowError(status, counts[0], counts[1])
+                self.record_sanitized_error("openrouter", model, local_status)
+                message = "The selected OpenRouter upstream rejected the request"
+                if skip_response_headers:
+                    self._emit_stream_error(local_status, "api_error", message)
+                    self.close_connection = True
+                else:
+                    self.send_error_response(local_status, "api_error", message)
                 return local_status, 0, "upstream_error", None
             encoding = (response.getheader("content-encoding") or "").strip().lower()
             if encoding not in {"", "identity"}:
@@ -975,11 +2366,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                             retryable=False,
                         )
                     break
-                self.send_response(status, response.reason)
-                self.send_header("content-type", "text/event-stream")
-                self.send_header("connection", "close")
-                self.end_headers()
-                headers_sent = True
+                if not headers_sent:
+                    self.send_response(status, response.reason)
+                    self.send_header("content-type", "text/event-stream")
+                    self.send_header("connection", "close")
+                    self.end_headers()
+                    headers_sent = True
                 self.close_connection = True
                 self.wfile.write(prefix)
                 self.wfile.flush()
@@ -1026,12 +2418,13 @@ class RouterHandler(BaseHTTPRequestHandler):
                             openrouter_model_mismatch(model, response_model),
                             retryable=False,
                         )
-                    self.send_response(status, response.reason)
-                    self.send_header("content-type", "application/json")
-                    self.send_header("content-length", str(response_bytes))
-                    self.send_header("connection", "close")
-                    self.end_headers()
-                    headers_sent = True
+                    if not headers_sent:
+                        self.send_response(status, response.reason)
+                        self.send_header("content-type", "application/json")
+                        self.send_header("content-length", str(response_bytes))
+                        self.send_header("connection", "close")
+                        self.end_headers()
+                        headers_sent = True
                     self.close_connection = True
                     spool.seek(0)
                     while True:
@@ -1071,23 +2464,32 @@ class RouterHandler(BaseHTTPRequestHandler):
                 response.close()
             connection.close()
 
-    def send_json(self, status: int, payload: object) -> None:
+    def send_json(
+        self, status: int, payload: object, retry_after: int | None = None
+    ) -> None:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode(
             "ascii"
         )
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
+        if retry_after is not None:
+            # Synthesized from a parsed number, never copied from upstream
+            # bytes, so this stays inside the fixed-output rule while still
+            # telling the client when the request is worth repeating.
+            self.send_header("retry-after", str(retry_after))
         self.send_header("connection", "close")
         self.end_headers()
         self.close_connection = True
         self.wfile.write(body)
 
-    def send_error_response(self, status: int, kind: str, message: str) -> None:
+    def send_error_response(
+        self, status: int, kind: str, message: str, retry_after: int | None = None
+    ) -> None:
         self.send_json(status, {
             "type": "error",
             "error": {"type": kind, "message": message},
-        })
+        }, retry_after)
 
 
 def parse_upstream(
@@ -1154,6 +2556,218 @@ def request_model(body: bytes) -> str:
     if not isinstance(model, str) or not model:
         raise InvalidRequestError("Request model is missing")
     return model
+
+
+def decode_overflow_body(body: bytes, content_encoding: str) -> str:
+    """Decode a bounded upstream error body into lowercase text.
+
+    Error bodies can arrive gzipped, so the classifier decodes its own copy.
+    Anything undecodable yields an empty string and therefore no
+    classification, which keeps unknown shapes failing closed.
+    """
+    data = body
+    encoding = (content_encoding or "").strip().lower()
+    try:
+        if encoding in {"gzip", "x-gzip"}:
+            data = gzip.decompress(data)
+        elif encoding not in {"", "identity"}:
+            return ""
+        return data[:MAX_OVERFLOW_TEXT_CHARS].decode("utf-8", errors="replace").lower()
+    except (OSError, EOFError, zlib.error, UnicodeError):
+        return ""
+
+
+def classify_overflow(
+    status: int, body_text: str
+) -> tuple[int | None, int | None] | None:
+    """Return parsed (prompt_tokens, limit_tokens) when the body is overflow.
+
+    The status gate happens first: only 400 and 413 responses are even
+    considered. Within them the body must name the context limit using a
+    curated phrase; anything else returns None so ordinary bad requests keep
+    breaking the chain unchanged.
+    """
+    if status not in OVERFLOW_STATUS_CODES or not body_text:
+        return None
+    if not any(phrase in body_text for phrase in OVERFLOW_PHRASES):
+        return None
+    match = PROMPT_TOO_LONG_COUNTS_RE.search(body_text)
+    if match is not None:
+        prompt = int(match.group(1).replace(",", ""))
+        limit = int(match.group(2).replace(",", ""))
+        return prompt, limit
+    match = MAX_CONTEXT_LENGTH_COUNTS_RE.search(body_text)
+    if match is not None:
+        limit = int(match.group(1).replace(",", ""))
+        requested = REQUESTED_TOKENS_RE.search(body_text)
+        prompt = int(requested.group(1).replace(",", "")) if requested else None
+        return prompt, limit
+    return None, None
+
+
+def estimate_tokens_from_bytes(raw: bytes) -> int:
+    """Conservative byte-derived token estimate (roughly three bytes per token).
+
+    Overestimating keeps chunking and truncation on the safe side of the
+    window; the router has no tokenizer and must never depend on one.
+    """
+    return len(raw) // 3
+
+
+def message_units(messages: list[Any]) -> list[list[dict[str, Any]]]:
+    """Group messages into atomic handoff units that respect tool pairing.
+
+    An assistant turn that carries tool_use blocks stays glued to the
+    following user turns carrying their tool_result blocks, because both
+    providers and semantics require the pair to travel together. Every other
+    message becomes its own unit. The input list is never mutated.
+    """
+    units: list[list[dict[str, Any]]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if not isinstance(message, dict):
+            unit = [message]
+            units.append(unit)
+            index += 1
+            continue
+        unit = [message]
+        index += 1
+        if _message_has_tool_use(message):
+            while index < len(messages):
+                follower = messages[index]
+                if isinstance(follower, dict) and _message_has_tool_result(follower):
+                    unit.append(follower)
+                    index += 1
+                    if not _message_has_tool_use(follower):
+                        continue
+                    # A chained tool_use inside a result turn keeps pulling
+                    # its own results too.
+                    continue
+                break
+        units.append(unit)
+    return units
+
+
+def _message_blocks(message: dict[str, Any]) -> list[Any]:
+    content = message.get("content")
+    if isinstance(content, list):
+        return content
+    return []
+
+
+def _message_has_tool_use(message: dict[str, Any]) -> bool:
+    return any(
+        isinstance(block, dict) and block.get("type") == "tool_use"
+        for block in _message_blocks(message)
+    )
+
+
+def _message_has_tool_result(message: dict[str, Any]) -> bool:
+    return any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in _message_blocks(message)
+    )
+
+
+def sanitize_unit_for_compaction(unit: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy a unit safe to send to the compactor: images become placeholders
+    and cache_control markers are dropped."""
+    cleaned: list[dict[str, Any]] = []
+    for message in unit:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            blocks: list[Any] = []
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "image"
+                ):
+                    blocks.append({
+                        "type": "text",
+                        "text": "[image omitted during context compaction]",
+                    })
+                elif isinstance(block, dict) and "cache_control" in block:
+                    stripped = {
+                        key: value
+                        for key, value in block.items()
+                        if key != "cache_control"
+                    }
+                    blocks.append(stripped)
+                else:
+                    blocks.append(block)
+            new_message = {**message, "content": blocks}
+        elif isinstance(content, str):
+            new_message = dict(message)
+        else:
+            continue
+        new_message.pop("cache_control", None)
+        cleaned.append(new_message)
+    return cleaned
+
+
+def strip_cache_control_deep(value: Any) -> Any:
+    """Remove cache_control markers anywhere inside copied JSON structures."""
+
+    if isinstance(value, dict):
+        return {
+            key: strip_cache_control_deep(item)
+            for key, item in value.items()
+            if key != "cache_control"
+        }
+    if isinstance(value, list):
+        return [strip_cache_control_deep(item) for item in value]
+    return value
+
+
+def canonical_unit_bytes(value: Any) -> bytes:
+    """Stable bytes for hashing transcript units of arbitrary block shape."""
+
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+            default=str,
+        ).encode("ascii")
+    except (TypeError, ValueError):
+        return repr(value).encode("ascii")
+
+
+class _StreamPinger:
+    """Emit SSE comment pings so the client never idles during a long shrink.
+
+    The pinger owns the connection between its start and stop; the handler
+    stops it before writing any real stream content.
+    """
+
+    def __init__(self, wfile: Any, interval_seconds: float) -> None:
+        self._wfile = wfile
+        self._interval = interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._wfile.write(b": ping\n\n")
+                self._wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
 
 
 def _normalize_openrouter_system_messages(payload: dict[str, Any]) -> None:
@@ -1295,9 +2909,28 @@ def strip_anthropic_server_tools(payload: dict[str, Any]) -> list[str]:
     return removed
 
 
+def normalize_openrouter_effort(
+    payload: dict[str, Any], ceiling: str
+) -> OpenRouterEffortClamp | None:
+    """Clamp a recognized effort to the resolved OpenRouter route ceiling."""
+
+    if ceiling not in OPENROUTER_EFFORT_LEVELS:
+        raise InvalidRequestError("OpenRouter route effort ceiling is invalid")
+    output_config = payload.get("output_config")
+    if not isinstance(output_config, dict):
+        return None
+    requested = output_config.get("effort")
+    if requested not in OPENROUTER_EFFORT_LEVELS:
+        return None
+    if OPENROUTER_EFFORT_LEVELS.index(requested) <= OPENROUTER_EFFORT_LEVELS.index(ceiling):
+        return None
+    output_config["effort"] = ceiling
+    return OpenRouterEffortClamp(requested, ceiling, ceiling)
+
+
 def prepare_openrouter_request(
     body: bytes, model: str, route: OpenRouterRoute
-) -> tuple[bytes, list[str]]:
+) -> tuple[bytes, list[str], OpenRouterEffortClamp | None]:
     payload = request_payload(body)
     if payload.get("model") != model:
         raise InvalidRequestError("OpenRouter request model does not match its route")
@@ -1325,6 +2958,7 @@ def prepare_openrouter_request(
         "yes",
     }:
         stripped = strip_anthropic_server_tools(payload)
+    effort_clamp = normalize_openrouter_effort(payload, route.effort_ceiling)
     payload["provider"] = {
         "only": [route.provider_slug],
         "quantizations": [route.quantization],
@@ -1341,6 +2975,7 @@ def prepare_openrouter_request(
                 allow_nan=False,
             ).encode("ascii"),
             stripped,
+            effort_clamp,
         )
     except (TypeError, ValueError) as exc:
         raise InvalidRequestError("OpenRouter request body is invalid") from exc
@@ -1658,6 +3293,8 @@ def router_config_from_snapshot(
     snapshot: Any,
     openai_url: str | None,
     anthropic_url: str,
+    anthropic_rate_limit: str = "native",
+    background_model: str | None = None,
 ) -> RouterConfig:
     openrouter = {
         model: OpenRouterRoute(
@@ -1666,6 +3303,7 @@ def router_config_from_snapshot(
             provider_slug=metadata.provider_slug,
             quantization=metadata.quantization,
             canonical_slug=metadata.canonical_slug,
+            effort_ceiling=metadata.effort_ceiling,
         )
         for model, metadata in snapshot.openrouter.items()
     }
@@ -1680,6 +3318,13 @@ def router_config_from_snapshot(
         failover={
             model: tuple(peers) for model, peers in snapshot.failover.items()
         },
+        context_windows=dict(snapshot.context_windows),
+        compactors=dict(snapshot.compactors),
+        overflow_shrink=snapshot.overflow_shrink,
+        profile=snapshot.profile,
+        root_model=snapshot.root_model,
+        anthropic_rate_limit=anthropic_rate_limit,
+        background_model=background_model,
     )
 
 
@@ -1738,6 +3383,22 @@ def start_router(args: argparse.Namespace) -> int:
     ]
     if args.openai_url:
         command.extend(("--openai-url", args.openai_url))
+    # The daemon runs with a scrubbed environment, so a mode chosen by an
+    # environment variable has to be handed over explicitly. Only the two
+    # known words can travel; anything else falls back to the default.
+    if os.environ.get(
+        "AIRLOCK_ANTHROPIC_RATE_LIMIT", ""
+    ).strip().lower() == "handoff":
+        command.extend(("--anthropic-rate-limit", "handoff"))
+    # The seat Claude Code was told to use for background work. The daemon
+    # runs with a scrubbed environment, so it has to travel as an argument.
+    background = (
+        os.environ.get("ANTHROPIC_SMALL_FAST_MODEL")
+        or os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+        or ""
+    ).strip()
+    if background and len(background) <= 128 and background.isprintable():
+        command.extend(("--background-model", background))
     kwargs: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
@@ -1796,6 +3457,8 @@ def serve_router(args: argparse.Namespace) -> int:
         snapshot,
         args.openai_url,
         args.anthropic_url,
+        args.anthropic_rate_limit,
+        args.background_model,
     )
     ready = Path(args.ready_file)
     if ready.parent.resolve() != safe_runtime_root().resolve() or ready.exists():
@@ -1825,6 +3488,12 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--snapshot-sha256", required=True)
         sub.add_argument("--openai-url")
         sub.add_argument("--anthropic-url", default="https://api.anthropic.com")
+        sub.add_argument(
+            "--anthropic-rate-limit",
+            choices=("native", "handoff"),
+            default="native",
+        )
+        sub.add_argument("--background-model", default=None)
         if name == "serve":
             sub.add_argument("--ready-file", required=True)
     return result

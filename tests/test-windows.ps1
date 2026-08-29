@@ -98,6 +98,7 @@ $StubDir = Join-Path $TempRoot 'stubs'
 $InstallDir = Join-Path $TempRoot 'bin'
 $ConfigDir = Join-Path $TempRoot 'config'
 $AgentDir = Join-Path $TempRoot 'agents'
+$StatusStubProcess = $null
 New-Item -ItemType Directory -Path $StubDir -Force | Out-Null
 
 $ClaudeStub = Join-Path $StubDir 'claude-launch-stub.exe'
@@ -265,6 +266,8 @@ try {
   foreach ($name in @('git.cmd', 'bash.cmd', 'claude.cmd', 'python.cmd')) {
     Write-StubAt $MissingProxyDir $name
   }
+  # Keep the installer offline: proxy acquisition must not run in tests.
+  $env:AIRLOCK_PROXY_DOWNLOAD = 'off'
   $env:PATH = "$MissingProxyDir;$SystemPath"
   $env:AIRLOCK_INSTALL_DIR = Join-Path $TempRoot 'missing-proxy-bin'
   $env:AIRLOCK_CONFIG_DIR = Join-Path $TempRoot 'missing-proxy-config'
@@ -315,6 +318,7 @@ try {
   foreach ($relative in @(
     'skills\airlock-fast\SKILL.md',
     'scripts\fast-session-end.sh', 'scripts\fast-session-end.py',
+    'scripts\router-session-end.sh', 'scripts\router-session-end.py',
     'scripts\file_safety.py', 'scripts\update-notice.sh', 'scripts\update-notice.py',
     'scripts\worktree.py', 'scripts\worktree-create.sh', 'scripts\worktree-remove.sh'
   )) {
@@ -351,6 +355,219 @@ try {
   $env:AIRLOCK_SESSION_RUNTIME_DIR = Join-Path $TempRoot 'sessions'
   $env:AIRLOCK_REAL_CLAUDE = $ClaudeStub
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
+
+  $NoRouterMessage = 'no Airlock router is running for this terminal'
+  $NoRouterStatus = Invoke-LauncherProcess $InstalledLauncher @('status')
+  if ($NoRouterStatus.Output -ne "$NoRouterMessage`n" -or $NoRouterStatus.Error) {
+    throw "Windows status without a router returned unexpected output: $($NoRouterStatus.Output)$($NoRouterStatus.Error)"
+  }
+  $InvalidStatus = Invoke-LauncherProcess $InstalledLauncher @('status', '--json') $false
+  if ($InvalidStatus.ExitCode -ne 2 -or
+      $InvalidStatus.Error -notmatch 'airlock status: this command does not accept arguments') {
+    throw 'Windows status accepted an unexpected argument.'
+  }
+
+  $StatusStub = Join-Path $TempRoot 'router-status-stub.py'
+  $StatusPortFile = Join-Path $TempRoot 'router-status-port.txt'
+  $StatusStubSource = @'
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import sys
+import threading
+
+payload = {
+    "profile": "hybrid-openai-root",
+    "root_model": "gpt-5.6-sol",
+    "root_provider": "openai",
+    "events": [
+        {
+            "timestamp": "2026-08-26T10:00:01Z",
+            "kind": "session_model_pinned",
+            "model": "gpt-5.6-sol",
+            "provider": "openai",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:02Z",
+            "kind": "rate_limit_failover_attempted",
+            "from_model": "gpt-5.6-sol",
+            "to_model": "gpt-5.6-terra",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:03Z",
+            "kind": "rate_limit_failover_succeeded",
+            "from_model": "gpt-5.6-sol",
+            "to_model": "gpt-5.6-terra",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:04Z",
+            "kind": "rate_limit_cooldown_skipped",
+            "model": "gpt-5.6-terra",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:05Z",
+            "kind": "openrouter_effort_clamped",
+            "model": "stealth/ox-alpha",
+            "requested": "max",
+            "forwarded": "high",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:06Z",
+            "kind": "sanitized_error_substituted",
+            "provider": "openrouter",
+            "model": "stealth/ox-alpha",
+            "message": "SHOULD_NOT_PRINT",
+        },
+        {
+            "timestamp": "2026-08-26T10:00:07Z",
+            "kind": "rate_limit_chain_exhausted",
+            "model": "gpt-5.6-sol",
+            "models_considered": 2,
+        },
+        {
+            "timestamp": "2026-08-26T10:00:08Z",
+            "kind": "openrouter_server_tools_stripped",
+            "model": "stealth/ox-alpha",
+            "removed_count": 2,
+        },
+        {
+            "timestamp": "2026-08-26T10:00:09Z",
+            "kind": "future_action_v2",
+            "message": "SHOULD_NOT_PRINT",
+            "credential": "SENTINEL_STATUS_SECRET",
+        },
+    ],
+}
+body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/diagnostics":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.server.served += 1
+        if self.server.served >= 2:
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    def log_message(self, *args):
+        pass
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+server.served = 0
+Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
+server.serve_forever()
+server.server_close()
+'@
+  [IO.File]::WriteAllText(
+    $StatusStub,
+    $StatusStubSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $StatusStubInfo = New-Object Diagnostics.ProcessStartInfo
+  $StatusStubInfo.FileName = $RealPython
+  $StatusStubInfo.Arguments = '"' + $StatusStub + '" "' + $StatusPortFile + '"'
+  $StatusStubInfo.UseShellExecute = $false
+  $StatusStubInfo.CreateNoWindow = $true
+  $StatusStubProcess = [Diagnostics.Process]::Start($StatusStubInfo)
+  $StatusPort = $null
+  for ($attempt = 0; $attempt -lt 100; $attempt++) {
+    if (Test-Path -LiteralPath $StatusPortFile -PathType Leaf) {
+      $candidatePort = [IO.File]::ReadAllText($StatusPortFile).Trim()
+      if ($candidatePort -match '^[1-9][0-9]{0,4}$') {
+        $StatusPort = $candidatePort
+        break
+      }
+    }
+    if ($StatusStubProcess.HasExited) {
+      throw "Windows status stub exited before publishing its port: $($StatusStubProcess.ExitCode)"
+    }
+    Start-Sleep -Milliseconds 50
+  }
+  if (-not $StatusPort) { throw 'Windows status stub did not publish its port.' }
+  $StatusRouterUrl = "http://127.0.0.1:$StatusPort"
+  $LiveStatus = Invoke-LauncherProcess $InstalledLauncher @('status') $true @{
+    AIRLOCK_SESSION_ROUTER_URL = $StatusRouterUrl
+  }
+  $ExpectedStatusOutput = (@(
+    'Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)',
+    '10:00:01Z - Pinned gpt-5.6-sol (openai) as the session root.',
+    '10:00:02Z - gpt-5.6-sol hit a rate limit; trying gpt-5.6-terra.',
+    '10:00:03Z - gpt-5.6-sol hit a rate limit; continued on gpt-5.6-terra.',
+    '10:00:04Z - Skipped gpt-5.6-terra because its rate-limit cooldown is active.',
+    '10:00:05Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high.',
+    '10:00:06Z - Replaced the openrouter error for stealth/ox-alpha with a safe local message.',
+    '10:00:07Z - The failover chain for gpt-5.6-sol exhausted 2 models.',
+    '10:00:08Z - Removed 2 unsupported OpenRouter server tools for stealth/ox-alpha.',
+    '10:00:09Z - Router action: future_action_v2.'
+  ) -join "`n") + "`n"
+  if ($LiveStatus.Output -ne $ExpectedStatusOutput -or $LiveStatus.Error) {
+    throw "Windows live status returned unexpected output: $($LiveStatus.Output)$($LiveStatus.Error)"
+  }
+  if ($LiveStatus.Output -match 'SHOULD_NOT_PRINT|SENTINEL_STATUS_SECRET') {
+    throw 'Windows status exposed an arbitrary diagnostics payload field.'
+  }
+
+  $InstalledRouterNotice = Join-Path $ConfigDir 'plugins\airlock\scripts\router-session-end.py'
+  $PreviousRouterUrl = [Environment]::GetEnvironmentVariable(
+    'AIRLOCK_SESSION_ROUTER_URL', 'Process'
+  )
+  try {
+    [Environment]::SetEnvironmentVariable(
+      'AIRLOCK_SESSION_ROUTER_URL', $StatusRouterUrl, 'Process'
+    )
+    $HookOutput = ((& $RealPython $InstalledRouterNotice | Out-String).Replace("`r", ''))
+    $HookExit = $LASTEXITCODE
+  } finally {
+    [Environment]::SetEnvironmentVariable(
+      'AIRLOCK_SESSION_ROUTER_URL', $PreviousRouterUrl, 'Process'
+    )
+  }
+  if ($HookExit -ne 0 -or -not $HookOutput.Trim()) {
+    throw "Windows router SessionEnd notice failed: $HookOutput"
+  }
+  try {
+    $HookNotice = $HookOutput | ConvertFrom-Json
+  } catch {
+    throw "Windows router SessionEnd notice did not emit JSON: $HookOutput"
+  }
+  $HookPropertyNames = @($HookNotice.PSObject.Properties.Name)
+  $HookLines = @($HookNotice.systemMessage -split "`n")
+  if ($HookPropertyNames.Count -ne 1 -or
+      $HookPropertyNames[0] -ne 'systemMessage' -or
+      $HookLines.Count -gt 6 -or
+      $HookLines[-1] -ne '10:00:09Z - Router action: future_action_v2.' -or
+      $HookNotice.systemMessage -match 'SHOULD_NOT_PRINT|SENTINEL_STATUS_SECRET') {
+    throw "Windows router SessionEnd notice was unsafe or too long: $HookOutput"
+  }
+  if (-not $StatusStubProcess.WaitForExit(5000)) {
+    throw 'Windows status stub did not stop after its two loopback requests.'
+  }
+
+  $StoppedStatus = Invoke-LauncherProcess $InstalledLauncher @('status') $true @{
+    AIRLOCK_SESSION_ROUTER_URL = $StatusRouterUrl
+  }
+  if ($StoppedStatus.Output -ne "$NoRouterMessage`n" -or $StoppedStatus.Error) {
+    throw "Windows status did not fail friendly after the router stopped: $($StoppedStatus.Output)$($StoppedStatus.Error)"
+  }
+  try {
+    [Environment]::SetEnvironmentVariable(
+      'AIRLOCK_SESSION_ROUTER_URL', $StatusRouterUrl, 'Process'
+    )
+    $SilentHookOutput = ((& $RealPython $InstalledRouterNotice | Out-String).Replace("`r", ''))
+    $SilentHookExit = $LASTEXITCODE
+  } finally {
+    [Environment]::SetEnvironmentVariable(
+      'AIRLOCK_SESSION_ROUTER_URL', $PreviousRouterUrl, 'Process'
+    )
+  }
+  if ($SilentHookExit -ne 0 -or $SilentHookOutput) {
+    throw "Windows router SessionEnd notice was not silent on failure: $SilentHookOutput"
+  }
 
   $VersionCommand = Invoke-LauncherProcess $InstalledLauncher @('version')
   $ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Root 'VERSION') -Raw).Trim()
@@ -1165,7 +1382,7 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   }
   if ($GrokLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=400000$' -or
       $GrokLaunch.Output -notmatch '(?m)^MAX_CONTEXT=500000$') {
-    throw "Grok 4.6 did not declare its window and compact headroom: $($GrokLaunch.Output)"
+    throw "Grok 4.6 lost its documented window declaration: $($GrokLaunch.Output)"
   }
   if ($GrokLaunch.Output -notmatch 'airlock-grok' -or $GrokLaunch.Output -notmatch 'airlock-composer') {
     throw "Grok-only session did not expose the Grok workers: $($GrokLaunch.Output)"
@@ -1196,15 +1413,38 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   if ($GrokEquals.Output -notmatch '(?m)^MODEL=grok-4\.6$') {
     throw "Grok --model= form did not launch: $($GrokEquals.Output)"
   }
+  # Airlock runs one Grok flagship, so the older ID stays accepted as an alias
+  # of the shipped route instead of becoming a second route.
   $GrokLegacy = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.5', '-p', 'test')
   if ($GrokLegacy.Output -notmatch '(?m)^MODEL=grok-4\.6$') {
-    throw "Grok --model=grok-4.5 alias did not map to grok-4.6: $($GrokLegacy.Output)"
+    throw "Legacy Grok ID did not alias the shipped flagship: $($GrokLegacy.Output)"
   }
   # An unrecognized bare argument passes through to Claude Code, matching the
   # POSIX launcher; only an explicit --model names a route and can be rejected.
   $BadGrok = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=bogus', '-p', 'test') $false
   if ($BadGrok.Error -notmatch 'unsupported Grok model') {
     throw "Unknown Grok model was not rejected clearly: $($BadGrok.Error)"
+  }
+  # A declared model extends the launcher without code changes: with grok-4.7
+  # enabled in models.json, the same request resolves to that exact ID. The
+  # declared ID has to be one Airlock does not ship, or the launcher's own
+  # case matches first and the declaration path is never exercised.
+  $DeclaredModels = Join-Path ([IO.Path]::GetTempPath()) ("airlock-models-{0}.json" -f [Guid]::NewGuid().ToString('N'))
+  @'
+{"schema_version": 1, "models": [{
+  "id": "grok-4.7", "provider": "grok", "effort_ceiling": "xhigh",
+  "context_window": null, "cost": "premium", "enabled": true
+}]}
+'@ | Set-Content -LiteralPath $DeclaredModels -Encoding Ascii
+  $env:AIRLOCK_MODELS_FILE = $DeclaredModels
+  try {
+    $Declared = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.7', '-p', 'test')
+    if ($Declared.Output -notmatch '(?m)^MODEL=grok-4\.7$') {
+      throw "Declared grok-4.7 model was not honored: $($Declared.Output)"
+    }
+  } finally {
+    Remove-Item Env:\AIRLOCK_MODELS_FILE -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $DeclaredModels -Force -ErrorAction SilentlyContinue
   }
   $HybridGrok = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'grok', '-p', 'test')
   if ($HybridGrok.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-grok-root$' -or
@@ -1298,6 +1538,9 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
     throw "Windows doctor did not explain the signed-out Claude behavior: $SignedOutOutput"
   }
 } finally {
+  if ($null -ne $StatusStubProcess -and -not $StatusStubProcess.HasExited) {
+    try { $StatusStubProcess.Kill() } catch {}
+  }
   $env:PATH = $OldPath
   $env:AIRLOCK_INSTALL_DIR = $OldInstall
   $env:AIRLOCK_CONFIG_DIR = $OldConfig

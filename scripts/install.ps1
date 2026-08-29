@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
   [switch]$WithAgent,
-  [switch]$Login
+  [switch]$Login,
+  [switch]$UpgradeProxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,15 +116,117 @@ function Install-ManagedFile {
 $Git = Resolve-Application @('git.exe', 'git')
 $Bash = Resolve-Application @('bash.exe', 'bash')
 $Claude = Resolve-Application @('claude.exe', 'claude.cmd', 'claude')
-$Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
 $Python = Resolve-Python3
 
 foreach ($requirement in @(
   @('Git', $Git), @('Git Bash', $Bash), @('Claude Code', $Claude),
-  @('claude-code-proxy', $Proxy), @('Python 3', $Python)
+  @('Python 3', $Python)
 )) {
   if (-not $requirement[1]) {
     throw "install: $($requirement[0]) is required and was not found on PATH."
+  }
+}
+
+# Airlock carries a Windows claude-code-proxy build with one patch. Stock
+# releases open OAuth login URLs through cmd start without quoting, cmd cuts
+# the URL at the first ampersand, and x.ai rejects the sign-in with "Missing
+# or invalid client_id". macOS and Linux install upstream through Homebrew
+# and were never affected. Each release below is upstream plus that patch;
+# refresh the version, archives, and hashes together when adopting a newer
+# carried build.
+$ProxyReleaseVersion = '0.1.35-airlock.1'
+$ProxyReleaseAssets = [ordered]@{
+  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = 'ab3066358849e9630e6415df28f72996e5cbbdad708351de73c88775899b510f' }
+  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '93f944c172807a35f85535871e9369a70e32577bb6b64afbb51ae128fcccdb80' }
+}
+
+function Get-ProxyVersionLine {
+  param([Parameter(Mandatory)][string]$Path)
+  try {
+    return ((& $Path --version 2>$null) -join ' ').Trim()
+  } catch {
+    return ''
+  }
+}
+
+function Install-CarriedProxy {
+  param([Parameter(Mandatory)][string]$DestinationDir)
+  $arch = "$env:PROCESSOR_ARCHITECTURE"
+  if (-not $ProxyReleaseAssets.Contains($arch)) {
+    throw "install: no carried claude-code-proxy release supports processor architecture '$arch'."
+  }
+  $asset = $ProxyReleaseAssets[$arch]
+  if ($asset.Sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw 'install: the carried claude-code-proxy release hash is not recorded; refusing to download an unverified binary.'
+  }
+  $tag = "v$ProxyReleaseVersion"
+  $baseUrl = "https://github.com/Harshkamdar67/claude-code-proxy/releases/download/$tag"
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("airlock-proxy-" + [IO.Path]::GetRandomFileName())
+  New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+  try {
+    try {
+      [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+    Write-Host "Downloading claude-code-proxy $ProxyReleaseVersion ($arch)..."
+    $archivePath = Join-Path $tempRoot $asset.Archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/$($asset.Archive)" -OutFile $archivePath
+    $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLower()
+    if ($actualHash -ne $asset.Sha256.ToLower()) {
+      throw "install: the downloaded claude-code-proxy archive failed its SHA-256 check."
+    }
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $tempRoot
+    Assert-PlainDirectory $DestinationDir
+    $exeTarget = Join-Path $DestinationDir 'claude-code-proxy.exe'
+    Copy-Item -LiteralPath (Join-Path $tempRoot 'claude-code-proxy.exe') -Destination $exeTarget -Force
+    Write-Host "Installed claude-code-proxy $ProxyReleaseVersion to $exeTarget"
+    return $exeTarget
+  } finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Repair-CarriedProxy {
+  param([Parameter(Mandatory)][string]$ExistingProxy)
+  $item = Get-Item -LiteralPath $ExistingProxy -Force
+  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw "install: refusing to replace an unsafe claude-code-proxy target: $ExistingProxy"
+  }
+  $directory = Split-Path -Parent $ExistingProxy
+  $backup = Join-Path $directory ("claude-code-proxy.exe." + $ProxyReleaseVersion + ".bak")
+  Copy-Item -LiteralPath $ExistingProxy -Destination $backup -Force
+  $installed = Install-CarriedProxy -DestinationDir $directory
+  if (-not $installed) { throw 'install: carried claude-code-proxy installation did not produce a binary.' }
+  Write-Host "Previous binary kept at $backup"
+}
+
+$Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
+if ($env:AIRLOCK_PROXY_DOWNLOAD -eq 'off') {
+  if (-not $Proxy) {
+    throw 'install: claude-code-proxy is required and was not found on PATH.'
+  }
+} else {
+  if ($Proxy) {
+    $proxyVersionLine = Get-ProxyVersionLine $Proxy
+    if ($proxyVersionLine -and $proxyVersionLine -notlike '*airlock*') {
+      Write-Host ''
+      Write-Host "The found claude-code-proxy is a stock build ($proxyVersionLine). Stock"
+      Write-Host 'Windows builds open browser login through cmd start, which truncates'
+      Write-Host 'OAuth URLs at the first ampersand; grok auth login then fails with'
+      Write-Host '"Missing or invalid client_id". Codex login and serving still work.'
+      Write-Host 'Replace it with Airlock''s fixed build by rerunning:'
+      Write-Host ''
+      Write-Host '  powershell -NoProfile -File .\scripts\install.ps1 -UpgradeProxy'
+      Write-Host ''
+      if ($UpgradeProxy) {
+        Repair-CarriedProxy -ExistingProxy $Proxy
+        $Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
+      }
+    } elseif ($UpgradeProxy) {
+      Write-Host 'The found claude-code-proxy already carries the Airlock login fix; nothing to upgrade.'
+    }
+  } else {
+    $Proxy = Install-CarriedProxy -DestinationDir $InstallDir
   }
 }
 
@@ -170,6 +273,10 @@ $managedFiles = [ordered]@{
   'plugins\airlock\mcp-server\airlock_web_tools.py' = (Join-Path $PluginTarget 'mcp-server\airlock_web_tools.py')
   'plugins\airlock\scripts\fast-session-end.sh' = (Join-Path $PluginTarget 'scripts\fast-session-end.sh')
   'plugins\airlock\scripts\fast-session-end.py' = (Join-Path $PluginTarget 'scripts\fast-session-end.py')
+  'plugins\airlock\scripts\router-session-end.sh' = (Join-Path $PluginTarget 'scripts\router-session-end.sh')
+  'plugins\airlock\scripts\router-session-end.py' = (Join-Path $PluginTarget 'scripts\router-session-end.py')
+  'plugins\airlock\scripts\router-turn-notice.sh' = (Join-Path $PluginTarget 'scripts\router-turn-notice.sh')
+  'plugins\airlock\scripts\router-turn-notice.py' = (Join-Path $PluginTarget 'scripts\router-turn-notice.py')
   'plugins\airlock\scripts\agent-guard.sh' = (Join-Path $PluginTarget 'scripts\agent-guard.sh')
   'plugins\airlock\scripts\agent-guard.py' = (Join-Path $PluginTarget 'scripts\agent-guard.py')
   'plugins\airlock\scripts\secret-guard.sh' = (Join-Path $PluginTarget 'scripts\secret-guard.sh')

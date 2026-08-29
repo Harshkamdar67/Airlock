@@ -49,6 +49,12 @@ AIRLOCK_ANTHROPIC_FAST=off
 # Advanced selection within an enabled OpenAI Fast policy.
 AIRLOCK_SWARM_FAST=auto
 AIRLOCK_FAILOVER_POLICY=ask
+# What the router does when an overflowing handoff fits no peer's context
+# window: auto condenses history through the destination provider's economy
+# worker when enabled and falls back to trimming, truncate only trims locally,
+# summarize refuses to trim, and off keeps the honest failure. Compaction
+# spends tokens on a model already enabled in your session.
+AIRLOCK_OVERFLOW_SHRINK=auto
 AIRLOCK_ANTHROPIC_PLAN=unknown
 AIRLOCK_OPENAI_CAPACITY=auto
 AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku

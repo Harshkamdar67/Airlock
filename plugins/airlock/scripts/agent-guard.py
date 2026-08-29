@@ -48,8 +48,49 @@ def load_policy_schema():
     return module
 
 
-def load_session_permission_set():
-    schema = load_policy_schema()
+def snapshot_predates_this_airlock(schema, path: str, digest: str) -> bool:
+    """Report whether an authentic snapshot simply predates this Airlock.
+
+    The launcher writes the snapshot as canonical bytes and exports their
+    digest, so a file whose raw bytes still hash to that digest is exactly
+    what the launcher wrote. When such a file nonetheless fails the schema's
+    own check, the schema itself moved after the session started, which is
+    what an upgrade mid-session looks like. An edited file fails the raw
+    comparison instead, so the two cases stay distinguishable. Both remain
+    denied; only the wording differs.
+    """
+    reader = getattr(schema, "_read_regular_file", None)
+    digest_bytes = getattr(schema, "sha256_bytes", None)
+    loader = getattr(schema, "load_session_snapshot_bytes", None)
+    if reader is None or digest_bytes is None or loader is None:
+        return False
+    try:
+        raw = reader(path)
+        if digest_bytes(raw) != digest:
+            return False
+        return loader(raw).digest() != digest
+    except Exception:
+        return False
+
+
+def session_permission_failure_reason(schema) -> str:
+    path = os.environ.get("AIRLOCK_SESSION_SNAPSHOT")
+    digest = os.environ.get("AIRLOCK_SESSION_SNAPSHOT_SHA256")
+    if (
+        schema is not None
+        and path
+        and digest
+        and snapshot_predates_this_airlock(schema, path, digest)
+    ):
+        return (
+            "Airlock was updated while this session was running, so its saved"
+            " permission set is out of date. Restart the session to use Agents"
+            " again."
+        )
+    return "Airlock blocked Agent because the active session permission set is invalid."
+
+
+def load_session_permission_set(schema):
     path = os.environ.get("AIRLOCK_SESSION_SNAPSHOT")
     digest = os.environ.get("AIRLOCK_SESSION_SNAPSHOT_SHA256")
     if schema is None or not path or not digest:
@@ -156,9 +197,10 @@ def main() -> int:
     if len(raw) > MAX_EVENT_BYTES:
         deny("Airlock blocked an oversized Agent event.")
         return 0
-    permission_set = load_session_permission_set()
+    schema = load_policy_schema()
+    permission_set = load_session_permission_set(schema)
     if permission_set is None:
-        deny("Airlock blocked Agent because the active session permission set is invalid.")
+        deny(session_permission_failure_reason(schema))
         return 0
     (
         schema,

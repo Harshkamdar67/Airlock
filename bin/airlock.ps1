@@ -128,6 +128,9 @@ $HybridRoots = @{
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
 }
 
+$CustomModelRecords = @{}
+$CustomOpenRouterRoutes = @{}
+
 $ProxyVariables = @(
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -172,7 +175,7 @@ function Show-Models {
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
-  Write-Host 'Other commands: fast, bg, mode, usage, session-usage, access, bundle, config, models, openrouter auth/models, proxy auth, version, update'
+  Write-Host 'Other commands: fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update'
   Write-Host ''
   Write-Host 'OpenRouter credential commands:'
   Write-Host '  airlock openrouter auth set-key     Store a key using a hidden prompt'
@@ -215,6 +218,7 @@ function Show-Models {
   Write-Host '  airlock usage set --openai-capacity auto|1x|5x|20x'
   Write-Host '  airlock usage defaults           Clear capacity overrides'
   Write-Host '  airlock session-usage [--json]   Show router-observed token counts for this hybrid session'
+  Write-Host "  airlock status                   Show this terminal's router profile and recent actions"
   Write-Host ''
   Write-Host 'Update commands:'
   Write-Host '  airlock version                  Show the installed Airlock version'
@@ -323,8 +327,105 @@ function Invoke-AccessJson {
   try {
     return (($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
   } catch {
-    [Console]::Error.WriteLine('airlock: OpenRouter access helper returned invalid JSON.')
+    [Console]::Error.WriteLine('airlock: access helper returned invalid JSON.')
     exit 1
+  }
+}
+
+function Reset-CustomModels {
+  $CustomModelRecords.Clear()
+  $CustomOpenRouterRoutes.Clear()
+}
+
+function Import-CustomModels {
+  # The catalog load follows helper-version semantics instead of demanding a
+  # full-protocol helper on every invocation. Exit code 2 means the helper
+  # predates custom-models support and simply leaves the catalog empty; other
+  # nonzero exits are the helper's own named diagnostics for a malformed
+  # user-owned file and stay fatal. Unusable output from a helper that claimed
+  # success degrades to no declarations rather than bricking the session,
+  # because declarations are opt-in and can only add routes, never remove them.
+  if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed access helper is missing: $AccessHelper")
+    exit 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for access-policy handling.')
+    exit 1
+  }
+  # Windows PowerShell 5.1 turns redirected native stderr into a terminating
+  # error under Stop preference, so this one probe runs under Continue.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $raw = @(& $python $AccessHelper 'custom-models' 2>$null)
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  $rawExit = $LASTEXITCODE
+  if ($rawExit -eq 2) { return }
+  if ($rawExit -ne 0) { exit $rawExit }
+  try {
+    $entries = @((($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop))
+  } catch {
+    [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+    Reset-CustomModels
+    return
+  }
+  foreach ($entry in $entries) {
+    if ($null -eq $entry) { continue }
+    foreach ($field in @('id', 'provider', 'routed_provider', 'agent', 'effort_ceiling', 'cost')) {
+      $property = $entry.PSObject.Properties[$field]
+      if ($null -eq $property -or -not ($property.Value -is [string]) -or -not $property.Value) {
+        [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+        Reset-CustomModels
+        return
+      }
+    }
+    $id = [string]$entry.id
+    $provider = [string]$entry.provider
+    if ($CustomModelRecords.ContainsKey($id)) {
+      [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+      Reset-CustomModels
+      return
+    }
+    $CustomModelRecords[$id] = $entry
+    switch ($provider) {
+      'codex' {
+        if ([string]$entry.routed_provider -cne 'openai') {
+          [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+          Reset-CustomModels
+          return
+        }
+        $Models[$id] = @($id, "Custom Codex ($id)")
+        $HybridRoots[$id] = @($id, "Custom Codex ($id)", 'openai')
+      }
+      'grok' {
+        if ([string]$entry.routed_provider -cne 'grok') {
+          [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+          Reset-CustomModels
+          return
+        }
+        $GrokModels[$id] = @($id, "Custom Grok ($id)")
+        $HybridRoots[$id] = @($id, "Custom Grok ($id)", 'grok')
+      }
+      'openrouter' {
+        $routeProperty = $entry.PSObject.Properties['openrouter_route']
+        if ([string]$entry.routed_provider -cne 'openrouter' -or
+            $null -eq $routeProperty -or -not ($routeProperty.Value -is [string]) -or -not $routeProperty.Value) {
+          [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+          Reset-CustomModels
+          return
+        }
+        $CustomOpenRouterRoutes[$id] = [string]$entry.openrouter_route
+      }
+      default {
+        [Console]::Error.WriteLine('airlock: ignoring models.json declarations; the access helper returned unusable output.')
+        Reset-CustomModels
+        return
+      }
+    }
   }
 }
 
@@ -520,6 +621,10 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/mcp-server/airlock_web_tools.py=$(Join-Path $PluginDir 'mcp-server\airlock_web_tools.py')",
     '--component', "plugins/airlock/scripts/fast-session-end.sh=$(Join-Path $PluginDir 'scripts\fast-session-end.sh')",
     '--component', "plugins/airlock/scripts/fast-session-end.py=$(Join-Path $PluginDir 'scripts\fast-session-end.py')",
+    '--component', "plugins/airlock/scripts/router-session-end.sh=$(Join-Path $PluginDir 'scripts\router-session-end.sh')",
+    '--component', "plugins/airlock/scripts/router-session-end.py=$(Join-Path $PluginDir 'scripts\router-session-end.py')",
+    '--component', "plugins/airlock/scripts/router-turn-notice.sh=$(Join-Path $PluginDir 'scripts\router-turn-notice.sh')",
+    '--component', "plugins/airlock/scripts/router-turn-notice.py=$(Join-Path $PluginDir 'scripts\router-turn-notice.py')",
     '--component', "plugins/airlock/scripts/agent-guard.sh=$(Join-Path $PluginDir 'scripts\agent-guard.sh')",
     '--component', "plugins/airlock/scripts/agent-guard.py=$(Join-Path $PluginDir 'scripts\agent-guard.py')",
     '--component', "plugins/airlock/scripts/secret-guard.sh=$(Join-Path $PluginDir 'scripts\secret-guard.sh')",
@@ -630,7 +735,8 @@ function Set-OpenAIEnvironment {
   Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
   # grok-4.6 is documented at 500000. Declare that hard limit and compact at
   # 80% so the summary request still fits. Other OpenAI and Grok roots keep
-  # the conservative fallback unless the user overrides it.
+  # the conservative fallback unless the user overrides it, and any inherited
+  # value is dropped so it can never silently cap this session's workers.
   if ($Model -eq 'grok-4.6') {
     $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = '500000'
   } else {
@@ -685,6 +791,11 @@ function Resolve-GrokAlias {
     'grok-composer' { return 'composer' }
     'grok-composer-2.5-fast' { return 'composer' }
   }
+  if ($CustomModelRecords.ContainsKey($Value) -and
+      [string]$CustomModelRecords[$Value].provider -ceq 'grok' -and
+      [string]$CustomModelRecords[$Value].id -ceq $Value) {
+    return $Value
+  }
   return $null
 }
 
@@ -699,6 +810,13 @@ function Get-ModelProvider {
 function Resolve-OpenAIAlias {
   param([string]$Model)
   $Model = Normalize-OpenAIModelId $Model
+  if ($CustomModelRecords.ContainsKey($Model)) {
+    if ([string]$CustomModelRecords[$Model].provider -ceq 'codex' -and
+        [string]$CustomModelRecords[$Model].id -ceq $Model) {
+      return $Model
+    }
+    return $null
+  }
   if ($Models.ContainsKey($Model)) { return $Model }
   foreach ($alias in $Models.Keys) {
     $exact = [string]$Models[$alias][0]
@@ -938,6 +1056,16 @@ function Select-HybridRoot {
   return $choices[$selection]
 }
 
+# Renamed-command refusals never depend on access-helper health, so they run
+# before the user-owned catalog load.
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'orp') {
+  [Console]::Error.WriteLine("airlock: command 'orp' was renamed to 'opr'; use airlock opr.")
+  exit 2
+}
+# Parse the user-owned catalog before any saved-model probes. The helper emits
+# models[index] diagnostics for malformed entries and never changes the file.
+Import-CustomModels
+
 if ($DefaultProfile -notin @('openai', 'hybrid', 'grok')) {
   [Console]::Error.WriteLine("airlock: unsupported default profile '$DefaultProfile' (expected openai, hybrid, or grok)")
   exit 2
@@ -973,7 +1101,13 @@ if ($DefaultHybridModel -eq 'auto') {
   $null = Resolve-AutoHybridRoot
 } else {
   $hybridOpenAIAlias = Resolve-OpenAIAlias $DefaultHybridModel
-  if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
+  $customOpenRouterDefault = (
+    $CustomOpenRouterRoutes.ContainsKey($DefaultHybridModel) -and
+    [string]$CustomModelRecords[$DefaultHybridModel].id -ceq $DefaultHybridModel
+  )
+  if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and
+      -not $customOpenRouterDefault -and
+      $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
     [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
     exit 2
   }
@@ -985,18 +1119,21 @@ if (-not $DefaultBgAlias) {
   exit 2
 }
 $DefaultBgModel = $DefaultBgAlias
-if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'orp') {
-  [Console]::Error.WriteLine("airlock: command 'orp' was renamed to 'opr'; use airlock opr.")
-  exit 2
-}
 $ExplicitCommands = @(
-  'mode', 'usage', 'session-usage', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
+  'mode', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
   'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'sol', 'sol-fast', 'terra',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
 if ($DefaultProfile -eq 'grok') {
   $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
-  if ($firstArgument -notin $ExplicitCommands) {
+  $exactCustomGrok = (
+    $CustomModelRecords.ContainsKey($firstArgument) -and
+    [string]$CustomModelRecords[$firstArgument].provider -ceq 'grok' -and
+    [string]$CustomModelRecords[$firstArgument].id -ceq $firstArgument
+  )
+  if ($exactCustomGrok) {
+    $Arguments = @('grok') + $Arguments
+  } elseif ($firstArgument -notin $ExplicitCommands) {
     if ($firstArgument -in @('--model', '-m') -or $firstArgument -like '--model=*') {
       $Arguments = @('grok') + $Arguments
     } else {
@@ -1007,7 +1144,13 @@ if ($DefaultProfile -eq 'grok') {
 if ($DefaultProfile -eq 'hybrid') {
   $firstArgument = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
   $explicitCommands = $ExplicitCommands
-  if ($firstArgument -notin $explicitCommands) {
+  $exactCustomRoot = (
+    $CustomModelRecords.ContainsKey($firstArgument) -and
+    [string]$CustomModelRecords[$firstArgument].id -ceq $firstArgument
+  )
+  if ($exactCustomRoot) {
+    $Arguments = @('hybrid') + $Arguments
+  } elseif ($firstArgument -notin $explicitCommands) {
     if ($firstArgument -in @('--model', '-m') -or $firstArgument -like '--model=*') {
       $Arguments = @('hybrid') + $Arguments
     } else {
@@ -1047,6 +1190,18 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'session-usage') {
     $sessionUsageArguments += @($Arguments[1..($Arguments.Count - 1)])
   }
   exit (Invoke-AccessPolicy -PolicyArguments $sessionUsageArguments)
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'status') {
+  if ($Arguments.Count -ne 1) {
+    [Console]::Error.WriteLine('airlock status: this command does not accept arguments.')
+    exit 2
+  }
+  $statusArguments = @('status')
+  if ($env:AIRLOCK_SESSION_ROUTER_URL) {
+    $statusArguments += @('--router-url', $env:AIRLOCK_SESSION_ROUTER_URL)
+  }
+  exit (Invoke-AccessPolicy -PolicyArguments $statusArguments)
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'version') {
@@ -1182,6 +1337,10 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'opr') {
   } else {
     $openRouterRootRoute = Select-OpenRouterRootRoute
   }
+  if ($CustomOpenRouterRoutes.ContainsKey($openRouterRootRoute) -and
+      [string]$CustomModelRecords[$openRouterRootRoute].id -ceq $openRouterRootRoute) {
+    $openRouterRootRoute = [string]$CustomOpenRouterRoutes[$openRouterRootRoute]
+  }
   $null = Resolve-OpenRouterRootRoute -Route $openRouterRootRoute
   foreach ($argument in $oprArguments) {
     if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
@@ -1276,7 +1435,18 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     if ($hybridCandidate -eq 'auto') {
       # Reserved value: resolve under the local access policy, never an alias.
       $rootAlias = 'auto'
+    } elseif ($CustomOpenRouterRoutes.ContainsKey($hybridCandidate) -and
+              [string]$CustomModelRecords[$hybridCandidate].id -ceq $hybridCandidate) {
+      $customRoute = [string]$CustomOpenRouterRoutes[$hybridCandidate]
+      $record = Resolve-OpenRouterRootRoute -Route $customRoute
+      $script:HybridSelectedRoute = [string]$record.route
+      $script:HybridSelectedModel = [string]$record.model
     } elseif ($HybridRoots.ContainsKey($hybridCandidate)) {
+      if ($CustomModelRecords.ContainsKey($hybridCandidate) -and
+          [string]$CustomModelRecords[$hybridCandidate].id -cne $hybridCandidate) {
+        [Console]::Error.WriteLine("airlock: custom model IDs must be used exactly as declared: $hybridCandidate")
+        exit 2
+      }
       $rootAlias = $hybridCandidate
     } else {
       $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
@@ -1310,6 +1480,35 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     }
   }
   $explicitModel = Get-ExplicitModel $hybridArgs
+  if ($explicitModel) {
+    if ($explicitModel -like 'gpt-*') {
+      if (-not (Resolve-OpenAIAlias $explicitModel)) {
+        [Console]::Error.WriteLine("airlock: model '$explicitModel' is not shipped or enabled in models.json.")
+        exit 2
+      }
+    } elseif ($explicitModel -like 'grok-*') {
+      if (-not (Resolve-GrokAlias $explicitModel)) {
+        [Console]::Error.WriteLine("airlock: Grok model '$explicitModel' is not shipped or enabled in models.json.")
+        exit 2
+      }
+    } elseif ($explicitModel -like 'claude-*') {
+      # Native Claude exact IDs keep their existing launcher behavior.
+    } elseif (-not $rootAlias -and -not $script:HybridSelectedRoute) {
+      # A bare unrecognized ID may declare itself through models.json, but only
+      # when nothing else has chosen the root; otherwise the provider and
+      # OpenRouter mismatch checks below keep their exact messages.
+      if ($CustomOpenRouterRoutes.ContainsKey($explicitModel) -and
+          [string]$CustomModelRecords[$explicitModel].id -ceq $explicitModel) {
+        $customRoute = [string]$CustomOpenRouterRoutes[$explicitModel]
+        $record = Resolve-OpenRouterRootRoute -Route $customRoute
+        $script:HybridSelectedRoute = [string]$record.route
+        $script:HybridSelectedModel = [string]$record.model
+      } else {
+        [Console]::Error.WriteLine("airlock: model '$explicitModel' is not shipped or enabled in models.json.")
+        exit 2
+      }
+    }
+  }
   if (-not $script:HybridSelectedRoute -and -not $rootAlias -and -not $explicitModel) {
     $rootAlias = if ($chooseRoot) { Select-HybridRoot } else { $DefaultHybridModel }
   }
@@ -1403,6 +1602,9 @@ if ($Arguments.Count -gt 0) {
         $autoAlias = Resolve-AutoHybridRoot
         $autoRoot = $HybridRoots[$autoAlias]
         $hybridName = "auto (resolves now to $($autoRoot[1]) ($($autoRoot[0])))"
+      } elseif ($CustomOpenRouterRoutes.ContainsKey($DefaultHybridModel) -and
+                [string]$CustomModelRecords[$DefaultHybridModel].id -ceq $DefaultHybridModel) {
+        $hybridName = "Custom OpenRouter ($DefaultHybridModel)"
       } else {
         $hybridName = "$($HybridRoots[$DefaultHybridModel][1]) ($($HybridRoots[$DefaultHybridModel][0]))"
       }
@@ -1506,7 +1708,7 @@ if ($Arguments.Count -gt 0) {
           exit 2
         }
         if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
-      } elseif ($Models.ContainsKey($Arguments[0])) {
+      } elseif (Resolve-OpenAIAlias $Arguments[0]) {
         $requested = $Arguments[0]
         if ($Arguments.Count -gt 1) { $rest = @($Arguments[1..($Arguments.Count - 1)]) }
       } else {
