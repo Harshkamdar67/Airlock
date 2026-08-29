@@ -124,6 +124,52 @@ if ($GrokModels -or $DefaultProfile -eq 'grok') {
   Info 'Grok workers are not enabled in the saved configuration'
 }
 
+# Catalog discovery is informational only: newer gateway IDs are surfaced so a
+# person can declare them in models.json; nothing is ever enabled implicitly.
+if ($Proxy -and ($GrokModels -or $DefaultProfile -eq 'grok') -and $Python) {
+  $ModelsFile = if ($env:AIRLOCK_MODELS_FILE) {
+    $env:AIRLOCK_MODELS_FILE
+  } else {
+    Join-Path (Split-Path -Parent $ConfigTarget) 'models.json'
+  }
+  $DiscoveryCode = @'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+models = data.get("models") if isinstance(data, dict) else None
+if isinstance(models, list):
+    for entry in models:
+        try:
+            if entry.get("provider") == "grok" and entry.get("enabled") is True:
+                print(entry["id"])
+        except Exception:
+            pass
+'@
+  $DeclaredGrok = @()
+  if (Test-Path -LiteralPath $ModelsFile -PathType Leaf) {
+    try {
+      foreach ($item in ($DiscoveryCode | & $Python - $ModelsFile 2>$null)) {
+        if ($item) { $DeclaredGrok += [string]$item }
+      }
+    } catch { $DeclaredGrok = @() }
+  }
+  $EnabledGrok = @('grok-4.6', 'grok-composer-2.5-fast') + $DeclaredGrok
+  foreach ($catalogLine in (& $Proxy models 2>$null)) {
+    $text = [string]$catalogLine
+    if (-not $text.StartsWith('grok:')) { continue }
+    # The proxy prints the catalog comma separated, so split on commas as well
+    # as spaces; otherwise every entry but the last keeps a trailing comma and
+    # looks unrecognized.
+    foreach ($catalogId in ($text.Substring(5) -split '[,\s]+')) {
+      if ($catalogId -and $EnabledGrok -notcontains $catalogId) {
+        Info "Available but not enabled (Grok): $catalogId; declare it in models.json to use it"
+      }
+    }
+  }
+}
+
 $ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } else { 'http://127.0.0.1:18765' }
 try {
   Invoke-WebRequest -Uri "$ProxyUrl/healthz" -TimeoutSec 2 -UseBasicParsing | Out-Null
