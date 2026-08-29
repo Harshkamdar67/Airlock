@@ -2323,6 +2323,41 @@ class RateLimitFailoverTests(unittest.TestCase):
         ]
         self.assertEqual(models, ["gpt-test"])
 
+    def test_a_raced_ready_file_is_not_a_launch_failure(self) -> None:
+        # The child publishes the startup marker through a rename. Windows can
+        # refuse the read for the instant that rename is in flight, and that
+        # raced read used to abort the launch with a bare "Permission denied".
+        # It has to read as "not yet" so the caller simply polls again.
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "ready-probe.json"
+
+            self.assertIsNone(
+                router.read_ready_payload(marker), "absent is not an error"
+            )
+
+            marker.write_text("{not json", encoding="ascii")
+            self.assertIsNone(
+                router.read_ready_payload(marker), "half written is not an error"
+            )
+
+            marker.write_text('["not", "an", "object"]', encoding="ascii")
+            self.assertIsNone(router.read_ready_payload(marker))
+
+            marker.write_text('{"pid": 7, "url": "http://127.0.0.1:1"}', encoding="ascii")
+            self.assertEqual(router.read_ready_payload(marker)["pid"], 7)
+
+            def refuse(_self, *_args, **_kwargs):
+                raise PermissionError(13, "Permission denied")
+
+            with mock.patch.object(pathlib.Path, "read_text", refuse):
+                self.assertIsNone(
+                    router.read_ready_payload(marker),
+                    "a sharing violation must read as not yet, not as failure",
+                )
+
     def test_the_mode_survives_the_scrubbed_daemon_environment(self) -> None:
         # The daemon is spawned with an allowlisted environment, so a mode
         # read from a variable inside the child would always be the default.

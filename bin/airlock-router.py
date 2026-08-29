@@ -3258,6 +3258,26 @@ def safe_runtime_root() -> Path:
     return state / "airlock" / "router-startups"
 
 
+def read_ready_payload(path: Path) -> dict[str, object] | None:
+    """The startup marker, or None while it is not readable yet.
+
+    The child publishes this through a rename. Windows can still refuse the
+    read for the instant that rename is in flight, and a half-written file
+    will not parse. Neither is a failure, only "not yet", so both answer None
+    and the caller polls again. Treating them as errors aborted the launch
+    with a bare "Permission denied".
+    """
+    try:
+        raw = path.read_text(encoding="ascii")
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def write_ready(path: Path, server: RouterServer) -> None:
     payload = json.dumps({
         "pid": os.getpid(),
@@ -3418,7 +3438,10 @@ def start_router(args: argparse.Namespace) -> int:
     try:
         while time.monotonic() < deadline:
             if ready.is_file() and not ready.is_symlink():
-                payload = json.loads(ready.read_text(encoding="ascii"))
+                payload = read_ready_payload(ready)
+                if payload is None:
+                    time.sleep(0.05)
+                    continue
                 if (
                     payload.get("pid") != process.pid
                     or payload.get("bundle_version") != MANAGED_BUNDLE_VERSION
