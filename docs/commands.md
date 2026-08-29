@@ -89,8 +89,24 @@ your access policy does not include Haiku there is no such route, so those
 requests are served by the background seat Claude Code was already given.
 `airlock status` records each substitution.
 
-To choose the order yourself, write `failover.json`. See
-[Declaring your own chains](models-and-usage.md#declaring-your-own-chains).
+### Choosing the order yourself
+
+```bash
+airlock handoff                     # show the tree
+airlock handoff set sol opus grok   # sol tries opus, then grok
+airlock handoff off sol             # sol never hands off
+airlock handoff clear sol           # back to the default order
+airlock handoff reset               # clear every choice
+```
+
+Names are the short route names shown in the tree, not exact model IDs, so
+you never have to type a suffix like `[1m]`. A name that does not exist is
+refused with the list of names that would have worked. Add `--profile NAME`
+to work on a profile other than the mixed-provider one.
+
+These commands write `failover.json` for you; the file format is described
+in [Declaring your own chains](models-and-usage.md#declaring-your-own-chains)
+if you would rather edit it directly.
 
 ## Routing and limits
 
