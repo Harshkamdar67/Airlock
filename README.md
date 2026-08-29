@@ -141,15 +141,7 @@ Named `airlock-*` workers have a fixed exact model. Their effort follows the ses
 
 ## How work is routed
 
-The main model starts with the smallest useful approach:
-
-1. Work directly for small, connected, or already understood work.
-2. Use Explore for bounded read-only discovery.
-3. Use Plan after the relevant code is known.
-4. Use general-purpose for multi-step work that should stay with one model.
-5. Use one exact named worker when another model is a better fit.
-6. Use several Luna Agents only for independent high-volume work.
-7. Keep integration and final synthesis with a stronger main model, Sol, or Opus.
+The main model starts with the smallest useful approach: work directly when the change is small or already understood, Explore for bounded read-only discovery, Plan once the relevant code is known, general-purpose for multi-step work that should stay with one model, and one exact named worker when another model fits better. Integration and final synthesis stay with a stronger model.
 
 Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically. For UI and UX work, an exact user choice wins; otherwise visual direction prefers Opus and bounded component work fits Sonnet.
 
@@ -179,11 +171,23 @@ When a provider answers 402, 429, or 529, Airlock retries the same request on an
 
 A handoff is never silent. Claude Code sends one request and receives one answer, so on its own it cannot tell a different model replied. At the end of any turn where the router switched, a notice names the model that was unavailable and the one that answered, and the replacement is told it is standing in, so it does not answer in the other model's name.
 
-Two limits: an Anthropic rate limit is forwarded to Claude Code untouched, because Claude Code already handles its own provider's limits (`AIRLOCK_ANTHROPIC_RATE_LIMIT=handoff` switches models instead); and `/model` cannot show a handed-off model, because a handoff is per request, not per session. `airlock status` is the accurate record. [Commands and settings](docs/commands.md#handoff).
+The default order keeps a handoff inside one usage category, so it can never spend more than the model it replaces. `airlock handoff recommended` swaps that for an order that follows capability instead, which reaches further and gives the metered route somewhere to go:
 
-`airlock status` reports failover, cooldown skips, effort clamps, and safe error replacement without showing prompts, provider error bodies, headers, or credentials. New provider models do not wait on a release: declare them in your own [`models.json`](docs/models-and-usage.md#declaring-your-own-models).
+```mermaid
+flowchart LR
+  Opus <--> Sol & Grok & Fable
+  Sol <--> Grok & Fable
+  Sonnet <--> Terra & Luna
+  Luna <--> Composer & Haiku
+```
 
-Use native Claude Code's `/usage` screen for Anthropic subscription bars; Anthropic documents no personal subscription API that Airlock can safely read. OpenRouter is a separate opt-in path that stays off until you store a key and declare a route. A declared route becomes an `airlock-or-ROUTE` worker in a hybrid session, and `airlock opr [ROUTE]` starts an OpenRouter-only session on that one route with no other provider credential involved. Preset suggestions come from community reports, are unverified, and are not capability, price, or availability guarantees. [How it works](docs/how-it-works.md#openrouter-routes-optional) | [Models and usage](docs/models-and-usage.md)
+Routes you have not connected are dropped, so the shape follows your own providers. `airlock handoff` prints the current tree and marks which entries are yours; `set`, `off`, `clear`, and `reset` change it using short route names rather than exact model IDs.
+
+Two limits: an Anthropic rate limit goes to Claude Code untouched, since it already handles its own provider's limits; and `/model` cannot show a handed-off model, because a handoff is per request, not per session. [Commands and settings](docs/commands.md#handoff).
+
+`airlock status` reports failover, cooldown skips, and effort clamps without showing prompts, provider error bodies, headers, or credentials. New provider models do not wait on a release: declare them in your own [`models.json`](docs/models-and-usage.md#declaring-your-own-models).
+
+Use Claude Code's own `/usage` screen for Anthropic bars; Anthropic documents no personal subscription API Airlock can safely read. OpenRouter is opt-in and stays off until you store a key and declare a route; its preset suggestions come from community reports and are unverified. [How it works](docs/how-it-works.md#openrouter-routes-optional) | [Models and usage](docs/models-and-usage.md)
 
 ## Security and file access
 
@@ -193,15 +197,7 @@ When the main model requests `isolation: "worktree"`, the session-scoped Worktre
 - eligible non-ignored untracked regular files
 - key names only from tracked or eligible env files
 
-It leaves out:
-
-- known credential paths
-- JSON files with known credential fields
-- complete private-key blocks
-- ignored files
-- unsafe links and Windows reparse points
-- special files and outside-repository paths
-- content above the documented safety limits
+It leaves out known credential paths, JSON files with known credential fields, complete private-key blocks, ignored files, unsafe links and Windows reparse points, special files, outside-repository paths, and content above the documented safety limits.
 
 The snapshot does not stage, reset, clean, commit to, or change the user's branch, index, or working files. Claude Code owns the Agent and worktree lifecycle. A changed worktree is preserved rather than deleted by the custom cleanup hook.
 

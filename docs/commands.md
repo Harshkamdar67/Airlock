@@ -96,8 +96,17 @@ airlock handoff                     # show the tree
 airlock handoff set sol opus grok   # sol tries opus, then grok
 airlock handoff off sol             # sol never hands off
 airlock handoff clear sol           # back to the default order
+airlock handoff recommended         # use the suggested order
 airlock handoff reset               # clear every choice
 ```
+
+`recommended` applies an order that follows capability rather than price:
+each frontier route falls to another frontier route on a different provider,
+and the smaller tiers fall to the nearest capable neighbour. The derived
+default instead keeps a handoff inside one usage category, so it can never
+spend more than the model it replaces but leaves a category with a single
+member, such as the metered route, with nowhere to go. Routes you have not
+connected are dropped, so the shape follows your own providers.
 
 Names are the short route names shown in the tree, not exact model IDs, so
 you never have to type a suffix like `[1m]`. A name that does not exist is

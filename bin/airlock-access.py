@@ -451,6 +451,42 @@ HANDOFF_PROFILES = (
 )
 
 
+# A suggested order that follows capability rather than price. The derived
+# default keeps a handoff inside one usage category, which never spends more
+# than the model it replaces but leaves a category with one member, such as
+# the metered route, with nowhere to go. This trades that safety for reach:
+# a frontier model falls to another frontier model on a different provider,
+# and the smaller tiers fall to the nearest capable neighbour. Peers that are
+# not enabled are dropped, so the shape adapts to the providers you connect.
+RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
+    "opus": ("sol", "grok", "fable"),
+    "sol": ("opus", "grok", "fable"),
+    "grok": ("sol", "opus", "fable"),
+    "fable": ("sol", "opus", "grok"),
+    "sonnet": ("terra", "luna"),
+    "terra": ("sonnet", "luna"),
+    "luna": ("sonnet", "composer", "haiku"),
+    "luna-fast": ("luna", "sonnet"),
+    "composer": ("luna", "sonnet"),
+    "haiku": ("luna", "composer"),
+}
+
+
+def recommended_handoff_chains(
+    workers: list[dict[str, str]],
+) -> dict[str, list[str]]:
+    """The suggested tree, reduced to the routes this session actually has."""
+    by_route = {worker["route"]: wire_model_id(worker["model"]) for worker in workers}
+    chains: dict[str, list[str]] = {}
+    for source, peers in RECOMMENDED_HANDOFF.items():
+        if source not in by_route:
+            continue
+        resolved = [by_route[peer] for peer in peers if peer in by_route]
+        if resolved:
+            chains[by_route[source]] = resolved
+    return chains
+
+
 def handoff_workers(policy: dict[str, Any], profile: str) -> list[dict[str, str]]:
     """Every worker this profile can route, in a stable display order."""
     workers = enabled_profile_workers(policy, profile)
@@ -526,6 +562,7 @@ def handoff_lines(policy: dict[str, Any], profile: str) -> list[str]:
         "  airlock handoff set sol opus grok   choose an order",
         "  airlock handoff off sol             never hand off from sol",
         "  airlock handoff clear sol           back to the default",
+        "  airlock handoff recommended         use the suggested order",
         "  airlock handoff reset               clear every choice",
     ])
     return lines
@@ -557,6 +594,18 @@ def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]
     if action in (None, "", "show"):
         return handoff_lines(policy, profile)
     chains = {k: list(v) for k, v in load_failover_chains().items()}
+    if action == "recommended":
+        chains = recommended_handoff_chains(workers)
+        if not chains:
+            raise AccessError(
+                "no recommended order applies to the routes this profile enables"
+            )
+        write_failover_chains(chains)
+        return (
+            ["Recommended order applied to the routes you have enabled."]
+            + [""]
+            + handoff_lines(policy, profile)
+        )
     if action == "reset":
         write_failover_chains({})
         return ["Every handoff choice cleared."] + [""] + handoff_lines(policy, profile)
@@ -585,7 +634,7 @@ def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]
         write_failover_chains(chains)
         return [f"{names[0]} now hands off to {', '.join(names[1:])}."] + [""] + handoff_lines(policy, profile)
     raise AccessError(
-        "usage: airlock handoff [show|set|off|clear|reset]"
+        "usage: airlock handoff [show|set|off|clear|recommended|reset]"
     )
 
 

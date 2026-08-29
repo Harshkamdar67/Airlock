@@ -1954,6 +1954,42 @@ class FailoverChainTests(unittest.TestCase):
             with self.assertRaisesRegex(ACCESS.AccessError, "cannot hand off to itself"):
                 ACCESS.run_handoff("set", ["sol", "sol"], profile)
 
+    def test_recommended_handoff_drops_routes_you_have_not_connected(self) -> None:
+        """The suggested tree has to survive a partly connected setup.
+
+        It names every route Airlock ships, but most people enable a subset.
+        A peer that is not enabled must disappear rather than be written into
+        failover.json, where it would fail the next launch, and a source left
+        with no reachable peer must be skipped rather than written empty,
+        because an empty list means "never hand off".
+        """
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        target = Path(temporary.name) / "failover.json"
+        with patch.dict(os.environ, {"AIRLOCK_FAILOVER_FILE": str(target)}):
+            policy = ACCESS.load_policy()
+            workers = ACCESS.handoff_workers(policy, "openai-pure")
+            routes = {w["route"] for w in workers}
+            self.assertNotIn("opus", routes)
+
+            chains = ACCESS.recommended_handoff_chains(workers)
+            flat = {peer for peers in chains.values() for peer in peers}
+            self.assertTrue(flat)
+            for peer in flat:
+                self.assertIn(
+                    peer,
+                    {ACCESS.wire_model_id(w["model"]) for w in workers},
+                    "a peer that is not enabled must never be written",
+                )
+            self.assertNotIn([], list(chains.values()))
+
+            # Whatever it writes must satisfy the loader that reads it back.
+            ACCESS.write_failover_chains(chains)
+            self.assertEqual(
+                ACCESS.load_failover_chains(target),
+                {k: tuple(v) for k, v in chains.items()},
+            )
+
     def test_shipped_grok_routes_stay_inside_the_proxy_catalog(self) -> None:
         """A rate-limited root must never fail over to an unknown Grok ID.
 
