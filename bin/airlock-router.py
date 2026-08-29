@@ -963,7 +963,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                     self.record_cooldown_skip(attempt_model)
                     skipped = (
                         self.next_failover_model(
-                            attempt_model, visited, considered
+                            model, visited, considered
                         )
                         if hops < MAX_FAILOVER_HOPS
                         else None
@@ -1033,7 +1033,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                     )
                     nxt = (
                         self.next_failover_model(
-                            attempt_model, visited, considered
+                            model, visited, considered
                         )
                         if hops < MAX_FAILOVER_HOPS
                         else None
@@ -1078,7 +1078,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                     )
                     nxt = (
                         self.next_failover_model(
-                            attempt_model,
+                            model,
                             visited,
                             considered,
                             min_window=estimate,
@@ -1342,7 +1342,12 @@ class RouterHandler(BaseHTTPRequestHandler):
         *,
         min_window: int | None = None,
     ) -> str | None:
-        """Return the first healthy same-category peer for a rate-limited model.
+        """Return the first healthy peer left in ``source``'s own chain.
+
+        ``source`` is the model the request asked for, not the hop that just
+        failed. One request consumes one list, top to bottom, which is what a
+        declared chain promises. Walking the failed hop's list instead made
+        the second peer come from somewhere the caller never named.
 
         When ``min_window`` carries an estimated conversation size, peers
         whose known context window cannot hold it are skipped with a

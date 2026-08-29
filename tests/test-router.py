@@ -2210,6 +2210,31 @@ class RateLimitFailoverTests(unittest.TestCase):
             cooldown_actions[-1]["timestamp"], DIAGNOSTIC_TIMESTAMP_PATTERN
         )
 
+    def test_a_walk_follows_the_chain_of_the_model_that_was_asked_for(self) -> None:
+        """A declared order promises its peers are tried top to bottom.
+
+        The walk used to continue from the chain of whichever hop had just
+        failed, so only the first peer of a declared order was honoured and
+        the second came from a list the caller never named. Proven live: a
+        chain declared as grok then composer then sol went grok, composer,
+        luna, because luna is what composer's own chain names.
+        """
+        self.start_gateway({
+            "gpt-test": ("gpt-two", "claude-test"),
+            # If the walk ever consults the failed hop again, it lands here,
+            # which is exactly the mistake being guarded against.
+            "gpt-two": ("gpt-three",),
+        })
+        self.openai.rate_limited_models = {"gpt-test", "gpt-two"}
+        status, _payload = self.request("gpt-test")
+        self.assertEqual(status, 200)
+        served = [json.loads(r["body"])["model"] for r in self.anthropic.requests]
+        self.assertEqual(served, ["claude-test"])
+        self.assertNotIn(
+            "gpt-three",
+            [json.loads(r["body"])["model"] for r in self.openai.requests],
+        )
+
     def test_second_limited_model_cools_the_whole_subscription(self) -> None:
         """A subscription meters one pool, so stop probing after evidence.
 
@@ -2218,10 +2243,9 @@ class RateLimitFailoverTests(unittest.TestCase):
         provider is that proof, and every remaining seat is then skipped
         without a round trip.
         """
-        self.start_gateway({
-            "gpt-test": ("gpt-two",),
-            "gpt-two": ("gpt-three",),
-        })
+        # One request consumes one chain, so the seats to skip have to be on
+        # the requested model's own list.
+        self.start_gateway({"gpt-test": ("gpt-two", "gpt-three")})
         self.openai.rate_limited_models = {"gpt-test", "gpt-two", "gpt-three"}
         status, _payload = self.request("gpt-test")
         self.assertEqual(status, 429)
