@@ -682,15 +682,23 @@ function Start-ProxyIfNeeded {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $oldConfigDir = [Environment]::GetEnvironmentVariable('CCP_CONFIG_DIR', 'Process')
     $oldStateHome = [Environment]::GetEnvironmentVariable('XDG_STATE_HOME', 'Process')
+    $oldRetries = [Environment]::GetEnvironmentVariable('CCP_MAX_RATE_LIMIT_RETRIES', 'Process')
+    # Airlock picks the replacement model itself, so a rate limit retried
+    # inside the proxy is a delay paid for nothing. Measured at 175 seconds
+    # before a handoff that then took 9.
+    $proxyRetries = $env:AIRLOCK_PROXY_RATE_LIMIT_RETRIES
+    if ($proxyRetries -notmatch '^[0-9]$') { $proxyRetries = '0' }
     try {
       if ($ProxyConfigDir) { $env:CCP_CONFIG_DIR = $ProxyConfigDir }
       if ($ProxyStateHome) { $env:XDG_STATE_HOME = $ProxyStateHome }
+      $env:CCP_MAX_RATE_LIMIT_RETRIES = $proxyRetries
       Start-Process -FilePath $proxyExe -ArgumentList 'serve','--no-monitor' -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $logDir 'service.out.log') `
         -RedirectStandardError  (Join-Path $logDir 'service.err.log')
     } finally {
       if ($null -eq $oldConfigDir) { Remove-Item Env:CCP_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:CCP_CONFIG_DIR = $oldConfigDir }
       if ($null -eq $oldStateHome) { Remove-Item Env:XDG_STATE_HOME -ErrorAction SilentlyContinue } else { $env:XDG_STATE_HOME = $oldStateHome }
+      if ($null -eq $oldRetries) { Remove-Item Env:CCP_MAX_RATE_LIMIT_RETRIES -ErrorAction SilentlyContinue } else { $env:CCP_MAX_RATE_LIMIT_RETRIES = $oldRetries }
     }
   }
   for ($i = 0; $i -lt 50; $i++) {
@@ -1120,7 +1128,7 @@ if (-not $DefaultBgAlias) {
 }
 $DefaultBgModel = $DefaultBgAlias
 $ExplicitCommands = @(
-  'mode', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
+  'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
   'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'sol', 'sol-fast', 'terra',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
@@ -1170,6 +1178,14 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'mode') {
     $modeArguments += @($Arguments[1..($Arguments.Count - 1)])
   }
   exit (Invoke-AccessPolicy -PolicyArguments $modeArguments)
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'handoff') {
+  $handoffArguments = @('handoff')
+  if ($Arguments.Count -gt 1) {
+    $handoffArguments += @($Arguments[1..($Arguments.Count - 1)])
+  }
+  exit (Invoke-AccessPolicy -PolicyArguments $handoffArguments)
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'usage') {

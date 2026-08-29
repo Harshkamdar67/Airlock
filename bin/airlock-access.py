@@ -441,6 +441,154 @@ def failover_path() -> Path:
     return config_path().parent / "failover.json"
 
 
+HANDOFF_PROFILES = (
+    "hybrid-anthropic-root",
+    "hybrid-openai-root",
+    "hybrid-grok-root",
+    "hybrid-openrouter-root",
+    "openai-pure",
+    "grok-pure",
+)
+
+
+def handoff_workers(policy: dict[str, Any], profile: str) -> list[dict[str, str]]:
+    """Every worker this profile can route, in a stable display order."""
+    workers = enabled_profile_workers(policy, profile)
+    return sorted(workers, key=lambda worker: (worker["cost"], worker["route"]))
+
+
+def resolve_handoff_name(name: str, workers: list[dict[str, str]]) -> str:
+    """Accept a short route name or an exact model ID, return the model ID.
+
+    Short names exist because the exact IDs carry suffixes such as "[1m]"
+    that are easy to mistype and impossible to guess, which is what made
+    editing failover.json by hand unpleasant enough to avoid.
+    """
+    wanted = name.strip()
+    if not wanted:
+        raise AccessError("a route name is required")
+    for worker in workers:
+        if wanted == worker["route"]:
+            return wire_model_id(worker["model"])
+    for worker in workers:
+        if wanted in {worker["model"], wire_model_id(worker["model"])}:
+            return wire_model_id(worker["model"])
+    known = ", ".join(sorted({worker["route"] for worker in workers}))
+    raise AccessError(
+        "unknown route: " + wanted + "; choose one of: " + known
+    )
+
+
+def handoff_display_name(model: str, workers: list[dict[str, str]]) -> str:
+    for worker in workers:
+        if model in {worker["model"], wire_model_id(worker["model"])}:
+            return worker["route"]
+    return model
+
+
+def handoff_lines(policy: dict[str, Any], profile: str) -> list[str]:
+    """The tree, showing which order is declared and which is derived."""
+    workers = handoff_workers(policy, profile)
+    declared = load_failover_chains()
+    routes = {wire_model_id(worker["model"]): worker for worker in workers}
+    derived = session_failover_chains(policy, workers, routes, declared={})
+    lines = [
+        f"Handoff tree for {profile}",
+        "",
+    ]
+    width = max((len(worker["route"]) for worker in workers), default=8)
+    for worker in workers:
+        model = wire_model_id(worker["model"])
+        source = worker["route"]
+        forms = {worker["model"], model}
+        declared_peers = next(
+            (peers for form, peers in declared.items() if form in forms), None
+        )
+        if declared_peers is not None:
+            peers = [handoff_display_name(peer, workers) for peer in declared_peers]
+            note = "yours"
+        else:
+            peers = [
+                handoff_display_name(peer, workers)
+                for peer in derived.get(model, ())
+            ]
+            note = "default"
+        if peers:
+            arrow = "  ->  ".join(peers)
+        elif declared_peers is not None:
+            arrow = "(never hands off)"
+            note = "yours"
+        else:
+            arrow = f"(no peer in the {worker['cost']} category)"
+        lines.append(f"  {source:<{width}}  ->  {arrow}   [{note}]")
+    lines.extend([
+        "",
+        "  airlock handoff set sol opus grok   choose an order",
+        "  airlock handoff off sol             never hand off from sol",
+        "  airlock handoff clear sol           back to the default",
+        "  airlock handoff reset               clear every choice",
+    ])
+    return lines
+
+
+def write_failover_chains(chains: dict[str, list[str]]) -> None:
+    """Write failover.json, or remove it when nothing is declared."""
+    target = failover_path()
+    if not chains:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    payload = {"schema_version": 1, "chains": {k: list(v) for k, v in chains.items()}}
+    # Validated before it lands so a bad write cannot break the next launch.
+    validate_failover_chains(payload)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + chr(10), encoding="utf-8"
+    )
+
+
+def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]:
+    policy = load_cached_policy()
+    if profile not in PROFILE_COMPONENTS:
+        raise AccessError(f"unknown session profile: {profile}")
+    workers = handoff_workers(policy, profile)
+    if action in (None, "", "show"):
+        return handoff_lines(policy, profile)
+    chains = {k: list(v) for k, v in load_failover_chains().items()}
+    if action == "reset":
+        write_failover_chains({})
+        return ["Every handoff choice cleared."] + [""] + handoff_lines(policy, profile)
+    if not names:
+        raise AccessError(f"usage: airlock handoff {action} ROUTE")
+    source = resolve_handoff_name(names[0], workers)
+    if action == "clear":
+        chains.pop(source, None)
+        write_failover_chains(chains)
+        return [f"{names[0]} is back to its default order."] + [""] + handoff_lines(policy, profile)
+    if action == "off":
+        chains[source] = []
+        write_failover_chains(chains)
+        return [f"{names[0]} will never hand off."] + [""] + handoff_lines(policy, profile)
+    if action == "set":
+        if len(names) < 2:
+            raise AccessError("usage: airlock handoff set ROUTE PEER [PEER...]")
+        peers: list[str] = []
+        for peer_name in names[1:]:
+            peer = resolve_handoff_name(peer_name, workers)
+            if peer == source:
+                raise AccessError(f"{names[0]} cannot hand off to itself")
+            if peer not in peers:
+                peers.append(peer)
+        chains[source] = peers
+        write_failover_chains(chains)
+        return [f"{names[0]} now hands off to {', '.join(names[1:])}."] + [""] + handoff_lines(policy, profile)
+    raise AccessError(
+        "usage: airlock handoff [show|set|off|clear|reset]"
+    )
+
+
 def _custom_model_agent_name(provider: str, model_id: str) -> str:
     prefix = f"airlock-custom-{provider}-"
     slug = re.sub(r"[^a-z0-9]+", "-", model_id.lower(), flags=re.ASCII).strip("-")
@@ -5636,6 +5784,10 @@ def main() -> int:
     mode_parser.add_argument("--max-descendants")
     mode_parser.add_argument("--max-total-descendants")
     mode_parser.add_argument("--repair-rounds")
+    handoff_parser = subparsers.add_parser("handoff")
+    handoff_parser.add_argument("handoff_action", nargs="?")
+    handoff_parser.add_argument("handoff_names", nargs="*")
+    handoff_parser.add_argument("--profile", default="hybrid-anthropic-root")
     usage_parser = subparsers.add_parser("usage")
     usage_parser.add_argument("usage_action", nargs="?")
     usage_parser.add_argument("--claude-plan", choices=sorted(VALID_CLAUDE_PLANS))
@@ -5803,6 +5955,11 @@ def main() -> int:
             if updates is not None:
                 write_flat_config_overrides(updates)
             print("\n".join(mode_status_lines(updated=updates is not None)))
+            return 0
+        if args.command == "handoff":
+            print(chr(10).join(run_handoff(
+                args.handoff_action, list(args.handoff_names), args.profile
+            )))
             return 0
         if args.command == "usage":
             updates = parse_usage_update(args)

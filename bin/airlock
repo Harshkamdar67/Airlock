@@ -226,7 +226,7 @@ Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, c
   auto resolves to fable when Fable is neither extra nor unavailable, otherwise
   opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
-Other commands: fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
+Other commands: fast, bg, mode, handoff, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
 
 OpenRouter credential commands:
   airlock openrouter auth set-key     Store a key using a hidden prompt
@@ -735,14 +735,22 @@ start_proxy_background() {
   prepare_private_proxy_directory "$proxy_config_dir" || return 1
   prepare_private_proxy_directory "$state_home" || return 1
   prepare_private_proxy_directory "$log_dir" || return 1
+  # Airlock chooses the replacement model itself, so a rate limit retried
+  # inside the proxy is a delay paid for nothing: the alternative is already
+  # picked and waiting. Measured at 175 seconds before a handoff that then
+  # took 9. Set AIRLOCK_PROXY_RATE_LIMIT_RETRIES to keep some retries.
+  local proxy_retries="${AIRLOCK_PROXY_RATE_LIMIT_RETRIES:-0}"
+  if [[ ! "$proxy_retries" =~ ^[0-9]$ ]]; then
+    proxy_retries='0'
+  fi
   if [[ -n "$proxy_config_dir" && -n "$proxy_state_home" ]]; then
-    nohup env CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+    nohup env CCP_MAX_RATE_LIMIT_RETRIES="$proxy_retries" CCP_CONFIG_DIR="$proxy_config_dir" XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
   elif [[ -n "$proxy_config_dir" ]]; then
-    nohup env CCP_CONFIG_DIR="$proxy_config_dir" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+    nohup env CCP_MAX_RATE_LIMIT_RETRIES="$proxy_retries" CCP_CONFIG_DIR="$proxy_config_dir" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
   elif [[ -n "$proxy_state_home" ]]; then
-    nohup env XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+    nohup env CCP_MAX_RATE_LIMIT_RETRIES="$proxy_retries" XDG_STATE_HOME="$proxy_state_home" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
   else
-    nohup "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
+    nohup env CCP_MAX_RATE_LIMIT_RETRIES="$proxy_retries" "$proxy_executable" serve --no-monitor >>"$log_dir/service.log" 2>&1 &
   fi
 }
 
@@ -1734,6 +1742,12 @@ fi
 if [[ "${1:-}" == 'mode' ]]; then
   shift
   run_access mode "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == 'handoff' ]]; then
+  shift
+  run_access handoff "$@"
   exit $?
 fi
 

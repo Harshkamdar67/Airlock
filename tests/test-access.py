@@ -1917,6 +1917,43 @@ class FailoverChainTests(unittest.TestCase):
                 })
                 self.assertEqual(missing, [])
 
+    def test_handoff_editing_uses_route_names_not_model_ids(self) -> None:
+        """Editing the tree by hand meant knowing exact IDs, suffix and all.
+
+        The point of the command is that a person types "sol" and "opus",
+        never "gpt-5.6-sol" or "claude-opus-5[1m]", and that a typo is
+        answered with the list of names that would have worked.
+        """
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        target = Path(temporary.name) / "failover.json"
+        with patch.dict(os.environ, {"AIRLOCK_FAILOVER_FILE": str(target)}):
+            profile = "hybrid-anthropic-root"
+            lines = ACCESS.run_handoff("set", ["sol", "opus"], profile)
+            self.assertIn("sol now hands off to opus.", lines[0])
+            written = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(written["schema_version"], 1)
+            self.assertEqual(
+                written["chains"], {"gpt-5.6-sol": ["claude-opus-5"]}
+            )
+            # The tree marks a declared order so it is distinguishable.
+            tree = chr(10).join(ACCESS.run_handoff("show", [], profile))
+            self.assertRegex(tree, r"sol\s+->\s+opus\s+\[yours\]")
+
+            ACCESS.run_handoff("off", ["sol"], profile)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8"))["chains"],
+                {"gpt-5.6-sol": []},
+            )
+
+            ACCESS.run_handoff("clear", ["sol"], profile)
+            self.assertFalse(target.exists())
+
+            with self.assertRaisesRegex(ACCESS.AccessError, "unknown route: slo"):
+                ACCESS.run_handoff("set", ["slo", "opus"], profile)
+            with self.assertRaisesRegex(ACCESS.AccessError, "cannot hand off to itself"):
+                ACCESS.run_handoff("set", ["sol", "sol"], profile)
+
     def test_shipped_grok_routes_stay_inside_the_proxy_catalog(self) -> None:
         """A rate-limited root must never fail over to an unknown Grok ID.
 
