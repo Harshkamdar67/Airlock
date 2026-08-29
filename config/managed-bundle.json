@@ -30,7 +30,7 @@
     "plugins/airlock/scripts/file_safety.py": "0b04159517e0fee354d43fb03d4294e122dd49f137a93620446cab4e99b6b51c",
     "plugins/airlock/scripts/router-session-end.py": "457c94b42f25d3f0144b157f3562b766c5f51dbd87fac95e2caa4fb25ca5c9cf",
     "plugins/airlock/scripts/router-session-end.sh": "c0861ca4343c86dd5b29082aa5584380ecc12045e840e1ad352f78309dbdd5d1",
-    "plugins/airlock/scripts/router-turn-notice.py": "b30a079ce503fafb625a6cfcf05bbce4ae6e2bba39ccff90c5de86ee537af74f",
+    "plugins/airlock/scripts/router-turn-notice.py": "c3609b957a9299124d4abde5fd4cc16f9c418ab6de74fd552f32b2a9fd36d599",
     "plugins/airlock/scripts/router-turn-notice.sh": "9c19101a5a82fd78a2a46ae66c48593d613707dec81155de8da108088c0988f0",
     "plugins/airlock/scripts/secret-guard.py": "897c6bded93fc8c9a91024444e0995fabf94f492939c3ba20d8873bf49e9b403",
     "plugins/airlock/scripts/secret-guard.sh": "06b0f15edd1ad9363d625c4c5b53f3500a4f2ac6dfd6c789492d10befe5b6efd",

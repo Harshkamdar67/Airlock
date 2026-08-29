@@ -2210,6 +2210,50 @@ class RateLimitFailoverTests(unittest.TestCase):
             cooldown_actions[-1]["timestamp"], DIAGNOSTIC_TIMESTAMP_PATTERN
         )
 
+    def test_the_turn_notice_says_one_switch_once(self) -> None:
+        """A turn with many workers hands off many times, identically.
+
+        Printing a line per event meant the same sentence four times over,
+        which buries the one fact it exists to convey. Reported from a real
+        session running background agents.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "turn_notice",
+            os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "plugins", "airlock", "scripts", "router-turn-notice.py",
+            ),
+        )
+        notice_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(notice_module)
+
+        same = [
+            {"kind": "rate_limit_failover_succeeded",
+             "from_model": "gpt-5.6-sol", "to_model": "claude-opus-5"}
+            for _ in range(4)
+        ]
+        message, total = notice_module.notice(same, 0)
+        self.assertEqual(total, 4)
+        body = message.splitlines()[1:]
+        self.assertEqual(len(body), 1, message)
+        self.assertIn("4 times", body[0])
+
+        one = notice_module.notice(same[:1], 0)[0].splitlines()[1:]
+        self.assertEqual(len(one), 1)
+        self.assertNotIn("times", one[0])
+
+        # Distinct switches still each get a line.
+        mixed = same[:2] + [{
+            "kind": "rate_limit_failover_succeeded",
+            "from_model": "gpt-5.6-luna", "to_model": "claude-haiku-4-5-20251001",
+        }]
+        self.assertEqual(len(notice_module.notice(mixed, 0)[0].splitlines()[1:]), 2)
+
+        # Nothing new since the previous turn stays silent.
+        self.assertIsNone(notice_module.notice(same, 4)[0])
+
     def test_a_walk_follows_the_chain_of_the_model_that_was_asked_for(self) -> None:
         """A declared order promises its peers are tried top to bottom.
 

@@ -125,52 +125,97 @@ def remember(path: Path | None, count: int) -> None:
         pass
 
 
-def sentence(event: dict[str, object]) -> str | None:
+def sentence(event: dict[str, object], count: int) -> str | None:
+    """One line for a group of identical events.
+
+    A turn can hand off many times, once per background worker, and they are
+    usually the same switch repeated. Printing a line each was four copies of
+    one sentence, which buries the information it is meant to convey, so the
+    count carries the repetition instead.
+    """
     kind = event.get("kind")
     source = safe_model(event.get("from_model"))
     target = safe_model(event.get("to_model"))
     model = safe_model(event.get("model"))
+    times = "once" if count == 1 else f"{count} times"
     if kind == "rate_limit_failover_succeeded" and source and target:
+        if count == 1:
+            return f"{source} was rate limited; {target} answered instead."
         return (
-            f"{source} was rate limited, so {target} answered instead."
-            f" This turn's reply came from {target}, not {source}."
+            f"{source} was rate limited {times}; {target} answered those"
+            " requests instead."
         )
     if kind == "failover_overflow_succeeded" and source and target:
+        if count == 1:
+            return f"The conversation did not fit {source}; {target} answered."
         return (
-            f"The conversation did not fit {source}, so {target} answered"
-            f" instead. This turn's reply came from {target}."
+            f"The conversation did not fit {source} {times}; {target} answered"
+            " those requests."
         )
     if kind == "rate_limit_chain_exhausted" and model:
+        if count == 1:
+            return (
+                f"{model} and every replacement Airlock could try were rate"
+                " limited, so nothing answered."
+            )
         return (
-            f"{model} and every replacement Airlock could try were rate"
-            " limited, so nothing answered."
+            f"{model} and every replacement were rate limited on {count}"
+            " requests, so those did not get an answer."
         )
     if kind == "anthropic_rate_limit_passthrough" and model:
+        if count == 1:
+            return (
+                f"{model} hit an Anthropic rate limit. Airlock left it for"
+                " Claude Code to handle rather than switching models."
+            )
         return (
-            f"{model} hit an Anthropic rate limit. Airlock left it for Claude"
-            " Code to handle rather than switching models."
+            f"{model} hit an Anthropic rate limit {times}. Airlock left those"
+            " for Claude Code to handle rather than switching models."
         )
     return None
 
 
+def group_key(event: dict[str, object]) -> tuple[str, str, str, str] | None:
+    """What makes two events the same switch, for counting purposes."""
+    kind = event.get("kind")
+    if kind not in REPORTED_KINDS:
+        return None
+    return (
+        str(kind),
+        safe_model(event.get("from_model")) or "",
+        safe_model(event.get("to_model")) or "",
+        safe_model(event.get("model")) or "",
+    )
+
+
 def notice(events: list[object], already: int) -> tuple[str | None, int]:
-    sentences: list[str] = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        if event.get("kind") not in REPORTED_KINDS:
-            continue
-        line = sentence(event)
-        if line is not None:
-            sentences.append(line)
-    total = len(sentences)
+    reportable: list[dict[str, object]] = [
+        event
+        for event in events
+        if isinstance(event, dict) and group_key(event) is not None
+    ]
+    total = len(reportable)
     # A rotated event window can leave fewer than were reported before; treat
     # that as a fresh start rather than reporting old lines a second time.
     if total <= already:
         return None, total
-    fresh = sentences[already:]
-    body = "\n".join(fresh[-MAX_NOTICE_LINES:])
-    return f"Airlock routing\n{body}", total
+    counts: dict[tuple[str, str, str, str], int] = {}
+    examples: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    for event in reportable[already:]:
+        key = group_key(event)
+        if key is None:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        examples.setdefault(key, event)
+    lines: list[str] = []
+    for key, count in counts.items():
+        line = sentence(examples[key], count)
+        if line is not None:
+            lines.append(line)
+    if not lines:
+        return None, total
+    body = chr(10).join(lines[:MAX_NOTICE_LINES])
+    return "Airlock routing" + chr(10) + body, total
 
 
 def main() -> int:

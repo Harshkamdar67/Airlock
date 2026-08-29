@@ -1844,8 +1844,9 @@ value = json.loads(os.environ["TURN_NOTICE"])
 assert set(value) == {"systemMessage"}
 message = value["systemMessage"]
 assert message.startswith("Airlock routing")
-assert "gpt-5.6-sol was rate limited, so gpt-5.6-terra answered instead." in message
-assert "not gpt-5.6-sol" in message
+assert "gpt-5.6-sol was rate limited; gpt-5.6-terra answered instead." in message
+# One switch, one line. A turn that hands off many times must not repeat it.
+assert message.count("gpt-5.6-terra answered") == 1
 assert "every replacement Airlock could try were rate limited" in message
 assert "SHOULD_NOT_PRINT" not in message
 assert "SENTINEL_STATUS_SECRET" not in message
