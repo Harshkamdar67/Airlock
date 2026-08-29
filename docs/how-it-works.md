@@ -44,7 +44,9 @@ On an OpenAI route, it removes incoming Claude authorization, API-key, cookie, p
 
 The router binds to loopback, has a parent-process lifetime, rejects redirects, and does not log prompts, response bodies, or credentials. Its local `/diagnostics` endpoint exposes a bounded in-memory event list plus cumulative per-provider/model request and token totals for the current session. Token counts are read from the response that was already forwarded, so observation never changes, delays, or buffers the stream. When an upstream sends no usage, the event has no token counts and the summary records that usage was absent rather than inventing a zero.
 
-When an upstream answers HTTP 429 or 529 and the session carries failover chains, the router retries that one request on an enabled same-cost-category peer, marks the limited model with a short cooldown, and reports what happened through the diagnostics outcomes. The chains are frozen into the session snapshot from the saved policy, so routing decisions never read credentials or make new policy calls mid-session. See [Models and usage](models-and-usage.md) for the category rules and the `airlock mode failover` policy.
+When an upstream answers HTTP 402, 429, or 529 and the session carries failover chains, the router retries that one request on an enabled same-cost-category peer, marks the limited model with a short cooldown, and reports what happened through the diagnostics outcomes. The chains are frozen into the session snapshot from the saved policy, so routing decisions never read credentials or make new policy calls mid-session. A user-owned `failover.json` can replace the derived chain for any model it names, including peers from other categories. See [Models and usage](models-and-usage.md) for the category rules, declared chains, and the `airlock mode failover` policy.
+
+A peer that rejects the request only because the conversation is larger than its context window is handled the same way: the router recognizes that rejection, keeps walking the chain past models known to be too small, and when nothing fits it condenses older history through the destination provider's own economy worker, or trims it, before one retry. See [Models and usage](models-and-usage.md) for the order, the cost, and the `airlock mode overflow` setting.
 
 ## Native Agents
 
@@ -294,7 +296,7 @@ A managed SessionStart hook reads that file on a new, resumed, or cleared Airloc
 
 ## Context sizing
 
-Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI roots and undocumented Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. `grok-4.6` is documented at 500000 tokens, so Airlock declares that hard limit and compacts at 400000. That process-wide pair also affects named workers in the same session.
+Claude Code treats `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as one process-wide override. Native Anthropic roots already have model-aware sizing, so Airlock leaves them unset. The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, so OpenAI roots and undocumented Grok roots keep the saved conservative fallback instead of claiming an unverified 1M path. Airlock also drops any inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` so a stale value cannot silently cap the session's workers.
 
 A user-exported `CLAUDE_CODE_AUTO_COMPACT_WINDOW` has highest priority. An explicitly exported numeric `AIRLOCK_CONTEXT_WINDOW` also wins, while `AIRLOCK_CONTEXT_WINDOW=auto` removes the override. Any explicit numeric value applies to the root and every worker because Claude Code has no per-Agent compaction variable.
 

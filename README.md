@@ -19,6 +19,7 @@ airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
 airlock hybrid ox-alpha # A declared OpenRouter route drives the mixed session
 airlock grok            # Saved Grok-only root, needs a separate Grok login
+airlock status          # Current session root and recent router actions
 ```
 > [!NOTE]
 > This project is in beta. It does not replace Claude Code, Codex, or `claude-code-proxy`. The mixed-provider gateway works, but Anthropic does not officially support non-Claude models behind a Claude Code gateway. Read [Known limits](#known-limits) before relying on it for important work.
@@ -100,7 +101,7 @@ You need:
 - [Claude Code](https://code.claude.com/docs/en/setup)
 - [Git for Windows](https://git-scm.com/download/win), including Git Bash
 - Python 3
-- The Windows build of [`claude-code-proxy`](https://github.com/raine/claude-code-proxy)
+- `claude-code-proxy`. The Windows installer downloads Airlock's carried build of [`claude-code-proxy`](https://github.com/Harshkamdar67/claude-code-proxy) when none is installed and verifies its checksum. Stock releases open browser login through `cmd start`, which truncates OAuth URLs at the first ampersand and breaks Grok login; see [Troubleshooting](docs/troubleshooting.md).
 - A ChatGPT plan with Codex access
 
 Complete the official proxy login in an interactive terminal:
@@ -150,9 +151,7 @@ The main model starts with the smallest useful approach:
 6. Use several Luna Agents only for independent high-volume work.
 7. Keep integration and final synthesis with a stronger main model, Sol, or Opus.
 
-Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer when it is enabled. Each shard runs at the session effort unless you pin one. Implementation shards need explicit file ownership, no-touch boundaries, and acceptance checks. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically.
-
-For UI and UX work in a hybrid session, an exact user choice wins. Otherwise visual direction, product flows, new design systems, broad redesigns, and final visual critique prefer Opus. Sonnet fits bounded components and work that follows an existing design system.
+Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically. For UI and UX work, an exact user choice wins; otherwise visual direction prefers Opus and bounded component work fits Sonnet.
 
 [Read the detailed routing guide](docs/how-it-works.md).
 
@@ -160,29 +159,31 @@ For UI and UX work in a hybrid session, an exact user choice wins. Otherwise vis
 
 ```bash
 airlock                         # saved default profile and orchestrator
-airlock openai                  # saved OpenAI-only orchestrator
-airlock fast -r                 # one-session gpt-5.6-sol-fast root, not saved
-airlock terra                   # explicit OpenAI-only GPT-5.6 Terra root
 airlock hybrid                  # saved hybrid orchestrator
 airlock hybrid choose           # full interactive hybrid picker
-airlock hybrid opus             # explicit hybrid Claude Opus 5 root
+airlock openai                  # saved OpenAI-only orchestrator
 airlock grok                    # saved Grok-only orchestrator
-airlock proxy grok auth login   # sign in to Grok on the local proxy
-airlock mode                    # show routing and worker limits
-airlock mode budget             # prefer lower use and block extra usage
-airlock mode max-agents off     # use Claude Code's native worker limit
-airlock usage                   # refresh stale OpenAI usage and show it
-airlock openrouter auth set-key # store an OpenRouter key in OS credential storage
-airlock openrouter models presets # show curated opt-in starting points
 airlock opr                     # interactive OpenRouter-only root picker
-airlock opr kimi-k3             # exact OpenRouter-only root on a declared route
-airlock config                  # show saved roots and advanced values
-airlock bundle                  # verify managed files
-airlock update --check          # manually check for a newer release
-airlock update                  # download, verify, and confirm an update
+airlock mode                    # show routing and worker limits
+airlock status                  # this session's root and recent router actions
+airlock usage                   # refresh stale OpenAI usage and show it
 ```
 
-Use native Claude Code's `/usage` screen for Anthropic subscription bars. Anthropic does not document a personal subscription API that Airlock can safely read. OpenRouter is a separate opt-in path, off until you run the commands above and declare a route with `airlock openrouter models add` or `airlock openrouter models add-preset`. A declared route can start a session two ways: inside a hybrid session it appears as a named `airlock-or-ROUTE` worker alongside your OpenAI and Claude workers, and `airlock opr [ROUTE]` starts an OpenRouter-only session on that one exact route as the session root, with no hybrid router, no OpenAI or Codex proxy, and no Claude or Grok credential involved. Omit `ROUTE` in an interactive terminal to pick from your declared routes offline; outside an interactive terminal, or when the route is missing, disabled, or misspelled, `airlock opr` fails instead of guessing. The selected `opr` root carries normal usage the same as any other root and is never itself gated by the extra-usage policy; any other declared OpenRouter route that also becomes available in that session still follows `AIRLOCK_EXTRA_USAGE_POLICY` like it does in a hybrid session. `airlock openrouter models presets` lists four curated starting points without accessing the network or enabling paid usage. Their suggested uses and tradeoffs come from community reports, are explicitly unverified, and are not capability, price, or availability guarantees. [Read the full explanation](docs/how-it-works.md#openrouter-routes-optional). [Read the models and usage guide](docs/models-and-usage.md).
+Every root alias, policy, settings file, and environment variable is listed in [Capabilities and commands](docs/commands.md).
+
+Every command and setting is listed in one place in [Capabilities and commands](docs/commands.md).
+
+## Handoff when a model is unavailable
+
+When a provider answers 402, 429, or 529, Airlock retries the same request on another enabled model in the same usage category rather than failing the turn, and it does the same when a peer rejects a conversation for being too large.
+
+A handoff is never silent. Claude Code sends one request and receives one answer, so on its own it cannot tell a different model replied. At the end of any turn where the router switched, a notice names the model that was unavailable and the one that answered, and the replacement is told it is standing in, so it does not answer in the other model's name.
+
+Two limits: an Anthropic rate limit is forwarded to Claude Code untouched, because Claude Code already handles its own provider's limits (`AIRLOCK_ANTHROPIC_RATE_LIMIT=handoff` switches models instead); and `/model` cannot show a handed-off model, because a handoff is per request, not per session. `airlock status` is the accurate record. [Commands and settings](docs/commands.md#handoff).
+
+`airlock status` reports failover, cooldown skips, effort clamps, and safe error replacement without showing prompts, provider error bodies, headers, or credentials. New provider models do not wait on a release: declare them in your own [`models.json`](docs/models-and-usage.md#declaring-your-own-models).
+
+Use native Claude Code's `/usage` screen for Anthropic subscription bars; Anthropic documents no personal subscription API that Airlock can safely read. OpenRouter is a separate opt-in path that stays off until you store a key and declare a route. A declared route becomes an `airlock-or-ROUTE` worker in a hybrid session, and `airlock opr [ROUTE]` starts an OpenRouter-only session on that one route with no other provider credential involved. Preset suggestions come from community reports, are unverified, and are not capability, price, or availability guarantees. [How it works](docs/how-it-works.md#openrouter-routes-optional) | [Models and usage](docs/models-and-usage.md)
 
 ## Security and file access
 
@@ -213,7 +214,7 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - GPT model IDs may not appear in Claude Code's `/model` discovery list. Start the exact root with `airlock` or `airlock hybrid`, use Claude Code's family aliases for built-in Agents, and use a named `airlock-*` Agent when exact model identity matters.
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
 - Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
-- Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative Anthropic, OpenAI, and Grok provider-reported totals without changing provider responses; OpenRouter is omitted because it belongs to a separate account. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped, a `grok-4.6` root declares 500000 and compacts at 400000, and other OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
+- Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative Anthropic, OpenAI, and Grok provider-reported totals without changing provider responses; OpenRouter is omitted because it belongs to a separate account. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped and other OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
 - File hooks and prompts do not replace an operating-system sandbox.
 - Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
 - OpenRouter routes are entirely user-declared. Airlock checks the exact model and endpoint against the public catalog when you add or refresh one, but it does not verify or rank a route's real capability, context window, or cost, and it does not offer `count_tokens` for those routes.
@@ -222,13 +223,12 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [Capabilities and commands](docs/commands.md)
 - [How it works](docs/how-it-works.md)
 - [Models, limits, and usage](docs/models-and-usage.md)
 - [Windows](docs/windows.md)
 - [Troubleshooting](docs/troubleshooting.md)
-- [Testing](docs/testing.md)
-- [Live tests that use plan quota](docs/live-tests.md)
-- [Threat model](docs/threat-model.md)
+- [Testing](docs/testing.md) | [Live tests that use plan quota](docs/live-tests.md) | [Threat model](docs/threat-model.md)
 - [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md) | [Support](SUPPORT.md) | [Release process](docs/releasing.md) | [Changelog](CHANGELOG.md)
 
 ## What this project does not do
