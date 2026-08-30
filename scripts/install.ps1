@@ -134,10 +134,10 @@ foreach ($requirement in @(
 # and were never affected. Each release below is upstream plus that patch;
 # refresh the version, archives, and hashes together when adopting a newer
 # carried build.
-$ProxyReleaseVersion = '0.1.35-airlock.1'
+$ProxyReleaseVersion = '0.1.35-airlock.2'
 $ProxyReleaseAssets = [ordered]@{
-  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = 'ab3066358849e9630e6415df28f72996e5cbbdad708351de73c88775899b510f' }
-  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '93f944c172807a35f85535871e9369a70e32577bb6b64afbb51ae128fcccdb80' }
+  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '4fe4ec55cc3d35d2f0ee7079030dc73968c645c3e81ca18b555effc32f00cd6f' }
+  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '528875aa4daec6b02fb10528b93acc989f442004a6f254fab18b7d771af48f77' }
 }
 
 function Get-ProxyVersionLine {
