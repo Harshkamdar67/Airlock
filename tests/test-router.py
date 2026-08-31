@@ -641,6 +641,27 @@ class RouterProtocolTests(unittest.TestCase):
             "require_parameters": False,
         })
 
+    def test_every_upstream_is_asked_for_an_uncompressed_body(self) -> None:
+        # Reproduces a real failure: a session died with
+        # "ZlibError fetching http://127.0.0.1:PORT/v1/messages". The router
+        # relays upstream headers verbatim, so a body that ended early still
+        # arrived under Content-Encoding: gzip and Claude Code reported an
+        # opaque decompression failure rather than the dropped transport it
+        # was. Asking for identity keeps a short read readable and retryable.
+        for model, recorder in (
+            ("claude-test", self.anthropic),
+            ("gpt-test", self.openai),
+            ("grok-test", self.openai),
+        ):
+            with self.subTest(model=model):
+                del recorder.requests[:]
+                status, _response, _elapsed = self.request(
+                    model, headers={"accept-encoding": "gzip, deflate, br"}
+                )
+                self.assertEqual(status, 200)
+                headers = recorder.requests[0]["headers"]
+                self.assertEqual(headers["accept-encoding"], "identity")
+
     def test_openrouter_preserves_native_optional_parameters(self) -> None:
         original = {
             "model": "vendor/model-test",

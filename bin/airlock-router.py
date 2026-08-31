@@ -3153,11 +3153,22 @@ def forwarded_headers(
         lowered = name.lower()
         if lowered in HOP_BY_HOP_HEADERS or lowered in {"host", "content-length"}:
             continue
+        # A compressed body cannot survive a short read. The router relays
+        # upstream headers verbatim, so a stream that ends early still
+        # carries Content-Encoding: gzip, and the client reports an opaque
+        # decompression failure it cannot act on instead of the dropped
+        # transport it actually was. Identity trades compression on this hop
+        # for a truncated body that still reads as far as it got, which is
+        # what makes the failure reportable and retryable. The OpenRouter
+        # path already holds this line.
+        if lowered == "accept-encoding":
+            continue
         if provider in {"openai", "grok"} and (
             lowered in OPENAI_PRIVATE_HEADERS or lowered == "anthropic-beta"
         ):
             continue
         result[name] = value
+    result["accept-encoding"] = "identity"
     result["content-length"] = str(content_length)
     result["connection"] = "close"
     if provider in {"openai", "grok"}:

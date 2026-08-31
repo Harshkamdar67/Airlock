@@ -7,7 +7,7 @@
     "bin/airlock": "6e39a73f72ee052ac4740fb691b6544735679f4c6aa4bc4b4a4da73ea1ec34b9",
     "bin/airlock-access.py": "a1303c9275d3c53fb29ef5f28066d6d311e6cc2248dcfcadf5fbd9c48f432c11",
     "bin/airlock-hybrid.py": "f16c24ae7603360b50eb38a92271cae8b664dbe97f2065f4ea105130196ea416",
-    "bin/airlock-router.py": "f092d54f6cc88de6cc5ae5aa3e5f1d1a1a4b59de44f1c09bd8681eb0eae06957",
+    "bin/airlock-router.py": "a2f8774b13df821562aa04bde68f4d4d91421f61660a80584a980d5d3910e478",
     "bin/airlock-update.py": "0e748148537a43bfd5d6e19faa3360343b5e6bcf444019e63cb56f877635a2a8",
     "bin/airlock.cmd": "55037fa96606b4de9f7c79d3592d1dcbac04f9d271e502a4d9b71e76c2671356",
     "bin/airlock.ps1": "2889f4ce0d2678ee8a3e9e8292b5468604de00e3706392cd59fa80e67839aaa4",
