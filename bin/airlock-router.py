@@ -37,6 +37,13 @@ RESPONSE_HEADER_TIMEOUT_SECONDS = 10 * 60
 STREAM_TIMEOUT_SECONDS = 60 * 60
 READY_TIMEOUT_SECONDS = 30
 MAX_DIAGNOSTIC_EVENTS = 256
+# A restart reclaims the port the dead router held. The kernel can still be
+# releasing it for a moment after the owner goes away, so a fixed-port bind
+# is retried briefly before it is called a failure.
+REBIND_TIMEOUT_SECONDS = 10.0
+REBIND_RETRY_SECONDS = 0.2
+WATCH_INTERVAL_SECONDS = 1.0
+MAX_ROUTER_RESTARTS = 5
 MAX_USAGE_LINE_BYTES = 256 * 1024
 MAX_USAGE_BODY_BYTES = 1024 * 1024
 MAX_OPENROUTER_IDENTITY_PREFIX_BYTES = 256 * 1024
@@ -3387,7 +3394,13 @@ def minimal_child_environment() -> dict[str, str]:
     return environment
 
 
-def start_router(args: argparse.Namespace) -> int:
+def launch_router(args: argparse.Namespace) -> tuple[str, int]:
+    """Start one router daemon and return its address and process id.
+
+    The process id is what a supervisor watches. A port probe cannot
+    stand in for it: a host that drops packets to closed ports, rather
+    than refusing them, makes a dead router look like a slow one.
+    """
     if not process_alive(args.parent_pid):
         raise RouterError("router owner process is not running")
     snapshot = load_router_snapshot(args.snapshot, args.snapshot_sha256)
@@ -3416,6 +3429,8 @@ def start_router(args: argparse.Namespace) -> int:
         args.snapshot_sha256,
         "--anthropic-url",
         args.anthropic_url,
+        "--port",
+        str(validated_port(args.port)),
     ]
     if args.openai_url:
         command.extend(("--openai-url", args.openai_url))
@@ -3428,8 +3443,14 @@ def start_router(args: argparse.Namespace) -> int:
         command.extend(("--anthropic-rate-limit", "handoff"))
     # The seat Claude Code was told to use for background work. The daemon
     # runs with a scrubbed environment, so it has to travel as an argument.
+    # A caller that already knows the seat says so outright. Only the shell
+    # launcher, which exports these before starting the router, can rely on
+    # the environment: the Windows launcher keeps the session's model
+    # variables in the child environment it builds and never in its own, so
+    # reading them here would find nothing and leave the seat unset.
     background = (
-        os.environ.get("ANTHROPIC_SMALL_FAST_MODEL")
+        args.background_model
+        or os.environ.get("ANTHROPIC_SMALL_FAST_MODEL")
         or os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
         or ""
     ).strip()
@@ -3465,8 +3486,7 @@ def start_router(args: argparse.Namespace) -> int:
                 ):
                     raise RouterError("router startup identity is invalid")
                 startup_complete = True
-                sys.stdout.write(payload["url"] + "\n")
-                return 0
+                return str(payload["url"]), int(process.pid)
             if process.poll() is not None:
                 raise RouterError("router stopped during startup")
             time.sleep(0.05)
@@ -3488,6 +3508,88 @@ def start_router(args: argparse.Namespace) -> int:
                 process.wait(timeout=3)
 
 
+def validated_port(value: object) -> int:
+    """A loopback port the router may bind, or 0 for any free port."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RouterError("router port is invalid")
+    if value == 0:
+        return 0
+    if not 1 <= value <= 65535:
+        raise RouterError("router port is invalid")
+    return value
+
+
+def bind_router(port: int, config: "RouterConfig") -> "RouterServer":
+    """Bind the router, waiting out a port a dead owner has not yet released.
+
+    A restart must reclaim the exact port the session was told to use, and
+    the kernel can hold that port for a moment after the previous process
+    dies. Only a requested port is worth waiting for: port 0 either
+    succeeds at once or is a real failure.
+    """
+    if port == 0:
+        return RouterServer(("127.0.0.1", 0), config)
+    deadline = time.monotonic() + REBIND_TIMEOUT_SECONDS
+    while True:
+        try:
+            return RouterServer(("127.0.0.1", port), config)
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise RouterError("router port could not be reclaimed") from None
+            time.sleep(REBIND_RETRY_SECONDS)
+
+
+def start_router(args: argparse.Namespace) -> int:
+    """Start a router and report its address, and its pid when asked."""
+    address, pid = launch_router(args)
+    sys.stdout.write(address + "\n")
+    if getattr(args, "print_pid", False):
+        sys.stdout.write(f"{pid}\n")
+    return 0
+
+
+def watch_router(args: argparse.Namespace) -> int:
+    """Put a router back on the session address when its process dies.
+
+    Claude Code reads the router address once, at startup, so a router that
+    dies mid-session takes every later request with it and the client sees
+    only a refused connection that names no cause. The router is an
+    ordinary python process holding an ephemeral port, so anything that
+    sweeps processes by image name takes it down. This watch outlives it
+    and rebinds the same port, which is free precisely because the owner is
+    gone. Restarts are capped so a router that cannot stay up fails the
+    session once instead of looping.
+    """
+    port = validated_port(args.port)
+    if port == 0:
+        raise RouterError("router watch needs the address to hold")
+    if args.router_pid <= 0:
+        raise RouterError("router watch needs the router it is watching")
+    router_pid = args.router_pid
+    restarts = 0
+    while process_alive(args.parent_pid):
+        time.sleep(WATCH_INTERVAL_SECONDS)
+        if not process_alive(args.parent_pid):
+            break
+        if process_alive(router_pid):
+            continue
+        if restarts >= MAX_ROUTER_RESTARTS:
+            return 0
+        restarts += 1
+        try:
+            address, router_pid = launch_router(args)
+        except (OSError, RouterError, ValueError, json.JSONDecodeError):
+            # A failed restart means the snapshot is gone, the session is
+            # ending, or something else took the port. None of those improve
+            # by trying again.
+            return 0
+        if address != f"http://127.0.0.1:{port}":
+            # A router on another address cannot serve a session that was
+            # already told where to look.
+            return 0
+    return 0
+
+
 def serve_router(args: argparse.Namespace) -> int:
     if not process_alive(args.parent_pid):
         raise RouterError("router owner process is not running")
@@ -3502,13 +3604,18 @@ def serve_router(args: argparse.Namespace) -> int:
     ready = Path(args.ready_file)
     if ready.parent.resolve() != safe_runtime_root().resolve() or ready.exists():
         raise RouterError("router ready path is unsafe")
-    server = RouterServer(("127.0.0.1", 0), config)
+    server = bind_router(validated_port(args.port), config)
     monitor = threading.Thread(
         target=monitor_parent,
         args=(server, args.parent_pid),
         daemon=True,
     )
     monitor.start()
+    if args.port != 0:
+        # The in-memory history of the previous instance died with it, so
+        # say why the record starts here rather than letting cooldowns and
+        # totals appear to reset for no reason.
+        server.record_diagnostic({"kind": "router_restarted"})
     write_ready(ready, server)
     try:
         server.serve_forever(poll_interval=0.25)
@@ -3520,7 +3627,7 @@ def serve_router(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="airlock-router")
     subparsers = result.add_subparsers(dest="command", required=True)
-    for name in ("start", "serve"):
+    for name in ("start", "serve", "watch"):
         sub = subparsers.add_parser(name)
         sub.add_argument("--parent-pid", type=int, required=True)
         sub.add_argument("--snapshot", required=True)
@@ -3533,8 +3640,19 @@ def parser() -> argparse.ArgumentParser:
             default="native",
         )
         sub.add_argument("--background-model", default=None)
+        # A restart has to land on the port the session was already told to
+        # use, because Claude Code reads ANTHROPIC_BASE_URL once at startup.
+        # Zero keeps the original behaviour of taking whatever port is free.
+        sub.add_argument("--port", type=int, default=0)
+        if name == "start":
+            sub.add_argument("--print-pid", action="store_true")
         if name == "serve":
             sub.add_argument("--ready-file", required=True)
+        if name == "watch":
+            # The process to watch. A port probe cannot stand in for it: a
+            # host that drops packets to closed ports rather than refusing
+            # them makes a dead router look like a slow one.
+            sub.add_argument("--router-pid", type=int, required=True)
     return result
 
 
@@ -3543,6 +3661,8 @@ def main() -> int:
     try:
         if args.command == "start":
             return start_router(args)
+        if args.command == "watch":
+            return watch_router(args)
         return serve_router(args)
     except (OSError, RouterError, ValueError, json.JSONDecodeError) as exc:
         print(f"airlock-router: {exc}", file=sys.stderr)

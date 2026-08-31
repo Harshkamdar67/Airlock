@@ -860,10 +860,22 @@ PY
 hybrid_opr_router="$tmp_dir/hybrid-opr-router.py"
 cat > "$hybrid_opr_router" <<'PY'
 #!/usr/bin/env python3
+import os
+from pathlib import Path
 import sys
+# The launcher watches the router process so a session survives its router
+# being killed, so this stub answers both the start and the watch it runs.
+if len(sys.argv) >= 2 and sys.argv[1] == "watch":
+    marker = os.environ.get("AIRLOCK_TEST_ROUTER_WATCH_MARKER")
+    if marker:
+        Path(marker).write_text(" ".join(sys.argv[1:]), encoding="utf-8")
+    raise SystemExit(0)
 if len(sys.argv) < 2 or sys.argv[1] != "start" or "--openai-url" not in sys.argv:
     raise SystemExit(71)
+if "--print-pid" not in sys.argv:
+    raise SystemExit(72)
 print("http://127.0.0.1:28473")
+print(os.getpid())
 PY
 chmod +x "$hybrid_opr_router"
 hybrid_opr_bundle="$tmp_dir/hybrid-opr-managed-bundle.json"
@@ -884,9 +896,18 @@ hybrid_opr_output="$(
   AIRLOCK_OPENROUTER_REGISTRY_FILE="$hybrid_opr_registry" \
   AIRLOCK_MANAGED_BUNDLE_FILE="$hybrid_opr_bundle" \
   AIRLOCK_ROUTER_HELPER="$hybrid_opr_router" AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_TEST_ROUTER_WATCH_MARKER="$tmp_dir/hybrid-opr-watch.marker" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 \
     "$launcher" hybrid ox-alpha -p test
 )"
+# A router-backed session watches its router, so a router killed mid-session
+# is replaced instead of taking every later request with it.
+if [[ ! -s "$tmp_dir/hybrid-opr-watch.marker" ]]; then
+  printf 'test: the launcher did not watch the session router\n' >&2
+  exit 1
+fi
+grep -q -- '--router-pid' "$tmp_dir/hybrid-opr-watch.marker"
+grep -q -- '--port 28473' "$tmp_dir/hybrid-opr-watch.marker"
 grep -q '^ACTIVE_PROFILE=hybrid-openrouter-root$' <<<"$hybrid_opr_output"
 grep -q '^ROOT_MODEL=stealth/ox-alpha$' <<<"$hybrid_opr_output"
 grep -q '^MODEL=unset$' <<<"$hybrid_opr_output"

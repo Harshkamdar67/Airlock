@@ -984,6 +984,35 @@ native_owner_pid() {
   printf '%s\n' "$owner_pid"
 }
 
+# The router's process id, captured so the watch can tell a router that died
+# from one that is merely busy.
+router_child_pid=''
+
+# Start the session router, setting router_url and router_child_pid. It sets
+# them rather than printing them because a command substitution would run it
+# in a subshell, where the process id it captured would be lost.
+start_session_router() {
+  local owner_pid="$1" snapshot_path="$2" snapshot_digest="$3"
+  local -a start_args=(
+    "$python_bin" "$router_helper" start
+    --parent-pid "$owner_pid"
+    --snapshot "$snapshot_path"
+    --snapshot-sha256 "$snapshot_digest"
+    --print-pid
+  )
+  [[ -z "${4:-}" ]] || start_args+=(--openai-url "$4")
+  local reported
+  reported="$("${start_args[@]}")" || return $?
+  # A helper running under a Windows Python writes CRLF, and the carriage
+  # return would otherwise ride along into the address and fail its check.
+  reported="${reported//$'\r'/}"
+  router_url="${reported%%$'\n'*}"
+  router_child_pid="${reported#*$'\n'}"
+  # A router that does not report its process id still serves the session; it
+  # only loses the watch that would restart it, so this is never fatal.
+  [[ "$router_child_pid" =~ ^[1-9][0-9]*$ ]] || router_child_pid=''
+}
+
 set_hybrid_environment() {
   local root_model="$1"
   local root_name="$2"
@@ -1020,11 +1049,8 @@ set_hybrid_environment() {
     printf 'airlock: could not determine the native launcher process ID.\n' >&2
     return 1
   }
-  router_url="$("$python_bin" "$router_helper" start \
-    --parent-pid "$router_owner_pid" \
-    --snapshot "$snapshot_path" \
-    --snapshot-sha256 "$snapshot_digest" \
-    --openai-url "$proxy_url")" || return $?
+  start_session_router "$router_owner_pid" "$snapshot_path" \
+    "$snapshot_digest" "$proxy_url" || return $?
   if [[ ! "$router_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
     printf 'airlock: native hybrid router returned an invalid loopback address.\n' >&2
     return 1
@@ -1063,10 +1089,8 @@ set_openrouter_environment() {
     printf 'airlock: could not determine the native launcher process ID.\n' >&2
     return 1
   }
-  router_url="$("$python_bin" "$router_helper" start \
-    --parent-pid "$router_owner_pid" \
-    --snapshot "$snapshot_path" \
-    --snapshot-sha256 "$snapshot_digest")" || return $?
+  start_session_router "$router_owner_pid" "$snapshot_path" \
+    "$snapshot_digest" || return $?
   if [[ ! "$router_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
     printf 'airlock: native OpenRouter router returned an invalid loopback address.\n' >&2
     return 1
@@ -1129,6 +1153,42 @@ compose_append_system_prompt() {
   # The composed text reaches Claude through --append-system-prompt-file so
   # long routing guidance never rides in the process argument list.
   AIRLOCK_COMBINED_SYSTEM_PROMPT="$combined"
+}
+
+router_watch_pid=''
+
+# Claude Code reads the router address once, at startup, so a router that
+# dies mid-session takes every later request with it and the client sees only
+# a refused connection that names no cause. The router is an ordinary python
+# process holding an ephemeral port, so anything that sweeps processes by
+# image name takes it down. The launcher outlives it, so it keeps a watch
+# that rebinds the same port.
+start_router_watch() {
+  local snapshot_path="$1" snapshot_digest="$2"
+  local address="${AIRLOCK_SESSION_ROUTER_URL:-}" port owner
+  [[ -n "$address" ]] || return 0
+  port="${address##*:}"
+  [[ "$port" =~ ^[1-9][0-9]*$ ]] || return 0
+  [[ "${router_child_pid:-}" =~ ^[1-9][0-9]*$ ]] || return 0
+  owner="$(native_owner_pid)" || return 0
+  local -a watch_args=(
+    "$python_bin" "$router_helper" watch
+    --parent-pid "$owner"
+    --router-pid "$router_child_pid"
+    --snapshot "$snapshot_path"
+    --snapshot-sha256 "$snapshot_digest"
+    --port "$port"
+  )
+  [[ -z "${proxy_url:-}" ]] || watch_args+=(--openai-url "$proxy_url")
+  "${watch_args[@]}" >/dev/null 2>&1 &
+  router_watch_pid=$!
+}
+
+stop_router_watch() {
+  [[ -n "$router_watch_pid" ]] || return 0
+  kill "$router_watch_pid" 2>/dev/null || true
+  wait "$router_watch_pid" 2>/dev/null || true
+  router_watch_pid=''
 }
 
 run_claude_with_stable_owner() {
@@ -1500,11 +1560,15 @@ launch_session() {
     ${mcp_config_args[@]+"${mcp_config_args[@]}"}
     ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
   )
+  start_router_watch "$snapshot_path" "$snapshot_digest"
   if run_claude_with_stable_owner "${claude_command[@]}"; then
     snapshot_extra=0
   else
     snapshot_extra=$?
   fi
+  # The session is over, so stop watching before the snapshot is cleaned up
+  # and a restart could race it.
+  stop_router_watch
   local cleanup_target='' cleanup_path=''
   local cleanup_rest='' cleanup_digest='' cleanup_size=''
   for cleanup_target in \

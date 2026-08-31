@@ -1899,6 +1899,173 @@ class RouterProtocolTests(unittest.TestCase):
             server.server_close()
 
 
+class RouterRestartTests(unittest.TestCase):
+    """Holding the session address when the router process dies.
+
+    Reproduces a real failure: a broad `taskkill /IM python.exe` took the
+    router with it, and because Claude Code reads the router address once at
+    startup, every later request in that session died with a refused
+    connection that named no cause.
+    """
+
+    def config(self) -> "router.RouterConfig":
+        return router.RouterConfig(
+            {"claude-test": "anthropic"},
+            None,
+            "https://api.anthropic.com",
+            production=False,
+        )
+
+    def test_a_port_is_validated_before_it_is_bound(self) -> None:
+        self.assertEqual(router.validated_port(0), 0)
+        self.assertEqual(router.validated_port(39123), 39123)
+        for bad in (-1, 65536, 1.5, "8080", True, None):
+            with self.subTest(port=bad), self.assertRaises(router.RouterError):
+                router.validated_port(bad)
+
+    def test_a_replacement_binds_the_port_the_session_was_given(self) -> None:
+        first = router.bind_router(0, self.config())
+        port = first.server_address[1]
+        first.server_close()
+        second = router.bind_router(port, self.config())
+        try:
+            self.assertEqual(second.server_address[1], port)
+        finally:
+            second.server_close()
+
+    def test_liveness_comes_from_the_process_not_the_port(self) -> None:
+        # A port probe cannot stand in for the process. This machine drops
+        # packets to closed loopback ports instead of refusing them, so a
+        # dead router reads as a slow one and the watch would never fire.
+        code = (
+            "import socket,time;s=socket.socket();s.bind(('127.0.0.1',0));"
+            "s.listen(5);print(s.getsockname()[1],flush=True);time.sleep(60)"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", code], stdout=subprocess.PIPE, text=True
+        )
+        try:
+            child.stdout.readline()
+            self.assertTrue(router.process_alive(child.pid))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(router.process_alive(child.pid))
+
+    def test_the_requested_port_and_seat_reach_the_serve_child(self) -> None:
+        # The Windows launcher keeps the session's model variables in the
+        # child environment it builds, never in its own, so a seat read from
+        # the environment here would be empty and Haiku substitution, which
+        # is what keeps compaction alive, would never happen.
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot, digest = write_test_snapshot(
+                directory, routes={"claude-test": "anthropic"}
+            )
+            process = mock.Mock()
+            process.pid = 4242
+            process.poll.return_value = None
+
+            def launch(command: list[str], **_kwargs: object) -> mock.Mock:
+                ready = Path(command[command.index("--ready-file") + 1])
+                ready.write_text(json.dumps({
+                    "pid": process.pid,
+                    "bundle_version": router.MANAGED_BUNDLE_VERSION,
+                    "url": "http://127.0.0.1:39123",
+                }), encoding="ascii")
+                return process
+
+            with (
+                mock.patch.dict(router.os.environ, {}, clear=True),
+                mock.patch.object(router, "process_alive", return_value=True),
+                mock.patch.object(
+                    router.subprocess, "Popen", side_effect=launch
+                ) as popen,
+                mock.patch.object(
+                    router, "safe_runtime_root", return_value=Path(directory)
+                ),
+            ):
+                args = router.parser().parse_args([
+                    "start",
+                    "--parent-pid", "1234",
+                    "--snapshot", str(snapshot),
+                    "--snapshot-sha256", digest,
+                    "--port", "39123",
+                    "--background-model", "claude-test",
+                ])
+                self.assertEqual(router.start_router(args), 0)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("--port") + 1], "39123")
+            self.assertEqual(
+                command[command.index("--background-model") + 1], "claude-test"
+            )
+
+    def test_the_watch_replaces_a_router_that_is_gone(self) -> None:
+        restarts: list[int] = []
+
+        def restart(args: object) -> tuple[str, int]:
+            restarts.append(getattr(args, "port"))
+            return "http://127.0.0.1:39123", 5252
+
+        args = router.parser().parse_args([
+            "watch",
+            "--parent-pid", "1234",
+            "--router-pid", "4242",
+            "--snapshot", "unused",
+            "--snapshot-sha256", "0" * 64,
+            "--port", "39123",
+        ])
+
+        def alive(pid: int) -> bool:
+            # The owner stays up for one pass; the router is already gone.
+            if pid == 4242:
+                return False
+            return len(restarts) == 0
+
+        with (
+            mock.patch.object(router, "WATCH_INTERVAL_SECONDS", 0),
+            mock.patch.object(router, "process_alive", side_effect=alive),
+            mock.patch.object(router, "launch_router", side_effect=restart),
+        ):
+            self.assertEqual(router.watch_router(args), 0)
+        self.assertEqual(restarts, [39123])
+
+    def test_the_watch_gives_up_rather_than_looping(self) -> None:
+        args = router.parser().parse_args([
+            "watch",
+            "--parent-pid", "1234",
+            "--router-pid", "4242",
+            "--snapshot", "unused",
+            "--snapshot-sha256", "0" * 64,
+            "--port", "39123",
+        ])
+        attempts: list[int] = []
+
+        def restart(_args: object) -> tuple[str, int]:
+            attempts.append(1)
+            return "http://127.0.0.1:39123", 4242
+
+        with (
+            mock.patch.object(router, "WATCH_INTERVAL_SECONDS", 0),
+            mock.patch.object(
+                router, "process_alive", side_effect=lambda pid: pid != 4242
+            ),
+            mock.patch.object(router, "launch_router", side_effect=restart),
+        ):
+            self.assertEqual(router.watch_router(args), 0)
+        self.assertEqual(len(attempts), router.MAX_ROUTER_RESTARTS)
+
+    def test_the_watch_needs_a_real_address_to_hold(self) -> None:
+        args = router.parser().parse_args([
+            "watch",
+            "--parent-pid", "1234",
+            "--router-pid", "4242",
+            "--snapshot", "unused",
+            "--snapshot-sha256", "0" * 64,
+        ])
+        with self.assertRaisesRegex(router.RouterError, "address to hold"):
+            router.watch_router(args)
+
+
 class OpenRouterStreamIdentityTests(unittest.TestCase):
     """Identity scanning over the leading SSE blocks of an OpenRouter stream."""
 

@@ -19,6 +19,10 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_AGENTS_BYTES = 24 * 1024
 WINDOWS_COMMAND_LINE_MAX_UNITS = 32_767
 ROUTER_START_TIMEOUT_SECONDS = 15
+# Claude Code reads the router address once, at startup, so a router that
+# dies mid-session takes the whole session with it and no later request can
+# succeed. The launcher outlives the router by design, so it runs the router
+# helper's own watch alongside the session.
 FAST_TRANSITION_CHANNEL_ENV = "AIRLOCK_FAST_TRANSITION_CHANNEL"
 FAST_TRANSITION_NONCE_ENV = "AIRLOCK_FAST_TRANSITION_NONCE"
 FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
@@ -489,12 +493,19 @@ def router_start_reason(stderr: str | None) -> str:
     return ""
 
 
-def start_native_router(
+def run_router_start(
     router: Path,
     snapshot: Path,
     snapshot_digest: str,
     proxy_url: str | None,
-) -> str:
+    background_model: str | None = None,
+    port: int = 0,
+) -> tuple[str | None, int, str]:
+    """Start one router. Returns its address and pid, or None with a reason.
+
+    Never exits the process: the supervisor calls this from a thread, where
+    a failed restart must end the watch rather than the session.
+    """
     command = [
         sys.executable,
         str(router),
@@ -505,9 +516,14 @@ def start_native_router(
         str(snapshot),
         "--snapshot-sha256",
         snapshot_digest,
+        "--port",
+        str(port),
+        "--print-pid",
     ]
     if proxy_url:
         command.extend(["--openai-url", proxy_url])
+    if background_model:
+        command.extend(["--background-model", background_model])
     try:
         completed = subprocess.run(
             command,
@@ -518,16 +534,121 @@ def start_native_router(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        fail("native session router could not start")
-    address = completed.stdout.strip()
+        return None, 0, ""
+    reported = completed.stdout.strip().splitlines()
+    address = reported[0].strip() if reported else ""
     if completed.returncode != 0 or not re.fullmatch(
         r"http://127\.0\.0\.1:[1-9][0-9]*", address
     ):
-        fail(
-            "native session router could not start securely"
-            f"{router_start_reason(completed.stderr)}"
+        return None, 0, router_start_reason(completed.stderr)
+    # A router that does not report its process id still serves the session;
+    # it only loses the watch that would restart it, so this is never fatal.
+    try:
+        router_pid = int(reported[1].strip())
+    except (IndexError, ValueError):
+        router_pid = 0
+    return address, max(router_pid, 0), ""
+
+
+def picker_background_model(route_policy: object) -> str | None:
+    """The Haiku seat this session serves, as the picker map names it.
+
+    Claude Code asks for a Haiku model by exact ID for compaction and other
+    background work. The router substitutes the seated model for it, but
+    only when it knows the seat.
+    """
+    if not isinstance(route_policy, dict):
+        return None
+    picker = route_policy.get("picker_models")
+    if not isinstance(picker, dict):
+        return None
+    model = picker.get("haiku")
+    if not isinstance(model, str):
+        return None
+    model = model.strip()
+    if not model or len(model) > 128 or not model.isprintable():
+        return None
+    return model
+
+
+def start_native_router(
+    router: Path,
+    snapshot: Path,
+    snapshot_digest: str,
+    proxy_url: str | None,
+    background_model: str | None = None,
+) -> tuple[str, int]:
+    address, router_pid, reason = run_router_start(
+        router, snapshot, snapshot_digest, proxy_url, background_model
+    )
+    if address is None:
+        fail(f"native session router could not start securely{reason}")
+    return address, router_pid
+
+
+def start_router_watch(
+    router: Path,
+    snapshot: Path,
+    snapshot_digest: str,
+    proxy_url: str | None,
+    background_model: str | None,
+    address: str,
+    router_pid: int,
+) -> subprocess.Popen[bytes] | None:
+    """Watch the router process and put a replacement on the same address.
+
+    The watch itself lives in the router helper, so both launchers share one
+    implementation of the restart, including the snapshot digest check it
+    performs on every attempt.
+    """
+    try:
+        port = int(address.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+    command = [
+        sys.executable,
+        str(router),
+        "watch",
+        "--parent-pid",
+        str(os.getpid()),
+        "--router-pid",
+        str(router_pid),
+        "--snapshot",
+        str(snapshot),
+        "--snapshot-sha256",
+        snapshot_digest,
+        "--port",
+        str(port),
+    ]
+    if proxy_url:
+        command.extend(["--openai-url", proxy_url])
+    if background_model:
+        command.extend(["--background-model", background_model])
+    try:
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    return address
+    except OSError:
+        # A session that cannot be supervised still runs; it just loses the
+        # ability to survive its router being killed.
+        return None
+
+
+def stop_router_watch(watch: "subprocess.Popen[bytes] | None") -> None:
+    if watch is None or watch.poll() is not None:
+        return
+    watch.terminate()
+    try:
+        watch.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        watch.kill()
+        try:
+            watch.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def build_child_environment(
@@ -1100,9 +1221,13 @@ def main(
             fail(f"session policy snapshot could not be created: {error}")
 
         router_url: str | None = None
+        router_background: str | None = None
+        router_pid = 0
         if router is not None:
-            router_url = start_native_router(
-                router, snapshot_path, snapshot_digest, proxy_url
+            router_background = picker_background_model(route_policy)
+            router_url, router_pid = start_native_router(
+                router, snapshot_path, snapshot_digest, proxy_url,
+                router_background,
             )
 
         child_environment = build_child_environment(
@@ -1122,6 +1247,18 @@ def main(
             ephemeral_openai_fast=_fast_relaunch,
         )
 
+        router_watch: subprocess.Popen[bytes] | None = None
+        if router is not None and router_url is not None and router_pid > 0:
+            router_watch = start_router_watch(
+                router,
+                snapshot_path,
+                snapshot_digest,
+                proxy_url,
+                router_background,
+                router_url,
+                router_pid,
+            )
+
         try:
             completed = subprocess.run(command, env=child_environment, check=False)
         except OSError as error:
@@ -1132,6 +1269,11 @@ def main(
                     2,
                 )
             fail(f"could not start Claude Code: {error}")
+        finally:
+            # The session is over the moment Claude Code exits, so stop
+            # watching before the snapshot is cleaned up and a restart could
+            # race it.
+            stop_router_watch(router_watch)
         return_code = completed.returncode
         if return_code == 0 and transition is not None:
             launcher_pid, transition_cwd, channel, nonce = transition

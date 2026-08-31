@@ -610,7 +610,7 @@ class HybridLauncherTests(unittest.TestCase):
             stack.enter_context(patch.object(HYBRID, "managed_session_settings", return_value="{}"))
             stack.enter_context(patch.object(HYBRID, "validate_policy_helper_path", return_value=POLICY_HELPER))
             stack.enter_context(patch.object(HYBRID, "validate_router_path", return_value=ROOT / "bin" / "airlock-router.py"))
-            start_router = stack.enter_context(patch.object(HYBRID, "start_native_router", return_value="http://127.0.0.1:28471"))
+            start_router = stack.enter_context(patch.object(HYBRID, "start_native_router", return_value=("http://127.0.0.1:28471", 4242)))
             build_environment = stack.enter_context(patch.object(HYBRID, "build_child_environment", return_value={}))
             run_claude = stack.enter_context(patch.object(HYBRID.subprocess, "run", side_effect=launch_claude))
             stack.enter_context(patch.object(sys, "argv", ["airlock-hybrid.py", "--request-file", "request.json"]))
@@ -807,17 +807,22 @@ class HybridLauncherTests(unittest.TestCase):
 
     def test_router_start_uses_snapshot_digest_and_parent(self) -> None:
         completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="http://127.0.0.1:28471\n", stderr=""
+            args=[], returncode=0, stdout="http://127.0.0.1:28471\n4242\n",
+            stderr="",
         )
         with patch.object(HYBRID.subprocess, "run", return_value=completed) as run:
-            address = HYBRID.start_native_router(
+            address, router_pid = HYBRID.start_native_router(
                 ROOT / "bin" / "airlock-router.py",
                 SNAPSHOT_PATH,
                 SNAPSHOT_DIGEST,
                 "http://127.0.0.1:18765",
             )
         self.assertEqual(address, "http://127.0.0.1:28471")
+        # The watch needs the router's own process id: a port probe cannot
+        # stand in for it on a host that drops packets to closed ports.
+        self.assertEqual(router_pid, 4242)
         command = run.call_args.args[0]
+        self.assertIn("--print-pid", command)
         self.assertIn("--parent-pid", command)
         self.assertIn(str(os.getpid()), command)
         self.assertEqual(
@@ -834,10 +839,11 @@ class HybridLauncherTests(unittest.TestCase):
 
     def test_openrouter_router_start_omits_subscription_upstream(self) -> None:
         completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="http://127.0.0.1:28471\n", stderr=""
+            args=[], returncode=0, stdout="http://127.0.0.1:28471\n4242\n",
+            stderr="",
         )
         with patch.object(HYBRID.subprocess, "run", return_value=completed) as run:
-            address = HYBRID.start_native_router(
+            address, _router_pid = HYBRID.start_native_router(
                 ROOT / "bin" / "airlock-router.py",
                 SNAPSHOT_PATH,
                 SNAPSHOT_DIGEST,
@@ -845,6 +851,55 @@ class HybridLauncherTests(unittest.TestCase):
             )
         self.assertEqual(address, "http://127.0.0.1:28471")
         self.assertNotIn("--openai-url", run.call_args.args[0])
+
+    def test_a_router_that_reports_no_pid_still_starts_the_session(self) -> None:
+        # Losing the watch costs the session its ability to survive its router
+        # being killed. It must not cost it the session.
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="http://127.0.0.1:28471\n", stderr=""
+        )
+        with patch.object(HYBRID.subprocess, "run", return_value=completed):
+            address, router_pid = HYBRID.start_native_router(
+                ROOT / "bin" / "airlock-router.py",
+                SNAPSHOT_PATH,
+                SNAPSHOT_DIGEST,
+                None,
+            )
+        self.assertEqual(address, "http://127.0.0.1:28471")
+        self.assertEqual(router_pid, 0)
+
+    def test_the_haiku_seat_is_named_for_the_router(self) -> None:
+        # The router substitutes this seat for the exact Haiku IDs Claude Code
+        # uses for compaction. This launcher keeps the session's model
+        # variables in the child environment it builds, never in its own, so a
+        # seat read from the environment there would always be empty and the
+        # substitution would never run.
+        self.assertEqual(
+            HYBRID.picker_background_model(
+                {"picker_models": {"haiku": "gpt-5.6-luna"}}
+            ),
+            "gpt-5.6-luna",
+        )
+        for bad in (None, {}, {"picker_models": {}},
+                    {"picker_models": {"haiku": ""}}):
+            with self.subTest(policy=bad):
+                self.assertIsNone(HYBRID.picker_background_model(bad))
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="http://127.0.0.1:28471\n4242\n",
+            stderr="",
+        )
+        with patch.object(HYBRID.subprocess, "run", return_value=completed) as run:
+            HYBRID.start_native_router(
+                ROOT / "bin" / "airlock-router.py",
+                SNAPSHOT_PATH,
+                SNAPSHOT_DIGEST,
+                None,
+                "gpt-5.6-luna",
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--background-model") + 1], "gpt-5.6-luna"
+        )
 
     def test_exact_native_agent_permissions_are_sorted_and_narrow(self) -> None:
         access = HYBRID.load_access_module()
@@ -1117,7 +1172,11 @@ class HybridLauncherTests(unittest.TestCase):
             stack.enter_context(patch.object(HYBRID, "managed_session_settings", return_value="{}"))
             stack.enter_context(patch.object(HYBRID, "validate_policy_helper_path", return_value=POLICY_HELPER))
             stack.enter_context(patch.object(HYBRID, "validate_router_path", return_value=ROOT / "bin" / "airlock-router.py"))
-            start_router = stack.enter_context(patch.object(HYBRID, "start_native_router"))
+            start_router = stack.enter_context(patch.object(
+                HYBRID,
+                "start_native_router",
+                return_value=("http://127.0.0.1:28471", 4242),
+            ))
             build_environment = stack.enter_context(patch.object(HYBRID, "build_child_environment"))
             run_claude = stack.enter_context(patch.object(HYBRID.subprocess, "run"))
             stack.enter_context(patch.object(sys, "argv", ["airlock-hybrid.py", "--request-file", "request.json"]))

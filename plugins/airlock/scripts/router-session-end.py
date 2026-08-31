@@ -123,6 +123,11 @@ def action_sentence(kind: str, event: dict[str, object]) -> str | None:
         provider = safe_provider(event.get("provider"))
         if model is not None and provider is not None:
             return f"Pinned {model} ({provider}) as the session root."
+    elif kind == "router_restarted":
+        return (
+            "The session router stopped and was restarted on the same"
+            " address. Recent actions before that point are not recorded."
+        )
     elif kind == "rate_limit_failover_attempted":
         source = safe_model(event.get("from_model"))
         target = safe_model(event.get("to_model"))

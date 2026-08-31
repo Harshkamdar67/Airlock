@@ -4123,6 +4123,11 @@ def status_event_sentence(kind: str, event: dict[str, Any]) -> str | None:
         provider = status_provider(event.get("provider"))
         if model is not None and provider is not None:
             return f"Pinned {model} ({provider}) as the session root."
+    elif kind == "router_restarted":
+        return (
+            "The session router stopped and was restarted on the same"
+            " address. Recent actions before that point are not recorded."
+        )
     elif kind == "rate_limit_failover_attempted":
         source = status_model(event.get("from_model"))
         target = status_model(event.get("to_model"))
