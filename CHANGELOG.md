@@ -44,6 +44,7 @@ No unreleased changes.
 
 ### Fixed
 
+- The POSIX installer now creates the managed plugin's `mcp-server` directory before copying `airlock_web_tools.py`. Linux and macOS installs otherwise stopped at that file with `No such file or directory`; Windows already created each target parent.
 - `airlock handoff recommended` now applies the live enabled-model config before writing its tree. Previously it read only the cached account probe, so Fable, Grok, and Composer could be enabled for the launched session but omitted from `failover.json`.
 - Router supervision now carries the Anthropic rate-limit mode as an explicit argument on both initial start and same-port restart. A restarted router no longer falls back from `handoff` to native passthrough after its environment is scrubbed.
 - The router startup marker now carries the current managed bundle version. Its embedded version lagged behind the bundle manifest, so a real subprocess start failed its own identity check even though both the router and snapshot were current.
