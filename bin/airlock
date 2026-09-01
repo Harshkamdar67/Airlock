@@ -105,6 +105,7 @@ config_agent_depth=''
 config_openai_fast=''
 config_anthropic_fast=''
 config_extra_usage=''
+config_anthropic_rate_limit=''
 config_gpt_effort_capabilities=''
 config_grok_model=''
 
@@ -129,6 +130,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_OPENAI_FAST) config_openai_fast="$config_value" ;;
       AIRLOCK_ANTHROPIC_FAST) config_anthropic_fast="$config_value" ;;
       AIRLOCK_EXTRA_USAGE_POLICY) config_extra_usage="$config_value" ;;
+      AIRLOCK_ANTHROPIC_RATE_LIMIT) config_anthropic_rate_limit="$config_value" ;;
       AIRLOCK_GPT_EFFORT_CAPABILITIES) config_gpt_effort_capabilities="$config_value" ;;
       AIRLOCK_AUTO_MODE_MODEL) config_auto_mode_model="$config_value" ;;
     esac
@@ -200,6 +202,15 @@ default_bg_model="$(normalize_openai_model_id "$default_bg_model")"
 openai_fast_policy="${AIRLOCK_OPENAI_FAST:-${config_openai_fast:-off}}"
 anthropic_fast_policy="${AIRLOCK_ANTHROPIC_FAST:-${config_anthropic_fast:-off}}"
 extra_usage_policy="${AIRLOCK_EXTRA_USAGE_POLICY:-${config_extra_usage:-ask}}"
+anthropic_rate_limit_policy="${AIRLOCK_ANTHROPIC_RATE_LIMIT:-${config_anthropic_rate_limit:-native}}"
+case "$anthropic_rate_limit_policy" in
+  native|handoff) ;;
+  *)
+    printf "airlock: unsupported Anthropic rate-limit policy '%s' (expected native or handoff).\n" \
+      "$anthropic_rate_limit_policy" >&2
+    exit 2
+    ;;
+esac
 airlock_fast_handoff_hop=0
 
 print_models() {
@@ -257,12 +268,13 @@ Policy commands:
   airlock mode defaults            Restore tested policy defaults
   airlock mode extra-usage ask|never|allow
   airlock mode failover ask|never|allow
+  airlock mode anthropic-rate-limit native|handoff
   airlock mode max-agents off|1..20
   airlock mode fast all|openai|anthropic|off
   airlock mode openai-fast on|off
   airlock mode anthropic-fast on|off
   airlock mode swarm-fast auto|on|off
-  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto
+  airlock mode set --routing economy --extra-usage never --failover ask --anthropic-rate-limit native --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto
   airlock usage                    Show cached sanitized subscription usage
   airlock usage refresh            Refresh OpenAI quota windows without a model call
   airlock usage set --claude-plan pro|max5x|max20x|unknown
@@ -435,6 +447,7 @@ OpenAI bridge agents: $openai_wrapper_agents_file
 Anthropic bridge agents: $anthropic_wrapper_agents_file
 Managed plugin: $plugin_dir
 Max concurrent top-level subagents: ${AIRLOCK_MAX_CONCURRENT_SUBAGENTS:-${config_max_agents:-off}}
+Anthropic rate limits: $anthropic_rate_limit_policy
 OpenAI Fast routes: $openai_fast_policy
 Anthropic Fast startup: $anthropic_fast_policy (supported Opus roots only)
 EOF
@@ -1000,6 +1013,7 @@ start_session_router() {
     --snapshot-sha256 "$snapshot_digest"
     --print-pid
   )
+  start_args+=(--anthropic-rate-limit "$anthropic_rate_limit_policy")
   [[ -z "${4:-}" ]] || start_args+=(--openai-url "$4")
   local reported
   reported="$("${start_args[@]}")" || return $?
@@ -1179,6 +1193,7 @@ start_router_watch() {
     --snapshot-sha256 "$snapshot_digest"
     --port "$port"
   )
+  watch_args+=(--anthropic-rate-limit "$anthropic_rate_limit_policy")
   [[ -z "${proxy_url:-}" ]] || watch_args+=(--openai-url "$proxy_url")
   "${watch_args[@]}" >/dev/null 2>&1 &
   router_watch_pid=$!

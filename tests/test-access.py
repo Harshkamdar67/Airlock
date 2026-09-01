@@ -335,6 +335,25 @@ for line in sys.stdin:
         self.assertIn(b"OTHER=value\r\n", raw)
         self.assertIn(b"AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off\r\n", raw)
         self.assertNotIn(b"AIRLOCK_OPENAI_CAPACITY", raw)
+
+    def test_anthropic_rate_limit_mode_is_persistent_and_overridable(self) -> None:
+        ACCESS.write_flat_config_overrides({
+            "AIRLOCK_ANTHROPIC_RATE_LIMIT": "handoff",
+        })
+        state = ACCESS.mode_state()
+        self.assertEqual(state["saved_anthropic_rate_limit"], "handoff")
+        self.assertEqual(state["effective_anthropic_rate_limit"], "handoff")
+        self.assertIn(
+            "Anthropic rate limits: handoff",
+            "\n".join(ACCESS.mode_status_lines()),
+        )
+        with patch.dict(
+            os.environ, {"AIRLOCK_ANTHROPIC_RATE_LIMIT": "native"}, clear=False
+        ):
+            self.assertEqual(
+                ACCESS.mode_state()["effective_anthropic_rate_limit"], "native"
+            )
+
     def test_adaptive_worker_policy_overrides_round_trip(self) -> None:
         ACCESS.write_flat_config_overrides({
             "AIRLOCK_FAILOVER_POLICY": "never",
@@ -1770,6 +1789,27 @@ class SessionUsageTests(unittest.TestCase):
 class FailoverChainTests(unittest.TestCase):
     """Rate-limit failover chains stay inside a cost category."""
 
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = self.root / "config"
+        self.access = self.root / "access.json"
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.config),
+            "AIRLOCK_ACCESS_FILE": str(self.access),
+            "AIRLOCK_FAILOVER_FILE": str(self.root / "failover.json"),
+            "AIRLOCK_MODELS_FILE": str(self.root / "models.json"),
+            "AIRLOCK_OPENROUTER_REGISTRY_FILE": str(
+                self.root / "openrouter-registry.json"
+            ),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+        }, clear=False)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
     def policy(self, *, failover="ask", extra_usage="ask") -> dict[str, object]:
         return {
             "policies": {
@@ -2371,6 +2411,19 @@ class DeclaredSnapshotIntegrationTests(unittest.TestCase):
 
 class OpenRouterLastResortPeerTests(unittest.TestCase):
     """The declared OpenRouter root serves as a deliberate last-resort peer."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.environment = patch.dict(
+            os.environ,
+            {"AIRLOCK_FAILOVER_FILE": str(Path(self.temp.name) / "failover.json")},
+            clear=False,
+        )
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
 
     @staticmethod
     def _policy() -> dict[str, object]:

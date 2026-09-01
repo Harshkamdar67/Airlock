@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("airlock_hybrid_test", ROOT / "bin" / "airlock-hybrid.py")
@@ -851,6 +851,44 @@ class HybridLauncherTests(unittest.TestCase):
             )
         self.assertEqual(address, "http://127.0.0.1:28471")
         self.assertNotIn("--openai-url", run.call_args.args[0])
+
+    def test_saved_anthropic_handoff_reaches_start_and_watch_commands(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="http://127.0.0.1:28471\n4242\n",
+            stderr="",
+        )
+        router_path = ROOT / "bin" / "airlock-router.py"
+        with patch.dict(
+            os.environ, {"AIRLOCK_ANTHROPIC_RATE_LIMIT": "handoff"}, clear=False
+        ), patch.object(HYBRID.subprocess, "run", return_value=completed) as run:
+            HYBRID.start_native_router(
+                router_path, SNAPSHOT_PATH, SNAPSHOT_DIGEST, None
+            )
+        start_command = run.call_args.args[0]
+        self.assertEqual(
+            start_command[start_command.index("--anthropic-rate-limit") + 1],
+            "handoff",
+        )
+
+        fake_watch = MagicMock()
+        with patch.dict(
+            os.environ, {"AIRLOCK_ANTHROPIC_RATE_LIMIT": "handoff"}, clear=False
+        ), patch.object(HYBRID.subprocess, "Popen", return_value=fake_watch) as popen:
+            result = HYBRID.start_router_watch(
+                router_path,
+                SNAPSHOT_PATH,
+                SNAPSHOT_DIGEST,
+                None,
+                None,
+                "http://127.0.0.1:28471",
+                4242,
+            )
+        self.assertIs(result, fake_watch)
+        watch_command = popen.call_args.args[0]
+        self.assertEqual(
+            watch_command[watch_command.index("--anthropic-rate-limit") + 1],
+            "handoff",
+        )
 
     def test_a_router_that_reports_no_pid_still_starts_the_session(self) -> None:
         # Losing the watch costs the session its ability to survive its router

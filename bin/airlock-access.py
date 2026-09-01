@@ -124,6 +124,7 @@ INHERIT_EFFORT = "inherit"
 VALID_WORKER_EFFORTS = (INHERIT_EFFORT,) + VALID_EFFORTS
 VALID_EXTRA_POLICIES = {"ask", "never", "allow"}
 VALID_FAILOVER_POLICIES = {"ask", "never", "allow"}
+VALID_ANTHROPIC_RATE_LIMIT_POLICIES = {"native", "handoff"}
 VALID_OVERFLOW_SHRINK_POLICIES = {"auto", "truncate", "summarize", "off"}
 VALID_DESCENDANT_POLICIES = {"bounded", "off"}
 VALID_ROUTING_POLICIES = {"balanced", "quality", "economy"}
@@ -141,6 +142,7 @@ DEFAULT_DESCENDANT_POLICY = "bounded"
 DEFAULT_MAX_DESCENDANTS = "2"
 DEFAULT_MAX_CONCURRENT_DESCENDANTS = "3"
 DEFAULT_MAX_REPAIR_ROUNDS = "2"
+MAX_CONCURRENT_SUBAGENTS = 20
 MAX_CONFIGURED_SUBAGENTS = 64
 MAX_REPAIR_ROUNDS = 5
 USAGE_FRESH_SECONDS = 15 * 60
@@ -193,6 +195,7 @@ MODE_CONFIG_KEYS = {
     "anthropic_fast": "AIRLOCK_ANTHROPIC_FAST",
     "swarm_fast": "AIRLOCK_SWARM_FAST",
     "failover": "AIRLOCK_FAILOVER_POLICY",
+    "anthropic_rate_limit": "AIRLOCK_ANTHROPIC_RATE_LIMIT",
     "overflow_shrink": "AIRLOCK_OVERFLOW_SHRINK",
     "agent_depth": "AIRLOCK_AGENT_DEPTH",
     "descendants": "AIRLOCK_DESCENDANT_POLICY",
@@ -1059,7 +1062,9 @@ def read_flat_config(path: Path | None = None) -> dict[str, str]:
 def _valid_max_agents(value: object) -> bool:
     if value == "off":
         return True
-    return _valid_positive_limit(value)
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]?", value):
+        return False
+    return 1 <= int(value) <= MAX_CONCURRENT_SUBAGENTS
 
 
 def _valid_positive_limit(value: object) -> bool:
@@ -1084,6 +1089,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
         "swarm_fast": DEFAULT_SWARM_FAST,
         "failover": "ask",
+        "anthropic_rate_limit": "native",
         "overflow_shrink": "auto",
         "agent_depth": DEFAULT_AGENT_DEPTH,
         "descendants": DEFAULT_DESCENDANT_POLICY,
@@ -1099,6 +1105,7 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
         "swarm_fast": VALID_SWARM_FAST_POLICIES,
         "failover": VALID_FAILOVER_POLICIES,
+        "anthropic_rate_limit": VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
         "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         "agent_depth": VALID_AGENT_DEPTHS,
         "descendants": VALID_DESCENDANT_POLICIES,
@@ -1135,6 +1142,7 @@ def mode_state() -> dict[str, object]:
         "saved_anthropic_fast": saved["anthropic_fast"],
         "saved_swarm_fast": saved["swarm_fast"],
         "saved_failover": saved["failover"],
+        "saved_anthropic_rate_limit": saved["anthropic_rate_limit"],
         "saved_descendants": saved["descendants"],
         "saved_max_descendants": saved["max_descendants"],
         "saved_max_total_descendants": saved["max_total_descendants"],
@@ -1152,6 +1160,7 @@ def mode_state() -> dict[str, object]:
         "effective_anthropic_fast": effective["anthropic_fast"],
         "effective_swarm_fast": effective["swarm_fast"],
         "effective_failover": effective["failover"],
+        "effective_anthropic_rate_limit": effective["anthropic_rate_limit"],
         "effective_overflow_shrink": effective["overflow_shrink"],
         "effective_agent_depth": effective["agent_depth"],
         "effective_descendants": effective["descendants"],
@@ -1196,13 +1205,14 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         f"Routing: {state['effective_routing']} ({routing_note})",
         f"Extra usage: {state['effective_extra_usage']} ({extra_note})",
         f"Failover: {state['effective_failover']}",
+        f"Anthropic rate limits: {state['effective_anthropic_rate_limit']}",
         f"Overflow handoff: {state['effective_overflow_shrink']}",
         f"Max concurrent top-level subagents: {state['effective_max_agents']} ({max_note})",
         f"OpenAI Fast routes: {state['effective_openai_fast']} ({openai_fast_note})",
         f"Anthropic Fast startup: {state['effective_anthropic_fast']} ({anthropic_fast_note})",
         f"Luna swarm Fast selection: {state['effective_swarm_fast']} ({swarm_fast_note})",
         agent_depth_note(state["effective_agent_depth"]),
-        "Defaults: routing=balanced, extra-usage=ask, failover=ask, max-agents=off, provider Fast=off, swarm-fast=auto",
+        "Defaults: routing=balanced, extra-usage=ask, failover=ask, anthropic-rate-limit=native, max-agents=off, provider Fast=off, swarm-fast=auto",
     ])
     if (
         state["effective_routing"] == "economy"
@@ -1245,6 +1255,7 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["anthropic_fast"]: VALID_PROVIDER_FAST_POLICIES,
         MODE_CONFIG_KEYS["swarm_fast"]: VALID_SWARM_FAST_POLICIES,
         MODE_CONFIG_KEYS["failover"]: VALID_FAILOVER_POLICIES,
+        MODE_CONFIG_KEYS["anthropic_rate_limit"]: VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
         MODE_CONFIG_KEYS["overflow_shrink"]: VALID_OVERFLOW_SHRINK_POLICIES,
         MODE_CONFIG_KEYS["agent_depth"]: VALID_AGENT_DEPTHS,
         MODE_CONFIG_KEYS["descendants"]: VALID_DESCENDANT_POLICIES,
@@ -1348,7 +1359,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         )
     option_names = (
         "routing", "extra_usage", "max_agents", "openai_fast", "anthropic_fast",
-        "swarm_fast", "failover",
+        "swarm_fast", "failover", "anthropic_rate_limit",
     )
     options_used = any(getattr(args, name, None) for name in option_names)
     if action == "show":
@@ -1380,6 +1391,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             MODE_CONFIG_KEYS["anthropic_fast"]: DEFAULT_ANTHROPIC_FAST,
             MODE_CONFIG_KEYS["swarm_fast"]: DEFAULT_SWARM_FAST,
             MODE_CONFIG_KEYS["failover"]: "ask",
+            MODE_CONFIG_KEYS["anthropic_rate_limit"]: "native",
             MODE_CONFIG_KEYS["agent_depth"]: DEFAULT_AGENT_DEPTH,
             MODE_CONFIG_KEYS["descendants"]: None,
             MODE_CONFIG_KEYS["max_descendants"]: None,
@@ -1400,6 +1412,11 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         "anthropic-fast": ("anthropic_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
         "swarm-fast": ("swarm_fast", VALID_SWARM_FAST_POLICIES, "auto|on|off"),
         "failover": ("failover", VALID_FAILOVER_POLICIES, "ask|never|allow"),
+        "anthropic-rate-limit": (
+            "anthropic_rate_limit",
+            VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
+            "native|handoff",
+        ),
         "overflow": (
             "overflow_shrink",
             VALID_OVERFLOW_SHRINK_POLICIES,
@@ -1423,7 +1440,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
     if action == "set":
         if value:
             raise AccessError(
-                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE] [--overflow-shrink VALUE]"
+                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE] [--anthropic-rate-limit VALUE] [--overflow-shrink VALUE]"
             )
         validators: dict[str, object] = {
             "routing": VALID_ROUTING_POLICIES,
@@ -1433,6 +1450,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
             "swarm_fast": VALID_SWARM_FAST_POLICIES,
             "failover": VALID_FAILOVER_POLICIES,
+            "anthropic_rate_limit": VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
             "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         }
         for name, validator in validators.items():
@@ -1447,7 +1465,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             raise AccessError("mode set requires at least one option")
         return updates
     raise AccessError(
-        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|overflow|max-agents|set]"
+        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|anthropic-rate-limit|overflow|max-agents|set]"
     )
 
 
@@ -5831,6 +5849,10 @@ def main() -> int:
     mode_parser.add_argument("--anthropic-fast", choices=sorted(VALID_PROVIDER_FAST_POLICIES))
     mode_parser.add_argument("--swarm-fast", choices=sorted(VALID_SWARM_FAST_POLICIES))
     mode_parser.add_argument("--failover", choices=sorted(VALID_FAILOVER_POLICIES))
+    mode_parser.add_argument(
+        "--anthropic-rate-limit",
+        choices=sorted(VALID_ANTHROPIC_RATE_LIMIT_POLICIES),
+    )
     mode_parser.add_argument(
         "--overflow-shrink", choices=sorted(VALID_OVERFLOW_SHRINK_POLICIES)
     )

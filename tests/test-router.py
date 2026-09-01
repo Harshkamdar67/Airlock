@@ -2674,6 +2674,40 @@ class RateLimitFailoverTests(unittest.TestCase):
         self.assertEqual(substituted[0]["requested"], "claude-haiku-4-5-20251001")
         self.assertEqual(substituted[0]["model"], "claude-test")
 
+    def test_compaction_leaves_an_exhausted_anthropic_plan_in_handoff_mode(self) -> None:
+        """Reproduce the rate-limit failure from a real automatic compaction."""
+
+        self.start_gateway(
+            {"claude-test": ("gpt-test",)},
+            anthropic_rate_limit="handoff",
+            background_model="claude-test",
+        )
+        self.anthropic.rate_limited_models = {"claude-test"}
+        body = json.dumps({
+            # Claude Code sends its own exact Haiku ID for compaction. Airlock
+            # first seats it on this session's background route, then must keep
+            # walking when that Anthropic subscription is exhausted.
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [{"role": "user", "content": "compact this session"}],
+        }, separators=(",", ":")).encode("utf-8")
+        status, payload, _headers = self.raw_request(body)
+        self.assertEqual(status, 200, payload[:200])
+        self.assertEqual(
+            [json.loads(r["body"])["model"] for r in self.anthropic.requests],
+            ["claude-test"],
+        )
+        self.assertEqual(
+            [json.loads(r["body"])["model"] for r in self.openai.requests],
+            ["gpt-test"],
+        )
+        events = self.wait_for_matching_events(
+            "kind", "rate_limit_failover_succeeded"
+        )
+        kinds = [event.get("kind") for event in events]
+        self.assertIn("background_model_substituted", kinds)
+        self.assertIn("rate_limit_failover_attempted", kinds)
+        self.assertIn("rate_limit_failover_succeeded", kinds)
+
     def test_an_unknown_model_is_still_refused_and_now_recorded(self) -> None:
         # Substitution is limited to the Haiku family. Everything else stays
         # refused, and the refusal is recorded so it can be diagnosed at all.

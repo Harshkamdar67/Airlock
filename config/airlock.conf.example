@@ -49,6 +49,10 @@ AIRLOCK_ANTHROPIC_FAST=off
 # Advanced selection within an enabled OpenAI Fast policy.
 AIRLOCK_SWARM_FAST=auto
 AIRLOCK_FAILOVER_POLICY=ask
+# Anthropic 429s default to Claude Code's native reset-time and resume handling.
+# Use handoff for cross-provider continuity, including automatic compaction when
+# the Claude plan is exhausted. `airlock mode anthropic-rate-limit ...` saves it.
+AIRLOCK_ANTHROPIC_RATE_LIMIT=native
 # What the router does when an overflowing handoff fits no peer's context
 # window: auto condenses history through the destination provider's economy
 # worker when enabled and falls back to trimming, truncate only trims locally,

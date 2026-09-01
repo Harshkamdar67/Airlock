@@ -47,6 +47,7 @@ $MaxAgents = if ($env:AIRLOCK_MAX_CONCURRENT_SUBAGENTS) { $env:AIRLOCK_MAX_CONCU
 $OpenAIFast = if ($env:AIRLOCK_OPENAI_FAST) { $env:AIRLOCK_OPENAI_FAST } elseif ($ConfigValues.ContainsKey('AIRLOCK_OPENAI_FAST')) { $ConfigValues['AIRLOCK_OPENAI_FAST'] } else { 'off' }
 $AnthropicFast = if ($env:AIRLOCK_ANTHROPIC_FAST) { $env:AIRLOCK_ANTHROPIC_FAST } elseif ($ConfigValues.ContainsKey('AIRLOCK_ANTHROPIC_FAST')) { $ConfigValues['AIRLOCK_ANTHROPIC_FAST'] } else { 'off' }
 $ExtraUsagePolicy = if ($env:AIRLOCK_EXTRA_USAGE_POLICY) { $env:AIRLOCK_EXTRA_USAGE_POLICY } elseif ($ConfigValues.ContainsKey('AIRLOCK_EXTRA_USAGE_POLICY')) { $ConfigValues['AIRLOCK_EXTRA_USAGE_POLICY'] } else { 'ask' }
+$AnthropicRateLimit = if ($env:AIRLOCK_ANTHROPIC_RATE_LIMIT) { $env:AIRLOCK_ANTHROPIC_RATE_LIMIT } elseif ($ConfigValues.ContainsKey('AIRLOCK_ANTHROPIC_RATE_LIMIT')) { $ConfigValues['AIRLOCK_ANTHROPIC_RATE_LIMIT'] } else { 'native' }
 $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOCK_GPT_EFFORT_CAPABILITIES } elseif ($ConfigValues.ContainsKey('AIRLOCK_GPT_EFFORT_CAPABILITIES')) { $ConfigValues['AIRLOCK_GPT_EFFORT_CAPABILITIES'] } else { 'effort,xhigh_effort,max_effort' }
 
 function Normalize-OpenAIModelId {
@@ -74,6 +75,10 @@ if ($AgentDepth -ne '1' -and $AgentDepth -ne '2') {
 # Claude Code enforces the cap, and it decides whether a worker gets the
 # Agent tool, so the session launchers must see the configured depth.
 $env:AIRLOCK_AGENT_DEPTH = $AgentDepth
+if ($AnthropicRateLimit -notin @('native', 'handoff')) {
+  [Console]::Error.WriteLine("airlock: unsupported Anthropic rate-limit policy '$AnthropicRateLimit' (expected native or handoff).")
+  exit 2
+}
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
 $OpenAIDirectAgentsFile = if ($env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE) { $env:AIRLOCK_OPENAI_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'openai-direct-agents.json' }
 $AnthropicDirectAgentsFile = if ($env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE) { $env:AIRLOCK_ANTHROPIC_DIRECT_AGENTS_FILE } else { Join-Path $ConfigDir 'anthropic-direct-agents.json' }
@@ -206,12 +211,13 @@ function Show-Models {
   Write-Host '  airlock mode defaults            Restore tested policy defaults'
   Write-Host '  airlock mode extra-usage ask|never|allow'
   Write-Host '  airlock mode failover ask|never|allow'
+  Write-Host '  airlock mode anthropic-rate-limit native|handoff'
   Write-Host '  airlock mode max-agents off|1..20'
   Write-Host '  airlock mode fast all|openai|anthropic|off'
   Write-Host '  airlock mode openai-fast on|off'
   Write-Host '  airlock mode anthropic-fast on|off'
   Write-Host '  airlock mode swarm-fast auto|on|off'
-  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto'
+  Write-Host '  airlock mode set --routing economy --extra-usage never --failover ask --anthropic-rate-limit native --max-agents off --openai-fast off --anthropic-fast off --swarm-fast auto'
   Write-Host '  airlock usage                    Show cached sanitized subscription usage'
   Write-Host '  airlock usage refresh            Refresh OpenAI quota windows without a model call'
   Write-Host '  airlock usage set --claude-plan pro|max5x|max20x|unknown'
@@ -929,6 +935,10 @@ function Invoke-AirlockSession {
   Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SUBAGENT_MODEL' -ErrorAction SilentlyContinue
   $env:AIRLOCK_UPDATE_NOTICE_FILE = [IO.Path]::GetFullPath($UpdateNoticeFile)
   $env:AIRLOCK_ACCESS_HELPER = [IO.Path]::GetFullPath($AccessHelper)
+  # Set this only for a real session launch. Exporting it before `airlock mode`
+  # would turn the saved value into an environment override and make a newly
+  # written mode appear not to take effect.
+  $env:AIRLOCK_ANTHROPIC_RATE_LIMIT = $AnthropicRateLimit
   if ($env:AIRLOCK_ALLOW_CLAUDE_API_SKILL -ne '1') {
     $ChildArguments = @('--disallowedTools', 'Skill(claude-api)', 'Skill(claude-api *)') + $ChildArguments
   }
@@ -1649,7 +1659,8 @@ if ($Arguments.Count -gt 0) {
       Write-Host "OpenAI bridge agents: $OpenAIWrapperAgentsFile"
       Write-Host "Anthropic bridge agents: $AnthropicWrapperAgentsFile"
       Write-Host "Managed plugin: $PluginDir"
-      Write-Host "Max concurrent top-level subagents: $MaxAgents"
+  Write-Host "Max concurrent top-level subagents: $MaxAgents"
+  Write-Host "Anthropic rate limits: $AnthropicRateLimit"
       Write-Host "OpenAI Fast routes: $OpenAIFast"
       Write-Host "Anthropic Fast startup: $AnthropicFast (supported Opus roots only)"
       $accessExitCode = Invoke-AccessPolicy -PolicyArguments @('show')

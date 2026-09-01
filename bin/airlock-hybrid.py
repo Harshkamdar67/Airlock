@@ -493,6 +493,18 @@ def router_start_reason(stderr: str | None) -> str:
     return ""
 
 
+def anthropic_rate_limit_mode() -> str:
+    """Return the only two router modes accepted at the launcher boundary."""
+
+    value = os.environ.get("AIRLOCK_ANTHROPIC_RATE_LIMIT", "native").strip().lower()
+    if value not in {"native", "handoff"}:
+        fail(
+            "AIRLOCK_ANTHROPIC_RATE_LIMIT must be native or handoff",
+            2,
+        )
+    return value
+
+
 def run_router_start(
     router: Path,
     snapshot: Path,
@@ -519,6 +531,8 @@ def run_router_start(
         "--port",
         str(port),
         "--print-pid",
+        "--anthropic-rate-limit",
+        anthropic_rate_limit_mode(),
     ]
     if proxy_url:
         command.extend(["--openai-url", proxy_url])
@@ -619,6 +633,8 @@ def start_router_watch(
         snapshot_digest,
         "--port",
         str(port),
+        "--anthropic-rate-limit",
+        anthropic_rate_limit_mode(),
     ]
     if proxy_url:
         command.extend(["--openai-url", proxy_url])

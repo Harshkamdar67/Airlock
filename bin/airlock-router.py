@@ -29,7 +29,7 @@ from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 import zlib
 
-MANAGED_BUNDLE_VERSION = "2026.08.11.3"
+MANAGED_BUNDLE_VERSION = "2026.08.26.1"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 CONNECT_TIMEOUT_SECONDS = 10
@@ -3394,6 +3394,24 @@ def minimal_child_environment() -> dict[str, str]:
     return environment
 
 
+def router_child_python() -> str:
+    """Use the real Windows interpreter so Popen's pid is the router's pid.
+
+    A Windows virtual-environment ``python.exe`` may be a launcher that starts
+    the base interpreter as a grandchild. ``Popen.pid`` then names the launcher
+    while the ready marker correctly names the serving process, causing the
+    startup identity check and later supervision to reject a healthy router.
+    The router is standard-library-only, so running its daemon on the base
+    interpreter is equivalent and preserves a one-process identity.
+    """
+
+    if os.name == "nt":
+        candidate = getattr(sys, "_base_executable", "")
+        if isinstance(candidate, str) and candidate and Path(candidate).is_file():
+            return candidate
+    return sys.executable
+
+
 def launch_router(args: argparse.Namespace) -> tuple[str, int]:
     """Start one router daemon and return its address and process id.
 
@@ -3416,7 +3434,7 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
         root.chmod(0o700)
     ready = root / f"ready-{secrets.token_hex(16)}.json"
     command = [
-        sys.executable,
+        router_child_python(),
         str(Path(__file__).resolve()),
         "serve",
         "--parent-pid",
@@ -3434,12 +3452,11 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
     ]
     if args.openai_url:
         command.extend(("--openai-url", args.openai_url))
-    # The daemon runs with a scrubbed environment, so a mode chosen by an
-    # environment variable has to be handed over explicitly. Only the two
-    # known words can travel; anything else falls back to the default.
-    if os.environ.get(
-        "AIRLOCK_ANTHROPIC_RATE_LIMIT", ""
-    ).strip().lower() == "handoff":
+    # The daemon runs with a scrubbed environment, so the launcher resolves
+    # saved config and environment precedence before this process and passes
+    # the validated choice as an argument. The watch carries the same argument
+    # so a restarted router cannot silently fall back to native passthrough.
+    if args.anthropic_rate_limit == "handoff":
         command.extend(("--anthropic-rate-limit", "handoff"))
     # The seat Claude Code was told to use for background work. The daemon
     # runs with a scrubbed environment, so it has to travel as an argument.
@@ -3484,7 +3501,22 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
                     or payload.get("bundle_version") != MANAGED_BUNDLE_VERSION
                     or not valid_router_url(payload.get("url"))
                 ):
-                    raise RouterError("router startup identity is invalid")
+                    # These are local, non-secret marker fields. Naming the
+                    # failed check turns an otherwise opaque launch failure
+                    # into something an installer or test can repair without
+                    # exposing the full marker.
+                    failures = []
+                    if payload.get("pid") != process.pid:
+                        failures.append(
+                            f"pid expected {process.pid}, got {payload.get('pid')}"
+                        )
+                    if payload.get("bundle_version") != MANAGED_BUNDLE_VERSION:
+                        failures.append("bundle")
+                    if not valid_router_url(payload.get("url")):
+                        failures.append("url")
+                    raise RouterError(
+                        "router startup identity is invalid: " + ", ".join(failures)
+                    )
                 startup_complete = True
                 return str(payload["url"]), int(process.pid)
             if process.poll() is not None:

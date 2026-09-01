@@ -183,7 +183,7 @@ flowchart LR
 
 Routes you have not connected are dropped, so the shape follows your own providers. `airlock handoff` prints the current tree and marks which entries are yours; `set`, `off`, `clear`, and `reset` change it using short route names rather than exact model IDs.
 
-Two limits: an Anthropic rate limit goes to Claude Code untouched, since it already handles its own provider's limits; and `/model` cannot show a handed-off model, because a handoff is per request, not per session. [Commands and settings](docs/commands.md#handoff).
+Anthropic rate limits default to Claude Code's native wait-and-resume handling. For uninterrupted cross-provider continuity, including automatic compaction after the Claude plan is exhausted, save `airlock mode anthropic-rate-limit handoff`; `airlock mode ... native` restores the default. `/model` cannot show a handed-off model because a handoff is per request, not per session. [Commands and settings](docs/commands.md#handoff).
 
 `airlock status` reports failover, cooldown skips, and effort clamps without showing prompts, provider error bodies, headers, or credentials. New provider models do not wait on a release: declare them in your own [`models.json`](docs/models-and-usage.md#declaring-your-own-models).
 

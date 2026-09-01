@@ -1063,7 +1063,7 @@ class SnapshotValidationTests(PolicyTestCase):
             with self.subTest(value=str(value)[:120]):
                 self.assert_invalid_snapshot(value)
 
-    def test_snapshot_agent_count_boundary_is_twenty(self) -> None:
+    def test_snapshot_agent_count_boundary_is_sixty_four(self) -> None:
         value = valid_snapshot()
         value["routes"] = {"claude-opus-4-6[1m]": "anthropic"}
         value["openrouter"] = {}
@@ -1073,16 +1073,16 @@ class SnapshotValidationTests(PolicyTestCase):
                 "provider": "anthropic",
                 "extra_usage": False,
             }
-            for index in range(20)
+            for index in range(64)
         }
         result = policy.validate_session_snapshot(value)
-        self.assertEqual(len(result.agents), 20)
-        value["agents"]["airlock-worker-20"] = {  # type: ignore[index]
+        self.assertEqual(len(result.agents), 64)
+        value["agents"]["airlock-overflow-worker"] = {  # type: ignore[index]
             "model": "claude-opus-4-6[1m]",
             "provider": "anthropic",
             "extra_usage": False,
         }
-        self.assert_invalid_snapshot(value, "at most 20")
+        self.assert_invalid_snapshot(value, "at most 64")
 
     def test_openrouter_metadata_is_exact_referenced_and_complete(self) -> None:
         unknown = valid_snapshot()

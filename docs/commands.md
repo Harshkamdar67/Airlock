@@ -61,6 +61,8 @@ history so a smaller peer can still serve the request.
 airlock mode failover ask        # default: chains use included models only
 airlock mode failover never      # no chains at all
 airlock mode failover allow      # extra-usage models may serve as peers
+airlock mode anthropic-rate-limit native   # default: Claude Code waits/resumes
+airlock mode anthropic-rate-limit handoff  # cross-provider continuity
 airlock mode overflow auto       # default: condense, then trim, then fail honestly
 airlock mode overflow summarize
 airlock mode overflow truncate
@@ -76,9 +78,10 @@ Handoff is never silent:
 - `airlock status` lists the hops, cooldown skips, and exhausted chains.
 
 Two things worth knowing. An Anthropic 429 is forwarded to Claude Code
-untouched rather than handed to another provider, because Claude Code already
-understands its own provider's limits; set `AIRLOCK_ANTHROPIC_RATE_LIMIT=handoff`
-before launching to switch models instead. And `/model` cannot show a
+untouched by default because Claude Code already understands its own provider's
+limits. Save `airlock mode anthropic-rate-limit handoff` to switch models
+instead; an `AIRLOCK_ANTHROPIC_RATE_LIMIT` environment value overrides the saved
+choice for one launch. And `/model` cannot show a
 handed-off model: that is Claude Code's own session state, and a handoff is
 decided per request rather than per session, so the turn notice and
 `airlock status` are the accurate record.
@@ -87,7 +90,12 @@ Claude Code also runs some work of its own, compaction most visibly, by asking
 for a Haiku model directly instead of using the slot Airlock seats for it. When
 your access policy does not include Haiku there is no such route, so those
 requests are served by the background seat Claude Code was already given.
-`airlock status` records each substitution.
+`airlock status` records each substitution. If that seat is on an exhausted
+Anthropic plan, compaction is itself another rate-limited model request:
+`anthropic-rate-limit handoff` lets it continue down the declared chain, while
+`native` preserves Claude Code's reset time and resume behavior. If every
+enabled provider in the chain is exhausted, no model-based compaction can run;
+start a fresh session or wait for a provider reset.
 
 ### Choosing the order yourself
 
@@ -134,7 +142,8 @@ airlock mode depth 2             # a worker may spawn only its own type
 
 `airlock mode set` accepts the same values as flags, so several can change at
 once: `--routing`, `--extra-usage`, `--max-agents`, `--openai-fast`,
-`--anthropic-fast`, `--swarm-fast`, `--failover`, `--overflow-shrink`.
+`--anthropic-fast`, `--swarm-fast`, `--failover`,
+`--anthropic-rate-limit`, `--overflow-shrink`.
 
 ## Usage and status
 
@@ -202,11 +211,12 @@ powershell -NoProfile -File .\scripts\doctor.ps1      # Windows
 
 ## Environment settings
 
-These have no `airlock mode` equivalent and are read at launch.
+Environment values override saved mode settings for one launch. The remaining
+variables in this table have no `airlock mode` equivalent.
 
 | Variable | Effect |
 |---|---|
-| `AIRLOCK_ANTHROPIC_RATE_LIMIT` | `native` (default) forwards an Anthropic 429 to Claude Code; `handoff` switches models instead |
+| `AIRLOCK_ANTHROPIC_RATE_LIMIT` | one-launch override for `airlock mode anthropic-rate-limit` (`native` or `handoff`) |
 | `AIRLOCK_OPENROUTER_CHAIN_PEER` | `off` removes the declared OpenRouter route as the last-resort peer |
 | `AIRLOCK_FAILOVER_FILE` | path to your handoff file |
 | `AIRLOCK_MODELS_FILE` | path to your declared models file |
