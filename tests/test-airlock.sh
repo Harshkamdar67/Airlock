@@ -1804,12 +1804,21 @@ for _ in range(4):
 server.server_close()
 PY
 status_server_pid=$!
-for _ in $(seq 1 100); do
+# On a loaded macOS runner, starting the Python interpreter itself can take
+# longer than the old two-second allowance. Wait for the readiness artifact,
+# but stop immediately if the stub process actually died so a real traceback
+# is not hidden behind a misleading timing failure.
+for _ in $(seq 1 750); do
   [[ -s "$status_port_file" ]] && break
+  if ! kill -0 "$status_server_pid" 2>/dev/null; then
+    wait "$status_server_pid" || true
+    printf 'test: status stub stopped before publishing its loopback port\n' >&2
+    exit 1
+  fi
   sleep 0.02
 done
 if [[ ! -s "$status_port_file" ]]; then
-  printf 'test: status stub did not publish its loopback port\n' >&2
+  printf 'test: status stub did not publish its loopback port within 15 seconds\n' >&2
   exit 1
 fi
 status_router_url="http://127.0.0.1:$(<"$status_port_file")"

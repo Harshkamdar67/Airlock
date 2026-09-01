@@ -31,11 +31,13 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 
-# One Enter for each question in the recommended path: session profile, Grok
-# subscription, orchestrator, worker pool, session effort, worker effort, extra
-# usage, Fast startup, routing, parallel workers, Advanced, Codex OAuth, proxy
-# service, and apply.
-ENTER_PRESSES = 14
+# One Enter for each question in the plain recommended path: the fourteen base
+# questions below, plus one per model when the saved worker mix does not match
+# a named preset and the wizard opens "Choose models individually". The fixture
+# asks about seven models, so the plain and narrow runs answer twenty-one prompts.
+# The keyboard run has its own explicit script and selects the balanced preset,
+# so it still answers only the base questions.
+ENTER_PRESSES = 21
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -124,9 +126,9 @@ def run_wizard(
     cover the redirected-stream case.
 
     With no `keystrokes`, one Enter is sent for each question. Every key waits
-    for visible output from the wizard and then for the output to become quiet.
-    This matches normal typing and avoids racing the child's controlling-terminal
-    setup on macOS.
+    for a newly rendered input prompt and then for the output to become quiet.
+    This matches normal typing, cannot spend answers on wrapped help text, and
+    avoids racing the child's controlling-terminal setup on macOS.
     """
     run_label = config_dir.name
     print(f"Setup PTY: starting {run_label}", flush=True)
@@ -190,7 +192,17 @@ def run_wizard(
             pending = [KEY_ENTER] * ENTER_PRESSES
         else:
             pending = list(keystrokes)
-        output_since_key = False
+        # Send one logical key only after the wizard has rendered one new
+        # input prompt. The old quiet-gap heuristic treated a pause between
+        # wrapped paragraphs as a question and consumed keys before the real
+        # prompt appeared; a slower Linux CI runner spent all fourteen Enters
+        # by the Fast-startup question. Arrow-key repaints render the same
+        # prompt again, which deliberately unlocks the next logical key.
+        prompt_pattern = re.compile(
+            rb"(?:Choice \[[^\r\n]*\]|Answer \[[^\r\n]*\]|"
+            rb"Apply this configuration\? \[Y/n/s\]): "
+        )
+        prompts_answered = 0
         quiet_since = time.monotonic()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -216,14 +228,14 @@ def run_wizard(
                 break
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
-                if (
-                    pending
-                    and output_since_key
-                    and time.monotonic() - quiet_since >= IDLE_GAP
-                ):
-                    os.write(master_fd, pending.pop(0))
-                    output_since_key = False
-                    quiet_since = time.monotonic()
+                if pending and time.monotonic() - quiet_since >= IDLE_GAP:
+                    rendered_prompts = len(
+                        prompt_pattern.findall(b"".join(output_parts))
+                    )
+                    if rendered_prompts > prompts_answered:
+                        os.write(master_fd, pending.pop(0))
+                        prompts_answered += 1
+                        quiet_since = time.monotonic()
                 continue
             try:
                 chunk = os.read(read_fd, 65536)
@@ -234,7 +246,6 @@ def run_wizard(
                     raise
             if chunk:
                 output_parts.append(chunk)
-                output_since_key = True
                 quiet_since = time.monotonic()
             else:
                 status = wait_for_child(child_pid, 1.0)
@@ -394,7 +405,7 @@ SECTION_HIERARCHY = (
 CHOICE_PRESENTATION = (
     "[recommended]",
     "Press Enter to accept 1) Hybrid: Claude and GPT together",
-    "Press Enter to accept 1) GPT-5.6 Sol",
+    "Press Enter to accept 1) Auto (recommended)",
     "Choice [1-3, name, or ?]:",
     "Choice [1-4, name, or ?]:",
     # Claude Fable 5.1 has to be reachable without hunting through Advanced.
@@ -483,11 +494,11 @@ HIDDEN_OR_RETIRED = (
 
 EXPECTED_CONFIG = (
     "AIRLOCK_DEFAULT_PROFILE=hybrid\n",
-    "AIRLOCK_HYBRID_MODEL=sol\n",
+    "AIRLOCK_HYBRID_MODEL=auto\n",
     "AIRLOCK_MAIN_EFFORT=high\n",
     "AIRLOCK_WORKER_EFFORT=inherit\n",
-    "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n",
-    "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n",
+    "AIRLOCK_ANTHROPIC_MODELS=sonnet,opus,haiku\n",
+    "AIRLOCK_OPENAI_MODELS=luna,terra,sol\n",
     "AIRLOCK_GROK_MODELS=\n",
     "AIRLOCK_OPENAI_FAST=off\n",
     "AIRLOCK_ANTHROPIC_FAST=off\n",
@@ -496,9 +507,9 @@ EXPECTED_CONFIG = (
 )
 
 
-# The keyboard runs move three separate markers, one of them by wrapping off the
-# top of the list and one by wrapping off the bottom, so a stuck or clamped
-# marker cannot pass.
+# The keyboard runs move four separate markers, including the worker pool,
+# one by wrapping off the top and two by wrapping off the bottom, so a stuck
+# or clamped marker cannot pass.
 KEYBOARD_SELECTION = (
     "The Up and Down arrow keys move the > marker.",
     "Press Enter to accept 4) Extra high",
@@ -548,7 +559,7 @@ try:
         "plain run",
         output,
         (
-            "  Default command:    airlock -> GPT-5.6 Sol (gpt-5.6-sol)",
+            "  Default command:    airlock -> Auto hybrid root (auto)",
             "  Session profile:    hybrid: Claude and GPT workers",
             "  Worker effort:      follow session /effort",
             # A long unbreakable path, of the kind macOS hands out for a
@@ -629,8 +640,8 @@ try:
     keyboard_script = (
         [KEY_ENTER]  # session profile: hybrid
         + [KEY_ENTER]  # Grok subscription: no
-        + [KEY_ENTER]  # orchestrator: GPT-5.6 Sol
-        + [KEY_ENTER]  # worker pool: balanced
+        + [KEY_ENTER]  # orchestrator: Auto hybrid root
+        + [KEY_DOWN, KEY_ENTER]  # worker pool: custom wraps to balanced
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
@@ -683,8 +694,8 @@ try:
     plain_keyboard_script = (
         [KEY_ENTER]  # session profile: hybrid
         + [KEY_ENTER]  # Grok subscription: no
-        + [b"?", b"\n", b"5", b"\n"]  # orchestrator: show the list, then pick 5
-        + [KEY_ENTER]  # worker pool: balanced
+        + [b"?\n", b"6\n"]  # orchestrator: show the list, then pick Opus
+        + [KEY_DOWN, KEY_ENTER]  # worker pool: custom wraps to balanced
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session
         + [KEY_UP, KEY_ENTER]  # extra usage: wrap up from 1) to 3)
