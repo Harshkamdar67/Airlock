@@ -96,6 +96,13 @@ PROXY_VARIABLES = {
 
 
 DEFAULT_GPT_EFFORT_CAPABILITIES = "effort,xhigh_effort,max_effort"
+# grok-4.6 is documented at 500000 tokens. Claude Code does not know that
+# ID, so the hard limit has to be declared, and compacting at 80% leaves
+# room for the summary request that compaction itself must send. This
+# mirrors the POSIX launcher; tests/test-windows.ps1 guards the parity.
+GROK_4_6_MODEL = "grok-4.6"
+GROK_4_6_HARD_LIMIT = "500000"
+GROK_4_6_COMPACT_THRESHOLD = "400000"
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -761,6 +768,7 @@ def build_child_environment(
         apply_context_window(
             environment,
             profile=profile,
+            root_model=root_model,
             context_window=context_window,
             force_context_window=force_context_window,
             user_context_window=user_context_window,
@@ -840,6 +848,7 @@ def build_child_environment(
     apply_context_window(
         environment,
         profile=profile,
+        root_model=root_model,
         context_window=context_window,
         force_context_window=force_context_window,
         user_context_window=user_context_window,
@@ -878,19 +887,27 @@ def apply_context_window(
     environment: dict[str, str],
     *,
     profile: str,
+    root_model: str,
     context_window: str,
     force_context_window: bool,
     user_context_window: str,
 ) -> None:
     """Declare the root window and compact threshold for this process.
 
-    Native Anthropic roots keep Claude Code's own sizing. OpenAI and Grok
-    roots keep the conservative saved fallback, and no shipped root declares
-    a hard limit: an inherited CLAUDE_CODE_MAX_CONTEXT_TOKENS is dropped so it
-    can never silently cap this session's workers. A user-exported compact
-    window still wins.
+    A grok-4.6 root declares its documented 500000-token hard limit and
+    compacts at 80% so the summary request still fits. Native Anthropic roots
+    keep Claude Code's own sizing. Every other root keeps the conservative
+    saved fallback, and an inherited CLAUDE_CODE_MAX_CONTEXT_TOKENS is dropped
+    so it cannot silently cap the session. A user-exported compact window
+    still wins.
     """
-    environment.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
+    grok_flagship_root = (
+        root_model == GROK_4_6_MODEL and profile != "hybrid-anthropic-root"
+    )
+    if grok_flagship_root:
+        environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = GROK_4_6_HARD_LIMIT
+    else:
+        environment.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
     if user_context_window:
         environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
         return
@@ -902,6 +919,9 @@ def apply_context_window(
         return
     if context_window == "auto" or profile == "hybrid-anthropic-root":
         environment.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+        return
+    if grok_flagship_root:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = GROK_4_6_COMPACT_THRESHOLD
         return
     environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
 

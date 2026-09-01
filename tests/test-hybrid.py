@@ -216,12 +216,15 @@ class HybridLauncherTests(unittest.TestCase):
         )
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
-    def test_grok_root_keeps_the_conservative_window(self) -> None:
-        # No shipped root declares a hard limit; the flagship Grok route keeps
-        # the conservative saved fallback like every other custom root.
+    def test_grok_flagship_root_declares_its_documented_window(self) -> None:
+        # grok-4.6 is documented at 500000 tokens and Claude Code does not know
+        # the ID, so the hard limit is declared and compaction runs at 80% to
+        # leave room for the summary request. The POSIX launcher does the same;
+        # tests/test-windows.ps1 checks the two agree, and caught this launcher
+        # silently dropping the declaration in a change meant for something else.
         environment = self.build("hybrid-grok-root", "grok-4.6")
-        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
-        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
 
     def test_composer_root_keeps_the_conservative_auto_compact_window(self) -> None:
         environment = self.build("hybrid-grok-root", "grok-composer-2.5-fast")
@@ -234,7 +237,9 @@ class HybridLauncherTests(unittest.TestCase):
             "grok-4.6",
             preset_environment={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000"},
         )
-        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
+        # The hard limit is a fact about the model; only the compact threshold
+        # is the user's to move.
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
     def test_auto_context_window_never_sets_the_variable(self) -> None:
@@ -1756,8 +1761,10 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["ANTHROPIC_SMALL_FAST_MODEL"], "grok-composer-2.5-fast")
         self.assertEqual(environment["AIRLOCK_ACTIVE_PROFILE"], "grok-pure")
-        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
-        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
+        # grok-pure on the flagship declares the documented window like every
+        # other grok-4.6 root; the Windows integration test asserts the same.
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
         for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
             self.assertNotIn(marker, environment)
 
