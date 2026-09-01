@@ -1870,7 +1870,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.7",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.8",
             }},
         }):
             return None

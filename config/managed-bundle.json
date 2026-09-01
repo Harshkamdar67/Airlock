@@ -5,7 +5,7 @@
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
     "bin/airlock": "f1a42fbee0ce2fd9ddecf0286e6827cc8a75d256f2c5a80865431f4b533c1edd",
-    "bin/airlock-access.py": "cdf6c8869896aa9415c5e8e68b32a2b3bf0d9df19bf48520e9fe12b9191bfbd6",
+    "bin/airlock-access.py": "4278a2ee27eea383359a0800193068825234f683bc52b7df265401fdd120f4d4",
     "bin/airlock-hybrid.py": "b72af694300807a9d770fbbffb6e03919ce1ca419369ef33fb35b7bf60be589d",
     "bin/airlock-router.py": "3ec8615279715b4bc9f31394020b62fa928c69d87042c6cb756d2301fd6f4321",
     "bin/airlock-update.py": "0e748148537a43bfd5d6e19faa3360343b5e6bcf444019e63cb56f877635a2a8",
@@ -20,7 +20,7 @@
     "config/grok-agents.json": "f3f2deac7ab6e55434c88aaa3ec80dd42cdb2be001c13a2f99f3740a1adedaec",
     "config/hybrid-agents.json": "88dfa81b9892baa684f0e24b5a11fe2649eb9512f46483a4fb1f67e795921890",
     "config/openai-direct-agents.json": "88dfa81b9892baa684f0e24b5a11fe2649eb9512f46483a4fb1f67e795921890",
-    "plugins/airlock/.claude-plugin/plugin.json": "8f5cfd83c5dfd2a02104c7ec6f9482a27a31f26a2f87ea76f4a085e3f4c1ff09",
+    "plugins/airlock/.claude-plugin/plugin.json": "edb23c83763f517baa4c94692377b572e89b94ce23e4e5aba7d872df60004afc",
     "plugins/airlock/hooks/hooks.json": "832ea3bbd0665fcf4f29a88889eb496043d129feea6752633c77ec90bcf3e9ea",
     "plugins/airlock/mcp-server/airlock_web_tools.py": "71c0dd86dc8af4544a955431cb4605ea4724637760c12fd43d8614bfc3606847",
     "plugins/airlock/scripts/agent-guard.py": "67fd9265d2e4ef23ab26b0101bc89ca50f85b5e6538c927deda0d9c7294aea17",

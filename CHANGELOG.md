@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.1.0-beta.8 - 2026-09-02
+
 ### Added
 
 - `airlock mode anthropic-rate-limit native|handoff` makes the existing Anthropic 429 policy persistent and discoverable. `native` remains the safe default; `handoff` keeps background work and automatic compaction moving across an explicitly declared provider chain when the Claude plan is exhausted. A one-launch `AIRLOCK_ANTHROPIC_RATE_LIMIT` environment override still wins.
@@ -74,6 +78,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## 0.1.0-beta.7 - 2026-08-23
 
+Version bump only. This version was never tagged or published; its changes first ship in 0.1.0-beta.8.
+
 ### Added
 
 - A local `airlock-web-tools` MCP server for sessions whose root cannot use Claude Code's own web tools. Built-in WebSearch executes on Anthropic's API, so a GPT, Grok, or OpenRouter root has no working search, and a pure profile cannot run WebFetch either because no Claude model sits in its Haiku slot. The managed plugin now ships a standard-library-only Python server exposing two tools: `web_search`, which queries DuckDuckGo's HTML endpoint and returns ranked links with short descriptions, and `fetch_page`, which reads one public page into context as plain text without a background model. Non-Anthropic roots get the server registered through managed session settings, get managed guidance steering them to these tools, and get the broken built-ins denied through managed permissions, so each session has exactly one working web path: a pure root loses both built-ins, while a hybrid root keeps the WebFetch that beta.7 fixed and loses only WebSearch. An Anthropic-rooted session receives none of this and stays exactly as Claude Code shipped it. Both tools make their own outbound requests to the public web, refuse private and loopback network addresses, revalidate every redirect hop, cap responses at 2 MB and 20 seconds, and truncate long pages. DuckDuckGo's HTML endpoint is an unofficial interface, so result format, availability, and rate limits can change without notice. Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. Because Claude Code does not start `mcpServers` entries carried in `--settings`, the launcher also hands the same single-server definition to Claude Code through an `--mcp-config` file that is created at launch and deleted when the session ends; without it the tools never appear in live sessions.
@@ -92,6 +98,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - A `grok-4.6` root now declares its documented 500000-token window and compacts at 400000, so automatic compaction still has room for the summary request. OpenAI roots, Composer, and a user-exported window are unchanged.
 
 ## 0.1.0-beta.6 - 2026-08-22
+
+Tagged but never published as a GitHub release; its changes first ship in 0.1.0-beta.8.
 
 ### Fixed
 
