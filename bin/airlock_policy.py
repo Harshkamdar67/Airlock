@@ -10,7 +10,7 @@ exception.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import errno
 import hashlib
@@ -27,7 +27,12 @@ from typing import Any, Mapping
 
 MAX_POLICY_BYTES = 128 * 1024
 MAX_OPENROUTER_ENTRIES = 10
-MAX_SNAPSHOT_AGENTS = 20
+MAX_SNAPSHOT_AGENTS = 64
+MAX_SNAPSHOT_FAILOVER_ENTRIES = 64
+MAX_SNAPSHOT_FAILOVER_PEERS = 8
+MIN_CONTEXT_WINDOW_TOKENS = 1000
+MAX_CONTEXT_WINDOW_TOKENS = 10_000_000
+VALID_OVERFLOW_SHRINK_MODES = frozenset({"auto", "truncate", "summarize", "off"})
 MAX_SUPPORTED_PARAMETERS = 64
 CHECKED_AT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CHECKED_AT_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
@@ -95,15 +100,23 @@ _SNAPSHOT_FIELDS = frozenset({
     "routes",
     "agents",
     "openrouter",
+    "failover",
+    "context_windows",
+    "compactors",
+    "overflow_shrink",
 })
 _AGENT_FIELDS = frozenset({"model", "provider", "extra_usage"})
-_OPENROUTER_SNAPSHOT_FIELDS = frozenset({
+_OPENROUTER_SNAPSHOT_REQUIRED_FIELDS = frozenset({
     "endpoint_provider",
     "provider_name",
     "provider_slug",
     "quantization",
     "canonical_slug",
 })
+_OPENROUTER_SNAPSHOT_FIELDS = (
+    _OPENROUTER_SNAPSHOT_REQUIRED_FIELDS | {"effort_ceiling"}
+)
+_EFFORT_CEILINGS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _PROVIDERS = frozenset({"anthropic", "openai", "grok", "openrouter"})
 
 
@@ -206,15 +219,20 @@ class SnapshotOpenRouterRoute:
     provider_slug: str
     quantization: str
     canonical_slug: str
+    effort_ceiling: str = "high"
+    effort_ceiling_explicit: bool = True
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        result = {
             "endpoint_provider": self.endpoint_provider,
             "provider_name": self.provider_name,
             "provider_slug": self.provider_slug,
             "quantization": self.quantization,
             "canonical_slug": self.canonical_slug,
         }
+        if self.effort_ceiling_explicit:
+            result["effort_ceiling"] = self.effort_ceiling
+        return result
 
 
 @dataclass(frozen=True)
@@ -227,6 +245,21 @@ class SessionSnapshot:
     routes: Mapping[str, str]
     agents: Mapping[str, SnapshotAgent]
     openrouter: Mapping[str, SnapshotOpenRouterRoute]
+    # Ordered same-category replacement models per routed model ID. Snapshots
+    # written before rate-limit failover existed carry an empty map.
+    failover: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # Known context-window sizes (tokens) per routed model ID. Snapshots
+    # written before overflow-aware handoff existed carry an empty map; a
+    # model absent from this map is simply never pre-screened for size.
+    context_windows: Mapping[str, int] = field(default_factory=dict)
+    # Per-provider compaction worker used when no failover peer can fit an
+    # overflowing conversation. Snapshots written before overflow-aware
+    # handoff existed carry an empty map, which disables compaction.
+    compactors: Mapping[str, str] = field(default_factory=dict)
+    # What the router does when every candidate window is too small:
+    # "auto" (compact through the provider compactor, else truncate),
+    # "truncate", "summarize", or "off".
+    overflow_shrink: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +276,12 @@ class SessionSnapshot:
                 model: metadata.to_dict()
                 for model, metadata in self.openrouter.items()
             },
+            "failover": {
+                model: list(peers) for model, peers in self.failover.items()
+            },
+            "context_windows": dict(self.context_windows),
+            "compactors": dict(self.compactors),
+            "overflow_shrink": self.overflow_shrink,
         }
 
     def canonical_bytes(self) -> bytes:
@@ -1299,6 +1338,19 @@ def _validate_model_for_provider(value: Any, provider: str, location: str) -> st
 def validate_session_snapshot(value: Any) -> SessionSnapshot:
     """Validate a generic, table-independent session snapshot schema v1."""
 
+    if type(value) is not dict:
+        raise PolicyValidationError("snapshot must be an object")
+    # Snapshots rendered before rate-limit failover existed are still valid;
+    # they simply carry no failover chains. The same applies to the
+    # overflow-handoff fields added later.
+    for optional_field, default in (
+        ("failover", {}),
+        ("context_windows", {}),
+        ("compactors", {}),
+        ("overflow_shrink", "auto"),
+    ):
+        if optional_field not in value:
+            value = {**value, optional_field: default}
     snapshot = _require_exact_fields(value, _SNAPSHOT_FIELDS, "snapshot")
     schema_version = _require_integer(snapshot["schema_version"], "schema_version")
     if schema_version != 1:
@@ -1383,11 +1435,14 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
     openrouter: dict[str, SnapshotOpenRouterRoute] = {}
     for raw_model, raw_metadata in raw_openrouter.items():
         model = _validate_openrouter_model(raw_model, "openrouter key")
-        metadata = _require_exact_fields(
-            raw_metadata,
+        if type(raw_metadata) is not dict or frozenset(raw_metadata) not in {
+            _OPENROUTER_SNAPSHOT_REQUIRED_FIELDS,
             _OPENROUTER_SNAPSHOT_FIELDS,
-            f"openrouter[{model!r}]",
-        )
+        }:
+            raise PolicyValidationError(
+                f"openrouter[{model!r}] has missing or unexpected fields"
+            )
+        metadata = raw_metadata
         endpoint_provider = _validate_endpoint_provider(
             metadata["endpoint_provider"],
             f"openrouter[{model!r}].endpoint_provider",
@@ -1408,6 +1463,11 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             metadata["canonical_slug"],
             f"openrouter[{model!r}].canonical_slug",
         )
+        effort_ceiling = metadata.get("effort_ceiling", "high")
+        if type(effort_ceiling) is not str or effort_ceiling not in _EFFORT_CEILINGS:
+            raise PolicyValidationError(
+                f"openrouter[{model!r}].effort_ceiling must be low, medium, high, xhigh, or max"
+            )
         if routes.get(model) != "openrouter":
             raise PolicyValidationError(
                 f"openrouter[{model!r}] does not reference an OpenRouter route"
@@ -1418,6 +1478,8 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             provider_slug=provider_slug,
             quantization=quantization,
             canonical_slug=canonical_slug,
+            effort_ceiling=effort_ceiling,
+            effort_ceiling_explicit="effort_ceiling" in metadata,
         )
 
     openrouter_routes = {
@@ -1427,6 +1489,100 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         missing = sorted(openrouter_routes - set(openrouter))
         raise PolicyValidationError(
             f"OpenRouter routes and metadata must agree; missing {missing!r}"
+        )
+
+    raw_failover = snapshot["failover"]
+    if type(raw_failover) is not dict:
+        raise PolicyValidationError("failover must be an object")
+    if len(raw_failover) > MAX_SNAPSHOT_FAILOVER_ENTRIES:
+        raise PolicyValidationError(
+            f"failover must contain at most {MAX_SNAPSHOT_FAILOVER_ENTRIES} entries"
+        )
+    failover: dict[str, tuple[str, ...]] = {}
+    for raw_model, raw_peers in raw_failover.items():
+        if type(raw_model) is not str or not raw_model:
+            raise PolicyValidationError("failover keys must be model IDs")
+        if raw_model not in routes:
+            raise PolicyValidationError(
+                f"failover key {raw_model!r} does not reference a route"
+            )
+        if type(raw_peers) is not list or not (
+            1 <= len(raw_peers) <= MAX_SNAPSHOT_FAILOVER_PEERS
+        ):
+            raise PolicyValidationError(
+                f"failover[{raw_model!r}] must list 1-{MAX_SNAPSHOT_FAILOVER_PEERS} model IDs"
+            )
+        peers: list[str] = []
+        for raw_peer in raw_peers:
+            if type(raw_peer) is not str or not raw_peer:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] entries must be model IDs"
+                )
+            if raw_peer == raw_model:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] must not chain to itself"
+                )
+            if raw_peer in peers:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] repeats a peer"
+                )
+            if raw_peer not in routes:
+                raise PolicyValidationError(
+                    f"failover[{raw_model!r}] references unknown route {raw_peer!r}"
+                )
+            peers.append(raw_peer)
+        failover[raw_model] = tuple(peers)
+
+    raw_windows = snapshot["context_windows"]
+    if type(raw_windows) is not dict:
+        raise PolicyValidationError("context_windows must be an object")
+    if len(raw_windows) > MAX_SNAPSHOT_FAILOVER_ENTRIES:
+        raise PolicyValidationError(
+            f"context_windows must contain at most {MAX_SNAPSHOT_FAILOVER_ENTRIES} entries"
+        )
+    context_windows: dict[str, int] = {}
+    for raw_model, raw_window in raw_windows.items():
+        if type(raw_model) is not str or not raw_model:
+            raise PolicyValidationError("context_windows keys must be model IDs")
+        if raw_model not in routes:
+            raise PolicyValidationError(
+                f"context_windows key {raw_model!r} does not reference a route"
+            )
+        window = _require_integer(raw_window, f"context_windows[{raw_model!r}]")
+        if not MIN_CONTEXT_WINDOW_TOKENS <= window <= MAX_CONTEXT_WINDOW_TOKENS:
+            raise PolicyValidationError(
+                f"context_windows[{raw_model!r}] must be between "
+                f"{MIN_CONTEXT_WINDOW_TOKENS} and {MAX_CONTEXT_WINDOW_TOKENS}"
+            )
+        context_windows[raw_model] = window
+
+    raw_compactors = snapshot["compactors"]
+    if type(raw_compactors) is not dict:
+        raise PolicyValidationError("compactors must be an object")
+    compactors: dict[str, str] = {}
+    for raw_provider, raw_model in raw_compactors.items():
+        if (
+            type(raw_provider) is not str
+            or raw_provider not in _PROVIDERS
+            or raw_provider == "openrouter"
+        ):
+            raise PolicyValidationError(
+                "compactors keys must be anthropic, openai, or grok providers"
+            )
+        if type(raw_model) is not str or raw_model not in routes:
+            raise PolicyValidationError(
+                f"compactors[{raw_provider!r}] does not reference a route"
+            )
+        if routes[raw_model] != raw_provider:
+            raise PolicyValidationError(
+                f"compactors[{raw_provider!r}] disagrees with its route provider"
+            )
+        compactors[raw_provider] = raw_model
+
+    overflow_shrink = snapshot["overflow_shrink"]
+    if type(overflow_shrink) is not str or overflow_shrink not in VALID_OVERFLOW_SHRINK_MODES:
+        raise PolicyValidationError(
+            "overflow_shrink must be auto, truncate, summarize, or off"
         )
 
     canonical_references = referenced_models | {root_model}
@@ -1452,6 +1608,10 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         routes=MappingProxyType(dict(routes)),
         agents=MappingProxyType(dict(agents)),
         openrouter=MappingProxyType(dict(openrouter)),
+        failover=MappingProxyType(failover),
+        context_windows=MappingProxyType(context_windows),
+        compactors=MappingProxyType(compactors),
+        overflow_shrink=overflow_shrink,
     )
     if len(result.canonical_bytes()) > MAX_POLICY_BYTES:
         raise PolicyValidationError("canonical snapshot exceeds the 128 KiB limit")

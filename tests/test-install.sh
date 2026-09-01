@@ -158,7 +158,8 @@ for relative in .claude-plugin/plugin.json hooks/hooks.json skills/usage/SKILL.m
 done
 # The hook scripts are launched directly by Claude Code, so the executable bit
 # is part of a working install rather than a detail of the file mode.
-for relative in scripts/fast-session-end.sh scripts/fast-session-end.py \
+for relative in mcp-server/airlock_web_tools.py \
+  scripts/fast-session-end.sh scripts/fast-session-end.py \
   scripts/agent-guard.sh scripts/agent-guard.py scripts/secret-guard.sh \
   scripts/secret-guard.py scripts/update-notice.sh scripts/update-notice.py \
   scripts/worktree.py scripts/worktree-create.sh scripts/worktree-remove.sh; do

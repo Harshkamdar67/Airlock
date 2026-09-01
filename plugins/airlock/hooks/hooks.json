@@ -1,5 +1,5 @@
 {
-  "description": "Managed by https://github.com/Harshkamdar67/Airlock. Show cached update notices, enforce worker profiles, and replace sensitive env reads with key-only projections.",
+  "description": "Managed by https://github.com/Harshkamdar67/Airlock. Show update and router notices, enforce worker profiles, and replace sensitive env reads with key-only projections.",
   "hooks": {
     "SessionStart": [
       {
@@ -13,6 +13,17 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/router-turn-notice.sh\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -20,6 +31,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/fast-session-end.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/router-session-end.sh\"",
+            "timeout": 2
           }
         ]
       }

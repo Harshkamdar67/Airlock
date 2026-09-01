@@ -415,6 +415,7 @@ ensure_plugin_directory "$config_dir/plugins"
 ensure_plugin_directory "$plugin_target"
 ensure_plugin_directory "$plugin_target/.claude-plugin"
 ensure_plugin_directory "$plugin_target/hooks"
+ensure_plugin_directory "$plugin_target/mcp-server"
 ensure_plugin_directory "$plugin_target/skills"
 ensure_plugin_directory "$plugin_target/skills/usage"
 ensure_plugin_directory "$plugin_target/skills/airlock-fast"
@@ -423,8 +424,13 @@ install_managed_file "$repo_root/plugins/airlock/.claude-plugin/plugin.json" "$p
 install_managed_file "$repo_root/plugins/airlock/hooks/hooks.json" "$plugin_target/hooks/hooks.json" 0644
 install_managed_file "$repo_root/plugins/airlock/skills/usage/SKILL.md" "$plugin_target/skills/usage/SKILL.md" 0644
 install_managed_file "$repo_root/plugins/airlock/skills/airlock-fast/SKILL.md" "$plugin_target/skills/airlock-fast/SKILL.md" 0644
+install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_web_tools.py" "$plugin_target/mcp-server/airlock_web_tools.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.sh" "$plugin_target/scripts/fast-session-end.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.py" "$plugin_target/scripts/fast-session-end.py" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-session-end.sh" "$plugin_target/scripts/router-session-end.sh" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-session-end.py" "$plugin_target/scripts/router-session-end.py" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-turn-notice.sh" "$plugin_target/scripts/router-turn-notice.sh" 0755
+install_managed_file "$repo_root/plugins/airlock/scripts/router-turn-notice.py" "$plugin_target/scripts/router-turn-notice.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.sh" "$plugin_target/scripts/agent-guard.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/agent-guard.py" "$plugin_target/scripts/agent-guard.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/secret-guard.sh" "$plugin_target/scripts/secret-guard.sh" 0755

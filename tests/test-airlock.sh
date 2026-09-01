@@ -5,21 +5,39 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 launcher="$repo_root/bin/airlock"
 stub="$repo_root/tests/stub-claude.sh"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/airlock-launcher-test.XXXXXX")"
-trap 'rm -rf "$tmp_dir"' EXIT
+status_server_pid=''
+cleanup() {
+  if [[ -n "$status_server_pid" ]]; then
+    kill "$status_server_pid" 2>/dev/null || true
+    wait "$status_server_pid" 2>/dev/null || true
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 # The launcher keeps a window the user set themselves, so a suite that runs
 # inside an Airlock session would otherwise inherit that session's window and
-# read it back as the launcher's own choice.
+# read it back as the launcher's own choice. The same applies to the saved
+# Agent depth and to armed Fast transition credentials.
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW AIRLOCK_CONTEXT_WINDOW AIRLOCK_SESSION_ROUTER_URL \
   AIRLOCK_UPDATE_NOTICE_FILE AIRLOCK_POLICY_HELPER AIRLOCK_SESSION_SNAPSHOT \
-  AIRLOCK_SESSION_SNAPSHOT_SHA256
+  AIRLOCK_SESSION_SNAPSHOT_SHA256 AIRLOCK_AGENT_DEPTH \
+  AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE \
+  AIRLOCK_ACCESS_HELPER
+# A Grok-rooted Airlock session exports its own worker pool, and the
+# environment outranks the fixture config, so the suite would otherwise carry
+# that session's Grok workers into profiles the fixture disables them for.
+unset AIRLOCK_GROK_MODELS
 # Build a legacy config without the saved-profile keys to verify that existing
-# installations keep their original OpenAI-only bare command.
+# installations keep their original OpenAI-only bare command. The Anthropic
+# pool stays at the pre-Haiku default so the sonnet fallback seat keeps
+# coverage; the new default seat is asserted separately below.
 while IFS= read -r line; do
   case "$line" in
-    AIRLOCK_DEFAULT_PROFILE=*|AIRLOCK_HYBRID_MODEL=*) continue ;;
+    AIRLOCK_DEFAULT_PROFILE=*|AIRLOCK_HYBRID_MODEL=*|AIRLOCK_ANTHROPIC_MODELS=*) continue ;;
   esac
   printf '%s\n' "$line"
 done < "$repo_root/config/airlock.conf.example" > "$tmp_dir/config"
+printf 'AIRLOCK_ANTHROPIC_MODELS=opus,sonnet\n' >> "$tmp_dir/config"
 cat > "$tmp_dir/access.json" <<'EOF'
 {
   "schema_version": 1,
@@ -129,10 +147,11 @@ anthropic_fast_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE=
 grep -q '^Anthropic Fast startup: on' <<<"$anthropic_fast_output"
 openai_fast_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode openai-fast off)"
 grep -q '^OpenAI Fast routes: off' <<<"$openai_fast_output"
-set_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode set --routing quality --extra-usage allow --failover never --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast on)"
+set_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode set --routing quality --extra-usage allow --failover never --anthropic-rate-limit handoff --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast on)"
 grep -q '^Routing: quality' <<<"$set_output"
 grep -q '^Extra usage: allow' <<<"$set_output"
 grep -q '^Failover: never' <<<"$set_output"
+grep -q '^Anthropic rate limits: handoff' <<<"$set_output"
 grep -q '^Max concurrent top-level subagents: 3' <<<"$set_output"
 grep -q '^OpenAI Fast routes: on' <<<"$set_output"
 grep -q '^Anthropic Fast startup: off' <<<"$set_output"
@@ -325,10 +344,11 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
   powershell_helper="$(cygpath -w "$repo_root/bin/airlock-access.py")"
   powershell_config="$(cygpath -w "$tmp_dir/powershell-mode.conf")"
   powershell_access="$(cygpath -w "$tmp_dir/powershell-mode-access.json")"
-  powershell_output="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" mode set --routing economy --extra-usage never --failover never --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast off)"
+  powershell_output="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" mode set --routing economy --extra-usage never --failover never --anthropic-rate-limit handoff --max-agents 3 --openai-fast on --anthropic-fast off --swarm-fast off)"
   grep -q '^Routing: economy' <<<"$powershell_output"
   grep -q '^Extra usage: never' <<<"$powershell_output"
   grep -q '^Failover: never' <<<"$powershell_output"
+  grep -q '^Anthropic rate limits: handoff' <<<"$powershell_output"
   grep -q '^Max concurrent top-level subagents: 3' <<<"$powershell_output"
   grep -q '^OpenAI Fast routes: on' <<<"$powershell_output"
   grep -q '^Anthropic Fast startup: off' <<<"$powershell_output"
@@ -337,7 +357,7 @@ if command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>
   powershell_usage="$(AIRLOCK_CONFIG_FILE="$powershell_config" AIRLOCK_ACCESS_FILE="$powershell_access" AIRLOCK_ACCESS_HELPER="$powershell_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" usage set --claude-plan pro --openai-capacity 5x)"
   grep -q 'configured-tier=pro; effective-tier=pro (source=user_override)' <<<"$powershell_usage"
 
-  printf 'import os\nprint("PYTHON_BIN=" + os.environ.get("AIRLOCK_PYTHON", "unset"))\n' > "$tmp_dir/powershell-python-env.py"
+  printf 'import json, os, sys\nif "custom-models" in sys.argv[1:]:\n    print("[]")\nelse:\n    print("PYTHON_BIN=" + os.environ.get("AIRLOCK_PYTHON", "unset"))\n' > "$tmp_dir/powershell-python-env.py"
   powershell_env_helper="$(cygpath -w "$tmp_dir/powershell-python-env.py")"
   powershell_python_output="$(AIRLOCK_ACCESS_HELPER="$powershell_env_helper" powershell.exe -NoProfile -NonInteractive -File "$powershell_launcher" access show)"
   if grep -q '^PYTHON_BIN=unset$' <<<"$powershell_python_output"; then
@@ -396,6 +416,9 @@ grep -q "^UPDATE_NOTICE=$PWD/relative-notice-config/update-notice.json$" <<<"$re
 grep -q '^MODEL=gpt-5.6-sol$' <<<"$normal_output"
 grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
+# The classifier rides the small fast seat (luna), not the premium sol root.
+grep -q '^AUTO_MODE_MODEL=gpt-5.6-luna$' <<<"$normal_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$normal_output"
 grep -q '^ARG=high$' <<<"$normal_output"
 grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
 grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
@@ -428,6 +451,8 @@ custom_config="$repo_root/tests/fixtures/custom.conf"
 configured_output="$(AIRLOCK_CONFIG_FILE="$custom_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q '^MODEL=gpt-5.6-terra$' <<<"$configured_output"
 grep -q '^SMALL_FAST=gpt-5.4-mini$' <<<"$configured_output"
+# A configured small fast model becomes the classifier seat too.
+grep -q '^AUTO_MODE_MODEL=gpt-5.4-mini$' <<<"$configured_output"
 grep -q '^ARG=high$' <<<"$configured_output"
 # The saved OpenAI fallback remains conservative until a >300k proof passes.
 grep -q '^COMPACT_WINDOW=200000$' <<<"$configured_output"
@@ -451,11 +476,16 @@ if grep -q '^Worker descendants:' <<<"$config_output"; then
 fi
 
 pure_profile="$normal_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["pure_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" not in trust_context
@@ -495,7 +525,10 @@ assert "Agent" not in allowed and "Agent(*)" not in allowed and "Agent(airlock-*
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
 assert "Skill(claude-api)" in args
 assert "Skill(claude-api *)" in args
-guidance = args[args.index("--append-system-prompt") + 1]
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
 assert "claude-api skill is blocked" in guidance
 assert "Work directly" in guidance and "Built-in Explore, Plan, and general-purpose accept Claude Code's" in guidance
 assert "pass `model=haiku` (resolved to gpt-5.6-luna)" in guidance and "Omit `model` only when inheriting the orchestrator" in guidance
@@ -538,15 +571,22 @@ grep -q '^SPAWN_DEPTH=1$' <<<"$normal_output"
 
 custom_prompt_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" --append-system-prompt 'first custom instruction' --append-system-prompt='second custom instruction' -p test)"
 custom_prompt_profile="$custom_prompt_output" python - <<'PY'
+import base64
 import json
 import os
+from pathlib import Path
 lines = os.environ["custom_prompt_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-assert args.count("--append-system-prompt") == 1
-prompt = args[args.index("--append-system-prompt") + 1]
-assert prompt.startswith("first custom instruction\n\nsecond custom instruction\n\n")
-assert prompt.endswith("The claude-api skill is blocked by default because its large attachment can overflow an Agent context during model routing. Native routing through Airlock is not Claude API application development; do not retry that skill unless the session was launched with AIRLOCK_ALLOW_CLAUDE_API_SKILL=1.")
-assert args.index("-p") < args.index("--append-system-prompt")
+assert args.count("--append-system-prompt-file") == 1
+prompt = Path(args[args.index("--append-system-prompt-file") + 1])
+assert prompt.name.startswith("guidance-") and prompt.suffix == ".txt"
+prompt_text = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert prompt_text.startswith("first custom instruction\n\nsecond custom instruction\n\n")
+assert prompt_text.endswith("The claude-api skill is blocked by default because its large attachment can overflow an Agent context during model routing. Native routing through Airlock is not Claude API application development; do not retry that skill unless the session was launched with AIRLOCK_ALLOW_CLAUDE_API_SKILL=1.")
+assert "-p" in args and "--append-system-prompt-file" in args
 PY
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" --append-system-prompt >/dev/null 2>&1; then
   printf 'test: missing appended-system-prompt value unexpectedly launched Claude\n' >&2
@@ -723,12 +763,18 @@ grep -q '^DEFAULT_OPUS=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^DEFAULT_SONNET=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^DEFAULT_HAIKU=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^SMALL_FAST=moonshotai/kimi-k3$' <<<"$opr_output"
-grep -q '^FABLE_CAPS=unset$' <<<"$opr_output"
-grep -q '^CUSTOM_CAPS=unset$' <<<"$opr_output"
+grep -q '^FABLE_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^OPUS_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^SONNET_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^HAIKU_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^CUSTOM_CAPS=effort,xhigh_effort,max_effort$' <<<"$opr_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$opr_output"
+grep -q '^AUTO_MODE_MODEL=moonshotai/kimi-k3$' <<<"$opr_output"
 grep -q '^COMPACT_WINDOW=unset$' <<<"$opr_output"
 grep -q '^ARG=-r$' <<<"$opr_output"
 grep -q '^ARG=high$' <<<"$opr_output"
 opr_profile="$opr_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["opr_profile"].splitlines()
@@ -741,7 +787,20 @@ assert "extra-usage authorization" in agents["airlock-or-deepseek-v4-flash-0731"
 assert args.count("--model") == 1
 assert args[args.index("--model") + 1] == "moonshotai/kimi-k3"
 assert "-r" in args
+# The OpenRouter-only root receives the web tools server through a real
+# --mcp-config file, and the launcher removes that file after Claude exits.
+assert args.count("--mcp-config") == 1
+from pathlib import Path
+mcp_arg = Path(args[args.index("--mcp-config") + 1])
+assert mcp_arg.name.startswith("airlock-mcp-") and mcp_arg.suffix == ".json"
+assert mcp_arg.exists() is False
 PY
+opr_mcp_path="$(awk 'found {sub(/^ARG=/, ""); print; exit} /^ARG=--mcp-config$/ {found=1}' <<<"$opr_output")"
+if [[ -z "$opr_mcp_path" || -e "$opr_mcp_path" ]]; then
+  printf 'test: OpenRouter-only MCP config path missing or not cleaned up\n' >&2
+  exit 1
+fi
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$opr_output"
 opr_snapshot="$(grep '^SESSION_SNAPSHOT=' <<<"$opr_output" | cut -d= -f2-)"
 if [[ -z "$opr_snapshot" || -e "$opr_snapshot" ]]; then
   printf 'test: OpenRouter-only snapshot was not removed after Claude exited\n' >&2
@@ -772,8 +831,127 @@ fi
 [[ "$opr_bare_status" -eq 2 ]]
 grep -q 'OpenRouter route is required outside an interactive terminal' "$tmp_dir/opr-bare.err"
 
-hybrid_openai_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid terra -p test)"
+# A hybrid OpenRouter root must keep the resolved registry route after the
+# resolver function returns. This is an isolated launcher test: the fake router
+# accepts only hybrid arguments, the Claude stub makes no model request, and no
+# real credential backend is read.
+hybrid_opr_registry="$tmp_dir/hybrid-opr-private/openrouter-registry.json"
+python - "$repo_root/bin" "$hybrid_opr_registry" <<'PY'
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import airlock_policy as policy
+policy.write_openrouter_registry(sys.argv[2], {
+    "schema_version": 1,
+    "models": [{
+        "route": "ox-alpha",
+        "model": "stealth/ox-alpha",
+        "endpoint_provider": "stealth",
+        "provider_name": "Stealth",
+        "provider_slug": "stealth",
+        "quantization": "unknown",
+        "canonical_slug": "stealth/ox-alpha",
+        "alias_target": None,
+        "supported_parameters": ["tool_choice", "tools"],
+        "expiration_date": None,
+        "checked_at": int(time.time()),
+        "enabled": True,
+    }],
+})
+PY
+hybrid_opr_router="$tmp_dir/hybrid-opr-router.py"
+cat > "$hybrid_opr_router" <<'PY'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+# The launcher watches the router process so a session survives its router
+# being killed, so this stub answers both the start and the watch it runs.
+if len(sys.argv) >= 2 and sys.argv[1] == "watch":
+    marker = os.environ.get("AIRLOCK_TEST_ROUTER_WATCH_MARKER")
+    if marker:
+        Path(marker).write_text(" ".join(sys.argv[1:]), encoding="utf-8")
+    raise SystemExit(0)
+if len(sys.argv) < 2 or sys.argv[1] != "start" or "--openai-url" not in sys.argv:
+    raise SystemExit(71)
+if "--print-pid" not in sys.argv:
+    raise SystemExit(72)
+print("http://127.0.0.1:28473")
+print(os.getpid())
+PY
+chmod +x "$hybrid_opr_router"
+hybrid_opr_bundle="$tmp_dir/hybrid-opr-managed-bundle.json"
+python - "$repo_root/config/managed-bundle.json" "$hybrid_opr_bundle" "$hybrid_opr_router" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+bundle = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+bundle["components"]["bin/airlock-router.py"] = hashlib.sha256(
+    Path(sys.argv[3]).read_bytes()
+).hexdigest()
+Path(sys.argv[2]).write_text(json.dumps(bundle), encoding="utf-8")
+PY
+hybrid_opr_output="$(
+  OPENAI_API_KEY=synthetic GROK_API_KEY=synthetic \
+  OPENROUTER_API_KEY=synthetic CLAUDE_CODE_OAUTH_TOKEN=synthetic \
+  AIRLOCK_OPENROUTER_REGISTRY_FILE="$hybrid_opr_registry" \
+  AIRLOCK_MANAGED_BUNDLE_FILE="$hybrid_opr_bundle" \
+  AIRLOCK_ROUTER_HELPER="$hybrid_opr_router" AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_TEST_ROUTER_WATCH_MARKER="$tmp_dir/hybrid-opr-watch.marker" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 \
+    "$launcher" hybrid ox-alpha -p test
+)"
+# A router-backed session watches its router, so a router killed mid-session
+# is replaced instead of taking every later request with it.
+if [[ ! -s "$tmp_dir/hybrid-opr-watch.marker" ]]; then
+  printf 'test: the launcher did not watch the session router\n' >&2
+  exit 1
+fi
+grep -q -- '--router-pid' "$tmp_dir/hybrid-opr-watch.marker"
+grep -q -- '--port 28473' "$tmp_dir/hybrid-opr-watch.marker"
+grep -q '^ACTIVE_PROFILE=hybrid-openrouter-root$' <<<"$hybrid_opr_output"
+grep -q '^ROOT_MODEL=stealth/ox-alpha$' <<<"$hybrid_opr_output"
+grep -q '^MODEL=unset$' <<<"$hybrid_opr_output"
+grep -q '^CUSTOM_NAME=OpenRouter ox-alpha (OpenRouter hybrid root)$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^AUTO_MODE_MODEL=claude-sonnet-5\[1m\]$' <<<"$hybrid_opr_output"
+grep -q '^OPENROUTER_KEY_SET=no$' <<<"$hybrid_opr_output"
+grep -q '^ARG=stealth/ox-alpha$' <<<"$hybrid_opr_output"
+hybrid_opr_profile="$hybrid_opr_output" python - <<'PY'
+import json
+import os
+lines = os.environ["hybrid_opr_profile"].splitlines()
+args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
+agents = json.loads(args[args.index("--agents") + 1])
+assert args.count("--model") == 1
+assert args[args.index("--model") + 1] == "stealth/ox-alpha"
+assert agents["airlock-or-ox-alpha"]["model"] == "stealth/ox-alpha"
+assert "hybrid root model" in agents["airlock-or-ox-alpha"]["description"]
+assert all(
+    value != "stealth/ox-alpha"
+    for key, value in (
+        ("fable", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_FABLE="))),
+        ("opus", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_OPUS="))),
+        ("sonnet", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_SONNET="))),
+        ("haiku", next(line.split("=", 1)[1] for line in lines if line.startswith("DEFAULT_HAIKU="))),
+    )
+), "OpenRouter root leaked into a family alias"
+PY
+if AIRLOCK_OPENROUTER_REGISTRY_FILE="$hybrid_opr_registry" \
+  "$launcher" hybrid ox-alpha --model moonshotai/kimi-k3 -p test \
+  >/dev/null 2>"$tmp_dir/hybrid-opr-mismatch.err"; then
+  printf 'test: hybrid OpenRouter root accepted a mismatched --model\n' >&2
+  exit 1
+fi
+grep -q 'forwarded --model disagrees with the selected OpenRouter root route' \
+  "$tmp_dir/hybrid-opr-mismatch.err"
+
+hybrid_openai_output="$(OPENROUTER_API_KEY=synthetic AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid terra -p test)"
 grep -q '^MODEL=unset$' <<<"$hybrid_openai_output"
+grep -q '^OPENROUTER_KEY_SET=no$' <<<"$hybrid_openai_output"
 grep -Eq '^BASE_URL=http://127\.0\.0\.1:[1-9][0-9]*$' <<<"$hybrid_openai_output"
 if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_openai_output"; then
   printf 'test: hybrid OpenAI root bypassed the native router\n' >&2
@@ -784,22 +962,29 @@ grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_openai_output"
-grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
+# The classifier rides the small fast seat, which prefers native Claude here.
+grep -q '^AUTO_MODE_MODEL=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^FABLE_NAME=gpt-5.6-sol$' <<<"$hybrid_openai_output"
 grep -q '^OPUS_NAME=claude-opus-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SONNET_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^HAIKU_NAME=gpt-5.6-luna$' <<<"$hybrid_openai_output"
+grep -q '^HAIKU_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
 grep -q '^ROUTER_MODELS=claude-opus-5,claude-opus-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_openai_output"
 hybrid_profile="$hybrid_openai_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["hybrid_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
@@ -829,7 +1014,10 @@ for value in args[start:]:
 expected_allowed = ["Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)", *[f"Agent({name})" for name in sorted(agents)]]
 assert allowed == expected_allowed, (allowed, expected_allowed)
 assert "Bash(airlock-delegate *)" not in allowed and "Bash(airlock-workflow *)" not in allowed
-guidance = args[args.index("--append-system-prompt") + 1]
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
 assert "one session-scoped loopback router keeps every enabled provider inside the same Claude Code process" in guidance.replace("One session", "one session")
 # Grok is off unless the config or an explicit Grok root enables it, so this
 # session must be told the route does not exist rather than left to guess.
@@ -1072,17 +1260,31 @@ grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_FABLE=gpt-5.6-sol$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
-grep -q '^DEFAULT_HAIKU=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
-grep -q '^SMALL_FAST=gpt-5.6-luna$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
+grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
+# An Anthropic root serves the stock classifier target, so the knob stays clear.
+grep -q '^AUTO_MODE_MODEL=unset$' <<<"$hybrid_anthropic_output"
+# With Haiku enabled, which is the setup default now, the family slot prefers
+# the cheapest Claude route instead of falling back to Sonnet.
+hybrid_haiku_seat_output="$(AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sonnet -p test)"
+grep -q '^DEFAULT_HAIKU=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^SMALL_FAST=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^HAIKU_NAME=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
+grep -q '^AUTO_MODE_MODEL=unset$' <<<"$hybrid_haiku_seat_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_MODELS=claude-opus-5\[1m\],claude-sonnet-5\[1m\],gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra$' <<<"$hybrid_anthropic_output"
 hybrid_profile="$hybrid_anthropic_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["hybrid_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 assert settings["autoMode"]["environment"][0] == "$defaults"
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
@@ -1121,11 +1323,16 @@ reduced_config="$tmp_dir/reduced.conf"
 printf '%s\n' 'AIRLOCK_ANTHROPIC_MODELS=sonnet' 'AIRLOCK_OPENAI_MODELS=sol,luna' 'AIRLOCK_ANTHROPIC_EXTRA_MODELS=' 'AIRLOCK_OPENAI_EXTRA_MODELS=' >"$reduced_config"
 reduced_output="$(AIRLOCK_CONFIG_FILE="$reduced_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid sol -p test)"
 reduced_profile="$reduced_output" python - <<'PY'
+import base64
 import json
 import os
 lines = os.environ["reduced_profile"].splitlines()
 args = json.loads(next(line[len("ARGS_JSON="):] for line in lines if line.startswith("ARGS_JSON=")))
-settings = json.loads(args[args.index("--settings") + 1])
+settings_line_value = next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+)
+settings = json.loads(settings_line_value)
 trust_context = settings["autoMode"]["environment"][1]
 assert "OpenAI models" in trust_context and "Anthropic Claude" in trust_context
 assert "airlock-luna, airlock-sol, airlock-sonnet" in trust_context
@@ -1168,7 +1375,10 @@ done
 # The bash that macOS ships as /bin/bash rejects a bare expansion of an empty
 # array under set -u, so both entry points need a no-argument run here.
 bare_hybrid_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid opus)"
-grep -Fq '"--effort", "high", "--model", "claude-opus-5[1m]", "--append-system-prompt"' <<<"$bare_hybrid_output"
+# File-backed flags land early in argv and user passthrough lands last, so the
+# effort/model pair and the guidance flag are checked as independent elements.
+grep -Fq '"--effort", "high", "--model", "claude-opus-5[1m]"' <<<"$bare_hybrid_output"
+grep -Fq '"--append-system-prompt-file"' <<<"$bare_hybrid_output"
 grep -q '^OPENAI_BRIDGE=1$' <<<"$bare_hybrid_output"
 # Claude Code detects effort support for real Claude IDs on its own. Declaring
 # capabilities here would disable everything left off the list.
@@ -1196,7 +1406,10 @@ for rejected_window in 50000 99999 1000001 2000000 0272000 +272000 ' 272000 ' no
   fi
 done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
-grep -Fq '"--model", "gpt-5.6-sol", "--effort", "high", "--append-system-prompt"' <<<"$bare_openai_output"
+# File-backed flags land early in argv and user passthrough lands last, so the
+# model/effort pair and the guidance flag are checked as independent elements.
+grep -Fq '"--model", "gpt-5.6-sol", "--effort", "high"' <<<"$bare_openai_output"
+grep -Fq '"--append-system-prompt-file"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
 # OpenAI roots keep the conservative fallback because no long-context proof passed.
 grep -q '^COMPACT_WINDOW=272000$' <<<"$bare_openai_output"
@@ -1332,24 +1545,107 @@ fi
 grok_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok -p test)"
-grep -q '^MODEL=grok-4.5$' <<<"$grok_output"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_output"
 grep -q '^ACTIVE_PROFILE=grok-pure$' <<<"$grok_output"
 grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$grok_output"
 grep -q '^ALLOWED_AGENTS=airlock-composer,airlock-grok$' <<<"$grok_output"
-grep -q '^ALLOWED_MODELS=grok-4.5,grok-composer-2.5-fast$' <<<"$grok_output"
-grep -q '^DEFAULT_FABLE=grok-4.5$' <<<"$grok_output"
-grep -q '^DEFAULT_OPUS=grok-4.5$' <<<"$grok_output"
+grep -q '^ALLOWED_MODELS=grok-4.6,grok-composer-2.5-fast$' <<<"$grok_output"
+grep -q '^DEFAULT_FABLE=grok-4.6$' <<<"$grok_output"
+grep -q '^DEFAULT_OPUS=grok-4.6$' <<<"$grok_output"
 grep -q '^DEFAULT_SONNET=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^DEFAULT_HAIKU=grok-composer-2.5-fast$' <<<"$grok_output"
 grep -q '^SMALL_FAST=grok-composer-2.5-fast$' <<<"$grok_output"
-grep -q '^CUSTOM_NAME=Grok 4.5 (Grok subscription)$' <<<"$grok_output"
+grep -q '^CUSTOM_NAME=Grok 4.6 (Grok subscription)$' <<<"$grok_output"
+# Classifications ride the economical Composer seat instead of the flagship root.
+grep -q '^AUTO_MODE_MODEL=grok-composer-2.5-fast$' <<<"$grok_output"
+grep -q '^ALWAYS_EFFORT=1$' <<<"$grok_output"
+# grok-4.6 declares its documented 500000-token window and compacts at 80%
+# of it, so automatic compaction still has room for the summary request it
+# has to send. Composer has no documented window and keeps the fallback.
+grep -q '^COMPACT_WINDOW=400000$' <<<"$grok_output"
+grep -q '^MAX_CONTEXT=500000$' <<<"$grok_output"
 [[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_output")" -eq 1 ]]
+# The bundled web tools server rides in managed settings for a Grok root,
+# together with guidance steering it away from the Anthropic-only built-ins.
+# Settings arrive through the stub's parsed SETTINGS_JSON line, so assertions
+# read the decoded object instead of matching dump formatting.
+grok_profile="$grok_output" python - <<'PY'
+import base64
+import json
+import os
+
+lines = os.environ["grok_profile"].splitlines()
+settings = json.loads(next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+))
+assert set(settings["mcpServers"]) == {"airlock-web-tools"}
+assert settings["permissions"]["allow"] == [
+    "mcp__airlock-web-tools__web_search",
+    "mcp__airlock-web-tools__fetch_page",
+]
+assert settings["permissions"]["deny"] == ["WebSearch", "WebFetch"]
+# The composed guidance reaches Claude as a base64 file-backed flag, so the
+# steering paragraph is asserted against the decoded prompt.
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance:" in guidance
+PY
+# The same server definition reaches Claude through a real --mcp-config file,
+# because Claude Code does not start mcpServers entries from --settings.
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$grok_output"
+
+web_tools_off_output="$(AIRLOCK_WEB_TOOLS=off AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok -p test)"
+if grep -q 'airlock-web-tools' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off still registered the web tools server\n' >&2
+  exit 1
+fi
+if grep -q '^MCP_SERVERS=' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off still passed an --mcp-config file\n' >&2
+  exit 1
+fi
+if grep -q '"permissions"' <<<"$web_tools_off_output"; then
+  printf 'test: AIRLOCK_WEB_TOOLS=off kept the web tool denials\n' >&2
+  exit 1
+fi
+# The off switch must also omit the steering paragraph from the composed
+# guidance, which the stub only reports in its base64 encoded form.
+web_tools_off_profile="$web_tools_off_output" python - <<'PY'
+import base64
+import os
+
+lines = os.environ["web_tools_off_profile"].splitlines()
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance" not in guidance
+assert "airlock-web-tools" not in guidance
+PY
 
 grok_composer_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok composer -p test)"
 grep -q '^MODEL=grok-composer-2.5-fast$' <<<"$grok_composer_output"
+grep -q '^COMPACT_WINDOW=272000$' <<<"$grok_composer_output"
+grep -q '^MAX_CONTEXT=unset$' <<<"$grok_composer_output"
 [[ "$(grep -c '^ACTIVE_PROFILE=' <<<"$grok_composer_output")" -eq 1 ]]
+
+grok_new_id_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok --model=grok-4.6 -p test)"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_new_id_output"
+
+# Airlock runs one Grok flagship, so the older ID stays accepted as an alias
+# of the shipped route instead of becoming a second route.
+grok_legacy_id_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
+  AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
+  AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok --model=grok-4.5 -p test)"
+grep -q '^MODEL=grok-4.6$' <<<"$grok_legacy_id_output"
 
 if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   "$launcher" grok --model=bogus -p test >/dev/null 2>&1; then
@@ -1357,13 +1653,57 @@ if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   exit 1
 fi
 
+# A declared model extends the launcher without code changes: with grok-4.7
+# present and enabled in models.json, the same request resolves to that ID.
+# The declared ID has to be one Airlock does not ship, or resolve_grok_model
+# matches its own case first and the declaration path is never exercised.
+declared_models="$(mktemp "${TMPDIR:-/tmp}/airlock-models-XXXXXX.json")"
+cat >"$declared_models" <<'JSON'
+{"schema_version": 1, "models": [{
+  "id": "grok-4.7", "provider": "grok", "effort_ceiling": "xhigh",
+  "context_window": null, "cost": "premium", "enabled": true
+}]}
+JSON
+declared_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
+  AIRLOCK_MODELS_FILE="$declared_models" \
+  "$launcher" grok --model=grok-4.7 -p test)"
+grep -q '^MODEL=grok-4.7$' <<<"$declared_output"
+rm -f "$declared_models"
+
 hybrid_grok_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_GROK_DIRECT_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_GROK_WRAPPER_AGENTS_FILE="$repo_root/config/grok-agents.json" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid grok -p test)"
 grep -q '^ACTIVE_PROFILE=hybrid-grok-root$' <<<"$hybrid_grok_output"
-grep -Eq '^ROUTER_MODELS=.*grok-4\.5' <<<"$hybrid_grok_output"
+grep -Eq '^ROUTER_MODELS=.*grok-4\.6' <<<"$hybrid_grok_output"
 grep -Eq '^ROUTER_MODELS=.*claude-opus-5' <<<"$hybrid_grok_output"
+# A hybrid Grok root is still grok-4.6, so it declares the same documented
+# window as the pure profile rather than the conservative fallback.
+grep -q '^COMPACT_WINDOW=400000$' <<<"$hybrid_grok_output"
+grep -q '^MAX_CONTEXT=500000$' <<<"$hybrid_grok_output"
+# The Grok-rooted hybrid keeps working built-in WebFetch, so only WebSearch is denied.
+hybrid_grok_profile="$hybrid_grok_output" python - <<'PY'
+import json
+import os
+
+lines = os.environ["hybrid_grok_profile"].splitlines()
+settings = json.loads(next(
+    line[len("SETTINGS_JSON="):] for line in lines
+    if line.startswith("SETTINGS_JSON=") and line != "SETTINGS_JSON=unreadable"
+))
+assert set(settings["mcpServers"]) == {"airlock-web-tools"}
+assert settings["permissions"]["allow"] == [
+    "mcp__airlock-web-tools__web_search",
+    "mcp__airlock-web-tools__fetch_page",
+]
+assert settings["permissions"]["deny"] == ["WebSearch"]
+PY
+# The hybrid Grok root also receives the web tools through --mcp-config.
+grep -q '^MCP_SERVERS=airlock-web-tools$' <<<"$hybrid_grok_output"
+if grep -Fq '"WebFetch"' <<<"$hybrid_grok_output"; then
+  printf 'test: hybrid Grok root denied working built-in WebFetch\n' >&2
+  exit 1
+fi
 
 # A hybrid session that did not ask for Grok must not gain Grok workers.
 hybrid_plain_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
@@ -1372,6 +1712,189 @@ if grep -q 'airlock-grok' <<<"$hybrid_plain_output"; then
   printf 'test: hybrid session enabled Grok without an explicit opt-in\n' >&2
   exit 1
 fi
+# An Anthropic-rooted hybrid keeps Claude Code exactly as shipped: no web tools
+# server, no denials, and no steering paragraph.
+if grep -q '"permissions"' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session received web tool denials\n' >&2
+  exit 1
+fi
+if grep -q '"mcpServers"' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session registered the web tools server\n' >&2
+  exit 1
+fi
+if grep -q '^MCP_SERVERS=' <<<"$hybrid_plain_output"; then
+  printf 'test: Anthropic-rooted session passed an --mcp-config file\n' >&2
+  exit 1
+fi
+# The composed guidance of an Anthropic-rooted session carries no web tools
+# paragraph; the stub reports it in base64 encoded form.
+hybrid_plain_profile="$hybrid_plain_output" python - <<'PY'
+import base64
+import os
+
+lines = os.environ["hybrid_plain_profile"].splitlines()
+guidance = base64.b64decode(next(
+    line[len("APPEND_SYSTEM_PROMPT_B64="):] for line in lines
+    if line.startswith("APPEND_SYSTEM_PROMPT_B64=")
+)).decode("utf-8")
+assert "Web tool guidance" not in guidance
+assert "airlock-web-tools" not in guidance
+PY
+
+status_without_router="$(AIRLOCK_SESSION_ROUTER_URL= "$launcher" status)"
+[[ "$status_without_router" == 'no Airlock router is running for this terminal' ]]
+if "$launcher" status unexpected >/dev/null 2>&1; then
+  printf 'test: status command accepted an unexpected argument\n' >&2
+  exit 1
+fi
+
+status_port_file="$tmp_dir/status-port"
+python - "$status_port_file" <<'PY' &
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from pathlib import Path
+import sys
+
+payload = {
+    "instance_id": "0123456789abcdef",
+    "profile": "hybrid-openai-root",
+    "root_model": "gpt-5.6-sol",
+    "root_provider": "openai",
+    "rate_limit_cooldowns": ["gpt-5.6-terra"],
+    "events": [
+        {"timestamp": "2026-08-26T10:00:01Z", "kind": "session_model_pinned", "profile": "hybrid-openai-root", "model": "gpt-5.6-sol", "provider": "openai"},
+        {"timestamp": "2026-08-26T10:00:02Z", "kind": "rate_limit_failover_attempted", "from_model": "gpt-5.6-sol", "to_model": "gpt-5.6-terra"},
+        {"timestamp": "2026-08-26T10:00:03Z", "kind": "rate_limit_failover_succeeded", "from_model": "gpt-5.6-sol", "to_model": "gpt-5.6-terra", "hops": 1},
+        {"timestamp": "2026-08-26T10:00:04Z", "kind": "rate_limit_cooldown_skipped", "model": "gpt-5.6-terra", "provider": "openai"},
+        {"timestamp": "2026-08-26T10:00:05Z", "kind": "openrouter_effort_clamped", "model": "stealth/ox-alpha", "requested": "max", "forwarded": "high", "ceiling": "high"},
+        {"timestamp": "2026-08-26T10:00:06Z", "kind": "sanitized_error_substituted", "model": "stealth/ox-alpha", "provider": "openrouter", "status": 403},
+        {"timestamp": "2026-08-26T10:00:07Z", "kind": "rate_limit_chain_exhausted", "model": "gpt-5.6-sol", "last_model": "gpt-5.6-terra", "models_considered": 2},
+        {"timestamp": "2026-08-26T10:00:08Z", "kind": "openrouter_server_tools_stripped", "model": "stealth/ox-alpha", "removed_count": 2},
+        {"timestamp": "2026-08-26T10:00:09Z", "kind": "future_action_v2", "message": "SHOULD_NOT_PRINT", "credential": "SENTINEL_STATUS_SECRET"},
+    ],
+    "summary": [],
+}
+body = json.dumps(payload, separators=(",", ":")).encode("ascii")
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format, *_args):
+        pass
+
+    def do_GET(self):
+        if self.path != "/diagnostics":
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+Path(sys.argv[1]).write_text(str(server.server_address[1]), encoding="ascii")
+# status, the session-end hook, then two turn-notice runs.
+for _ in range(4):
+    server.handle_request()
+server.server_close()
+PY
+status_server_pid=$!
+# On a loaded macOS runner, starting the Python interpreter itself can take
+# longer than the old two-second allowance. Wait for the readiness artifact,
+# but stop immediately if the stub process actually died so a real traceback
+# is not hidden behind a misleading timing failure.
+for _ in $(seq 1 750); do
+  [[ -s "$status_port_file" ]] && break
+  if ! kill -0 "$status_server_pid" 2>/dev/null; then
+    wait "$status_server_pid" || true
+    printf 'test: status stub stopped before publishing its loopback port\n' >&2
+    exit 1
+  fi
+  sleep 0.02
+done
+if [[ ! -s "$status_port_file" ]]; then
+  printf 'test: status stub did not publish its loopback port within 15 seconds\n' >&2
+  exit 1
+fi
+status_router_url="http://127.0.0.1:$(<"$status_port_file")"
+status_with_router="$(AIRLOCK_SESSION_ROUTER_URL="$status_router_url" "$launcher" status)"
+STATUS_OUTPUT="$status_with_router" python - <<'PY'
+import os
+
+lines = os.environ["STATUS_OUTPUT"].splitlines()
+assert lines == [
+    "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
+    "10:00:01Z - Pinned gpt-5.6-sol (openai) as the session root.",
+    "10:00:02Z - gpt-5.6-sol hit a rate limit; trying gpt-5.6-terra.",
+    "10:00:03Z - gpt-5.6-sol hit a rate limit; continued on gpt-5.6-terra.",
+    "10:00:04Z - Skipped gpt-5.6-terra because its rate-limit cooldown is active.",
+    "10:00:05Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high (route ceiling high).",
+    "10:00:06Z - Replaced the openrouter error for stealth/ox-alpha with a safe local message.",
+    "10:00:07Z - The failover chain for gpt-5.6-sol exhausted 2 models.",
+    "10:00:08Z - Removed 2 unsupported OpenRouter server tools for stealth/ox-alpha.",
+    "10:00:09Z - Router action: future_action_v2.",
+]
+assert "SHOULD_NOT_PRINT" not in os.environ["STATUS_OUTPUT"]
+assert "SENTINEL_STATUS_SECRET" not in os.environ["STATUS_OUTPUT"]
+PY
+
+python_command="$(command -v python)"
+hook_output="$(
+  AIRLOCK_SESSION_ROUTER_URL="$status_router_url" AIRLOCK_PYTHON="$python_command" \
+    bash "$repo_root/plugins/airlock/scripts/router-session-end.sh"
+)"
+HOOK_OUTPUT="$hook_output" python - <<'PY'
+import json
+import os
+
+value = json.loads(os.environ["HOOK_OUTPUT"])
+assert set(value) == {"systemMessage"}
+lines = value["systemMessage"].splitlines()
+assert 1 <= len(lines) <= 6
+assert lines[0] == "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)"
+assert lines[-1] == "10:00:09Z - Router action: future_action_v2."
+assert "SHOULD_NOT_PRINT" not in value["systemMessage"]
+assert "SENTINEL_STATUS_SECRET" not in value["systemMessage"]
+PY
+# The turn notice is the only in-session signal that another model answered,
+# so it must name both models and must not repeat itself on a later turn.
+turn_marker="$tmp_dir/turn-notice-session.json"
+: >"$turn_marker"
+turn_notice="$(
+  AIRLOCK_SESSION_ROUTER_URL="$status_router_url" AIRLOCK_PYTHON="$python_command"     AIRLOCK_SESSION_SNAPSHOT="$turn_marker"     bash "$repo_root/plugins/airlock/scripts/router-turn-notice.sh"
+)"
+TURN_NOTICE="$turn_notice" python - <<'PY2'
+import json
+import os
+
+value = json.loads(os.environ["TURN_NOTICE"])
+assert set(value) == {"systemMessage"}
+message = value["systemMessage"]
+assert message.startswith("Airlock routing")
+assert "gpt-5.6-sol was rate limited; gpt-5.6-terra answered instead." in message
+# One switch, one line. A turn that hands off many times must not repeat it.
+assert message.count("gpt-5.6-terra answered") == 1
+assert "every replacement Airlock could try were rate limited" in message
+assert "SHOULD_NOT_PRINT" not in message
+assert "SENTINEL_STATUS_SECRET" not in message
+PY2
+repeat_notice="$(
+  AIRLOCK_SESSION_ROUTER_URL="$status_router_url" AIRLOCK_PYTHON="$python_command"     AIRLOCK_SESSION_SNAPSHOT="$turn_marker"     bash "$repo_root/plugins/airlock/scripts/router-turn-notice.sh"
+)"
+[[ -z "$repeat_notice" ]]
+
+wait "$status_server_pid"
+status_server_pid=''
+
+status_unreachable="$(AIRLOCK_SESSION_ROUTER_URL="$status_router_url" "$launcher" status)"
+[[ "$status_unreachable" == 'no Airlock router is running for this terminal' ]]
+silent_hook="$({ AIRLOCK_SESSION_ROUTER_URL="$status_router_url" AIRLOCK_PYTHON="$python_command" bash "$repo_root/plugins/airlock/scripts/router-session-end.sh"; } 2>/dev/null)"
+[[ -z "$silent_hook" ]]
 
 if AIRLOCK_SESSION_ROUTER_URL= "$launcher" session-usage >/dev/null 2>"$tmp_dir/session-usage.err"; then
   printf 'test: session usage succeeded outside a hybrid session\n' >&2

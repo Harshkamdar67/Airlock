@@ -115,8 +115,13 @@ Options:
 Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
-  Hybrid: sonnet, sol, terra, luna, opus, fable, haiku
+  Hybrid: auto, sonnet, sol, terra, luna, opus, fable, haiku
   OpenAI-only: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+
+The reserved hybrid value 'auto' resolves at launch time: Fable when Fable's
+access class is neither extra nor unavailable, otherwise Opus under the same
+rule, otherwise Sonnet as a final fallback. Auto never picks an extra-class
+model and never creates silent metered spend.
 EOF
 }
 
@@ -250,14 +255,17 @@ else
   read_config_value AIRLOCK_DEFAULT_PROFILE hybrid
 fi
 default_default_profile="$CONFIG_VALUE"
-# A brand new setup recommends Sol. An existing config that simply never had
+# A brand new setup writes the reserved value 'auto': the hybrid root then
+# resolves at launch time under the local access policy (Fable when eligible,
+# otherwise Opus, otherwise Sonnet). An existing config that simply never had
 # this key must fall back to sonnet instead, because that is what both
-# launchers already use for it; picking anything else would silently move the
-# hybrid root the first time setup rewrites the file.
+# launchers already used for it; picking anything else would silently move the
+# hybrid root the first time setup rewrites the file. Moving an existing root
+# to 'auto' stays a deliberate choice through --hybrid-model auto.
 if [[ -f "$config_target" ]]; then
   read_config_value AIRLOCK_HYBRID_MODEL sonnet
 else
-  read_config_value AIRLOCK_HYBRID_MODEL sol
+  read_config_value AIRLOCK_HYBRID_MODEL auto
 fi
 default_hybrid_model="$CONFIG_VALUE"
 read_config_value AIRLOCK_GROK_MODEL grok
@@ -305,7 +313,7 @@ read_config_value AIRLOCK_ANTHROPIC_PLAN unknown
 default_claude_plan="$CONFIG_VALUE"
 read_config_value AIRLOCK_OPENAI_CAPACITY auto
 default_openai_capacity="$CONFIG_VALUE"
-read_config_value AIRLOCK_ANTHROPIC_MODELS 'opus,sonnet'
+read_config_value AIRLOCK_ANTHROPIC_MODELS 'opus,sonnet,haiku'
 default_anthropic_models="$CONFIG_VALUE"
 read_config_value AIRLOCK_OPENAI_MODELS 'sol,terra,luna'
 default_openai_models="$CONFIG_VALUE"
@@ -385,9 +393,10 @@ utility_alias_from_wire() {
 
 set_model_info() {
   case "$1" in
+    auto) MODEL_TITLE='Auto hybrid root'; MODEL_ID='auto'; MODEL_DETAIL='Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet.' ;;
     sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
     opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
-    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
+    fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
@@ -399,7 +408,7 @@ set_model_info() {
     5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex'; MODEL_DETAIL='Supported Codex root.' ;;
     spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
     5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2'; MODEL_DETAIL='Supported OpenAI root.' ;;
-    grok) MODEL_TITLE='Grok 4.5'; MODEL_ID='grok-4.5'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
+    grok) MODEL_TITLE='Grok 4.6'; MODEL_ID='grok-4.6'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
     composer) MODEL_TITLE='Grok Composer 2.5 Fast'; MODEL_ID='grok-composer-2.5-fast'; MODEL_DETAIL='Discovery, triage, and bounded mechanical work. Economical usage.' ;;
     *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
   esac
@@ -435,7 +444,7 @@ validate_default_profile() {
 
 validate_hybrid_model() {
   case "$1" in
-    sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
+    auto|sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
@@ -1287,7 +1296,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
   if [[ "$default_profile" == 'grok' ]]; then
     print_question 'Default orchestrator' 'Grok-only sessions can still use exact Grok workers.'
     choose_rich_option "${grok_model:-$default_grok_model}" grok \
-      'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.' \
       'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
     grok_model="$CHOICE"
     main_model="$default_main_model"
@@ -1295,21 +1304,22 @@ if [[ "$assume_yes" -eq 0 ]]; then
   elif [[ "$default_profile" == 'hybrid' ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
     hybrid_options=(
+      'auto|Auto (recommended)|auto|Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet. Never picks an extra-class model.'
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.'
       'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
       'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.'
       'opus|Claude Opus 5|claude-opus-5[1m]|Architecture, security, and visual direction. Premium usage.'
-      'fable|Claude Fable 5|claude-fable-5[1m]|Efficient frontier work. May require extra usage.'
+      'fable|Claude Fable 5.1|claude-fable-5-1[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
       hybrid_options+=(
-        'grok|Grok 4.5|grok-4.5|Difficult implementation and debugging. Premium usage.'
+        'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.'
         'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
       )
     fi
-    choose_rich_option "$hybrid_model" sol "${hybrid_options[@]}"
+    choose_rich_option "$hybrid_model" auto "${hybrid_options[@]}"
     hybrid_model="$CHOICE"
     main_model="$default_main_model"
   else
@@ -1348,8 +1358,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
   choose_rich_option "$current_preset" balanced \
     'balanced|Balanced pool||Claude Opus 5 and Claude Sonnet 5 plus GPT Sol, Terra, and Luna. The router picks one only when it helps.' \
     'economy|Economical pool||Claude Sonnet 5 and GPT Luna. Lower relative usage with broad basic coverage.' \
-    'frontier|Balanced pool plus Claude Fable 5||Everything in the balanced pool and Claude Fable 5 (claude-fable-5[1m]). Fable can use extra usage, so it is not on by default.' \
-    'custom|Choose models individually||Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.'
+    'frontier|Balanced pool plus Claude Fable 5.1||Everything in the balanced pool and Claude Fable 5.1 (claude-fable-5-1[1m]). Fable can use extra usage, so it is not on by default.' \
+    'custom|Choose models individually||Pick any mix, including Claude Fable 5.1 and Claude Haiku 4.5.'
   worker_preset="$CHOICE"
   anthropic_models_was_decided=1
   openai_models_was_decided=1
@@ -1388,8 +1398,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
     esac
     print_question 'Which Grok workers should the orchestrator be allowed to use?' 'These run on your Grok subscription through the local proxy.'
     choose_rich_option "$current_grok_preset" both \
-      'both|Grok 4.5 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
-      'grok|Grok 4.5 only|grok-4.5|Difficult implementation and debugging. Premium usage.' \
+      'both|Grok 4.6 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
+      'grok|Grok 4.6 only|grok-4.6|Difficult implementation and debugging. Premium usage.' \
       'composer|Grok Composer 2.5 Fast only|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
     case "$CHOICE" in
       both) grok_models='grok,composer' ;;

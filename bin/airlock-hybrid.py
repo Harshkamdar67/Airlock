@@ -19,6 +19,10 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_AGENTS_BYTES = 24 * 1024
 WINDOWS_COMMAND_LINE_MAX_UNITS = 32_767
 ROUTER_START_TIMEOUT_SECONDS = 15
+# Claude Code reads the router address once, at startup, so a router that
+# dies mid-session takes the whole session with it and no later request can
+# succeed. The launcher outlives the router by design, so it runs the router
+# helper's own watch alongside the session.
 FAST_TRANSITION_CHANNEL_ENV = "AIRLOCK_FAST_TRANSITION_CHANNEL"
 FAST_TRANSITION_NONCE_ENV = "AIRLOCK_FAST_TRANSITION_NONCE"
 FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
@@ -32,6 +36,7 @@ PROFILES = {
     "hybrid-openai-root",
     "hybrid-anthropic-root",
     "hybrid-grok-root",
+    "hybrid-openrouter-root",
 }
 PROXY_PURE_PROFILES = {"openai-pure", "grok-pure"}
 PROXY_PURE_ROOT_PREFIXES = {"openai-pure": "gpt-", "grok-pure": "grok-"}
@@ -39,6 +44,7 @@ HYBRID_PROFILES = {
     "hybrid-openai-root",
     "hybrid-anthropic-root",
     "hybrid-grok-root",
+    "hybrid-openrouter-root",
 }
 ROUTER_BACKED_PROFILES = HYBRID_PROFILES | {"openrouter-pure"}
 ORP_CREDENTIAL_VARIABLES = {
@@ -81,6 +87,7 @@ PROXY_VARIABLES = {
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
     "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK",
@@ -89,6 +96,13 @@ PROXY_VARIABLES = {
 
 
 DEFAULT_GPT_EFFORT_CAPABILITIES = "effort,xhigh_effort,max_effort"
+# grok-4.6 is documented at 500000 tokens. Claude Code does not know that
+# ID, so the hard limit has to be declared, and compacting at 80% leaves
+# room for the summary request that compaction itself must send. This
+# mirrors the POSIX launcher; tests/test-windows.ps1 guards the parity.
+GROK_4_6_MODEL = "grok-4.6"
+GROK_4_6_HARD_LIMIT = "500000"
+GROK_4_6_COMPACT_THRESHOLD = "400000"
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -121,6 +135,35 @@ def declare_non_claude_effort_capabilities(
 declare_gpt_effort_capabilities = declare_non_claude_effort_capabilities
 
 
+def apply_auto_mode_model(environment: dict[str, str], root_model: str) -> None:
+    """Point auto mode's permission classifier at a model this route serves.
+
+    Claude Code hard-codes Claude Sonnet 5 for the classifier and ignores the
+    family slots, so on any root that does not serve that exact ID every
+    classification fails closed. Classifications are frequent background work,
+    so default to the cheapest served model rather than the premium root: the
+    small fast seat first, then the discovery model, then the root itself only
+    when nothing smaller is routed. AIRLOCK_AUTO_MODE_MODEL passes through
+    verbatim, and off or none keeps Claude Code's native behavior.
+    """
+    configured = (environment.get("AIRLOCK_AUTO_MODE_MODEL") or "").strip()
+    environment.pop("CLAUDE_CODE_AUTO_MODE_MODEL", None)
+    if configured.lower() in {"off", "none"}:
+        return
+    if configured:
+        environment["CLAUDE_CODE_AUTO_MODE_MODEL"] = configured
+        return
+    if not root_model or root_model.startswith("claude-"):
+        return
+    small_model = (
+        environment.get("ANTHROPIC_SMALL_FAST_MODEL")
+        or environment.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+        or environment.get("AIRLOCK_DISCOVERY_MODEL")
+        or root_model
+    )
+    environment["CLAUDE_CODE_AUTO_MODE_MODEL"] = small_model
+
+
 def configure_proxy_model_picker(
     environment: dict[str, str], profile: str, picker_models: object
 ) -> None:
@@ -144,8 +187,7 @@ def configure_proxy_model_picker(
             f"Airlock exact route for Claude Code's {family.title()} slot"
         )
         environment.pop(f"{variable}_SUPPORTED_CAPABILITIES", None)
-        if profile != "openrouter-pure":
-            declare_non_claude_effort_capabilities(environment, variable, model)
+        declare_non_claude_effort_capabilities(environment, variable, model)
     if (
         profile in {"grok-pure", "openrouter-pure"}
         or profile in HYBRID_PROFILES
@@ -264,19 +306,60 @@ def managed_session_settings(
     agents_json: str,
     fast_mode: str,
     policy: dict[str, object],
+    web_tools_script: str | None = None,
+    profile: str = "",
 ) -> str:
     try:
         settings = access.managed_session_settings_json(
-            agents_json, fast_mode, policy=policy
+            agents_json, fast_mode, policy=policy,
+            web_tools_script=web_tools_script,
+            profile=profile or None,
         )
         parsed = json.loads(settings)
     except Exception as error:
         fail(f"managed Auto-mode settings are invalid: {error}")
-    allowed_keys = {"autoMode"} if fast_mode == "inherit" else {"autoMode", "fastMode"}
+    if profile and profile not in access.PROFILE_ROOT_PROVIDERS:
+        fail("managed session settings received an unknown profile")
+    allowed_keys = {"autoMode"}
+    if fast_mode != "inherit":
+        allowed_keys.add("fastMode")
+    web_tools_entry = access.web_tools_server_entry(web_tools_script)
+    web_tools_join = (
+        web_tools_entry is not None
+        and (not profile or access.web_tools_active_for(profile))
+    )
+    expected_denials = access.built_in_web_tool_denials(profile) if (
+        profile and web_tools_entry is not None
+    ) else []
+    if web_tools_join:
+        allowed_keys.add("mcpServers")
+    if expected_denials:
+        allowed_keys.add("permissions")
     if not isinstance(parsed, dict) or set(parsed) != allowed_keys:
         fail("managed session settings have an unexpected shape")
     if fast_mode != "inherit" and parsed.get("fastMode") is not (fast_mode == "on"):
         fail("managed session Fast setting is invalid")
+    servers = parsed.get("mcpServers")
+    if servers is not None and not (
+        isinstance(servers, dict)
+        and set(servers) == {"airlock-web-tools"}
+        and isinstance(servers["airlock-web-tools"], dict)
+        and isinstance(servers["airlock-web-tools"].get("command"), str)
+        and servers["airlock-web-tools"].get("args") == [str(Path(web_tools_script).resolve())]
+    ):
+        fail("managed session web tools entry is invalid")
+    permissions = parsed.get("permissions")
+    if permissions is not None and not (
+        isinstance(permissions, dict)
+        and set(permissions) == {"allow", "deny"}
+        and isinstance(permissions["allow"], list)
+        and all(isinstance(entry, str) for entry in permissions["allow"])
+        and permissions["allow"] == access.web_tool_allowances()
+        and isinstance(permissions["deny"], list)
+        and all(isinstance(entry, str) for entry in permissions["deny"])
+        and set(permissions["deny"]) == set(expected_denials)
+    ):
+        fail("managed session web tool permissions are invalid")
     return settings
 
 
@@ -290,12 +373,41 @@ def validate_child_args(raw_args: object) -> list[str]:
     return raw_args
 
 
-def reject_openrouter_model_overrides(child_args: list[str]) -> None:
-    for argument in child_args:
-        if argument in {"--model", "-m"} or argument.startswith("--model="):
+def reject_openrouter_model_overrides(
+    child_args: list[str], root_model: str | None = None
+) -> None:
+    """Reject forwarded --model flags on OpenRouter-rooted sessions.
+
+    openrouter-pure forbids them outright: the route is the only selector. A
+    hybrid OpenRouter root accepts a forwarded flag only when it restates the
+    resolved root model exactly; anything else would let one argv move traffic
+    off the route the user selected.
+    """
+    index = 0
+    while index < len(child_args):
+        argument = child_args[index]
+        flagged = argument in {"--model", "-m"}
+        valued = argument.startswith("--model=")
+        if not flagged and not valued:
+            index += 1
+            continue
+        if root_model is None:
             fail(
                 "OpenRouter roots are selected by exact registry route; "
                 "--model and -m cannot be forwarded",
+                2,
+            )
+        if flagged:
+            if index + 1 >= len(child_args):
+                fail("--model requires a value", 2)
+            value = child_args[index + 1]
+            index += 2
+        else:
+            value = argument.split("=", 1)[1]
+            index += 1
+        if value != root_model:
+            fail(
+                "forwarded --model disagrees with the selected OpenRouter root route",
                 2,
             )
 
@@ -388,12 +500,31 @@ def router_start_reason(stderr: str | None) -> str:
     return ""
 
 
-def start_native_router(
+def anthropic_rate_limit_mode() -> str:
+    """Return the only two router modes accepted at the launcher boundary."""
+
+    value = os.environ.get("AIRLOCK_ANTHROPIC_RATE_LIMIT", "native").strip().lower()
+    if value not in {"native", "handoff"}:
+        fail(
+            "AIRLOCK_ANTHROPIC_RATE_LIMIT must be native or handoff",
+            2,
+        )
+    return value
+
+
+def run_router_start(
     router: Path,
     snapshot: Path,
     snapshot_digest: str,
     proxy_url: str | None,
-) -> str:
+    background_model: str | None = None,
+    port: int = 0,
+) -> tuple[str | None, int, str]:
+    """Start one router. Returns its address and pid, or None with a reason.
+
+    Never exits the process: the supervisor calls this from a thread, where
+    a failed restart must end the watch rather than the session.
+    """
     command = [
         sys.executable,
         str(router),
@@ -404,9 +535,16 @@ def start_native_router(
         str(snapshot),
         "--snapshot-sha256",
         snapshot_digest,
+        "--port",
+        str(port),
+        "--print-pid",
+        "--anthropic-rate-limit",
+        anthropic_rate_limit_mode(),
     ]
     if proxy_url:
         command.extend(["--openai-url", proxy_url])
+    if background_model:
+        command.extend(["--background-model", background_model])
     try:
         completed = subprocess.run(
             command,
@@ -417,16 +555,123 @@ def start_native_router(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        fail("native session router could not start")
-    address = completed.stdout.strip()
+        return None, 0, ""
+    reported = completed.stdout.strip().splitlines()
+    address = reported[0].strip() if reported else ""
     if completed.returncode != 0 or not re.fullmatch(
         r"http://127\.0\.0\.1:[1-9][0-9]*", address
     ):
-        fail(
-            "native session router could not start securely"
-            f"{router_start_reason(completed.stderr)}"
+        return None, 0, router_start_reason(completed.stderr)
+    # A router that does not report its process id still serves the session;
+    # it only loses the watch that would restart it, so this is never fatal.
+    try:
+        router_pid = int(reported[1].strip())
+    except (IndexError, ValueError):
+        router_pid = 0
+    return address, max(router_pid, 0), ""
+
+
+def picker_background_model(route_policy: object) -> str | None:
+    """The Haiku seat this session serves, as the picker map names it.
+
+    Claude Code asks for a Haiku model by exact ID for compaction and other
+    background work. The router substitutes the seated model for it, but
+    only when it knows the seat.
+    """
+    if not isinstance(route_policy, dict):
+        return None
+    picker = route_policy.get("picker_models")
+    if not isinstance(picker, dict):
+        return None
+    model = picker.get("haiku")
+    if not isinstance(model, str):
+        return None
+    model = model.strip()
+    if not model or len(model) > 128 or not model.isprintable():
+        return None
+    return model
+
+
+def start_native_router(
+    router: Path,
+    snapshot: Path,
+    snapshot_digest: str,
+    proxy_url: str | None,
+    background_model: str | None = None,
+) -> tuple[str, int]:
+    address, router_pid, reason = run_router_start(
+        router, snapshot, snapshot_digest, proxy_url, background_model
+    )
+    if address is None:
+        fail(f"native session router could not start securely{reason}")
+    return address, router_pid
+
+
+def start_router_watch(
+    router: Path,
+    snapshot: Path,
+    snapshot_digest: str,
+    proxy_url: str | None,
+    background_model: str | None,
+    address: str,
+    router_pid: int,
+) -> subprocess.Popen[bytes] | None:
+    """Watch the router process and put a replacement on the same address.
+
+    The watch itself lives in the router helper, so both launchers share one
+    implementation of the restart, including the snapshot digest check it
+    performs on every attempt.
+    """
+    try:
+        port = int(address.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+    command = [
+        sys.executable,
+        str(router),
+        "watch",
+        "--parent-pid",
+        str(os.getpid()),
+        "--router-pid",
+        str(router_pid),
+        "--snapshot",
+        str(snapshot),
+        "--snapshot-sha256",
+        snapshot_digest,
+        "--port",
+        str(port),
+        "--anthropic-rate-limit",
+        anthropic_rate_limit_mode(),
+    ]
+    if proxy_url:
+        command.extend(["--openai-url", proxy_url])
+    if background_model:
+        command.extend(["--background-model", background_model])
+    try:
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    return address
+    except OSError:
+        # A session that cannot be supervised still runs; it just loses the
+        # ability to survive its router being killed.
+        return None
+
+
+def stop_router_watch(watch: "subprocess.Popen[bytes] | None") -> None:
+    if watch is None or watch.poll() is not None:
+        return
+    watch.terminate()
+    try:
+        watch.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        watch.kill()
+        try:
+            watch.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def build_child_environment(
@@ -515,10 +760,21 @@ def build_child_environment(
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment.pop("AIRLOCK_GROK_HYBRID", None)
+        environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
         if ephemeral_openai_fast:
             environment["AIRLOCK_EPHEMERAL_OPENAI_FAST"] = "1"
         else:
             environment.pop("AIRLOCK_EPHEMERAL_OPENAI_FAST", None)
+        apply_context_window(
+            environment,
+            profile=profile,
+            root_model=root_model,
+            context_window=context_window,
+            force_context_window=force_context_window,
+            user_context_window=user_context_window,
+        )
+        apply_auto_mode_model(environment, root_model)
+        environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
         return environment
 
     if profile == "openrouter-pure":
@@ -542,11 +798,17 @@ def build_child_environment(
         environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
             f"Selected exact OpenRouter root ({root_model})"
         )
+        declare_non_claude_effort_capabilities(
+            environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
+        )
+        apply_auto_mode_model(environment, root_model)
+        environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
         environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
         environment.pop("AIRLOCK_HYBRID", None)
         environment.pop("AIRLOCK_GPT_HYBRID", None)
         environment.pop("AIRLOCK_GROK_HYBRID", None)
+        environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
         return environment
 
     if environment.get("ANTHROPIC_API_KEY") or environment.get("ANTHROPIC_AUTH_TOKEN") not in {None, "", "unused"}:
@@ -556,48 +818,57 @@ def build_child_environment(
         )
     if router_url is None:
         fail("hybrid native routing is missing its loopback router")
-    for variable in PROXY_VARIABLES:
+    # An OpenRouter root keeps its key out of the Claude Code process exactly
+    # like every proxy-backed provider; wrapper traffic is routed by the loopback
+    # router either way.
+    # OpenRouter credentials are loaded by the loopback router from protected
+    # storage and never belong in any Claude Code child process.
+    environment_variables = PROXY_VARIABLES | {"OPENROUTER_API_KEY"}
+    if profile == "hybrid-openrouter-root":
+        environment_variables |= ORP_CREDENTIAL_VARIABLES
+    for variable in environment_variables:
         environment.pop(variable, None)
     environment["ANTHROPIC_BASE_URL"] = router_url
     environment["AIRLOCK_SESSION_ROUTER_URL"] = router_url
     configure_proxy_model_picker(
         environment, profile, route_policy.get("picker_models")
     )
+    if profile == "hybrid-openrouter-root":
+        option_name = f"{root_name} (OpenRouter hybrid root)"
+        option_description = f"Selected OpenRouter hybrid root ({root_model})"
+    else:
+        option_name = f"{root_name} (native hybrid route)"
+        option_description = f"Selected Airlock hybrid root ({root_model})"
     environment["ANTHROPIC_CUSTOM_MODEL_OPTION"] = root_model
-    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = (
-        f"{root_name} (native hybrid route)"
-    )
-    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = (
-        f"Selected Airlock hybrid root ({root_model})"
-    )
+    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = option_name
+    environment["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = option_description
     declare_non_claude_effort_capabilities(
         environment, "ANTHROPIC_CUSTOM_MODEL_OPTION", root_model
     )
-    # Claude Code reads CLAUDE_CODE_AUTO_COMPACT_WINDOW ahead of its own per-model
-    # tuning. Native Anthropic roots already carry real model-aware sizing. An
-    # explicit Airlock window wins; otherwise OpenAI and Grok roots keep the
-    # conservative saved fallback for the whole process.
-    if user_context_window:
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
-    elif force_context_window and context_window != "auto":
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
-    elif (
-        context_window != "auto"
-        and profile != "hybrid-anthropic-root"
-    ):
-        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+    apply_context_window(
+        environment,
+        profile=profile,
+        root_model=root_model,
+        context_window=context_window,
+        force_context_window=force_context_window,
+        user_context_window=user_context_window,
+    )
+    apply_auto_mode_model(environment, root_model)
     environment.setdefault("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1")
     environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     environment["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
     environment.pop("AIRLOCK_HYBRID", None)
     environment.pop("AIRLOCK_GPT_HYBRID", None)
     environment.pop("AIRLOCK_GROK_HYBRID", None)
+    environment.pop("AIRLOCK_OPENROUTER_HYBRID", None)
     if profile == "hybrid-anthropic-root":
         environment["AIRLOCK_HYBRID"] = "1"
     elif profile == "hybrid-openai-root":
         environment["AIRLOCK_GPT_HYBRID"] = "1"
     elif profile == "hybrid-grok-root":
         environment["AIRLOCK_GROK_HYBRID"] = "1"
+    elif profile == "hybrid-openrouter-root":
+        environment["AIRLOCK_OPENROUTER_HYBRID"] = "1"
     return environment
 
 
@@ -610,6 +881,49 @@ def validate_max_agents(raw: object) -> str:
     ):
         fail("max_agents must be off or an integer from 1 to 20", 2)
     return raw
+
+
+def apply_context_window(
+    environment: dict[str, str],
+    *,
+    profile: str,
+    root_model: str,
+    context_window: str,
+    force_context_window: bool,
+    user_context_window: str,
+) -> None:
+    """Declare the root window and compact threshold for this process.
+
+    A grok-4.6 root declares its documented 500000-token hard limit and
+    compacts at 80% so the summary request still fits. Native Anthropic roots
+    keep Claude Code's own sizing. Every other root keeps the conservative
+    saved fallback, and an inherited CLAUDE_CODE_MAX_CONTEXT_TOKENS is dropped
+    so it cannot silently cap the session. A user-exported compact window
+    still wins.
+    """
+    grok_flagship_root = (
+        root_model == GROK_4_6_MODEL and profile != "hybrid-anthropic-root"
+    )
+    if grok_flagship_root:
+        environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = GROK_4_6_HARD_LIMIT
+    else:
+        environment.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
+    if user_context_window:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = user_context_window
+        return
+    if force_context_window:
+        if context_window == "auto":
+            environment.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+        else:
+            environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
+        return
+    if context_window == "auto" or profile == "hybrid-anthropic-root":
+        environment.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+        return
+    if grok_flagship_root:
+        environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = GROK_4_6_COMPACT_THRESHOLD
+        return
+    environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = context_window
 
 
 def context_window_is_valid(value: str) -> bool:
@@ -635,6 +949,8 @@ def validate_launch_marker(profile: str) -> None:
         expected = "AIRLOCK_GPT_HYBRID"
     elif profile == "hybrid-grok-root":
         expected = "AIRLOCK_GROK_HYBRID"
+    elif profile == "hybrid-openrouter-root":
+        expected = "AIRLOCK_OPENROUTER_HYBRID"
     else:
         return
     if os.environ.get(expected) != "1":
@@ -717,6 +1033,7 @@ def validate_root_route(
         "hybrid-openai-root": "openai",
         "hybrid-anthropic-root": "anthropic",
         "hybrid-grok-root": "grok",
+        "hybrid-openrouter-root": "openrouter",
     }.get(profile)
     if not isinstance(routes, dict):
         fail("session route policy is invalid", 2)
@@ -767,6 +1084,22 @@ def main(
         proxy_url: str | None = None
         root_model = ""
         root_name = ""
+    elif profile == "hybrid-openrouter-root":
+        raw_route = request.get("openrouter_root_route")
+        if not isinstance(raw_route, str) or not raw_route:
+            fail("hybrid-openrouter-root requires an exact OpenRouter root route", 2)
+        openrouter_root_route = raw_route
+        for forbidden in ("root_model", "root_name"):
+            if forbidden in request:
+                fail(
+                    f"hybrid-openrouter-root launch request must not include {forbidden}",
+                    2,
+                )
+        # The wrapper catalogs keep GPT and Grok routes in the snapshot, and the
+        # router refuses to start without a subscription endpoint for them.
+        proxy_url = required_request_string(request, "proxy_url", "OpenAI proxy URL")
+        root_model = ""
+        root_name = ""
     else:
         if "openrouter_root_route" in request:
             fail("OpenRouter root route is not valid for this session profile", 2)
@@ -804,12 +1137,14 @@ def main(
     access = _access if _access is not None else load_access_module()
     try:
         policy = _policy if _policy is not None else access.load_or_refresh_policy()
-        if profile == "openrouter-pure":
+        if profile in ("openrouter-pure", "hybrid-openrouter-root"):
             root_entry = access.resolve_openrouter_route(
                 policy, str(openrouter_root_route)
             )
             root_model = root_entry.model
             root_name = f"OpenRouter {root_entry.route}"
+        if profile == "hybrid-openrouter-root":
+            reject_openrouter_model_overrides(child_args, root_model)
         agents_json = render_agents(
             request.get("catalog_files"),
             profile,
@@ -828,7 +1163,11 @@ def main(
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")
         session_settings = managed_session_settings(
-            access, agents_json, fast_mode, policy
+            access, agents_json, fast_mode, policy,
+            web_tools_script=str(
+                plugin_dir / "mcp-server" / "airlock_web_tools.py"
+            ),
+            profile=profile,
         )
         guidance = access.profile_guidance(
             policy,
@@ -855,6 +1194,7 @@ def main(
         router = validate_router_path(request.get("router_helper"))
 
     artifacts: list[tuple[str, Path, str, int]] = []
+    mcp_config_path: Path | None = None
     snapshot_path: Path | None = None
     snapshot_digest: str | None = None
     return_code = 1
@@ -875,6 +1215,22 @@ def main(
                 combined_guidance.encode("utf-8"), "guidance-", ".txt"
             )
             artifacts.append(("routing guidance", *guidance_artifact))
+            # Claude Code does not start mcpServers entries from --settings on
+            # every supported version, so the same single-server definition is
+            # handed to --mcp-config as a real artifact file.
+            web_tools_script = str(
+                plugin_dir / "mcp-server" / "airlock_web_tools.py"
+            )
+            mcp_output = access.write_web_tools_mcp_config(
+                web_tools_script, profile=profile
+            )
+            if mcp_output:
+                mcp_path, mcp_digest, mcp_size = mcp_output.split("\t", 2)
+                mcp_config_path = Path(mcp_path)
+                artifacts.append((
+                    "web tools MCP config",
+                    mcp_config_path, mcp_digest, int(mcp_size),
+                ))
         except Exception as error:
             fail(f"managed session launch files could not be created: {error}")
 
@@ -886,6 +1242,8 @@ def main(
             "--plugin-dir", str(plugin_dir), "--agents", agents_json,
             "--allowedTools", *allowed_tools, *child_args,
         ]
+        if mcp_config_path is not None:
+            command.extend(["--mcp-config", str(mcp_config_path)])
         validate_windows_command_line(command)
 
         try:
@@ -899,9 +1257,13 @@ def main(
             fail(f"session policy snapshot could not be created: {error}")
 
         router_url: str | None = None
+        router_background: str | None = None
+        router_pid = 0
         if router is not None:
-            router_url = start_native_router(
-                router, snapshot_path, snapshot_digest, proxy_url
+            router_background = picker_background_model(route_policy)
+            router_url, router_pid = start_native_router(
+                router, snapshot_path, snapshot_digest, proxy_url,
+                router_background,
             )
 
         child_environment = build_child_environment(
@@ -921,6 +1283,18 @@ def main(
             ephemeral_openai_fast=_fast_relaunch,
         )
 
+        router_watch: subprocess.Popen[bytes] | None = None
+        if router is not None and router_url is not None and router_pid > 0:
+            router_watch = start_router_watch(
+                router,
+                snapshot_path,
+                snapshot_digest,
+                proxy_url,
+                router_background,
+                router_url,
+                router_pid,
+            )
+
         try:
             completed = subprocess.run(command, env=child_environment, check=False)
         except OSError as error:
@@ -931,6 +1305,11 @@ def main(
                     2,
                 )
             fail(f"could not start Claude Code: {error}")
+        finally:
+            # The session is over the moment Claude Code exits, so stop
+            # watching before the snapshot is cleaned up and a restart could
+            # race it.
+            stop_router_watch(router_watch)
         return_code = completed.returncode
         if return_code == 0 and transition is not None:
             launcher_pid, transition_cwd, channel, nonce = transition

@@ -1,7 +1,7 @@
 {
   "name": "airlock",
   "description": "Session plugin for Airlock usage and Agent safety. Managed by https://github.com/Harshkamdar67/Airlock.",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.8",
   "author": {
     "name": "Airlock contributors",
     "url": "https://github.com/Harshkamdar67/Airlock"

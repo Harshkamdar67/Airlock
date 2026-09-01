@@ -46,6 +46,7 @@ Mixed-provider sessions:
 ```bash
 airlock hybrid
 airlock hybrid choose
+airlock hybrid auto
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
@@ -67,6 +68,8 @@ airlock grok composer
 Grok needs its own login with `airlock proxy grok auth login`, and its routes stay off until the saved configuration enables them or you name a Grok root. `airlock usage` does not cover Grok, because there is no documented plan-window method Airlock can read safely.
 
 `airlock hybrid` uses the saved hybrid root. `airlock hybrid choose` opens the full picker. An explicit OpenAI alias such as `airlock terra` stays OpenAI-only even when bare `airlock` is saved as hybrid.
+
+The saved root can be the reserved value `auto`, which is what a fresh setup writes. `auto` resolves at every launch under your local access policy: Fable when its access class is neither extra nor unavailable, otherwise Opus, otherwise Sonnet. It never selects a model that needs confirmed extra usage, so no launch under an ask or never policy can start metered spend on its own. An existing config that never had a saved hybrid root keeps Sonnet instead of moving to `auto` on its own; switching is a deliberate choice with `./scripts/setup.sh --hybrid-model auto` or `airlock hybrid auto`.
 
 Model access depends on your account and can change. A model supported by the proxy may still be unavailable on your plan.
 
@@ -223,6 +226,100 @@ Extra usage authorized: yes
 
 Provider billing settings are final. If paid credits are enabled on the account, a local routing preference cannot promise zero paid usage.
 
+## Rate limit failover
+
+```bash
+airlock mode failover ask
+airlock mode failover never
+airlock mode failover allow
+airlock mode anthropic-rate-limit native
+airlock mode anthropic-rate-limit handoff
+```
+
+When an upstream behind the session router answers HTTP 402, 429, or 529, Airlock immediately retries that request on another enabled model of the same cost category instead of hanging or failing. Premium models hand off among Opus, Sol, and Grok. Standard models hand off between Sonnet and Terra. Economy models hand off among Luna, Composer, and Haiku. Luna Fast sits in its own category, Fable stays alone because it is metered separately, and OpenRouter routes form their own category and can hand off only among themselves.
+
+The replacement order inside a category is fixed and cheap first. A 402 means a Grok subscription balance or OpenRouter credit balance is spent, which is not a rate limit but leaves the model just as unusable, so it hands off the same way. A model that just answered 402, 429, or 529 goes on a short cooldown: 60 seconds by default, or the provider's `Retry-After` hint bounded between 1 second and 5 minutes. Later requests skip every cooling route without spending a round trip. One request tries at most three hops. If every same-category peer is also limited, the client receives an honest 429 with a fixed Airlock message, and no upstream body is reflected. That reply carries a `Retry-After` header rebuilt from the number the upstream reported, or from the time left on the local cooldown when nothing was contacted, so the client can tell a temporary limit from a permanent failure and schedule its own retry. A model that is alone in its category, which is the case for the metered route, says so plainly instead of claiming the category is exhausted.
+
+A handoff is never silent. Claude Code sends one request and receives one answer, so on its own it cannot tell that a different model replied. Two things close that gap. At the end of any turn where the router switched models, a short notice names the model that was unavailable and the model that actually answered. And the replacement itself is told: the retargeted request carries a routing note saying which model it is standing in for, because its system prompt still describes the model that was asked for and without the note it answers in that model's name and misreports its own identity.
+
+One thing Airlock cannot do is change what `/model` shows. That is Claude Code's own session state, chosen at launch, and a handoff is decided per request rather than per session, so there is no single current model for it to display. The turn notice and `airlock status` are the accurate record of which model served which request.
+
+An Anthropic rate limit is the one exception by default. Claude Code understands its own provider's limits: it recognizes a subscription limit, reports when the allowance resets, and can carry on afterwards. Replacing that response removes the fields that handling reads, and handing the request to another provider spends a second subscription to avoid a wait the client was ready to sit out. In `native` mode an Anthropic 429 is therefore forwarded untouched, with its status, headers, and body intact, and no chain is walked. Save `airlock mode anthropic-rate-limit handoff` when continuity matters more than native wait-and-resume; the router then walks the declared cross-provider chain. `AIRLOCK_ANTHROPIC_RATE_LIMIT=native|handoff` overrides the saved value for one launch. This applies only to 429 and only to Anthropic: a 529 means an overloaded server and a 402 means a spent balance, neither of which is a wait, and no other provider has client-side limit handling to defer to.
+
+Automatic compaction is a model request too. Claude Code asks for an exact Haiku ID, Airlock substitutes the background seat enabled for the session, and `handoff` mode keeps walking when that seat belongs to an exhausted Anthropic plan. This is the continuity setting to use before a long multi-provider session. If every enabled provider in the declared chain is exhausted, Airlock cannot create a model-generated summary; the honest recovery is to wait for a reset or begin a fresh session.
+
+Anthropic, OpenAI, and Grok meter a subscription rather than a single model, so a limit on one of their models usually means the siblings are limited too. Once a second distinct model of one of those providers is limited inside the same window, the cooldown covers that whole provider and later requests skip its routes without contacting them until the window ends. A single limited model still cools only itself, because one reading is not enough evidence to write off the rest. OpenRouter is never escalated this way because it meters credits per request.
+
+Every chain also ends at one deliberate exception: the declared OpenRouter root you selected for the session, such as Ox Alpha, is appended as a final peer to chains in other categories. It is the last stop after the same-category peers, it never replaces them, and OpenRouter-rooted requests never receive it. Set `AIRLOCK_OPENROUTER_CHAIN_PEER=off` before launching to remove it. Remember that the route carries the data terms of the provider behind it, which for Ox Alpha means an anonymous preview provider that retains prompts and completions.
+
+Policies:
+
+- `ask`, the default, builds chains among included models only. Automatic healing never starts a model that would need confirmed extra usage.
+- `never` disables failover entirely and builds no chains.
+- `allow` also lets extra-usage models act as failover targets for their own category.
+
+`airlock mode budget` sets failover to `never` along with its other limits.
+
+Inside an active hybrid session, `airlock session-usage` lists models that are currently cooling down. The router's local diagnostics record `upstream_rate_limited`, `rate_limit_cooldown_skip`, and `rate_limit_exhausted` outcomes, and completed requests carry the model they originally targeted under `failover_from`.
+
+### Declaring your own chains
+
+The derived order above is a default, not a rule. A user-owned file at `$AIRLOCK_CONFIG_DIR/failover.json` (or the path in `AIRLOCK_FAILOVER_FILE`) replaces the derived chain for any model you name:
+
+```json
+{
+  "schema_version": 1,
+  "chains": {
+    "claude-opus-5[1m]": ["gpt-5.6-sol", "grok-4.6"],
+    "gpt-5.6-sol": ["claude-opus-5[1m]", "gpt-5.6-luna"],
+    "gpt-5.6-terra": []
+  }
+}
+```
+
+Rules:
+
+- Each key is a source model ID, exactly as routes name it. Long-context Claude IDs may be written either way; both forms get the same chain.
+- The peer list is tried top to bottom on a rate limit. You can mix providers and cost categories freely, because writing the file is itself the decision to upspend.
+- An empty list opts that source out of handoff entirely.
+- A declared chain replaces the derived one for that source only. Models you do not name keep their normal chains, and the automatic OpenRouter last-resort peer is never appended to a declared chain; add it as an explicit final entry if you want it.
+- Extra usage still applies: a peer that needs confirmed extra usage only serves when the extra usage policy is `allow`.
+- Every named model must exist in Airlock: shipped profiles, your own `models.json` declarations, or enabled OpenRouter routes. Unknown names fail at launch with the exact entry called out, so a typo cannot silently shorten a chain. Peers that are not enabled for the current session are skipped rather than fatal.
+
+Deleting the file, or naming nothing, restores fully derived chains. Setting `airlock mode failover never` disables declared chains along with derived ones.
+
+## When a handoff overflows
+
+Models do not all hold the same amount of conversation. A long session on a one million token root does not fit a peer that stops at 272,000 tokens, so a handoff that would otherwise work can be rejected for size alone. Airlock handles that case in four steps, in order, and stops at the first one that works.
+
+First it recognizes the rejection. A peer that answers 400 or 413 and names a context limit in its message is treated as an overflow rather than a broken request. Anything else keeps failing exactly as it did before, because a plain bad request must not be mistaken for a size problem.
+
+Second it keeps walking the chain. An overflow now advances to the next peer the same way a rate limit does, with the same hop limit and the same cooldown rules. Peers whose context window is already known to be too small are skipped without spending a round trip.
+
+Third, if no peer can hold the conversation, Airlock condenses it. Older history is grouped into chunks that respect tool call and tool result pairing, each chunk is summarized, and the summaries are merged into one structured brief covering the goal, decisions, files touched, commands run, errors seen, and open threads. The system prompt is passed through untouched and the most recent turns are kept word for word, so only older material is summarized. The brief is labeled in the conversation so the next model knows earlier detail was condensed. Summaries of the shared part of a conversation are cached, so later turns only pay to condense what is new.
+
+The model that does the condensing is the destination provider's own economy worker, and only when it is already enabled in your session: Haiku for Anthropic, Luna for OpenAI, Composer for Grok. Airlock never wakes a provider you have not enabled. This step spends tokens on that worker, which is why it is limited to a model you already chose to turn on, and why extra usage rules apply to it the same way they apply to failover peers. OpenRouter destinations do not have an economy worker for this, so they go straight to the next step.
+
+Fourth, if there is no compaction model or the compaction call fails, Airlock trims older turns to fit and retries once. If nothing fits even then, the request ends with a clear message saying the conversation does not fit any enabled model, instead of a raw provider error.
+
+Control it with one setting:
+
+```bash
+airlock mode overflow auto
+airlock mode overflow truncate
+airlock mode overflow summarize
+airlock mode overflow off
+```
+
+- `auto`, the default, is the full order above: condense if possible, trim if not.
+- `truncate` never calls another model. It only trims older turns locally.
+- `summarize` condenses but refuses to trim, so a handoff that cannot be condensed fails instead of losing detail silently.
+- `off` does nothing to the conversation and lets the overflow fail honestly.
+
+Compaction can take a while on a very long conversation, so Airlock holds the response open and sends keepalive frames until the answer is ready. The router's local diagnostics record what happened at each step: `upstream_context_overflow`, `failover_overflow_skipped`, `failover_overflow_attempted`, `failover_shrink_compacted`, `failover_shrink_truncated`, and `overflow_chain_exhausted`. The end of session summary reports the same events in plain sentences.
+
+Setting `airlock mode failover never` turns this off along with the rest of handoff, because there is no peer to hand off to.
+
 ## OpenRouter routes
 
 OpenRouter routes are not in the model roles table above because Airlock does not rank them. Add any supported exact route yourself with `airlock openrouter models add ROUTE MODEL ENDPOINT`, or start from one of four managed presets:
@@ -250,11 +347,49 @@ The Kimi K3, DeepSeek V4 Flash 0731, and Qwen 3.6 27B guidance was reviewed on 2
 
 Ox Alpha is a stealth preview rather than a named vendor model. OpenRouter lists it at zero cost for prompt and completion tokens and routes it through a single `stealth` endpoint, and it says the anonymous provider retains prompts and completions without training on them. Treat it the way you would treat any route that sends your repository to a third party you cannot name: keep private or regulated code off it, and expect the free window to close. If the catalog entry is renamed or withdrawn when the provider is revealed, `airlock openrouter models refresh` fails for that route, and its verified metadata expires 30 days after the last check, which stops every Airlock session until you refresh it or run `airlock openrouter models remove ox-alpha`.
 
-All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers, or it can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
+All OpenRouter routes stay off until you add one. A declared route can appear as a named `airlock-or-ROUTE` worker inside a hybrid session, alongside your OpenAI and Claude workers. It can start its own OpenRouter-only session as the exclusive root with `airlock opr ROUTE` (or `airlock opr` alone to pick one interactively from your declared routes). `airlock opr` never picks or saves a default route on its own.
 
-Because Airlock does not evaluate a declared model's real capability, context window, or cost, an OpenRouter route usually follows `AIRLOCK_EXTRA_USAGE_POLICY` like any other extra-usage worker: it needs `Extra usage authorized: yes` under `ask`, runs without asking under `allow`, and is not offered under `never`. The one route you explicitly select as the `airlock opr` root is the exception: it carries that session's normal traffic and is not itself gated by the extra-usage policy, the same as an explicit hybrid root. Any other declared route that becomes available in that same `opr` session still follows the extra-usage policy normally. `airlock session-usage` and `airlock usage` do not cover OpenRouter, since it is a separate account with its own billing.
+A declared route can also lead a full mixed session as the hybrid root. Pass its declared route name directly, as in `airlock hybrid ox-alpha`, or select it for one launch with `airlock hybrid choose` option 10. Neither command changes the saved default; guided setup saves only a built-in hybrid alias or `auto`. The selected route behaves like an explicit `airlock opr` root: it carries normal session traffic without extra-usage gating. The difference is what surrounds it. Every other family slot stays wrapper backed, so Sonnet, Opus, Sol, Terra, Luna, Grok, and any other enabled worker keep their exact models, and every other declared OpenRouter route still follows `AIRLOCK_EXTRA_USAGE_POLICY` normally. An OpenRouter model never fills a Claude Code family slot, so named Agents and family aliases keep working.
+
+Because Airlock does not evaluate a declared model's real capability, context window, or cost, an OpenRouter route usually follows `AIRLOCK_EXTRA_USAGE_POLICY` like any other extra-usage worker: it needs `Extra usage authorized: yes` under `ask`, runs without asking under `allow`, and is not offered under `never`. The one route you explicitly select as the `airlock opr` or hybrid OpenRouter root is the exception: it carries that session's normal traffic and is not itself gated by the extra-usage policy, the same as an explicit hybrid root. Any other declared route that becomes available in that same session still follows the extra-usage policy normally. `airlock session-usage` and `airlock usage` do not cover OpenRouter, since it is a separate account with its own billing.
+
+The reserved `auto` hybrid root never resolves to an OpenRouter route. It picks only among Fable, Opus, and Sonnet, so enabling OpenRouter cannot change what `auto` launches.
 
 Read [How it works](how-it-works.md#openrouter-routes-optional) for the full explanation, including `airlock opr`, the 30-day metadata expiry, and the credential storage backends.
+
+## Declaring your own models
+
+New provider models do not need an Airlock release. Declare them in a user-owned `models.json` beside the Airlock config (`~/.config/airlock/models.json`, or point `AIRLOCK_MODELS_FILE` at another path):
+
+```json
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "grok-4.7",
+      "provider": "grok",
+      "effort_ceiling": "xhigh",
+      "context_window": null,
+      "cost": "premium",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Rules:
+
+- `provider` is `grok`, `codex`, or `openrouter`. A Grok id starts with `grok-`, a Codex id with `gpt-`, and an OpenRouter id must be the exact two-segment form such as `vendor/model`.
+- `effort_ceiling` is the strongest reasoning level the model accepts: `low`, `medium`, `high`, `xhigh`, or `max`.
+- `context_window` is `null` or a token count from 1 to 10000000.
+- `cost` places the model in a failover category: `premium`, `standard`, or `economical`.
+- At most 32 entries, ids must be unique, and anything malformed fails the launch with the offending entry named. Nothing is ever enabled by discovery alone.
+
+A declaration takes effect once the gateway serves the id too: subscription routes through `claude-code-proxy` need its catalog to list the model, while OpenRouter routes work as soon as OpenRouter does. Each enabled entry appears as an `airlock-custom-<provider>-<slug>` Agent inside managed sessions and joins failover chains in its cost category.
+
+Effort clamping applies to OpenRouter routes only. Each carries `high` unless its registry metadata or a declaration documents a stronger level, so `/effort max` there forwards the resolved ceiling and records the requested value, the forwarded value, and the ceiling in `airlock status`. Other routes forward your level unchanged, and a provider rejects a level it does not support.
+
+The doctor script (`scripts/doctor.sh`, or `scripts/doctor.ps1` on Windows) reports Grok models the installed gateway advertises but the saved configuration does not enable, one informational line per id, so a newly launched model is a declaration away instead of a release away.
 
 ## Effort
 
@@ -309,6 +444,30 @@ AIRLOCK_GPT_EFFORT_CAPABILITIES=effort,xhigh_effort,max_effort
 
 Anything left off that list is turned off for GPT roots, so remove entries only on purpose.
 
+### Effort on Grok and OpenRouter roots
+
+The same problem applies to any model ID that Claude Code does not recognize, so Grok roots and OpenRouter roots get the same treatment: every family slot the profile fills and the custom model option declare the effort capability tokens, and Airlock sets `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`. That switch tells Claude Code to show `/effort` even when the ID matches nothing it knows. An OpenRouter root therefore has a working effort knob without needing an entry in the capabilities variable, because the always-on switch covers IDs Airlock cannot predict.
+
+If you export your own `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`, your value wins.
+
+## Auto mode classifier model
+
+Claude Code runs a small permission classifier on tool calls that are not obviously safe, deciding whether to auto-approve them. That classifier ignores the session's model slots and hard-codes `claude-sonnet-5`. On a GPT, Grok, or OpenRouter root no route serves that exact ID, so every classified call failed closed and asked you to approve it by hand.
+
+Airlock now seats the cheapest model the session serves in the undocumented `CLAUDE_CODE_AUTO_MODE_MODEL` knob on non-Anthropic roots. Classifications are constant background work, so they ride the small fast seat rather than the premium root: a hybrid session prefers Claude Haiku when one is enabled, a pure OpenAI session rides Luna, and a pure Grok session rides Composer. An OpenRouter root uses what its preset serves; a single-model preset has nothing smaller than its own root, which still beats failing closed. Anthropic roots keep stock behaviour with the knob cleared. You can override the choice:
+
+```bash
+# pin any exact model ID for the classifier
+AIRLOCK_AUTO_MODE_MODEL=gpt-5.6-luna airlock hybrid sonnet
+
+# turn the override off and go back to stock behaviour
+AIRLOCK_AUTO_MODE_MODEL=off airlock opr
+```
+
+The same value works in the config file as `auto_mode_model`. Setting it to `off` or `none` clears the knob for that launch.
+
+Note for Windows PowerShell users: explicit overrides travel through the exported environment variable. A value saved in the config file is applied by the bash launcher; the PowerShell path still gets the default policy, which picks the small seat automatically.
+
 ## OpenAI usage
 
 ```bash
@@ -343,7 +502,7 @@ Airlock does not read login files, decode tokens, scrape the screen, or guess a 
 
 Claude Code decides when to compact from the context window assigned to the root process. Native Anthropic roots already have model-aware sizing, so Airlock leaves the process-wide override unset for them.
 
-The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI and Grok roots. The fallback defaults to `272000`.
+The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI roots and for Grok roots, whose window Airlock does not verify. The fallback defaults to `272000`. No shipped root declares a hard limit; Airlock also drops any inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` so a stale value cannot silently cap the session's workers.
 
 | Root profile | Default behavior |
 | --- | --- |
@@ -367,13 +526,13 @@ Opus 5, Sonnet 5, and Fable 5 have a one million token context window. Claude Co
 
 Nothing reports this. The session simply compacts four times as often as the same model would outside Airlock, which costs more usage rather than less.
 
-Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
+Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5-1[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
 
 GPT-5.6 Sol now uses the bare exact ID `gpt-5.6-sol`; Airlock does not label it `[1m]` after the failed proof. All OpenAI worker IDs, including Terra and Luna, are bare because no OpenAI route has a recorded successful proof above 300000 tokens. Legacy suffixed GPT input remains accepted at launcher and setup boundaries, then normalizes to the bare ID. The guarded helper in `scripts/test-sol-long-context.py` can test Sol separately with one synthetic root-only request when a new exact authorization is granted. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
 
 Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
 
-Two limits still apply. The conservative OpenAI or Grok fallback also lowers every worker in that root process. Also, a one million token window is not available on every plan. A future release must pass the guarded proof before removing the fallback.
+Two limits still apply. The conservative fallback applies to every worker in an OpenAI or Grok root process. Also, a one million token window is not available on every plan. A future release must pass the guarded proof before removing the OpenAI fallback, and a Grok window claim would need its own verified documentation before Airlock declares one.
 
 ## Native usage display
 
@@ -387,3 +546,32 @@ airlock session-usage --json
 ```
 
 This reads only the active loopback router's sanitized cumulative summary. It shows per-provider/model request outcomes and provider-reported input, cache-write, cache-read, and output totals. It does not rewrite provider responses, spoof Claude model IDs, estimate missing values, or claim to be a bill. Provider-pure profiles have no router and fail clearly rather than guessing.
+
+## Web search and page fetch
+
+Claude Code's built-in WebSearch runs on Anthropic's API. In a session whose root is GPT, Grok, or an OpenRouter route, that tool cannot run at all. A pure profile also cannot run built-in WebFetch, because no Claude model is available for its Haiku family slot. Hybrid sessions keep both built-in tools working by seating Claude Haiku there.
+
+For an OpenRouter route, the router also removes Anthropic server-tool declarations from the forwarded request. Without that, the upstream rejects the whole request with a 400 naming `web_search_20250305` before generating anything. The strip keeps the rest of the request working when a model tries WebSearch anyway; it does not execute searches, so use the local tools below instead.
+
+Airlock gives each profile exactly one working web path:
+
+| Root | Built-in WebSearch | Built-in WebFetch | Local airlock-web-tools |
+|---|---|---|---|
+| Hybrid with an Anthropic root | works | works | not registered |
+| Hybrid with a GPT, Grok, or OpenRouter root | denied | works (seated Claude Haiku) | registered |
+| Pure GPT, Grok, or OpenRouter root | denied | denied | registered |
+
+Denied means the tool is refused through managed permissions before the model wastes a turn on a call that cannot succeed. The managed guidance paragraph tells non-Anthropic roots why the built-ins are gone and names the local tools instead.
+
+The launcher hands the server to Claude Code through an `--mcp-config` file that is created at launch and deleted when the session ends, because Claude Code does not start `mcpServers` entries carried in `--settings`. The managed settings JSON keeps the same entry for forward compatibility.
+
+The local server needs only Python 3 and ships inside the plugin. It exposes two tools:
+
+- `web_search` takes `query` and optional `max_results` (1 to 12, default 6). It queries DuckDuckGo's HTML endpoint and returns ranked links with short descriptions. Follow up with `fetch_page` to read any result.
+- `fetch_page` takes `url` and optional `max_chars`. It downloads one public page and returns readable text without sending it through any model.
+
+Both tools contact the public web directly from your machine. They accept only http and https, resolve every address and refuse private, loopback, and link-local targets, follow redirects only while each hop passes the same checks, cap responses at 2 MB and 20 seconds, and truncate returned text to 20000 characters (up to 100000 when asked).
+
+DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
+
+Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.

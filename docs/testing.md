@@ -49,6 +49,7 @@ python tests/test-openrouter-auth.py
 python tests/test-openrouter-models.py
 python tests/test-openrouter-access.py
 python tests/test-fast-session-end.py
+python tests/test-web-tools.py
 ```
 
 `tests/test-openrouter-policy.py` covers the shared registry and session-snapshot schema: exact-field checks, the 10-route limit, separate routable-ID and canonical-identity validation, bounded provider-name, provider-slug, and quantization routing tokens, sorted and deduplicated `supported_parameters` with `tools` and `tool_choice` required, the 30-day `checked_at` freshness window, owner and file-permission checks, atomic durable writes, and compare-and-swap conflicts between concurrent writers.
@@ -62,6 +63,8 @@ python tests/test-fast-session-end.py
 `tests/test-update.py` uses only loopback fake release servers and temporary archives. It never contacts GitHub. It covers release channels, exact checksums, optional attestations, network failures, archive traversal and links, active-session refusal, confirmation, installation, Doctor, cleanup, and update-notice cache lifecycle.
 
 `tests/test-update-notice.py` validates the network-free SessionStart reader. It covers exact user-only output, missing and unsafe files, the size and age limits, duplicate or malformed JSON, installed-version and release-channel checks, canonical release URLs, SemVer precedence, interpreter failures, and silence on every invalid path.
+
+`tests/test-web-tools.py` covers the bundled MCP web-tools server offline. It checks DuckDuckGo link decoding and result parsing against fixture markup, refusal of private, loopback, and non-HTTP addresses, readable-text extraction with scripts and styles removed, and the stdio protocol handshake, `tools/list`, and `tools/call`, using fake HTTP functions throughout. It never contacts the network.
 
 The native tests cover:
 
@@ -97,7 +100,7 @@ bash tests/test-setup.sh
 python tests/test-setup-pty.py
 ```
 
-These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, update and version dispatch, provider Fast controls, the session-local `airlock fast -r` shortcut and `/airlock-fast` clean-exit handoff, paid Anthropic Fast refusal, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, invalid input, and backups without using OAuth or model quota.
+These tests replace Claude Code and provider commands with stubs. They verify old-config compatibility, saved OpenAI and hybrid roots, explicit overrides, update and version dispatch, provider Fast controls, the session-local `airlock fast -r` shortcut and `/airlock-fast` clean-exit handoff, paid Anthropic Fast refusal, exact Agent catalogs, allowed tools, model allowlists, full setup labels, worker effort inheritance and pins, the managed web tools server entry and its `AIRLOCK_WEB_TOOLS=off` switch, the per-profile denial of built-in web tools for non-Anthropic roots, the real `--mcp-config` file handed to Claude with its cleanup after the session ends, invalid input, and backups without using OAuth or model quota.
 
 `test-setup-pty.py` runs the guided flow through a real POSIX terminal six times: a plain 80 column run, a color-capable run, a redirected-output run, a 40 column run, a color keyboard run, and a no-color keyboard run. It checks the ASCII wordmark and introduction, six numbered sections and progress track, full Claude and GPT names and IDs, recommended markers and Enter hints, honest effort wording, provider Fast choices and paid-credit wording, Claude Fable 5, separate Claude Code and Codex OAuth wording, the grouped review screen, hidden Advanced details, and saved hybrid defaults. The keyboard runs send real Up and Down escape sequences, prove wraparound and Enter selection, and keep number, name, and `?` input working. The suite also checks that plain or redirected streams contain no escape sequences, long macOS-style config paths use a stacked layout, and wrapped lines fit the terminal. Every run reports its start and finish. The harness polls the child independently of pipe EOF, then drains buffered output. A timeout terminates the full child process group within a fixed grace period, falls back to the exact child when the platform rejects a group signal, and reports the last output plus unsent key count. The suite prints a skip on Windows, where the Python PTY module is unavailable.
 
@@ -146,7 +149,7 @@ After an intentional launcher, helper, Agent catalog, or plugin change, refresh 
 python scripts/update-bundle.py
 ```
 
-Review the marker change before committing it.
+The script also syncs the marker's version with `MANAGED_BUNDLE_VERSION` in `bin/airlock-access.py`, so bumping the version needs no hand edit of the JSON. Review the marker change before committing it.
 
 ## Router protocol tests
 
@@ -161,7 +164,11 @@ It verifies:
 - token-count routing
 - unknown, malformed, and oversized request rejection
 - redirect rejection with a sanitized upstream error
-- upstream status and error-body pass-through
+- retryable upstream failures surfacing as 502s that keep a bounded, printable reason
+- deterministic redirects, credential failures, malformed responses, and OpenRouter identity mismatches surfacing as non-retryable 400s; identity mismatches retain only the bounded printable model identity needed for diagnosis
+- OpenRouter requests stripping Anthropic server-side tools and matching history blocks before forwarding, with an opt-out for explicit compatibility testing
+- same-category rate limit handoff on HTTP 429 and 529, with cooldown memory, Retry-After parsing, a three-hop cap, no upstream contact for cooling routes, honest sanitized 429s when every peer is limited, provider-pin removal when a hop leaves OpenRouter, snapshot chain validation, and diagnostics outcomes
+- upstream status and error-body pass-through for statuses other than the failover codes
 - streamed bytes arriving before upstream completion
 - stream timeout separation from the shorter connection timeout
 - upstream header and stream timeout handling

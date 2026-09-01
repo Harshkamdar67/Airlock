@@ -9,9 +9,12 @@ import unittest
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
+# .claude holds local session notes rather than Airlock-owned documentation.
+LOCAL_DIRECTORIES = {".claude"}
 MARKDOWN_FILES = sorted(
     path for path in ROOT.rglob("*.md")
     if ".git" not in path.parts
+    and not LOCAL_DIRECTORIES.intersection(path.parts)
 )
 LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -44,6 +47,7 @@ class DocumentationTests(unittest.TestCase):
                 or path.is_symlink()
                 or ".git" in path.parts
                 or "__pycache__" in path.parts
+                or LOCAL_DIRECTORIES.intersection(path.parts)
                 or (path.suffix.lower() not in text_suffixes and path.name not in {"VERSION"})
             ):
                 continue

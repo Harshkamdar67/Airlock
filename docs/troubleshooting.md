@@ -55,6 +55,31 @@ airlock proxy grok auth login
 
 A session that confirms the proxy is signed out of Grok disables the Grok routes on purpose, so that the main model is never offered a worker whose first request would fail. `airlock grok` and `airlock hybrid grok` enable the routes themselves, because naming a Grok root is an explicit request for that provider.
 
+## Grok login shows `Missing or invalid client_id`
+
+Stock Windows builds of `claude-code-proxy` open the login page through `cmd start` without quoting the address. cmd cuts the address at the first ampersand, so x.ai receives a login request without a client id and shows `Missing or invalid client_id`.
+
+Check which build you have:
+
+```powershell
+claude-code-proxy --version
+```
+
+Airlock's carried build reports a version with `airlock` in it, such as `0.1.35-airlock.1`. If your version has no `airlock` marker, replace it with the fixed build:
+
+```powershell
+powershell -NoProfile -File .\scripts\install.ps1 -UpgradeProxy
+powershell -NoProfile -File .\scripts\doctor.ps1
+```
+
+The upgrade keeps your previous binary next to the installed one as `claude-code-proxy.exe.<version>.bak`. Then log in again:
+
+```powershell
+airlock proxy grok auth login
+```
+
+macOS and Linux install upstream through Homebrew and never had this problem.
+
 ## Every Airlock session fails because of the OpenRouter registry
 
 An expired or invalid OpenRouter registry entry does not just disable that one route. It makes the whole registry file invalid, which stops every Airlock session, including OpenAI-only and Grok-only ones. This is deliberate: a stale or broken declared route is treated as untrusted input rather than left running on unverified metadata.
@@ -111,6 +136,12 @@ airlock openrouter models refresh
 ```
 
 A provider can still reject a request for its own availability, account, limit, or compatibility reasons even while its public catalog entry is valid. Do not change the endpoint or enable fallback based only on the sanitized message.
+
+## OpenRouter effort is clamped to the route ceiling
+
+Claude Code can send `output_config.effort=max` for an unknown custom model after you select maximum effort. That value is specific to Anthropic and pinned OpenRouter endpoints may reject it. Airlock forwards instead the strongest level the target route accepts, called its ceiling: `high` for every OpenRouter route by default, raised by that route's registry metadata or by declaring the model in `models.json`. Only fields above the ceiling change, the rest of the request and your saved session setting stay untouched, and routes outside OpenRouter receive your level unchanged.
+
+In a routed hybrid session, `airlock status` records the clamp as a timestamped action naming the requested value, the forwarded value, and the ceiling. This is expected behavior, not a silent model or endpoint change.
 
 ## Fast handoff does not resume
 
@@ -179,6 +210,37 @@ Then reinstall and start a fresh session. Do not set a gateway API token by hand
 
 The router chooses an unused `127.0.0.1` port and exits with its launcher. It is not expected to remain running between sessions.
 
+## A model hits a rate limit
+
+Sessions using Airlock's router handle this automatically when a failover peer is available. When an upstream answers 402, 429, or 529, the router retries the same request on another enabled model of the same cost category, at most three hops. A limited model also goes on a short cooldown, so later requests skip it instead of waiting on it. If every same-category peer is limited too, the request ends with an honest 429 and a fixed Airlock message without contacting a route that is still cooling.
+
+One deliberate exception crosses categories: the session's declared OpenRouter root, such as Ox Alpha, is appended as the final peer of every other chain, so a fully limited premium or standard chain still has one last stop. OpenRouter requests themselves never receive it. Set `AIRLOCK_OPENROUTER_CHAIN_PEER=off` before launching to remove it. Remember that the route carries the data terms of its provider, which for Ox Alpha includes prompt retention by an anonymous preview provider.
+
+Nothing about failover changes your saved models. The handoff lasts for one request and later requests return to the normal route once the cooldown expires.
+
+To inspect recent router decisions inside an active session:
+
+```bash
+airlock status
+```
+
+The first line names the pinned profile and root. The remaining timestamped lines can show a failover attempt, successful handoff, exhausted chain, or cooldown skip. The list is bounded. It never includes prompts, headers, credentials, or provider error bodies, and a future event type is shown by its short kind rather than by arbitrary payload fields. The managed SessionEnd hook shows an even shorter version when the session closes and stays silent if the router is already gone.
+
+For token totals and the full list of models that are currently cooling down, use:
+
+```bash
+airlock session-usage
+```
+
+To check that failover is enabled, and change it:
+
+```bash
+airlock mode
+airlock mode failover ask
+```
+
+Under the default `ask` policy only included models act as failover targets, so healing never starts extra usage on its own.
+
 ## Explore, Plan, or general-purpose is blocked
 
 Current sessions allow the exact built-in `Explore`, `Plan`, and `general-purpose` Agent types.
@@ -203,6 +265,29 @@ airlock bundle
 
 If it fails, reinstall and restart. Do not add a caller `model` override to a named `airlock-*` Agent. The guard rejects it because the Agent name and model must remain consistent.
 
+## WebFetch fails with an unrecognized model
+
+The error looks like this, and it appears before anything is fetched:
+
+```
+[claude-code:unrecognized_model] {"model":"gpt-5.6-luna","query_source":"web_fetch_apply"}
+```
+
+WebFetch reads the fetched page with Claude Code's Haiku-class model, and Claude
+Code refuses a model ID it does not recognize. Session titles use the same slot
+and fail the same way. This is not a network, proxy, or router problem, and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` has nothing to do with it.
+
+A hybrid session seats a Claude model in that slot, so WebFetch works. It prefers
+Claude Haiku and falls back to the other enabled Claude routes. Add `haiku` to
+`AIRLOCK_ANTHROPIC_MODELS` in your Airlock config to get the cheapest seat;
+without it the slot falls back to a larger Claude route and every page read
+costs more.
+
+A pure OpenAI, Grok, or OpenRouter session has no model Claude Code recognizes,
+so WebFetch cannot work in those profiles. Use a hybrid session when a task needs
+it, or give the URL to a worker that can read it another way.
+
 ## Web Search rejects `xhigh` or `max` effort
 
 Web Search can use a smaller internal search model with thinking disabled. That helper may accept only `high` effort or below even when the main model or a named worker supports `xhigh` or `max`.
@@ -214,6 +299,28 @@ Do not retry the same failing search. Use one of these paths:
 - give the design worker an exact public URL and use WebFetch instead
 
 The error does not mean that Opus, the public website, or provider login failed. It is an effort mismatch at the Web Search helper boundary.
+
+## Every tool call asks for manual approval
+
+On a GPT, Grok, or OpenRouter root, almost every Bash, Edit, or Write call stops with a permission prompt even though auto mode should have approved it.
+
+Claude Code runs a small permission classifier on calls that are not obviously safe. That classifier ignores your session's models and always asks for `claude-sonnet-5`. No route serves that exact ID on a non-Anthropic root, so every classified call fails closed into a prompt.
+
+Airlock seats your session's cheapest served model in the classifier knob automatically, so new sessions do not hit this. If you still see it:
+
+- confirm you launched through `airlock` or `airlock.ps1` and not raw `claude`
+- start a new session; existing sessions keep the environment they started with
+- pin a specific model yourself with `AIRLOCK_AUTO_MODE_MODEL=<exact-id>`
+- set `AIRLOCK_AUTO_MODE_MODEL=off` to return to stock Claude Code behaviour
+
+## WebSearch fails with `cannot run Anthropic server-side tools`
+
+An OpenRouter-rooted session calls built-in WebSearch and the request dies with a 400 naming `web_search_20250305` or a similar server tool type.
+
+Built-in WebSearch and WebFetch are features of Anthropic's API. The router forwards requests verbatim to OpenRouter, and an OpenRouter upstream rejects any request carrying those tool declarations before generating anything.
+
+Airlock now strips those declarations and their history blocks before forwarding, so the rest of the request succeeds. This does not make WebSearch work: the router cannot execute searches or invent results, because server-side execution belongs to Anthropic's API, not to this machine. A non-Anthropic root should use the managed `airlock-web-tools` MCP server (`web_search` and `fetch_page`) instead. Set `AIRLOCK_OPENROUTER_KEEP_SERVER_TOOLS=1` if you need the old pass-through behaviour back.
+
 
 ## `/model` shows provider models under Claude family slots
 
@@ -254,7 +361,7 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, and no shipped root declares a hard limit.
 
 To take the control back for a session, start it with:
 
@@ -343,6 +450,18 @@ airlock mode
 ```
 
 Use several top-level native Agent calls when the work is truly independent. Do not build hidden descendant trees.
+
+## A Grok session says `Unknown model "grok-4.6"`
+
+Airlock pins the Grok flagship route to `grok-4.6`, which proxy 0.1.35 and later list. An older installed proxy does not carry that ID, so the router or proxy answers with an unknown-model error. Check what the installed build accepts with:
+
+```bash
+claude-code-proxy models
+```
+
+If `grok-4.6` is missing, upgrade the proxy. Composer is unaffected: `grok-composer-2.5-fast` exists in every current proxy catalog.
+
+`grok-4.5` still works as a command-line alias and resolves to the same shipped flagship, because Airlock runs one Grok flagship route. To reach a different exact Grok ID, declare it in `models.json` as described in the models guide.
 
 ## Windows says the Claude Code launch command is too long
 

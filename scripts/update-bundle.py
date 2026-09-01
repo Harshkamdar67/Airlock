@@ -7,10 +7,24 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "config" / "managed-bundle.json"
+ACCESS = ROOT / "bin" / "airlock-access.py"
+
+
+def managed_bundle_version() -> str:
+    """Read MANAGED_BUNDLE_VERSION from the access helper source of truth."""
+    match = re.search(
+        r'^MANAGED_BUNDLE_VERSION\s*=\s*"([^"]+)"',
+        ACCESS.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError(f"no MANAGED_BUNDLE_VERSION found in {ACCESS}")
+    return match.group(1)
 
 
 def component_path(name: str) -> Path:
@@ -47,15 +61,26 @@ def main() -> int:
         if not isinstance(bundle, dict):
             raise ValueError("managed bundle must be a JSON object")
         observed = current_digests(bundle)
+        version = managed_bundle_version()
         if args.check:
+            if bundle.get("bundle_version") != version:
+                print(
+                    "managed bundle version is stale; run python scripts/update-bundle.py",
+                    file=sys.stderr,
+                )
+                return 1
             if bundle.get("components") != observed:
                 print(
                     "managed bundle hashes are stale; run python scripts/update-bundle.py",
                     file=sys.stderr,
                 )
                 return 1
-            print(f"Managed bundle hashes are current for {len(observed)} components.")
+            print(
+                f"Managed bundle is current for {len(observed)} components"
+                f" at version {version}."
+            )
             return 0
+        bundle["bundle_version"] = version
         bundle["components"] = observed
         BUNDLE.write_text(
             json.dumps(bundle, indent=2) + "\n", encoding="utf-8", newline="\n"

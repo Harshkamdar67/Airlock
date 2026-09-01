@@ -145,6 +145,57 @@ else
   info 'Grok workers are not enabled in the saved configuration'
 fi
 
+# Catalog discovery is informational only: newer gateway IDs are surfaced so a
+# person can declare them in models.json; nothing is ever enabled implicitly.
+if command -v claude-code-proxy >/dev/null 2>&1 \
+  && [[ -n "${AIRLOCK_GROK_MODELS:-$config_grok_models}" \
+    || "${AIRLOCK_DEFAULT_PROFILE:-$config_default_profile}" == 'grok' ]]; then
+  discovery_python=''
+  if command -v python3 >/dev/null 2>&1; then
+    discovery_python="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    discovery_python="$(command -v python)"
+  fi
+  if [[ -n "$discovery_python" ]]; then
+    models_file="${AIRLOCK_MODELS_FILE:-$config_dir/models.json}"
+    declared_grok="$("$discovery_python" - "$models_file" <<'PYDISCOVERY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+models = data.get("models") if isinstance(data, dict) else None
+if isinstance(models, list):
+    for entry in models:
+        try:
+            if entry.get("provider") == "grok" and entry.get("enabled") is True:
+                print(entry["id"])
+        except Exception:
+            pass
+PYDISCOVERY
+)" || declared_grok=''
+    enabled_grok=" grok-4.6 grok-composer-2.5-fast $(printf '%s ' "$declared_grok")"
+    while IFS= read -r catalog_line; do
+      case "$catalog_line" in
+        'grok:'*)
+          # The proxy prints the catalog comma separated, so strip separators
+          # before matching or every entry but the last keeps a trailing comma
+          # and looks unrecognized.
+          # shellcheck disable=SC2086
+          for catalog_id in ${catalog_line#grok:}; do
+            catalog_id="${catalog_id%,}"
+            [ -n "$catalog_id" ] || continue
+            case "$enabled_grok" in
+              *" $catalog_id "*) ;;
+              *) info "Available but not enabled (Grok): $catalog_id; declare it in models.json to use it" ;;
+            esac
+          done
+          ;;
+      esac
+    done < <(run_proxy_command models 2>/dev/null)
+  fi
+fi
+
 proxy_url="${AIRLOCK_PROXY_URL:-http://127.0.0.1:18765}"
 proxy_healthy=0
 if curl --silent --fail --max-time 2 "$proxy_url/healthz" >/dev/null 2>&1; then
@@ -179,12 +230,19 @@ if command -v airlock >/dev/null 2>&1; then
       fail "Release updater is missing or unsafe: $updater_path"
     fi
 
+    # Match the launcher's probe: a candidate has to answer as Python 3 before
+    # it is accepted. On Windows the python3 name is often the Microsoft Store
+    # placeholder, which exists on PATH but is not an interpreter, so a probe
+    # that only checks the name would pick it and every helper check would fail.
     python_bin=''
-    if command -v python3 >/dev/null 2>&1; then
-      python_bin="$(command -v python3)"
-    elif command -v python >/dev/null 2>&1; then
-      python_bin="$(command -v python)"
-    fi
+    for python_candidate in "${AIRLOCK_PYTHON:-}" python3 python; do
+      [[ -n "$python_candidate" ]] || continue
+      if command -v "$python_candidate" >/dev/null 2>&1 && \
+        "$python_candidate" -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' >/dev/null 2>&1; then
+        python_bin="$(command -v "$python_candidate")"
+        break
+      fi
+    done
     policy_path="${AIRLOCK_POLICY_HELPER:-$(dirname "$launcher_path")/airlock_policy.py}"
     openrouter_auth_path="${AIRLOCK_OPENROUTER_AUTH_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_auth.py}"
     openrouter_presets_path="${AIRLOCK_OPENROUTER_PRESETS_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_presets.py}"
@@ -211,6 +269,10 @@ if command -v airlock >/dev/null 2>&1; then
       )"
       openrouter_registry_status=$?
       while IFS= read -r openrouter_line; do
+        # A Python helper on Windows ends every line with a carriage return, and
+        # command substitution only strips the final one, so drop it here or the
+        # first line's value never matches.
+        openrouter_line="${openrouter_line%$'\r'}"
         case "$openrouter_line" in
           STATE=*) openrouter_registry_state="${openrouter_line#STATE=}" ;;
           COUNT=*) openrouter_registry_count="${openrouter_line#COUNT=}" ;;
@@ -238,6 +300,7 @@ if command -v airlock >/dev/null 2>&1; then
       openrouter_backend='unknown'
       openrouter_backend_state='unknown'
       while IFS= read -r openrouter_line; do
+        openrouter_line="${openrouter_line%$'\r'}"
         case "$openrouter_line" in
           BACKEND=*) openrouter_backend="${openrouter_line#BACKEND=}" ;;
           STATE=*) openrouter_backend_state="${openrouter_line#STATE=}" ;;

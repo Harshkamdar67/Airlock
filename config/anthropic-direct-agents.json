@@ -19,12 +19,12 @@
     "effort": "high"
   },
   "airlock-fable": {
-    "description": "Claude Fable 5 native worker. Configured strength: efficient frontier implementation, orchestration, and analysis when enabled or explicitly selected. Limitation: default-disabled or extra-usage access may require confirmation. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "description": "Claude Fable 5.1 native worker. Configured strength: efficient frontier implementation, orchestration, and analysis when enabled or explicitly selected. Limitation: default-disabled or extra-usage access may require confirmation. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect the relevant code, preserve unrelated work, and keep edits within the requested scope. Prefer a complete, efficient solution without skipping evidence or acceptance checks. Report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
     "disallowedTools": [
       "Agent"
     ],
-    "model": "claude-fable-5[1m]",
+    "model": "claude-fable-5-1[1m]",
     "effort": "high"
   },
   "airlock-haiku": {

@@ -25,10 +25,10 @@ MARKER = "Extra usage authorized: yes"
 ROOT_MODELS = {
     "openrouter-pure": "anthropic/claude-sonnet-4.5",
     "openai-pure": "gpt-5.6-sol",
-    "grok-pure": "grok-4.5",
+    "grok-pure": "grok-4.6",
     "hybrid-openai-root": "gpt-5.6-sol",
     "hybrid-anthropic-root": "claude-sonnet-5[1m]",
-    "hybrid-grok-root": "grok-4.5",
+    "hybrid-grok-root": "grok-4.6",
 }
 FAMILY_VARIABLES = {
     "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
@@ -471,6 +471,43 @@ class AgentGuardTests(unittest.TestCase):
             {"subagent_type": "airlock-sol"},
             environment_changes={"AIRLOCK_POLICY_HELPER": None},
         ), "permission set")
+
+    def test_a_snapshot_from_an_older_airlock_asks_for_a_restart(self) -> None:
+        # Installing Airlock while a session is running leaves that session
+        # with a snapshot the new schema serializes differently, so the digest
+        # stops matching and every Agent call is denied for the rest of it.
+        # The denial has to name the cause, because the fix is a restart and
+        # nothing in the session hints at that.
+        session = self.session("openai-pure")
+        value = session["snapshot"].to_dict()
+        for field in ("compactors", "context_windows", "overflow_shrink"):
+            value.pop(field, None)
+        raw = POLICY.canonical_json_bytes(value)
+        session["path"].write_bytes(raw)
+        session["digest"] = POLICY.sha256_bytes(raw)
+        self.assert_denied(
+            self.invoke(session, {"subagent_type": "airlock-sol"}),
+            "Restart the session",
+        )
+
+    def test_an_edited_snapshot_is_never_reported_as_an_upgrade(self) -> None:
+        # The restart wording is only safe because it cannot be reached by
+        # editing the file: the recorded digest still describes the authentic
+        # bytes, so an edit fails that comparison and stays generic.
+        session = self.session("openai-pure")
+        value = session["snapshot"].to_dict()
+        value["agents"] = dict(value["agents"])
+        value["agents"]["airlock-intruder"] = {
+            "model": "gpt-5.6-sol",
+            "provider": "openai",
+            "extra_usage": False,
+        }
+        session["path"].write_bytes(POLICY.canonical_json_bytes(value))
+        result = self.invoke(session, {"subagent_type": "airlock-sol"})
+        self.assert_denied(result, "permission set is invalid")
+        self.assertNotIn(
+            "Restart", result["hookSpecificOutput"]["permissionDecisionReason"]
+        )
 
     def test_protocol_mismatch_fails_closed(self) -> None:
         session = self.session("openai-pure")

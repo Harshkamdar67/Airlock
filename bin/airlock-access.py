@@ -24,7 +24,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 
@@ -71,10 +71,20 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.22.2"
+MANAGED_BUNDLE_VERSION = "2026.08.26.1"
 MANAGED_PROTOCOL_VERSION = 5
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
+MAX_MODELS_FILE_BYTES = 128 * 1024
+MAX_CUSTOM_MODELS = 32
+MAX_FAILOVER_FILE_BYTES = 128 * 1024
+MAX_FAILOVER_CHAIN_SOURCES = 64
+# Exact IDs a shipped route used to pin. Kept accepted in failover.json so a
+# default moving on does not turn an existing file into a launch failure.
+RETIRED_FAILOVER_MODEL_IDS = frozenset({
+    "claude-fable-5",
+    "claude-fable-5[1m]",
+})
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
 MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
@@ -89,7 +99,10 @@ FAST_TRANSITION_MODEL = "gpt-5.6-sol-fast"
 FAST_TRANSITION_ENV_CHANNEL = "AIRLOCK_FAST_TRANSITION_CHANNEL"
 FAST_TRANSITION_ENV_NONCE = "AIRLOCK_FAST_TRANSITION_NONCE"
 SESSION_DIAGNOSTICS_TIMEOUT_SECONDS = 3
+STATUS_DIAGNOSTICS_TIMEOUT_SECONDS = 0.5
 MAX_SESSION_DIAGNOSTIC_EVENTS = 256
+MAX_STATUS_LINES = 10
+NO_SESSION_ROUTER_MESSAGE = "no Airlock router is running for this terminal"
 SESSION_USAGE_FIELDS = (
     "input_tokens",
     "cache_creation_input_tokens",
@@ -99,12 +112,26 @@ SESSION_USAGE_FIELDS = (
 APP_SERVER_TIMEOUT_SECONDS = 15
 VALID_ACCESS = {"included", "extra", "unavailable", "unknown"}
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+VALID_CUSTOM_MODEL_PROVIDERS = frozenset({"grok", "codex", "openrouter"})
+VALID_CUSTOM_MODEL_COSTS = frozenset({"premium", "standard", "economical"})
+CUSTOM_MODEL_FIELDS = frozenset({
+    "id", "provider", "effort_ceiling", "context_window", "cost", "enabled",
+})
+CUSTOM_MODELS_FIELDS = frozenset({"schema_version", "models"})
+CUSTOM_PROVIDER_ROUTES = {"codex": "openai", "grok": "grok", "openrouter": "openrouter"}
+CUSTOM_MODEL_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:/\-]{0,159}\Z", re.ASCII)
+CUSTOM_OPENROUTER_SEGMENT_RE = re.compile(
+    r"[a-z0-9]+(?:[._:-][a-z0-9]+)*\Z", re.ASCII
+)
+EFFORT_RANK = {effort: index for index, effort in enumerate(VALID_EFFORTS)}
 # A worker with no effort of its own inherits the session level, so /effort moves
 # the root and every worker together. A named level pins that worker instead.
 INHERIT_EFFORT = "inherit"
 VALID_WORKER_EFFORTS = (INHERIT_EFFORT,) + VALID_EFFORTS
 VALID_EXTRA_POLICIES = {"ask", "never", "allow"}
 VALID_FAILOVER_POLICIES = {"ask", "never", "allow"}
+VALID_ANTHROPIC_RATE_LIMIT_POLICIES = {"native", "handoff"}
+VALID_OVERFLOW_SHRINK_POLICIES = {"auto", "truncate", "summarize", "off"}
 VALID_DESCENDANT_POLICIES = {"bounded", "off"}
 VALID_ROUTING_POLICIES = {"balanced", "quality", "economy"}
 VALID_SWARM_FAST_POLICIES = {"auto", "on", "off"}
@@ -121,7 +148,8 @@ DEFAULT_DESCENDANT_POLICY = "bounded"
 DEFAULT_MAX_DESCENDANTS = "2"
 DEFAULT_MAX_CONCURRENT_DESCENDANTS = "3"
 DEFAULT_MAX_REPAIR_ROUNDS = "2"
-MAX_CONFIGURED_SUBAGENTS = 20
+MAX_CONCURRENT_SUBAGENTS = 20
+MAX_CONFIGURED_SUBAGENTS = 64
 MAX_REPAIR_ROUNDS = 5
 USAGE_FRESH_SECONDS = 15 * 60
 OPENAI_PLAN_MAP_VERSION = "2026-07"
@@ -173,6 +201,8 @@ MODE_CONFIG_KEYS = {
     "anthropic_fast": "AIRLOCK_ANTHROPIC_FAST",
     "swarm_fast": "AIRLOCK_SWARM_FAST",
     "failover": "AIRLOCK_FAILOVER_POLICY",
+    "anthropic_rate_limit": "AIRLOCK_ANTHROPIC_RATE_LIMIT",
+    "overflow_shrink": "AIRLOCK_OVERFLOW_SHRINK",
     "agent_depth": "AIRLOCK_AGENT_DEPTH",
     "descendants": "AIRLOCK_DESCENDANT_POLICY",
     "max_descendants": "AIRLOCK_MAX_DESCENDANTS_PER_WORKER",
@@ -218,6 +248,11 @@ PROFILE_COMPONENTS = {
         ("openai", "openai_wrappers"),
         ("anthropic", "anthropic_wrappers"),
     ),
+    "hybrid-openrouter-root": (
+        ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_wrappers"),
+        ("grok", "grok_wrappers"),
+    ),
 }
 PROFILE_ROOT_PROVIDERS = {
     "openrouter-pure": "openrouter",
@@ -226,6 +261,7 @@ PROFILE_ROOT_PROVIDERS = {
     "hybrid-openai-root": "openai",
     "hybrid-anthropic-root": "anthropic",
     "hybrid-grok-root": "grok",
+    "hybrid-openrouter-root": "openrouter",
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
@@ -236,69 +272,87 @@ CATALOG_EXPECTED_AGENTS = {
     "grok_wrappers": {"airlock-grok", "airlock-composer"},
 }
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
-MAX_RENDERED_AGENTS_BYTES = 24 * 1024
+MAX_RENDERED_AGENTS_BYTES = 64 * 1024
 MODEL_PROFILES = {
     # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
     # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com,
     # and Airlock always points it at the session router. The [1m] suffix is
     # the one lever that still reaches 1M from behind the router. Haiku 4.5 is
-    # a genuine 200000 model and must not carry the suffix.
+    # a genuine 200000 model and must not carry the suffix. The "window" value
+    # is the context size used for overflow-aware handoff pre-screening; a
+    # model without one is attempted regardless of conversation size.
     "anthropic": {
         "opus": {
             "agent": "airlock-opus", "model": "claude-opus-5[1m]", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
+            "capability": "frontier", "cost": "premium", "window": 1000000,
             "strength": "difficult architecture, UI/UX design and visual direction, product-flow and design-system work, long-horizon planning, complex debugging, security reasoning, high-impact review, and synthesis",
         },
         "sonnet": {
             "agent": "airlock-sonnet", "model": "claude-sonnet-5[1m]", "effort": "high",
-            "capability": "general", "cost": "standard",
+            "capability": "general", "cost": "standard", "window": 1000000,
             "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
         },
         "fable": {
-            "agent": "airlock-fable", "model": "claude-fable-5[1m]", "effort": "high",
-            "capability": "frontier-efficient", "cost": "metered",
+            "agent": "airlock-fable", "model": "claude-fable-5-1[1m]", "effort": "high",
+            "capability": "frontier-efficient", "cost": "metered", "window": 1000000,
             "strength": "efficient frontier implementation, orchestration, and analysis when the route is enabled or explicitly selected",
         },
         "haiku": {
             "agent": "airlock-haiku", "model": "claude-haiku-4-5-20251001", "effort": "medium",
-            "capability": "utility", "cost": "economical",
+            "capability": "utility", "cost": "economical", "window": 200000,
             "strength": "fast bounded utility work when the route is enabled or explicitly selected",
         },
     },
     "openai": {
         "sol": {
             "agent": "airlock-sol", "model": "gpt-5.6-sol", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
+            "capability": "frontier", "cost": "premium", "window": 272000,
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },
         "terra": {
             "agent": "airlock-terra", "model": "gpt-5.6-terra", "effort": "high",
-            "capability": "general", "cost": "standard",
+            "capability": "general", "cost": "standard", "window": 272000,
             "strength": "independent second opinions, adversarial review, competing designs, and debugging hypotheses",
         },
         "luna": {
             "agent": "airlock-luna", "model": "gpt-5.6-luna", "effort": "max",
-            "capability": "utility", "cost": "economical",
+            "capability": "utility", "cost": "economical", "window": 272000,
             "strength": "high-volume discovery, webpage reading, extraction, lookup, summarization, test or log triage, and small mechanical work",
         },
         "luna-fast": {
             "agent": "airlock-luna-fast", "model": "gpt-5.6-luna-fast", "effort": "max",
-            "capability": "utility", "cost": "economical-fast",
+            "capability": "utility", "cost": "economical-fast", "window": 272000,
             "strength": "priority-processed high-volume discovery, reading, extraction, lookup, summarization, and triage on eligible OpenAI plans",
         },
     },
     "grok": {
         "grok": {
-            "agent": "airlock-grok", "model": "grok-4.5", "effort": "xhigh",
-            "capability": "frontier", "cost": "premium",
+            "agent": "airlock-grok", "model": "grok-4.6", "effort": "xhigh",
+            "capability": "frontier", "cost": "premium", "window": 500000,
             "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
         },
         "composer": {
             "agent": "airlock-composer", "model": "grok-composer-2.5-fast", "effort": "high",
-            "capability": "general", "cost": "economical",
+            "capability": "general", "cost": "economical", "window": 256000,
             "strength": "fast low-latency agentic coding loops, automated debugging, web implementation, and bounded multi-step edits that need speed more than depth",
         },
     },
+}
+# Economy workers tried in order per provider when an overflowing handoff
+# needs its history compacted before a smaller-window peer can serve it.
+PROVIDER_COMPACTOR_ROUTES = {
+    "anthropic": ("haiku",),
+    "openai": ("luna", "luna-fast"),
+    "grok": ("composer",),
+}
+SHIPPED_MODEL_EFFORT_CEILINGS = {
+    **{
+        profile["model"]: "max"
+        for provider in ("anthropic", "openai")
+        for profile in MODEL_PROFILES[provider].values()
+    },
+    "grok-4.6": "xhigh",
+    "grok-composer-2.5-fast": "high",
 }
 MANAGED_AGENT_NAMES = frozenset(
     profile["agent"]
@@ -319,6 +373,37 @@ PLAN_KEYS = ("plan", "tier", "subscriptionPlan", "subscriptionTier")
 
 class AccessError(RuntimeError):
     pass
+
+
+class CustomModelEntry(NamedTuple):
+    """One validated entry from the user-owned models.json catalog."""
+
+    model_id: str
+    provider: str
+    effort_ceiling: str
+    context_window: int | None
+    cost: str
+    enabled: bool
+    agent_name: str
+
+    @property
+    def routed_provider(self) -> str:
+        return CUSTOM_PROVIDER_ROUTES[self.provider]
+
+    @property
+    def route(self) -> str:
+        return self.agent_name.removeprefix("airlock-")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.model_id,
+            "provider": self.provider,
+            "effort_ceiling": self.effort_ceiling,
+            "context_window": self.context_window,
+            "cost": self.cost,
+            "enabled": self.enabled,
+            "agent": self.agent_name,
+        }
 
 
 def config_path() -> Path:
@@ -349,6 +434,525 @@ def config_path() -> Path:
     if not standard_parent.exists() and os.access(home, os.W_OK):
         return standard_root / "config"
     return fallback_root / "config"
+
+
+def models_path() -> Path:
+    configured = os.environ.get("AIRLOCK_MODELS_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "models.json"
+
+
+def failover_path() -> Path:
+    configured = os.environ.get("AIRLOCK_FAILOVER_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "failover.json"
+
+
+HANDOFF_PROFILES = (
+    "hybrid-anthropic-root",
+    "hybrid-openai-root",
+    "hybrid-grok-root",
+    "hybrid-openrouter-root",
+    "openai-pure",
+    "grok-pure",
+)
+
+
+# A suggested order that follows capability rather than price. The derived
+# default keeps a handoff inside one usage category, which never spends more
+# than the model it replaces but leaves a category with one member, such as
+# the metered route, with nowhere to go. This trades that safety for reach:
+# a frontier model falls to another frontier model on a different provider,
+# and the smaller tiers fall to the nearest capable neighbour. Peers that are
+# not enabled are dropped, so the shape adapts to the providers you connect.
+RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
+    "opus": ("sol", "grok", "fable"),
+    "sol": ("opus", "grok", "fable"),
+    "grok": ("sol", "opus", "fable"),
+    "fable": ("sol", "opus", "grok"),
+    "sonnet": ("terra", "luna"),
+    "terra": ("sonnet", "luna"),
+    "luna": ("sonnet", "composer", "haiku"),
+    "luna-fast": ("luna", "sonnet"),
+    "composer": ("luna", "sonnet"),
+    "haiku": ("luna", "composer"),
+}
+
+
+def recommended_handoff_chains(
+    workers: list[dict[str, str]],
+) -> dict[str, list[str]]:
+    """The suggested tree, reduced to the routes this session actually has."""
+    by_route = {worker["route"]: wire_model_id(worker["model"]) for worker in workers}
+    chains: dict[str, list[str]] = {}
+    for source, peers in RECOMMENDED_HANDOFF.items():
+        if source not in by_route:
+            continue
+        resolved = [by_route[peer] for peer in peers if peer in by_route]
+        if resolved:
+            chains[by_route[source]] = resolved
+    return chains
+
+
+def handoff_workers(policy: dict[str, Any], profile: str) -> list[dict[str, str]]:
+    """Every worker this profile can route, in a stable display order."""
+    workers = enabled_profile_workers(policy, profile)
+    return sorted(workers, key=lambda worker: (worker["cost"], worker["route"]))
+
+
+def resolve_handoff_name(name: str, workers: list[dict[str, str]]) -> str:
+    """Accept a short route name or an exact model ID, return the model ID.
+
+    Short names exist because the exact IDs carry suffixes such as "[1m]"
+    that are easy to mistype and impossible to guess, which is what made
+    editing failover.json by hand unpleasant enough to avoid.
+    """
+    wanted = name.strip()
+    if not wanted:
+        raise AccessError("a route name is required")
+    for worker in workers:
+        if wanted == worker["route"]:
+            return wire_model_id(worker["model"])
+    for worker in workers:
+        if wanted in {worker["model"], wire_model_id(worker["model"])}:
+            return wire_model_id(worker["model"])
+    known = ", ".join(sorted({worker["route"] for worker in workers}))
+    raise AccessError(
+        "unknown route: " + wanted + "; choose one of: " + known
+    )
+
+
+def handoff_display_name(model: str, workers: list[dict[str, str]]) -> str:
+    for worker in workers:
+        if model in {worker["model"], wire_model_id(worker["model"])}:
+            return worker["route"]
+    return model
+
+
+def handoff_lines(policy: dict[str, Any], profile: str) -> list[str]:
+    """The tree, showing which order is declared and which is derived."""
+    workers = handoff_workers(policy, profile)
+    declared = load_failover_chains()
+    routes = {wire_model_id(worker["model"]): worker for worker in workers}
+    derived = session_failover_chains(policy, workers, routes, declared={})
+    lines = [
+        f"Handoff tree for {profile}",
+        "",
+    ]
+    width = max((len(worker["route"]) for worker in workers), default=8)
+    for worker in workers:
+        model = wire_model_id(worker["model"])
+        source = worker["route"]
+        forms = {worker["model"], model}
+        declared_peers = next(
+            (peers for form, peers in declared.items() if form in forms), None
+        )
+        if declared_peers is not None:
+            peers = [handoff_display_name(peer, workers) for peer in declared_peers]
+            note = "yours"
+        else:
+            peers = [
+                handoff_display_name(peer, workers)
+                for peer in derived.get(model, ())
+            ]
+            note = "default"
+        if peers:
+            arrow = "  ->  ".join(peers)
+        elif declared_peers is not None:
+            arrow = "(never hands off)"
+            note = "yours"
+        else:
+            arrow = f"(no peer in the {worker['cost']} category)"
+        lines.append(f"  {source:<{width}}  ->  {arrow}   [{note}]")
+    lines.extend([
+        "",
+        "  airlock handoff set sol opus grok   choose an order",
+        "  airlock handoff off sol             never hand off from sol",
+        "  airlock handoff clear sol           back to the default",
+        "  airlock handoff recommended         use the suggested order",
+        "  airlock handoff reset               clear every choice",
+    ])
+    return lines
+
+
+def write_failover_chains(chains: dict[str, list[str]]) -> None:
+    """Write failover.json, or remove it when nothing is declared."""
+    target = failover_path()
+    if not chains:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    payload = {"schema_version": 1, "chains": {k: list(v) for k, v in chains.items()}}
+    # Validated before it lands so a bad write cannot break the next launch.
+    validate_failover_chains(payload)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + chr(10), encoding="utf-8"
+    )
+
+
+def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]:
+    # Account access is cached, but the enabled route lists are live config.
+    # Reading only the cache made `handoff recommended` omit routes explicitly
+    # enabled in config (notably Fable and both Grok seats), so the saved tree
+    # could not serve the session that the launcher built from that same file.
+    policy = apply_runtime_overrides(load_cached_policy())
+    if profile not in PROFILE_COMPONENTS:
+        raise AccessError(f"unknown session profile: {profile}")
+    workers = handoff_workers(policy, profile)
+    if action in (None, "", "show"):
+        return handoff_lines(policy, profile)
+    chains = {k: list(v) for k, v in load_failover_chains().items()}
+    if action == "recommended":
+        chains = recommended_handoff_chains(workers)
+        if not chains:
+            raise AccessError(
+                "no recommended order applies to the routes this profile enables"
+            )
+        write_failover_chains(chains)
+        return (
+            ["Recommended order applied to the routes you have enabled."]
+            + [""]
+            + handoff_lines(policy, profile)
+        )
+    if action == "reset":
+        write_failover_chains({})
+        return ["Every handoff choice cleared."] + [""] + handoff_lines(policy, profile)
+    if not names:
+        raise AccessError(f"usage: airlock handoff {action} ROUTE")
+    source = resolve_handoff_name(names[0], workers)
+    if action == "clear":
+        chains.pop(source, None)
+        write_failover_chains(chains)
+        return [f"{names[0]} is back to its default order."] + [""] + handoff_lines(policy, profile)
+    if action == "off":
+        chains[source] = []
+        write_failover_chains(chains)
+        return [f"{names[0]} will never hand off."] + [""] + handoff_lines(policy, profile)
+    if action == "set":
+        if len(names) < 2:
+            raise AccessError("usage: airlock handoff set ROUTE PEER [PEER...]")
+        peers: list[str] = []
+        for peer_name in names[1:]:
+            peer = resolve_handoff_name(peer_name, workers)
+            if peer == source:
+                raise AccessError(f"{names[0]} cannot hand off to itself")
+            if peer not in peers:
+                peers.append(peer)
+        chains[source] = peers
+        write_failover_chains(chains)
+        return [f"{names[0]} now hands off to {', '.join(names[1:])}."] + [""] + handoff_lines(policy, profile)
+    raise AccessError(
+        "usage: airlock handoff [show|set|off|clear|recommended|reset]"
+    )
+
+
+def _custom_model_agent_name(provider: str, model_id: str) -> str:
+    prefix = f"airlock-custom-{provider}-"
+    slug = re.sub(r"[^a-z0-9]+", "-", model_id.lower(), flags=re.ASCII).strip("-")
+    if not slug:
+        raise AccessError("model ID cannot produce a safe Agent slug")
+    available = 64 - len(prefix)
+    if len(slug) > available:
+        digest = hashlib.sha256(model_id.encode("ascii")).hexdigest()[:8]
+        slug = f"{slug[:available - 9].rstrip('-')}-{digest}"
+    return prefix + slug
+
+
+def _validate_custom_model_id(value: object, provider: str, location: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or CUSTOM_MODEL_ID_RE.fullmatch(value) is None
+    ):
+        raise AccessError(
+            f"{location}.id must be a 1-160 character lower-case exact model ID"
+        )
+    if provider == "codex" and not value.startswith("gpt-"):
+        raise AccessError(f"{location}.id must be a canonical Codex gpt-* model ID")
+    if provider == "grok" and not value.startswith("grok-"):
+        raise AccessError(f"{location}.id must be a canonical Grok grok-* model ID")
+    if provider == "openrouter":
+        segments = value.split("/")
+        if (
+            len(segments) != 2
+            or any(CUSTOM_OPENROUTER_SEGMENT_RE.fullmatch(item) is None for item in segments)
+        ):
+            raise AccessError(
+                f"{location}.id must be an exact two-segment OpenRouter model ID"
+            )
+    return value
+
+
+def validate_custom_models(value: object) -> tuple[CustomModelEntry, ...]:
+    if not isinstance(value, dict) or set(value) != CUSTOM_MODELS_FIELDS:
+        raise AccessError(
+            "models.json must contain exactly schema_version and models"
+        )
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise AccessError("models.json schema_version must be 1")
+    raw_models = value.get("models")
+    if not isinstance(raw_models, list):
+        raise AccessError("models.json models must be an array")
+    if len(raw_models) > MAX_CUSTOM_MODELS:
+        raise AccessError(f"models.json models must contain at most {MAX_CUSTOM_MODELS} entries")
+
+    entries: list[CustomModelEntry] = []
+    model_locations: dict[str, str] = {}
+    agent_locations: dict[str, str] = {}
+    for index, raw in enumerate(raw_models):
+        location = f"models[{index}]"
+        if not isinstance(raw, dict) or set(raw) != CUSTOM_MODEL_FIELDS:
+            raise AccessError(
+                f"{location} must contain exactly id, provider, effort_ceiling, "
+                "context_window, cost, enabled"
+            )
+        provider = raw.get("provider")
+        if provider not in VALID_CUSTOM_MODEL_PROVIDERS:
+            raise AccessError(
+                f"{location}.provider must be grok, codex, or openrouter"
+            )
+        model_id = _validate_custom_model_id(raw.get("id"), provider, location)
+        if model_id in model_locations:
+            raise AccessError(
+                f"{location}.id duplicates {model_locations[model_id]}.id: {model_id}"
+            )
+        effort_ceiling = raw.get("effort_ceiling")
+        if effort_ceiling not in VALID_EFFORTS:
+            raise AccessError(
+                f"{location}.effort_ceiling must be low, medium, high, xhigh, or max"
+            )
+        context_window = raw.get("context_window")
+        if context_window is not None and (
+            type(context_window) is not int
+            or not 1 <= context_window <= 10_000_000
+        ):
+            raise AccessError(
+                f"{location}.context_window must be null or an integer from 1 to 10000000"
+            )
+        cost = raw.get("cost")
+        if cost not in VALID_CUSTOM_MODEL_COSTS:
+            raise AccessError(
+                f"{location}.cost must be premium, standard, or economical"
+            )
+        enabled = raw.get("enabled")
+        if type(enabled) is not bool:
+            raise AccessError(f"{location}.enabled must be a boolean")
+        agent_name = _custom_model_agent_name(provider, model_id)
+        if agent_name in agent_locations:
+            raise AccessError(
+                f"{location}.id produces the same Agent name as "
+                f"{agent_locations[agent_name]}.id"
+            )
+        model_locations[model_id] = location
+        agent_locations[agent_name] = location
+        entries.append(CustomModelEntry(
+            model_id=model_id,
+            provider=provider,
+            effort_ceiling=effort_ceiling,
+            context_window=context_window,
+            cost=cost,
+            enabled=enabled,
+            agent_name=agent_name,
+        ))
+    return tuple(entries)
+
+
+def load_custom_models(path: Path | None = None) -> tuple[CustomModelEntry, ...]:
+    target = path or models_path()
+    try:
+        if not target.exists():
+            return ()
+        if target.is_symlink() or not target.is_file():
+            raise AccessError("models.json is not a safe regular file")
+        size = target.stat().st_size
+        if size > MAX_MODELS_FILE_BYTES:
+            raise AccessError(
+                f"models.json exceeds the {MAX_MODELS_FILE_BYTES}-byte limit"
+            )
+        raw = target.read_bytes()
+        if not raw.strip():
+            return ()
+        value = POLICY_SCHEMA.load_json_bytes(raw, max_bytes=MAX_MODELS_FILE_BYTES)
+        return validate_custom_models(value)
+    except AccessError:
+        raise
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
+        raise AccessError(f"models.json is invalid: {exc}") from exc
+
+
+def known_failover_model_ids() -> frozenset[str]:
+    """Every model ID a declared failover chain may legally name.
+
+    Shipped profiles, user-declared custom models, and enabled OpenRouter
+    routes. Validation is deliberately global so one failover.json works
+    across profiles; whether a named model actually participates in one
+    session is decided later from that session's own worker table.
+    """
+    ids: set[str] = set()
+    for provider_profiles in MODEL_PROFILES.values():
+        for profile in provider_profiles.values():
+            ids.add(profile["model"])
+            ids.add(wire_model_id(profile["model"]))
+    for entry in load_custom_models():
+        ids.add(entry.model_id)
+        ids.add(wire_model_id(entry.model_id))
+    try:
+        registry = load_openrouter_registry()
+    except AccessError:
+        registry = None
+    for entry in getattr(registry, "models", ()):
+        if getattr(entry, "enabled", False):
+            ids.add(entry.model)
+            ids.add(wire_model_id(entry.model))
+    # Models that used to ship stay legal to name, so a failover.json written
+    # before a default moved on does not fail the next launch. A stale entry
+    # is inert rather than dangerous: no session routes the old ID, so a
+    # chain keyed by it never fires and it is skipped as a peer.
+    ids.update(RETIRED_FAILOVER_MODEL_IDS)
+    return frozenset(ids)
+
+
+def validate_failover_chains(value: object) -> dict[str, tuple[str, ...]]:
+    """Validate the user-owned failover.json chain map.
+
+    Keys are source model IDs and each value is the exact peer order to try
+    on a rate limit. An empty peer list opts that source out of handoff.
+    Names must reference shipped, custom-declared, or enabled OpenRouter
+    models so a typo fails closed here instead of silently dropping a hop.
+    """
+    if not isinstance(value, dict) or set(value) != {"schema_version", "chains"}:
+        raise AccessError(
+            "failover.json must contain exactly schema_version and chains"
+        )
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise AccessError("failover.json schema_version must be 1")
+    raw_chains = value.get("chains")
+    if not isinstance(raw_chains, dict):
+        raise AccessError("failover.json chains must be an object")
+    if len(raw_chains) > MAX_FAILOVER_CHAIN_SOURCES:
+        raise AccessError(
+            f"failover.json chains must contain at most "
+            f"{MAX_FAILOVER_CHAIN_SOURCES} sources"
+        )
+    known = known_failover_model_ids()
+    chains: dict[str, tuple[str, ...]] = {}
+    for raw_source, raw_peers in raw_chains.items():
+        location = f'chains["{raw_source}"]'
+        if (
+            not isinstance(raw_source, str)
+            or not raw_source
+            or not raw_source.isascii()
+            or len(raw_source) > 200
+        ):
+            raise AccessError("failover.json chain keys must be exact model IDs")
+        source_forms = {raw_source, wire_model_id(raw_source)}
+        if not any(form in known for form in source_forms):
+            raise AccessError(f"failover.json {location} names an unknown model")
+        if not isinstance(raw_peers, list):
+            raise AccessError(f"failover.json {location} must be an array of peers")
+        if len(raw_peers) > FAILOVER_CHAIN_LIMIT:
+            raise AccessError(
+                f"failover.json {location} must list at most "
+                f"{FAILOVER_CHAIN_LIMIT} peers"
+            )
+        seen_wire_forms: set[str] = set()
+        peers: list[str] = []
+        for raw_peer in raw_peers:
+            peer_location = f'{location}[{len(peers)}]'
+            if (
+                not isinstance(raw_peer, str)
+                or not raw_peer
+                or not raw_peer.isascii()
+                or len(raw_peer) > 200
+            ):
+                raise AccessError(
+                    f"failover.json {peer_location} must be an exact model ID"
+                )
+            peer_forms = {raw_peer, wire_model_id(raw_peer)}
+            if not any(form in known for form in peer_forms):
+                raise AccessError(
+                    f"failover.json {peer_location} names an unknown model: "
+                    f"{raw_peer}"
+                )
+            wire_peer = wire_model_id(raw_peer)
+            if wire_peer in source_forms:
+                raise AccessError(
+                    f"failover.json {peer_location} would chain "
+                    f"{raw_source} to itself"
+                )
+            if wire_peer in seen_wire_forms:
+                raise AccessError(
+                    f"failover.json {peer_location} repeats an earlier peer"
+                )
+            seen_wire_forms.add(wire_peer)
+            peers.append(raw_peer)
+        chains[raw_source] = tuple(peers)
+    return chains
+
+
+def load_failover_chains(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    target = path or failover_path()
+    try:
+        if not target.exists():
+            return {}
+        if target.is_symlink() or not target.is_file():
+            raise AccessError("failover.json is not a safe regular file")
+        size = target.stat().st_size
+        if size > MAX_FAILOVER_FILE_BYTES:
+            raise AccessError(
+                f"failover.json exceeds the {MAX_FAILOVER_FILE_BYTES}-byte limit"
+            )
+        raw = target.read_bytes()
+        if not raw.strip():
+            return {}
+        value = POLICY_SCHEMA.load_json_bytes(raw, max_bytes=MAX_FAILOVER_FILE_BYTES)
+        return validate_failover_chains(value)
+    except AccessError:
+        raise
+    except (OSError, POLICY_SCHEMA.PolicyValidationError) as exc:
+        raise AccessError(f"failover.json is invalid: {exc}") from exc
+
+
+def enabled_custom_models(policy: dict[str, Any]) -> tuple[CustomModelEntry, ...]:
+    entries = policy.get("_custom_models", ())
+    return tuple(
+        entry for entry in entries
+        if isinstance(entry, CustomModelEntry) and entry.enabled
+    )
+
+
+def custom_model_fields(
+    policy: dict[str, Any],
+    model_id: str,
+    provider: str | None = None,
+) -> dict[str, object] | None:
+    """Return one enabled exact declaration for launcher-side resolution."""
+
+    if not isinstance(model_id, str):
+        raise AccessError("custom model ID is invalid")
+    matches = [
+        entry for entry in enabled_custom_models(policy)
+        if entry.model_id == model_id
+        and (provider is None or entry.provider == provider)
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise AccessError(f"custom model declaration is ambiguous: {model_id}")
+    entry = matches[0]
+    result = {
+        **entry.to_dict(),
+        "routed_provider": entry.routed_provider,
+        "route": entry.route,
+    }
+    if entry.provider == "openrouter":
+        result["openrouter_route"] = _custom_openrouter_route(policy, entry).route
+    return result
 
 
 def openrouter_registry_path() -> Path:
@@ -398,6 +1002,7 @@ def default_policy() -> dict[str, Any]:
             "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
             "swarm_fast": DEFAULT_SWARM_FAST,
             "failover": "ask",
+            "overflow_shrink": "auto",
             "descendants": "bounded",
             "max_descendants": 2,
             "max_concurrent_descendants": 3,
@@ -472,7 +1077,9 @@ def read_flat_config(path: Path | None = None) -> dict[str, str]:
 def _valid_max_agents(value: object) -> bool:
     if value == "off":
         return True
-    return _valid_positive_limit(value)
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]?", value):
+        return False
+    return 1 <= int(value) <= MAX_CONCURRENT_SUBAGENTS
 
 
 def _valid_positive_limit(value: object) -> bool:
@@ -497,6 +1104,8 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": DEFAULT_ANTHROPIC_FAST,
         "swarm_fast": DEFAULT_SWARM_FAST,
         "failover": "ask",
+        "anthropic_rate_limit": "native",
+        "overflow_shrink": "auto",
         "agent_depth": DEFAULT_AGENT_DEPTH,
         "descendants": DEFAULT_DESCENDANT_POLICY,
         "max_descendants": DEFAULT_MAX_DESCENDANTS,
@@ -511,6 +1120,8 @@ def mode_state() -> dict[str, object]:
         "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
         "swarm_fast": VALID_SWARM_FAST_POLICIES,
         "failover": VALID_FAILOVER_POLICIES,
+        "anthropic_rate_limit": VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
+        "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         "agent_depth": VALID_AGENT_DEPTHS,
         "descendants": VALID_DESCENDANT_POLICIES,
         "max_descendants": _valid_positive_limit,
@@ -546,6 +1157,7 @@ def mode_state() -> dict[str, object]:
         "saved_anthropic_fast": saved["anthropic_fast"],
         "saved_swarm_fast": saved["swarm_fast"],
         "saved_failover": saved["failover"],
+        "saved_anthropic_rate_limit": saved["anthropic_rate_limit"],
         "saved_descendants": saved["descendants"],
         "saved_max_descendants": saved["max_descendants"],
         "saved_max_total_descendants": saved["max_total_descendants"],
@@ -563,6 +1175,8 @@ def mode_state() -> dict[str, object]:
         "effective_anthropic_fast": effective["anthropic_fast"],
         "effective_swarm_fast": effective["swarm_fast"],
         "effective_failover": effective["failover"],
+        "effective_anthropic_rate_limit": effective["anthropic_rate_limit"],
+        "effective_overflow_shrink": effective["overflow_shrink"],
         "effective_agent_depth": effective["agent_depth"],
         "effective_descendants": effective["descendants"],
         "effective_max_descendants": effective["max_descendants"],
@@ -606,12 +1220,14 @@ def mode_status_lines(updated: bool = False) -> list[str]:
         f"Routing: {state['effective_routing']} ({routing_note})",
         f"Extra usage: {state['effective_extra_usage']} ({extra_note})",
         f"Failover: {state['effective_failover']}",
+        f"Anthropic rate limits: {state['effective_anthropic_rate_limit']}",
+        f"Overflow handoff: {state['effective_overflow_shrink']}",
         f"Max concurrent top-level subagents: {state['effective_max_agents']} ({max_note})",
         f"OpenAI Fast routes: {state['effective_openai_fast']} ({openai_fast_note})",
         f"Anthropic Fast startup: {state['effective_anthropic_fast']} ({anthropic_fast_note})",
         f"Luna swarm Fast selection: {state['effective_swarm_fast']} ({swarm_fast_note})",
         agent_depth_note(state["effective_agent_depth"]),
-        "Defaults: routing=balanced, extra-usage=ask, failover=ask, max-agents=off, provider Fast=off, swarm-fast=auto",
+        "Defaults: routing=balanced, extra-usage=ask, failover=ask, anthropic-rate-limit=native, max-agents=off, provider Fast=off, swarm-fast=auto",
     ])
     if (
         state["effective_routing"] == "economy"
@@ -654,6 +1270,8 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["anthropic_fast"]: VALID_PROVIDER_FAST_POLICIES,
         MODE_CONFIG_KEYS["swarm_fast"]: VALID_SWARM_FAST_POLICIES,
         MODE_CONFIG_KEYS["failover"]: VALID_FAILOVER_POLICIES,
+        MODE_CONFIG_KEYS["anthropic_rate_limit"]: VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
+        MODE_CONFIG_KEYS["overflow_shrink"]: VALID_OVERFLOW_SHRINK_POLICIES,
         MODE_CONFIG_KEYS["agent_depth"]: VALID_AGENT_DEPTHS,
         MODE_CONFIG_KEYS["descendants"]: VALID_DESCENDANT_POLICIES,
         MODE_CONFIG_KEYS["max_descendants"]: _valid_positive_limit,
@@ -756,7 +1374,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         )
     option_names = (
         "routing", "extra_usage", "max_agents", "openai_fast", "anthropic_fast",
-        "swarm_fast", "failover",
+        "swarm_fast", "failover", "anthropic_rate_limit",
     )
     options_used = any(getattr(args, name, None) for name in option_names)
     if action == "show":
@@ -788,6 +1406,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             MODE_CONFIG_KEYS["anthropic_fast"]: DEFAULT_ANTHROPIC_FAST,
             MODE_CONFIG_KEYS["swarm_fast"]: DEFAULT_SWARM_FAST,
             MODE_CONFIG_KEYS["failover"]: "ask",
+            MODE_CONFIG_KEYS["anthropic_rate_limit"]: "native",
             MODE_CONFIG_KEYS["agent_depth"]: DEFAULT_AGENT_DEPTH,
             MODE_CONFIG_KEYS["descendants"]: None,
             MODE_CONFIG_KEYS["max_descendants"]: None,
@@ -808,6 +1427,16 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
         "anthropic-fast": ("anthropic_fast", VALID_PROVIDER_FAST_POLICIES, "on|off"),
         "swarm-fast": ("swarm_fast", VALID_SWARM_FAST_POLICIES, "auto|on|off"),
         "failover": ("failover", VALID_FAILOVER_POLICIES, "ask|never|allow"),
+        "anthropic-rate-limit": (
+            "anthropic_rate_limit",
+            VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
+            "native|handoff",
+        ),
+        "overflow": (
+            "overflow_shrink",
+            VALID_OVERFLOW_SHRINK_POLICIES,
+            "auto|truncate|summarize|off",
+        ),
         "depth": ("agent_depth", VALID_AGENT_DEPTHS, "1|2"),
     }
     if action in simple_actions:
@@ -826,7 +1455,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
     if action == "set":
         if value:
             raise AccessError(
-                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE]"
+                "usage: airlock mode set [--routing VALUE] [--extra-usage VALUE] [--max-agents VALUE] [--openai-fast VALUE] [--anthropic-fast VALUE] [--swarm-fast VALUE] [--failover VALUE] [--anthropic-rate-limit VALUE] [--overflow-shrink VALUE]"
             )
         validators: dict[str, object] = {
             "routing": VALID_ROUTING_POLICIES,
@@ -836,6 +1465,8 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             "anthropic_fast": VALID_PROVIDER_FAST_POLICIES,
             "swarm_fast": VALID_SWARM_FAST_POLICIES,
             "failover": VALID_FAILOVER_POLICIES,
+            "anthropic_rate_limit": VALID_ANTHROPIC_RATE_LIMIT_POLICIES,
+            "overflow_shrink": VALID_OVERFLOW_SHRINK_POLICIES,
         }
         for name, validator in validators.items():
             candidate = getattr(args, name, None)
@@ -849,7 +1480,7 @@ def parse_mode_update(args: argparse.Namespace) -> dict[str, str | None] | None:
             raise AccessError("mode set requires at least one option")
         return updates
     raise AccessError(
-        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|max-agents|set]"
+        "usage: airlock mode [show|budget|defaults|balanced|economy|quality|routing|extra-usage|fast|openai-fast|anthropic-fast|swarm-fast|failover|anthropic-rate-limit|overflow|max-agents|set]"
     )
 
 
@@ -1055,6 +1686,7 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
     anthropic_fast = config.get("AIRLOCK_ANTHROPIC_FAST")
     swarm_fast = config.get("AIRLOCK_SWARM_FAST")
     failover = config.get("AIRLOCK_FAILOVER_POLICY")
+    overflow_shrink = config.get("AIRLOCK_OVERFLOW_SHRINK")
     descendants = config.get("AIRLOCK_DESCENDANT_POLICY")
     max_descendants = config.get("AIRLOCK_MAX_DESCENDANTS_PER_WORKER")
     max_total_descendants = config.get("AIRLOCK_MAX_CONCURRENT_DESCENDANTS")
@@ -1074,6 +1706,8 @@ def apply_config_overrides(policy: dict[str, Any], config: dict[str, str]) -> di
         policy["policies"]["swarm_fast"] = swarm_fast
     if failover in VALID_FAILOVER_POLICIES:
         policy["policies"]["failover"] = failover
+    if overflow_shrink in VALID_OVERFLOW_SHRINK_POLICIES:
+        policy["policies"]["overflow_shrink"] = overflow_shrink
     if descendants in VALID_DESCENDANT_POLICIES:
         policy["policies"]["descendants"] = descendants
     if _valid_positive_limit(max_descendants):
@@ -1150,6 +1784,7 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
 def load_policy(path: Path | None = None) -> dict[str, Any]:
     policy = apply_runtime_overrides(load_cached_policy(path))
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_custom_models"] = load_custom_models()
     return policy
 
 
@@ -1235,7 +1870,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.6",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.8",
             }},
         }):
             return None
@@ -1489,6 +2124,7 @@ def refresh_policy(path: Path | None = None) -> dict[str, Any]:
     _write_policy(policy, target)
     policy = apply_runtime_overrides(policy)
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_custom_models"] = load_custom_models()
     return policy
 
 
@@ -1986,6 +2622,22 @@ def model_access(policy: dict[str, Any], provider: str, route: str) -> str:
     return policy["providers"][provider]["models"][route]["access"]
 
 
+def default_hybrid_root(policy: dict[str, Any]) -> str:
+    """Resolve the reserved ``auto`` hybrid root under the local access policy.
+
+    Fable wins when its Anthropic access class is neither ``extra`` nor
+    ``unavailable``, otherwise Opus wins under the same rule, and Sonnet is
+    the final fallback. Auto selection therefore never picks an extra-class
+    model and never creates silent metered spend, whatever the extra-usage
+    policy says.
+    """
+    for route in ("fable", "opus"):
+        access = model_access(policy, "anthropic", route)
+        if access not in ("extra", "unavailable"):
+            return route
+    return "sonnet"
+
+
 def delegation_error(policy: dict[str, Any], provider: str, route: str, effort: str, extra_authorized: bool) -> tuple[str, str] | None:
     if effort not in VALID_EFFORTS:
         return "invalid_effort", "Effort must be low, medium, high, xhigh, or max"
@@ -2078,6 +2730,12 @@ def _validate_openrouter_root_route(
         if openrouter_root_route is None:
             raise AccessError("openrouter-pure requires an exact OpenRouter root route")
         return resolve_openrouter_route(policy, openrouter_root_route)
+    if profile == "hybrid-openrouter-root":
+        if openrouter_root_route is None:
+            raise AccessError(
+                "hybrid-openrouter-root requires an exact OpenRouter root route"
+            )
+        return resolve_openrouter_route(policy, openrouter_root_route)
     if openrouter_root_route is not None:
         raise AccessError(
             f"OpenRouter root route is not valid for session profile: {profile}"
@@ -2114,6 +2772,7 @@ def enabled_openrouter_workers(
             "agent": entry.agent_name,
             "model": entry.model,
             "effort": INHERIT_EFFORT,
+            "effort_ceiling": "high",
             "access": "included" if selected_root else "extra",
             "capability": "unverified",
             "cost": "unknown",
@@ -2126,6 +2785,78 @@ def enabled_openrouter_workers(
             "provider_slug": entry.provider_slug,
             "quantization": entry.quantization,
             "canonical_slug": entry.canonical_slug,
+        })
+    return workers
+
+
+def _custom_openrouter_route(policy: dict[str, Any], model: CustomModelEntry) -> Any:
+    registry = policy.get("_openrouter_registry")
+    matches = [
+        entry for entry in getattr(registry, "models", ())
+        if entry.enabled and entry.model == model.model_id
+    ]
+    if len(matches) != 1:
+        reason = "no enabled route" if not matches else "more than one enabled route"
+        raise AccessError(
+            f"models.json entry {model.model_id!r} has {reason} in the OpenRouter registry"
+        )
+    return matches[0]
+
+
+def enabled_custom_workers(
+    policy: dict[str, Any],
+    profile: str,
+    provider: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> list[dict[str, str]]:
+    """Render enabled models.json entries into the matching profile machinery."""
+
+    if provider not in {"openai", "grok", "openrouter"}:
+        return []
+    root_entry = _validate_openrouter_root_route(
+        policy, profile, openrouter_root_route
+    )
+    workers: list[dict[str, str]] = []
+    for model in enabled_custom_models(policy):
+        if model.routed_provider != provider:
+            continue
+        base = {
+            "provider": provider,
+            "route": model.route,
+            "agent": model.agent_name,
+            "model": model.model_id,
+            "effort": model.effort_ceiling,
+            "effort_ceiling": model.effort_ceiling,
+            "capability": "unverified",
+            "cost": model.cost,
+            "strength": "user-declared exact model with no inferred capability or availability",
+            "declaration_provider": model.provider,
+        }
+        if provider != "openrouter":
+            workers.append({**base, "access": "included"})
+            continue
+
+        route = _custom_openrouter_route(policy, model)
+        selected_root = root_entry is not None and route.route == root_entry.route
+        if not selected_root and policy["policies"]["extra_usage"] == "never":
+            continue
+        # OpenRouter routes keep the shipped portable ceiling of high. A user
+        # declaration may explicitly relax it to xhigh or max for that exact ID.
+        route_ceiling = (
+            model.effort_ceiling
+            if EFFORT_RANK[model.effort_ceiling] > EFFORT_RANK["high"]
+            else "high"
+        )
+        workers.append({
+            **base,
+            "access": "included" if selected_root else "extra",
+            "effort_ceiling": route_ceiling,
+            "endpoint_provider": route.endpoint_provider,
+            "provider_name": route.provider_name,
+            "provider_slug": route.provider_slug,
+            "quantization": route.quantization,
+            "canonical_slug": route.canonical_slug,
         })
     return workers
 
@@ -2157,16 +2888,30 @@ def enabled_profile_workers(
                 "agent": model_profile["agent"],
                 "model": model_profile["model"],
                 "effort": policy["policies"]["worker_effort"].get(route, INHERIT_EFFORT),
+                "effort_ceiling": SHIPPED_MODEL_EFFORT_CEILINGS[model_profile["model"]],
                 "access": access,
                 "capability": model_profile["capability"],
                 "cost": model_profile["cost"],
                 "strength": model_profile["strength"],
             })
+        workers.extend(enabled_custom_workers(
+            policy,
+            profile,
+            provider,
+            openrouter_root_route=openrouter_root_route,
+        ))
     workers.extend(enabled_openrouter_workers(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
     ))
+    if profile == "openrouter-pure" or profile.startswith("hybrid-"):
+        workers.extend(enabled_custom_workers(
+            policy,
+            profile,
+            "openrouter",
+            openrouter_root_route=openrouter_root_route,
+        ))
     if len(workers) > MAX_CONFIGURED_SUBAGENTS:
         raise AccessError(
             f"{profile} enables more than {MAX_CONFIGURED_SUBAGENTS} named Agents"
@@ -2219,6 +2964,206 @@ def discovery_model_from_workers(
     return None
 
 
+FAILOVER_CHAIN_LIMIT = 8
+
+
+def _failover_route_preference(route: str) -> tuple[int, int, str]:
+    """Rank routes so failover chains keep a stable, cheap-first order."""
+    try:
+        return (0, DISCOVERY_ROUTES.index(route), route)
+    except ValueError:
+        return (1, 0, route)
+
+
+def session_failover_chains(
+    policy: dict[str, Any],
+    workers: list[dict[str, str]],
+    routes: dict[str, str],
+    *,
+    declared: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, list[str]]:
+    """Map every routed model to same-category replacements for rate limits.
+
+    When an upstream answers 429 the router retries the same request on the
+    next healthy model from the same cost category instead of letting Claude
+    Code back off against one exhausted model, which is what made WebFetch
+    appear to hang. Chains stay inside a cost category by default so a
+    handoff cannot quietly spend more than the model it replaces.
+
+    A user-owned ``$AIRLOCK_CONFIG_DIR/failover.json`` (override with
+    ``AIRLOCK_FAILOVER_FILE``) may declare exact chains per model:
+    ``{"schema_version": 1, "chains": {"claude-opus-5": ["gpt-5.6-sol"]}}``.
+    A declared source REPLACES its derived chain verbatim -- any order, any
+    mix of providers and cost categories, since writing the file is itself
+    the deliberate upspend decision. An empty peer list opts that source out
+    of handoff entirely. Declared chains never receive the automatic
+    OpenRouter last-resort peer; name it explicitly if you want it.
+    Extra-usage gated peers still only serve when the extra-usage policy is
+    allow, mirroring how worker selection treats them.
+    """
+    if policy["policies"]["failover"] == "never":
+        return {}
+    allow_extra = policy["policies"]["extra_usage"] == "allow"
+    eligible = [
+        worker for worker in workers if allow_extra or worker["access"] != "extra"
+    ]
+    openrouter_models = {
+        form
+        for worker in workers
+        if worker["provider"] == "openrouter"
+        for form in {worker["model"], wire_model_id(worker["model"])}
+    }
+    append_openrouter_peer = (
+        os.environ.get("AIRLOCK_OPENROUTER_CHAIN_PEER", "").strip().lower()
+        != "off"
+    )
+    ox_alpha_peer = None
+    if append_openrouter_peer:
+        ox_alpha_peer = next(
+            (
+                wire_model_id(worker["model"])
+                for worker in eligible
+                if worker["provider"] == "openrouter"
+                and wire_model_id(worker["model"]) == "stealth/ox-alpha"
+                and wire_model_id(worker["model"]) in routes
+            ),
+            None,
+        )
+    groups: dict[str, list[dict[str, str]]] = {}
+    for worker in eligible:
+        groups.setdefault(worker["cost"], []).append(worker)
+    routed = set(routes)
+    chains: dict[str, list[str]] = {}
+    for members in groups.values():
+        ordered = sorted(
+            members, key=lambda w: _failover_route_preference(w["route"])
+        )
+        for worker in ordered:
+            source_forms = {worker["model"], wire_model_id(worker["model"])}
+            peers: list[str] = []
+            for other in ordered:
+                if other is worker:
+                    continue
+                peer = wire_model_id(other["model"])
+                if peer in source_forms:
+                    continue
+                if peer in routed and peer not in peers:
+                    peers.append(peer)
+            add_ox_alpha = (
+                ox_alpha_peer is not None
+                and not source_forms.intersection(openrouter_models)
+                and ox_alpha_peer not in source_forms
+            )
+            if add_ox_alpha:
+                peers = [peer for peer in peers if peer != ox_alpha_peer]
+                entry = peers[:FAILOVER_CHAIN_LIMIT - 1] + [ox_alpha_peer]
+            else:
+                entry = peers[:FAILOVER_CHAIN_LIMIT]
+            if not entry:
+                continue
+            for form in source_forms:
+                if form in routed:
+                    chains[form] = entry
+
+    declared_chains = load_failover_chains() if declared is None else declared
+    if declared_chains:
+        access_by_form: dict[str, str] = {}
+        for worker in workers:
+            for form in {worker["model"], wire_model_id(worker["model"])}:
+                access_by_form.setdefault(form, worker["access"])
+        for raw_source, raw_peers in declared_chains.items():
+            source_forms = {raw_source, wire_model_id(raw_source)}
+            forms = {form for form in source_forms if form in routed}
+            if not forms:
+                continue
+            if not raw_peers:
+                for form in forms:
+                    chains.pop(form, None)
+                continue
+            entry: list[str] = []
+            seen: set[str] = set()
+            for raw_peer in raw_peers:
+                peer = wire_model_id(raw_peer)
+                if peer in source_forms or peer in seen:
+                    continue
+                access = access_by_form.get(peer)
+                if access is None or peer not in routed:
+                    continue
+                if access == "extra" and not allow_extra:
+                    continue
+                seen.add(peer)
+                entry.append(peer)
+            # A declaration that filters to nothing still owns the source:
+            # the user named the only acceptable targets, so keep no chain.
+            for form in forms:
+                chains[form] = entry
+    return dict(sorted(chains.items()))
+
+
+def session_context_windows(
+    policy: dict[str, Any],
+    routes: dict[str, str],
+) -> dict[str, int]:
+    """Map routed models to their known context-window sizes.
+
+    Shipped profiles carry curated window values, and user-declared
+    models.json entries carry whatever ``context_window`` the user wrote.
+    Models without a known size are simply absent: the router then never
+    pre-screens them and attempts every handoff regardless of size.
+    """
+    windows: dict[str, int] = {}
+    for provider_profiles in MODEL_PROFILES.values():
+        for profile in provider_profiles.values():
+            # Failover chains name peers by their wire ID, so a window filed
+            # only under the "[1m]" form would never be found for the peer the
+            # router actually retargets to, and every 1M Claude model would
+            # look size-unknown to the overflow pre-screen.
+            for form in {profile["model"], wire_model_id(profile["model"])}:
+                if form in routes:
+                    windows[form] = profile["window"]
+    for declaration in enabled_custom_models(policy):
+        for form in {declaration.model_id, wire_model_id(declaration.model_id)}:
+            if form in routes and declaration.context_window:
+                windows[form] = declaration.context_window
+    return dict(sorted(windows.items()))
+
+
+def session_compactors(
+    policy: dict[str, Any],
+    workers: list[dict[str, str]],
+    routes: dict[str, str],
+) -> dict[str, str]:
+    """Pick one economy worker per provider for overflow compaction.
+
+    When no failover peer can fit an overflowing conversation, the router
+    compresses its history through the destination provider's own economy
+    model before retrying. Only workers already enabled in the session are
+    eligible, and extra-usage gated workers serve only under the allow
+    policy, mirroring how failover peers are chosen. OpenRouter has no
+    shipped economy worker, so those targets fall back to truncation.
+    """
+    allow_extra = policy["policies"]["extra_usage"] == "allow"
+    by_route = {
+        worker["route"]: worker
+        for worker in workers
+        if worker.get("declaration_provider") is None
+    }
+    compactors: dict[str, str] = {}
+    for provider, candidates in PROVIDER_COMPACTOR_ROUTES.items():
+        for route in candidates:
+            worker = by_route.get(route)
+            if worker is None:
+                continue
+            model = wire_model_id(worker["model"])
+            if model not in routes:
+                continue
+            if worker["access"] == "extra" and not allow_extra:
+                continue
+            compactors[provider] = model
+            break
+    return dict(sorted(compactors.items()))
+
+
 def discovery_model(
     policy: dict[str, Any],
     profile: str,
@@ -2244,10 +3189,19 @@ def proxy_picker_models(
     """Map Claude Code's four Agent/model family aliases to exact enabled models.
 
     Claude Code's Agent tool accepts family aliases rather than arbitrary model
-    IDs. Every slot therefore has to resolve inside the active route policy, and
-    the Haiku slot is reserved for the economical discovery model. Routes gated
-    behind explicit extra-usage confirmation are excluded because a model alias
-    has no place to carry that confirmation marker.
+    IDs. Every slot therefore has to resolve inside the active route policy.
+    Routes gated behind explicit extra-usage confirmation are excluded because a
+    model alias has no place to carry that confirmation marker.
+
+    The Haiku slot is special. Claude Code also spends it on its own background
+    work, including the page-reading step of WebFetch and session titles, and it
+    refuses a model ID it does not recognize before any request leaves the
+    machine. A profile that carries Claude routes therefore has to put a Claude
+    model in that slot, cheapest first, or those built-in features break. The
+    economical discovery model keeps its own channel in AIRLOCK_DISCOVERY_MODEL,
+    so nothing is lost by not seating it here. A pure OpenAI, Grok, or
+    OpenRouter profile has no recognized model to offer and keeps the discovery
+    model, which is why WebFetch cannot work in those profiles.
     """
     workers = [
         worker for worker in enabled_profile_workers(
@@ -2262,12 +3216,20 @@ def proxy_picker_models(
     ]
     by_route = {worker["route"]: worker["model"] for worker in workers}
 
-    def first(*routes: str) -> str:
+    def optional(*routes: str) -> str | None:
         for route in routes:
             model = by_route.get(route)
             if model:
                 return model
-        raise AccessError(f"{profile} has no model eligible for a Claude Code family slot")
+        return None
+
+    def first(*routes: str) -> str:
+        model = optional(*routes)
+        if model is None:
+            raise AccessError(
+                f"{profile} has no model eligible for a Claude Code family slot"
+            )
+        return model
 
     if profile == "openrouter-pure":
         root = resolve_openrouter_route(policy, str(openrouter_root_route)).model
@@ -2294,11 +3256,18 @@ def proxy_picker_models(
     utility = discovery_model_from_workers(policy, workers)
     if utility is None:
         raise AccessError(f"{profile} has no model eligible for the discovery slot")
+    haiku = utility
+    if profile.startswith("hybrid-"):
+        # Cheapest recognized Claude route first. Claude Haiku is the right
+        # seat; the larger Claude routes are a working fallback when it is not
+        # enabled, and cost more per background call, which is why the setup
+        # default now enables haiku.
+        haiku = optional("haiku", "sonnet", "fable", "opus") or utility
     return {
         "fable": fable,
         "opus": opus,
         "sonnet": sonnet,
-        "haiku": utility,
+        "haiku": haiku,
     }
 
 
@@ -2340,9 +3309,9 @@ def session_route_policy(
     )
     return {
         "routes": {model: routes[model] for model in sorted(routes)},
-        "model_ids": sorted(model_ids),
+        "model_ids": sorted(set(model_ids)),
         "agent_names": sorted(agent_names),
-        "extra_model_ids": sorted(extra_model_ids),
+        "extra_model_ids": sorted(set(extra_model_ids)),
         "extra_agent_names": sorted(extra_agent_names),
         "picker_models": proxy_picker_models(
             policy,
@@ -2415,6 +3384,7 @@ def build_session_snapshot(
             "provider_slug": worker["provider_slug"],
             "quantization": worker["quantization"],
             "canonical_slug": worker["canonical_slug"],
+            "effort_ceiling": worker["effort_ceiling"],
         }
         for worker in workers
         if worker["provider"] == "openrouter"
@@ -2429,6 +3399,10 @@ def build_session_snapshot(
             "routes": routes,
             "agents": agents,
             "openrouter": openrouter,
+            "failover": session_failover_chains(policy, workers, routes),
+            "context_windows": session_context_windows(policy, routes),
+            "compactors": session_compactors(policy, workers, routes),
+            "overflow_shrink": policy["policies"]["overflow_shrink"],
         })
     except POLICY_SCHEMA.PolicyValidationError as exc:
         raise AccessError(f"session policy snapshot is invalid: {exc}") from exc
@@ -3095,11 +4069,13 @@ def validate_session_router_url(raw_url: str) -> tuple[str, int]:
     return "127.0.0.1", port
 
 
-def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
+def fetch_session_diagnostics(
+    router_url: str,
+    *,
+    timeout: float = SESSION_DIAGNOSTICS_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     host, port = validate_session_router_url(router_url)
-    connection = http.client.HTTPConnection(
-        host, port, timeout=SESSION_DIAGNOSTICS_TIMEOUT_SECONDS
-    )
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         connection.request("GET", "/diagnostics", headers={"Accept": "application/json"})
         response = connection.getresponse()
@@ -3124,9 +4100,275 @@ def fetch_session_diagnostics(router_url: str) -> dict[str, Any]:
     return payload
 
 
+def status_model(value: object) -> str | None:
+    if isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:+/\-\[\]]{0,127}", value
+    ):
+        return value
+    return None
+
+
+def _status_bounded_int(value: object, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if minimum <= value <= maximum else None
+    return None
+
+
+def status_provider(value: object) -> str | None:
+    if isinstance(value, str) and value in {
+        "anthropic", "openai", "grok", "openrouter"
+    }:
+        return value
+    return None
+
+
+def status_effort(value: object) -> str | None:
+    if isinstance(value, str) and value in VALID_EFFORTS:
+        return value
+    return None
+
+
+def status_timestamp(value: object) -> str | None:
+    if not isinstance(value, str) or re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value
+    ) is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return value[11:19] + "Z"
+
+
+def status_event_kind(value: object) -> str | None:
+    if (
+        isinstance(value, str)
+        and 1 <= len(value) <= 64
+        and all(" " <= character <= "~" for character in value)
+    ):
+        return value
+    return None
+
+
+def status_event_sentence(kind: str, event: dict[str, Any]) -> str | None:
+    model = status_model(event.get("model"))
+    if kind == "session_model_pinned":
+        provider = status_provider(event.get("provider"))
+        if model is not None and provider is not None:
+            return f"Pinned {model} ({provider}) as the session root."
+    elif kind == "router_restarted":
+        return (
+            "The session router stopped and was restarted on the same"
+            " address. Recent actions before that point are not recorded."
+        )
+    elif kind == "rate_limit_failover_attempted":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} hit a rate limit; trying {target}."
+    elif kind == "rate_limit_failover_succeeded":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} hit a rate limit; continued on {target}."
+    elif kind == "rate_limit_chain_exhausted":
+        count = event.get("models_considered")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 32
+        ):
+            noun = "model" if count == 1 else "models"
+            line = f"The failover chain for {model} exhausted {count} {noun}."
+            wait = _status_bounded_int(event.get("retry_after"), 1, 300)
+            if wait is not None:
+                line += f" Retry in about {wait}s."
+            return line
+    elif kind == "rate_limit_cooldown_skipped":
+        if model is not None:
+            return f"Skipped {model} because its rate-limit cooldown is active."
+    elif kind == "rate_limit_provider_cooldown":
+        provider = status_provider(event.get("provider"))
+        if provider is not None and model is not None:
+            return (
+                f"{model} was the second {provider} model to hit a rate limit,"
+                " so the whole subscription is cooling down."
+            )
+        return None
+    elif kind == "anthropic_rate_limit_passthrough":
+        if model is not None:
+            return (
+                f"{model} hit an Anthropic rate limit; passed it to Claude"
+                " Code unchanged instead of handing off."
+            )
+        return None
+    elif kind == "background_model_substituted":
+        requested = status_model(event.get("requested"))
+        if requested is not None and model is not None:
+            return (
+                f"{requested} is not enabled here, so Claude Code's background"
+                f" request was served by {model}."
+            )
+        return None
+    elif kind == "model_not_enabled":
+        if model is not None:
+            return f"Refused a request for {model}: not enabled in this session."
+        return None
+    elif kind == "upstream_context_overflow":
+        if model is None:
+            return None
+        prompt = _status_bounded_int(event.get("prompt_tokens"), 1, 100_000_000)
+        limit = _status_bounded_int(event.get("limit_tokens"), 1, 100_000_000)
+        if prompt is not None and limit is not None:
+            return (
+                f"{model} rejected the request: {prompt} tokens exceed its"
+                f" {limit}-token context window."
+            )
+        return f"{model} rejected the request because it exceeds the context window."
+    elif kind == "failover_overflow_skipped":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        estimated = _status_bounded_int(event.get("estimated_tokens"), 1, 100_000_000)
+        if source is not None and target is not None and estimated is not None:
+            return (
+                f"Skipped {target}: about {estimated} tokens will not fit its"
+                " context window."
+            )
+        return None
+    elif kind == "failover_overflow_attempted":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} could not fit the conversation; trying {target}."
+        return None
+    elif kind == "failover_overflow_succeeded":
+        source = status_model(event.get("from_model"))
+        target = status_model(event.get("to_model"))
+        if source is not None and target is not None:
+            return f"{source} overflowed; continued on {target}."
+        return None
+    elif kind == "failover_shrink_compacted":
+        target = status_model(event.get("target_model"))
+        compactor = status_model(event.get("compactor_model"))
+        if target is not None and compactor is not None:
+            return f"Condensed earlier history through {compactor} before retrying on {target}."
+        return None
+    elif kind == "failover_shrink_truncated":
+        target = status_model(event.get("target_model"))
+        if target is not None:
+            return f"Trimmed older history so the handoff fits {target}."
+        return None
+    elif kind == "failover_shrink_failed":
+        target = status_model(event.get("target_model"))
+        if target is not None:
+            return f"Could not shrink the conversation for {target}; the handoff failed."
+        return None
+    elif kind == "overflow_chain_exhausted":
+        count = event.get("models_considered")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 32
+        ):
+            noun = "model" if count == 1 else "models"
+            return (
+                f"No enabled model could fit the conversation after {count}"
+                f" {noun} were tried."
+            )
+    elif kind == "openrouter_effort_clamped":
+        requested = status_effort(event.get("requested"))
+        forwarded = status_effort(event.get("forwarded"))
+        ceiling = status_effort(event.get("ceiling"))
+        if (
+            model is not None
+            and requested is not None
+            and forwarded is not None
+        ):
+            # Routers older than the per-route ceilings recorded no ceiling;
+            # never invent one, so those events keep the shorter line.
+            if ceiling is None:
+                return (
+                    f"Clamped OpenRouter effort for {model} from {requested} to "
+                    f"{forwarded}."
+                )
+            return (
+                f"Clamped OpenRouter effort for {model} from {requested} to "
+                f"{forwarded} (route ceiling {ceiling})."
+            )
+    elif kind == "sanitized_error_substituted":
+        provider = status_provider(event.get("provider"))
+        if model is not None and provider is not None:
+            return (
+                f"Replaced the {provider} error for {model} with a safe local message."
+            )
+    elif kind == "openrouter_server_tools_stripped":
+        count = event.get("removed_count")
+        if (
+            model is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 64
+        ):
+            noun = "tool" if count == 1 else "tools"
+            return f"Removed {count} unsupported OpenRouter server {noun} for {model}."
+    return None
+
+
+def router_status_lines(payload: dict[str, Any]) -> list[str]:
+    profile = payload.get("profile")
+    root_model = status_model(payload.get("root_model"))
+    root_provider = status_provider(payload.get("root_provider"))
+    events = payload.get("events")
+    if (
+        not isinstance(profile, str)
+        or re.fullmatch(
+            r"[a-z0-9]+(?:[._-][a-z0-9]+)*", profile, re.ASCII
+        ) is None
+        or len(profile) > 64
+        or root_model is None
+        or root_provider is None
+        or not isinstance(events, list)
+        or len(events) > MAX_SESSION_DIAGNOSTIC_EVENTS
+    ):
+        raise AccessError("active Airlock router status is invalid")
+
+    actions: list[str] = []
+    for raw_event in events:
+        if not isinstance(raw_event, dict):
+            continue
+        timestamp = status_timestamp(raw_event.get("timestamp"))
+        kind = status_event_kind(raw_event.get("kind"))
+        if timestamp is None or kind is None:
+            continue
+        sentence = status_event_sentence(kind, raw_event)
+        if sentence is None:
+            sentence = f"Router action: {kind}."
+        actions.append(f"{timestamp} - {sentence}")
+
+    lines = [
+        f"Airlock router: {profile} profile; root {root_model} ({root_provider})"
+    ]
+    if actions:
+        lines.extend(actions[-(MAX_STATUS_LINES - 1):])
+    else:
+        lines.append("No router actions have been recorded yet.")
+    return lines[:MAX_STATUS_LINES]
+
+
 def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and retain only cumulative counts from router diagnostics."""
-    if set(payload) != {"instance_id", "events", "summary"}:
+    # Routers that know about rate-limit failover also report which models are
+    # cooling down; older routers omit that key and stay equally valid.
+    required = {"instance_id", "events", "summary"}
+    allowed = required | {
+        "profile",
+        "root_model",
+        "root_provider",
+        "rate_limit_cooldowns",
+    }
+    if not required <= set(payload) or set(payload) - allowed:
         raise AccessError("active Airlock session diagnostics have an invalid shape")
     instance_id = payload.get("instance_id")
     events = payload.get("events")
@@ -3176,12 +4418,24 @@ def session_usage_report(payload: dict[str, Any]) -> dict[str, Any]:
             raise AccessError("active Airlock session usage counts are inconsistent")
         groups.append({"provider": provider, "model": model, **counts})
     groups.sort(key=lambda group: (group["provider"], group["model"]))
+    raw_cooldowns = payload.get("rate_limit_cooldowns", [])
+    if not isinstance(raw_cooldowns, list) or len(raw_cooldowns) > 32:
+        raise AccessError("active Airlock session rate-limit cooldowns are invalid")
+    cooldowns: list[str] = []
+    for model in raw_cooldowns:
+        if not isinstance(model, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:+\-\[\]]{0,127}", model
+        ):
+            raise AccessError("active Airlock session rate-limit cooldowns are invalid")
+        if model not in cooldowns:
+            cooldowns.append(model)
     return {
         "source": "airlock-router",
         "scope": "current-session",
         "billing": False,
         "bounded_event_window": len(events),
         "groups": groups,
+        "cooldowns": sorted(cooldowns),
     }
 
 
@@ -3203,6 +4457,12 @@ def session_usage_lines(report: dict[str, Any]) -> list[str]:
                 f"cache-read={group['cache_read_input_tokens']}, "
                 f"output={group['output_tokens']}"
             )
+    cooldowns = report.get("cooldowns")
+    if isinstance(cooldowns, list) and cooldowns:
+        lines.append(
+            "Cooling down after rate limits (failover skips these): "
+            + ", ".join(cooldowns)
+        )
     lines.append(
         "OpenRouter usage is not included because it belongs to a separate account."
     )
@@ -3377,17 +4637,31 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
 
 def root_orchestration_guidance(
     policy: dict[str, Any],
+    profile: str,
     workers: list[dict[str, str]],
     *,
     openrouter_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
-    recommended_discovery = (
-        resolve_openrouter_route(policy, openrouter_root_route).model
-        if openrouter_root_route is not None
-        else discovery_model_from_workers(policy, workers)
+    # Only openrouter-pure maps every family alias to the selected root. A
+    # hybrid OpenRouter root keeps normal wrapper-backed family slots, and the
+    # guidance must name the model a caller actually receives from the Haiku
+    # slot rather than the separate discovery route.
+    pure_openrouter_root = (
+        profile == "openrouter-pure" and openrouter_root_route is not None
     )
-    if openrouter_root_route is not None:
+    if pure_openrouter_root:
+        recommended_discovery: str | None = resolve_openrouter_route(
+            policy, openrouter_root_route
+        ).model
+    else:
+        try:
+            recommended_discovery = proxy_picker_models(
+                policy, profile, openrouter_root_route=openrouter_root_route
+            )["haiku"]
+        except AccessError:
+            recommended_discovery = None
+    if pure_openrouter_root:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
             f"Airlock resolves every alias to the exact selected OpenRouter root model {recommended_discovery}. "
@@ -3668,6 +4942,7 @@ def profile_guidance(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    web_tools_script: str | None = None,
 ) -> str:
     if profile not in PROFILE_COMPONENTS:
         raise AccessError(f"unknown session profile: {profile}")
@@ -3692,11 +4967,19 @@ def profile_guidance(
         if provider in enabled_providers and provider in policy.get("providers", {})
     )
     if "openrouter" in enabled_providers:
-        openrouter_signal = (
-            "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
-            if profile == "openrouter-pure"
-            else "openrouter(registry=pinned/key=separate/usage=extra)"
-        )
+        if profile == "openrouter-pure":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=explicitly-selected)"
+            )
+        elif profile == "hybrid-openrouter-root":
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/root=selected-hybrid-root/"
+                "other-routes=extra)"
+            )
+        else:
+            openrouter_signal = (
+                "openrouter(registry=pinned/key=separate/usage=extra)"
+            )
         signals = ", ".join(filter(None, (signals, openrouter_signal)))
     if profile == "openrouter-pure":
         selected = resolve_openrouter_route(policy, str(openrouter_root_route))
@@ -3765,6 +5048,14 @@ def profile_guidance(
                 "endpoint provider pinned in the local registry. OpenRouter uses a separate key; "
                 "Airlock does not infer these models' capability, context window, or relative cost."
             )
+        if profile == "hybrid-openrouter-root":
+            selected = resolve_openrouter_route(policy, str(openrouter_root_route))
+            routes.append(
+                f"The root itself is the user-selected OpenRouter route {selected.route} with model "
+                f"{selected.model} through endpoint provider {selected.endpoint_provider}. The fable, opus, "
+                "sonnet, and haiku family aliases stay wrapper backed and never carry an OpenRouter model; "
+                "Claude Code's single custom model option carries the root."
+            )
         excluded = [
             label
             for name, label in (
@@ -3785,6 +5076,32 @@ def profile_guidance(
             + " ".join(routes)
             + " Named airlock-* Agents use their exact model. Built-in Explore, Plan, and general-purpose inherit the "
             "orchestrator model unless a schema-valid family alias owned by this profile is supplied."
+        )
+    if (
+        PROFILE_ROOT_PROVIDERS[profile] == "anthropic"
+        or web_tools_server_entry(web_tools_script) is None
+    ):
+        web_tools_guidance = None
+    else:
+        label = {
+            "openai": "GPT",
+            "grok": "Grok",
+            "openrouter": "OpenRouter",
+        }[PROFILE_ROOT_PROVIDERS[profile]]
+        seat_note = (
+            "Built-in WebFetch still works here because the Haiku family slot seats a Claude model."
+            if profile.startswith("hybrid-")
+            else
+            "Built-in WebFetch cannot run either, because no Claude model is available for its "
+            "Haiku family slot, so Airlock has disabled it here as well."
+        )
+        web_tools_guidance = (
+            f"Web tool guidance: built-in WebSearch executes on Anthropic's API, so this {label} root cannot "
+            f"run it and Airlock has disabled it for this session. {seat_note} Use the local airlock-web-tools "
+            "MCP server instead: its web_search tool searches DuckDuckGo and returns ranked links with "
+            "descriptions, and its fetch_page tool reads one public page into context without a background "
+            "model. Both tools make their own outbound requests to the public web and refuse private network "
+            "addresses."
         )
     metadata = (
         "Native Agent handoff: send the selected worker one natural, self-contained query. Do not add task kind, risk, "
@@ -3813,6 +5130,7 @@ def profile_guidance(
             "preference is advisory and never overrides explicit choices, access, or confirmation."
         ),
         boundary,
+        *((web_tools_guidance,) if web_tools_guidance else ()),
         metadata,
         failure_policy,
         portfolio_guidance(
@@ -3823,6 +5141,7 @@ def profile_guidance(
         ui_ux_guidance(policy, profile, enabled_workers),
         root_orchestration_guidance(
             policy,
+            profile,
             enabled_workers,
             openrouter_root_route=openrouter_root_route,
         ),
@@ -3960,14 +5279,17 @@ def render_openrouter_agents(
         profile,
         openrouter_root_route=openrouter_root_route,
     ):
-        selected_root = (
-            profile == "openrouter-pure"
-            and worker["access"] == "included"
-        )
-        if selected_root:
+        selected_root = worker["access"] == "included"
+        if selected_root and profile == "openrouter-pure":
             usage_sentence = (
                 "This is the explicitly selected route for normal root traffic; its named "
                 "Agent uses the same route without extra-usage gating."
+            )
+        elif selected_root:
+            usage_sentence = (
+                "This is the explicitly selected route and this session's hybrid root model; its "
+                "named Agent uses the same route without extra-usage gating, while the wrapper-backed "
+                "family aliases never resolve to an OpenRouter model."
             )
         elif requires_confirmation:
             usage_sentence = (
@@ -4022,6 +5344,74 @@ def render_openrouter_agents(
     return rendered
 
 
+def render_custom_agents(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openrouter_root_route: str | None = None,
+) -> dict[str, Any]:
+    """Build native Agent definitions for enabled models.json declarations."""
+
+    declarations = {
+        entry.agent_name: entry for entry in enabled_custom_models(policy)
+    }
+    rendered: dict[str, Any] = {}
+    requires_confirmation = policy["policies"]["extra_usage"] == "ask"
+    for worker in enabled_profile_workers(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    ):
+        declaration = declarations.get(worker["agent"])
+        if declaration is None:
+            continue
+        provider_name = (
+            "Codex" if declaration.provider == "codex"
+            else "Grok" if declaration.provider == "grok"
+            else "OpenRouter"
+        )
+        access_sentence = ""
+        if worker["access"] == "extra" and requires_confirmation:
+            access_sentence = " Automatic use requires explicit extra-usage confirmation."
+        context_sentence = (
+            "No context window was declared."
+            if declaration.context_window is None
+            else f"The user declared a {declaration.context_window}-token context window."
+        )
+        endpoint_sentence = ""
+        if declaration.provider == "openrouter":
+            endpoint_sentence = (
+                f" It uses the separately pinned OpenRouter endpoint "
+                f"{worker['endpoint_provider']}."
+            )
+        description = (
+            f"User-declared {provider_name} worker for exact model "
+            f"{declaration.model_id}. Airlock does not verify its availability or "
+            f"capability. {context_sentence} Declared effort ceiling: "
+            f"{declaration.effort_ceiling}; relative usage class: "
+            f"{declaration.cost}.{endpoint_sentence}{access_sentence}"
+        )
+        prompt = (
+            "Complete the assigned task with the available tools and return the full "
+            "technical result. This exact model was declared by the user. Keep the "
+            "assigned scope, do not change model or provider, do not expose credentials, "
+            "and do not infer provider guarantees."
+        )
+        definition: dict[str, Any] = {
+            "description": description,
+            "prompt": prompt,
+            "model": declaration.model_id,
+            "effort": declaration.effort_ceiling,
+        }
+        if policy["policies"].get("agent_depth") == "2":
+            definition["tools"] = ["*"]
+            definition["prompt"] = prompt + " " + NESTED_AGENT_RULE
+        else:
+            definition["disallowedTools"] = ["Agent"]
+        rendered[declaration.agent_name] = definition
+    return rendered
+
+
 def render_profile(
     policy: dict[str, Any],
     profile: str,
@@ -4052,6 +5442,15 @@ def render_profile(
     if duplicates:
         raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
     rendered.update(openrouter_agents)
+    custom_agents = render_custom_agents(
+        policy,
+        profile,
+        openrouter_root_route=openrouter_root_route,
+    )
+    duplicates = set(rendered).intersection(custom_agents)
+    if duplicates:
+        raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
+    rendered.update(custom_agents)
     if not rendered:
         raise AccessError("user policy disables every worker in this session profile")
     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
@@ -4066,6 +5465,7 @@ def managed_agent_name_set(policy: dict[str, Any] | None = None) -> set[str]:
         registry = policy.get("_openrouter_registry")
         entries = getattr(registry, "models", ())
         names.update(entry.agent_name for entry in entries if entry.enabled)
+        names.update(entry.agent_name for entry in enabled_custom_models(policy))
     return names
 
 
@@ -4098,13 +5498,110 @@ def managed_agent_names_json(
     return managed_agent_names(rendered, policy)
 
 
+def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
+    """Build the stdio MCP entry for the Airlock web tools, or None.
+
+    The server ships with the plugin, but it only joins the session settings
+    when its file exists at launch time, so an older installation without it
+    keeps launching unchanged. Setting AIRLOCK_WEB_TOOLS=off turns the whole
+    feature off for users who prefer no extra outbound-capable helper.
+    """
+
+    if os.environ.get("AIRLOCK_WEB_TOOLS", "").strip().lower() == "off":
+        return None
+    if not script:
+        return None
+    path = Path(script)
+    if path.is_symlink() or not path.is_file():
+        return None
+    return {"command": sys.executable, "args": [str(path.resolve())]}
+
+
+def web_tools_active_for(profile: str) -> bool:
+    """Whether the local web tools server belongs to this profile.
+
+    An Anthropic root already has working built-in WebSearch and WebFetch, so
+    it receives neither our server nor any denial: its session stays exactly
+    as Claude Code shipped it.
+    """
+
+    return PROFILE_ROOT_PROVIDERS.get(profile) != "anthropic"
+
+
+def built_in_web_tool_denials(profile: str) -> list[str]:
+    """Managed permissions.deny entries for broken built-in web tools.
+
+    Built-in WebSearch executes on Anthropic's API, so every non-Anthropic
+    root gets it denied outright instead of letting the model burn a turn on
+    a call that cannot succeed. A pure profile also has no Claude model for
+    WebFetch's Haiku family slot; hybrid sessions keep WebFetch working
+    through the seated Claude Haiku and deny only WebSearch.
+    """
+
+    if not web_tools_active_for(profile):
+        return []
+    if profile.startswith("hybrid-"):
+        return ["WebSearch"]
+    return ["WebSearch", "WebFetch"]
+
+
+def web_tool_allowances() -> list[str]:
+    """Managed permissions.allow entries for the local web tools.
+
+    Non-interactive sessions auto-deny every tool that needs a prompt, so
+    the session's sanctioned web path must be pre-allowed or even an
+    interactive user could not approve it in print mode. The names follow
+    Claude Code's mcp__<server>__<tool> rule format.
+    """
+
+    return [
+        "mcp__airlock-web-tools__web_search",
+        "mcp__airlock-web-tools__fetch_page",
+    ]
+
+
+def write_web_tools_mcp_config(
+    script: str | None, profile: str | None = None
+) -> str:
+    """Write the web tools server as an standalone MCP config file handle.
+
+    Claude Code does not start mcpServers entries carried in --settings on
+    every supported version, so launchers also hand this file to
+    --mcp-config. The file names the helper interpreter and the plugin server
+    script; it holds no credentials. An Anthropic root, the off switch, or a
+    missing server script returns an empty string instead of a file so
+    launchers can skip the flag entirely.
+    """
+
+    if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
+        raise AccessError(f"unknown session profile: {profile}")
+    entry = web_tools_server_entry(script)
+    if entry is None or (
+        profile is not None and not web_tools_active_for(profile)
+    ):
+        return ""
+    payload = json.dumps(
+        {"mcpServers": {"airlock-web-tools": entry}},
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    path, digest, size = write_session_artifact(
+        payload.encode("utf-8"), "airlock-mcp-", ".json"
+    )
+    return f"{path}\t{digest}\t{size}"
+
+
 def managed_session_settings_json(
     serialized: str,
     fast_mode: str = "inherit",
     policy: dict[str, Any] | None = None,
+    web_tools_script: str | None = None,
+    profile: str | None = None,
 ) -> str:
     if fast_mode not in {"inherit", "on", "off"}:
         raise AccessError("managed session Fast mode must be inherit, on, or off")
+    if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
+        raise AccessError(f"unknown session profile: {profile}")
     names = managed_agent_names_json(serialized, policy)
     enabled = set(names)
     services: list[str] = []
@@ -4141,6 +5638,17 @@ def managed_session_settings_json(
     settings: dict[str, object] = {"autoMode": {"environment": ["$defaults", context]}}
     if fast_mode != "inherit":
         settings["fastMode"] = fast_mode == "on"
+    web_tools = web_tools_server_entry(web_tools_script)
+    denials = built_in_web_tool_denials(profile) if (
+        profile is not None and web_tools is not None
+    ) else []
+    if denials:
+        settings["permissions"] = {
+            "allow": web_tool_allowances(),
+            "deny": denials,
+        }
+    if web_tools is not None and (profile is None or web_tools_active_for(profile)):
+        settings["mcpServers"] = {"airlock-web-tools": web_tools}
     return json.dumps(settings, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -4177,6 +5685,7 @@ def status_lines(policy: dict[str, Any]) -> list[str]:
         f"Anthropic Fast startup: {policy['policies']['anthropic_fast']}",
         f"Luna swarm Fast selection: {policy['policies']['swarm_fast']}",
         f"Failover: {policy['policies']['failover']}",
+        f"Overflow handoff: {policy['policies']['overflow_shrink']}",
         agent_depth_note(policy["policies"]["agent_depth"]),
     ]
     for provider in ("anthropic", "openai"):
@@ -4355,10 +5864,21 @@ def main() -> int:
     mode_parser.add_argument("--anthropic-fast", choices=sorted(VALID_PROVIDER_FAST_POLICIES))
     mode_parser.add_argument("--swarm-fast", choices=sorted(VALID_SWARM_FAST_POLICIES))
     mode_parser.add_argument("--failover", choices=sorted(VALID_FAILOVER_POLICIES))
+    mode_parser.add_argument(
+        "--anthropic-rate-limit",
+        choices=sorted(VALID_ANTHROPIC_RATE_LIMIT_POLICIES),
+    )
+    mode_parser.add_argument(
+        "--overflow-shrink", choices=sorted(VALID_OVERFLOW_SHRINK_POLICIES)
+    )
     mode_parser.add_argument("--descendants", choices=sorted(VALID_DESCENDANT_POLICIES))
     mode_parser.add_argument("--max-descendants")
     mode_parser.add_argument("--max-total-descendants")
     mode_parser.add_argument("--repair-rounds")
+    handoff_parser = subparsers.add_parser("handoff")
+    handoff_parser.add_argument("handoff_action", nargs="?")
+    handoff_parser.add_argument("handoff_names", nargs="*")
+    handoff_parser.add_argument("--profile", default="hybrid-anthropic-root")
     usage_parser = subparsers.add_parser("usage")
     usage_parser.add_argument("usage_action", nargs="?")
     usage_parser.add_argument("--claude-plan", choices=sorted(VALID_CLAUDE_PLANS))
@@ -4366,6 +5886,8 @@ def main() -> int:
     session_usage_parser = subparsers.add_parser("session-usage")
     session_usage_parser.add_argument("--router-url", required=True)
     session_usage_parser.add_argument("--json", action="store_true")
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--router-url")
     recommend_parser = subparsers.add_parser("recommend-effort")
     recommend_parser.add_argument("--provider", choices=sorted(PROVIDER_ROUTES), required=True)
     recommend_parser.add_argument("--risk", choices=VALID_RISKS, required=True)
@@ -4418,6 +5940,22 @@ def main() -> int:
     session_settings.add_argument(
         "--fast-mode", choices=("inherit", "on", "off"), default="inherit"
     )
+    session_settings.add_argument("--web-tools-script")
+    session_settings.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
+    )
+    mcp_file = subparsers.add_parser("managed-web-tools-mcp-file")
+    mcp_file.add_argument("--web-tools-script")
+    mcp_file.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
+    )
+    artifact_delete = subparsers.add_parser("session-artifact-delete")
+    artifact_delete.add_argument("--artifact", type=Path, required=True)
+    artifact_delete.add_argument("--digest", required=True)
+    artifact_delete.add_argument("--size", type=int, required=True)
+    artifact_create = subparsers.add_parser("session-artifact-create")
+    artifact_create.add_argument("--prefix", required=True)
+    artifact_create.add_argument("--suffix", required=True)
     session_routes = subparsers.add_parser("session-routes")
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument("--openrouter-root-route")
@@ -4438,9 +5976,17 @@ def main() -> int:
     profile_help = subparsers.add_parser("profile-guidance")
     profile_help.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     profile_help.add_argument("--openrouter-root-route")
+    profile_help.add_argument("--web-tools-script")
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
+    subparsers.add_parser("custom-models")
+    custom_model_resolve = subparsers.add_parser("custom-model-resolve")
+    custom_model_resolve.add_argument("model_id")
+    custom_model_resolve.add_argument(
+        "--provider", choices=sorted(VALID_CUSTOM_MODEL_PROVIDERS)
+    )
+    subparsers.add_parser("hybrid-default-root")
     bundle_check = subparsers.add_parser("bundle-check")
     bundle_check.add_argument("--bundle", type=Path, required=True)
     bundle_check.add_argument("--platform", choices=("posix", "windows"), required=True)
@@ -4468,8 +6014,27 @@ def main() -> int:
         if args.command == "managed-session-settings":
             policy = load_policy()
             print(managed_session_settings_json(
-                args.agents_json, args.fast_mode, policy
+                args.agents_json, args.fast_mode, policy,
+                web_tools_script=args.web_tools_script,
+                profile=args.profile,
             ))
+            return 0
+        if args.command == "managed-web-tools-mcp-file":
+            output = write_web_tools_mcp_config(
+                args.web_tools_script, profile=args.profile
+            )
+            if output:
+                print(output)
+            return 0
+        if args.command == "session-artifact-delete":
+            delete_session_artifact(args.artifact, args.digest, args.size)
+            return 0
+        if args.command == "session-artifact-create":
+            content = sys.stdin.buffer.read()
+            artifact_path, artifact_digest, artifact_size = (
+                write_session_artifact(content, args.prefix, args.suffix)
+            )
+            print(f"{artifact_path}\t{artifact_digest}\t{artifact_size}")
             return 0
         if args.command == "refresh":
             policy = refresh_policy()
@@ -4481,6 +6046,11 @@ def main() -> int:
             if updates is not None:
                 write_flat_config_overrides(updates)
             print("\n".join(mode_status_lines(updated=updates is not None)))
+            return 0
+        if args.command == "handoff":
+            print(chr(10).join(run_handoff(
+                args.handoff_action, list(args.handoff_names), args.profile
+            )))
             return 0
         if args.command == "usage":
             updates = parse_usage_update(args)
@@ -4501,6 +6071,21 @@ def main() -> int:
                 print(json.dumps(report, separators=(",", ":"), ensure_ascii=True))
             else:
                 print("\n".join(session_usage_lines(report)))
+            return 0
+        if args.command == "status":
+            if not args.router_url:
+                print(NO_SESSION_ROUTER_MESSAGE)
+                return 0
+            try:
+                diagnostics = fetch_session_diagnostics(
+                    args.router_url,
+                    timeout=STATUS_DIAGNOSTICS_TIMEOUT_SECONDS,
+                )
+                lines = router_status_lines(diagnostics)
+            except AccessError:
+                print(NO_SESSION_ROUTER_MESSAGE)
+                return 0
+            print("\n".join(lines))
             return 0
         if args.command == "recommend-effort":
             policy = load_policy()
@@ -4550,6 +6135,19 @@ def main() -> int:
         if args.command == "session-snapshot-delete":
             delete_session_snapshot(args.snapshot, args.snapshot_sha256)
             return 0
+        if args.command in {"custom-models", "custom-model-resolve"}:
+            policy = load_policy()
+            if args.command == "custom-models":
+                output = [
+                    custom_model_fields(policy, entry.model_id, entry.provider)
+                    for entry in enabled_custom_models(policy)
+                ]
+            else:
+                output = custom_model_fields(
+                    policy, args.model_id, args.provider
+                )
+            print(json.dumps(output, separators=(",", ":"), ensure_ascii=True))
+            return 0
         policy = load_or_refresh_policy()
         if args.command == "openrouter-routes":
             print(json.dumps(
@@ -4566,6 +6164,9 @@ def main() -> int:
                 separators=(",", ":"),
                 ensure_ascii=True,
             ))
+            return 0
+        if args.command == "hybrid-default-root":
+            print(default_hybrid_root(policy))
             return 0
         if args.command == "session-snapshot":
             snapshot_path, snapshot_digest = write_session_snapshot(
@@ -4609,6 +6210,7 @@ def main() -> int:
                 policy,
                 args.profile,
                 openrouter_root_route=args.openrouter_root_route,
+                web_tools_script=args.web_tools_script,
             ))
             return 0
         if args.command == "render-agents":
@@ -4630,7 +6232,9 @@ def main() -> int:
         return 0
     except AccessError as error:
         command_name = (
-            args.command if args.command in {"mode", "usage", "session-usage"} else "access"
+            args.command
+            if args.command in {"mode", "usage", "session-usage", "status"}
+            else "access"
         )
         print(f"airlock {command_name}: {error}", file=sys.stderr)
         return 1
