@@ -125,7 +125,7 @@ $HybridRoots = @{
   # that survives that. Haiku 4.5 is a genuine 200000 model, so it stays bare.
   'opus'   = @('claude-opus-5[1m]', 'Claude Opus 5', 'anthropic')
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
-  'fable'  = @('claude-fable-5[1m]', 'Claude Fable 5', 'anthropic')
+  'fable'  = @('claude-fable-5-1[1m]', 'Claude Fable 5.1', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
   'grok'     = @('grok-4.6', 'Grok 4.6', 'grok')
   'grok-4.6' = @('grok-4.6', 'Grok 4.6', 'grok')
@@ -1053,7 +1053,7 @@ function Select-HybridRoot {
   Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra)'
   Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna)'
   Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'
-  Write-Host '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)'
+  Write-Host '  6) Claude Fable 5.1 (claude-fable-5-1[1m]; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
   Write-Host '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)'
   Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'

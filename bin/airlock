@@ -640,7 +640,7 @@ resolve_hybrid_alias() {
     # 200000 model and must not carry the suffix.
     opus) root_model='claude-opus-5[1m]'; root_name='Claude Opus 5'; root_provider='anthropic' ;;
     sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
-    fable) root_model='claude-fable-5[1m]'; root_name='Claude Fable 5'; root_provider='anthropic' ;;
+    fable) root_model='claude-fable-5-1[1m]'; root_name='Claude Fable 5.1'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
     grok|grok-4.6|grok-4.5) root_model='grok-4.6'; root_name='Grok 4.6'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
@@ -1668,7 +1668,7 @@ select_hybrid_root() {
     '  3) GPT-5.6 Terra (gpt-5.6-terra)' \
     '  4) GPT-5.6 Luna (gpt-5.6-luna)' \
     '  5) Claude Opus 5 (claude-opus-5[1m])' \
-    '  6) Claude Fable 5 (claude-fable-5[1m]; may use extra usage)' \
+    '  6) Claude Fable 5.1 (claude-fable-5-1[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
     '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)' \
     '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)' \

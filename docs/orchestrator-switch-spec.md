@@ -236,7 +236,7 @@ Airlock uses. Claude roots keep native sizing and must not receive the variable.
 
 | Root | H, hard limit | W to declare | T to set |
 | --- | --- | --- | --- |
-| `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, `claude-fable-5[1m]` | 1,000,000 | leave native | leave native, or `0.8 * H` when the session is switch ready |
+| `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, `claude-fable-5-1[1m]` | 1,000,000 | leave native | leave native, or `0.8 * H` when the session is switch ready |
 | `claude-haiku-4-5-20251001` | 200,000 | leave native | leave native |
 | `gpt-5.6-*` | believed 272,000, unproven above 300,000 | 272,000 | 218,000 |
 | `grok-4.6` | documented 500,000 | 500,000 via `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | 400,000 |

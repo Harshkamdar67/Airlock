@@ -79,6 +79,12 @@ MAX_MODELS_FILE_BYTES = 128 * 1024
 MAX_CUSTOM_MODELS = 32
 MAX_FAILOVER_FILE_BYTES = 128 * 1024
 MAX_FAILOVER_CHAIN_SOURCES = 64
+# Exact IDs a shipped route used to pin. Kept accepted in failover.json so a
+# default moving on does not turn an existing file into a launch failure.
+RETIRED_FAILOVER_MODEL_IDS = frozenset({
+    "claude-fable-5",
+    "claude-fable-5[1m]",
+})
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
 MAX_CLAUDE_STATE_BYTES = 10 * 1024 * 1024
@@ -287,7 +293,7 @@ MODEL_PROFILES = {
             "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
         },
         "fable": {
-            "agent": "airlock-fable", "model": "claude-fable-5[1m]", "effort": "high",
+            "agent": "airlock-fable", "model": "claude-fable-5-1[1m]", "effort": "high",
             "capability": "frontier-efficient", "cost": "metered", "window": 1000000,
             "strength": "efficient frontier implementation, orchestration, and analysis when the route is enabled or explicitly selected",
         },
@@ -590,7 +596,11 @@ def write_failover_chains(chains: dict[str, list[str]]) -> None:
 
 
 def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]:
-    policy = load_cached_policy()
+    # Account access is cached, but the enabled route lists are live config.
+    # Reading only the cache made `handoff recommended` omit routes explicitly
+    # enabled in config (notably Fable and both Grok seats), so the saved tree
+    # could not serve the session that the launcher built from that same file.
+    policy = apply_runtime_overrides(load_cached_policy())
     if profile not in PROFILE_COMPONENTS:
         raise AccessError(f"unknown session profile: {profile}")
     workers = handoff_workers(policy, profile)
@@ -799,6 +809,11 @@ def known_failover_model_ids() -> frozenset[str]:
         if getattr(entry, "enabled", False):
             ids.add(entry.model)
             ids.add(wire_model_id(entry.model))
+    # Models that used to ship stay legal to name, so a failover.json written
+    # before a default moved on does not fail the next launch. A stale entry
+    # is inert rather than dangerous: no session routes the old ID, so a
+    # chain keyed by it never fires and it is skipped as a peer.
+    ids.update(RETIRED_FAILOVER_MODEL_IDS)
     return frozenset(ids)
 
 

@@ -396,7 +396,7 @@ set_model_info() {
     auto) MODEL_TITLE='Auto hybrid root'; MODEL_ID='auto'; MODEL_DETAIL='Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet.' ;;
     sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
     opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
-    fable) MODEL_TITLE='Claude Fable 5'; MODEL_ID='claude-fable-5[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
+    fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
@@ -1310,7 +1310,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
       'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.'
       'opus|Claude Opus 5|claude-opus-5[1m]|Architecture, security, and visual direction. Premium usage.'
-      'fable|Claude Fable 5|claude-fable-5[1m]|Efficient frontier work. May require extra usage.'
+      'fable|Claude Fable 5.1|claude-fable-5-1[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
@@ -1358,8 +1358,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
   choose_rich_option "$current_preset" balanced \
     'balanced|Balanced pool||Claude Opus 5 and Claude Sonnet 5 plus GPT Sol, Terra, and Luna. The router picks one only when it helps.' \
     'economy|Economical pool||Claude Sonnet 5 and GPT Luna. Lower relative usage with broad basic coverage.' \
-    'frontier|Balanced pool plus Claude Fable 5||Everything in the balanced pool and Claude Fable 5 (claude-fable-5[1m]). Fable can use extra usage, so it is not on by default.' \
-    'custom|Choose models individually||Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.'
+    'frontier|Balanced pool plus Claude Fable 5.1||Everything in the balanced pool and Claude Fable 5.1 (claude-fable-5-1[1m]). Fable can use extra usage, so it is not on by default.' \
+    'custom|Choose models individually||Pick any mix, including Claude Fable 5.1 and Claude Haiku 4.5.'
   worker_preset="$CHOICE"
   anthropic_models_was_decided=1
   openai_models_was_decided=1

@@ -232,6 +232,8 @@ Provider billing settings are final. If paid credits are enabled on the account,
 airlock mode failover ask
 airlock mode failover never
 airlock mode failover allow
+airlock mode anthropic-rate-limit native
+airlock mode anthropic-rate-limit handoff
 ```
 
 When an upstream behind the session router answers HTTP 402, 429, or 529, Airlock immediately retries that request on another enabled model of the same cost category instead of hanging or failing. Premium models hand off among Opus, Sol, and Grok. Standard models hand off between Sonnet and Terra. Economy models hand off among Luna, Composer, and Haiku. Luna Fast sits in its own category, Fable stays alone because it is metered separately, and OpenRouter routes form their own category and can hand off only among themselves.
@@ -524,7 +526,7 @@ Opus 5, Sonnet 5, and Fable 5 have a one million token context window. Claude Co
 
 Nothing reports this. The session simply compacts four times as often as the same model would outside Airlock, which costs more usage rather than less.
 
-Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
+Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5-1[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
 
 GPT-5.6 Sol now uses the bare exact ID `gpt-5.6-sol`; Airlock does not label it `[1m]` after the failed proof. All OpenAI worker IDs, including Terra and Luna, are bare because no OpenAI route has a recorded successful proof above 300000 tokens. Legacy suffixed GPT input remains accepted at launcher and setup boundaries, then normalizes to the bare ID. The guarded helper in `scripts/test-sol-long-context.py` can test Sol separately with one synthetic root-only request when a new exact authorization is granted. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
 

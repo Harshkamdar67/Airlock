@@ -695,12 +695,12 @@ for line in sys.stdin:
             self.assertEqual(hybrid["routes"]["claude-opus-5[1m]"], "anthropic")
             self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
             self.assertIn("gpt-5.6-sol", hybrid["model_ids"])
-            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5-1[1m]", hybrid["model_ids"])
             self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
             policy["providers"]["anthropic"]["models"]["fable"]["access"] = "extra"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertIn("claude-fable-5[1m]", hybrid["extra_model_ids"])
+            self.assertIn("claude-fable-5-1[1m]", hybrid["extra_model_ids"])
             self.assertIn("airlock-fable", hybrid["extra_agent_names"])
 
             policy["providers"]["openai"]["detected_plan"] = "pro"
@@ -712,7 +712,7 @@ for line in sys.stdin:
 
             policy["policies"]["extra_usage"] = "never"
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertNotIn("claude-fable-5[1m]", hybrid["model_ids"])
+            self.assertNotIn("claude-fable-5-1[1m]", hybrid["model_ids"])
 
     def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
         policy = ACCESS.default_policy()
@@ -2030,6 +2030,35 @@ class FailoverChainTests(unittest.TestCase):
                 {k: tuple(v) for k, v in chains.items()},
             )
 
+    def test_recommended_handoff_applies_live_enabled_route_config(self) -> None:
+        """The cache records account probes; config owns enabled route lists."""
+
+        self.config.write_text(
+            "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,fable\n"
+            "AIRLOCK_OPENAI_MODELS=sol,terra,luna\n"
+            "AIRLOCK_GROK_MODELS=grok,composer\n",
+            encoding="utf-8",
+        )
+        cached = ACCESS.default_policy()
+        cached["providers"]["grok"]["authenticated"] = True
+        ACCESS._write_policy(cached, self.access)
+        target = self.root / "recommended-failover.json"
+        with patch.dict(os.environ, {"AIRLOCK_FAILOVER_FILE": str(target)}):
+            ACCESS.run_handoff(
+                "recommended", [], "hybrid-anthropic-root"
+            )
+        chains = json.loads(target.read_text(encoding="utf-8"))["chains"]
+        self.assertEqual(
+            chains["claude-fable-5-1"],
+            ["gpt-5.6-sol", "claude-opus-5", "grok-4.6"],
+        )
+        self.assertEqual(
+            chains["gpt-5.6-sol"],
+            ["claude-opus-5", "grok-4.6", "claude-fable-5-1"],
+        )
+        self.assertIn("grok-4.6", chains)
+        self.assertIn("grok-composer-2.5-fast", chains)
+
     def test_shipped_grok_routes_stay_inside_the_proxy_catalog(self) -> None:
         """A rate-limited root must never fail over to an unknown Grok ID.
 
@@ -2293,6 +2322,29 @@ class FailoverFileTests(unittest.TestCase):
             {
                 "claude-opus-5[1m]": ("gpt-5.6-sol", "gpt-5.6-luna"),
                 "gpt-5.6-sol": (),
+            },
+        )
+
+    def test_a_retired_default_stays_accepted_but_inert(self) -> None:
+        # The Fable route moved from claude-fable-5 to claude-fable-5-1. A
+        # failover.json written before that still names the old ID; failing
+        # the launch over it would punish the user for our upgrade, so the
+        # retired name loads fine and simply never matches a live route.
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {
+                    "claude-fable-5": ["gpt-5.6-sol"],
+                    "gpt-5.6-sol": ["claude-opus-5", "claude-fable-5"],
+                },
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.load(),
+            {
+                "claude-fable-5": ("gpt-5.6-sol",),
+                "gpt-5.6-sol": ("claude-opus-5", "claude-fable-5"),
             },
         )
 

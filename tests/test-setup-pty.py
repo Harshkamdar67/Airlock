@@ -397,18 +397,18 @@ CHOICE_PRESENTATION = (
     "Press Enter to accept 1) GPT-5.6 Sol",
     "Choice [1-3, name, or ?]:",
     "Choice [1-4, name, or ?]:",
-    # Claude Fable 5 has to be reachable without hunting through Advanced.
-    "Balanced pool plus Claude Fable 5",
-    "Everything in the balanced pool and Claude Fable 5 (claude-fable-5[1m]). Fable "
+    # Claude Fable 5.1 has to be reachable without hunting through Advanced.
+    "Balanced pool plus Claude Fable 5.1",
+    "Everything in the balanced pool and Claude Fable 5.1 (claude-fable-5-1[1m]). Fable "
     "can use extra usage, so it is not on by default.",
-    "Pick any mix, including Claude Fable 5 and Claude Haiku 4.5.",
+    "Pick any mix, including Claude Fable 5.1 and Claude Haiku 4.5.",
     "Efficient frontier work. May require extra usage.",
     "Claude Sonnet 5",
     "claude-sonnet-5",
     "Claude Opus 5",
     "claude-opus-5",
-    "Claude Fable 5",
-    "claude-fable-5",
+    "Claude Fable 5.1",
+    "claude-fable-5-1",
     "Claude Haiku 4.5",
     "claude-haiku-4-5-20251001",
     "GPT-5.6 Sol",
