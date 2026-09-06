@@ -1831,7 +1831,9 @@ launch_session() {
     printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
     exit 1
   fi
-  AIRLOCK_ALLOWED_AGENT_NAMES="$(IFS=,; printf '%s' "${enabled_agents[*]}")"
+  # The array is legitimately empty for openmodel-pure; bash 3.2 (macOS) treats
+  # an empty array expansion as unbound under set -u, so give it a default.
+  AIRLOCK_ALLOWED_AGENT_NAMES="$(IFS=,; printf '%s' "${enabled_agents[*]:-}")"
   route_agent_names="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field agent-names)" || exit $?
   if [[ "$route_agent_names" != "$AIRLOCK_ALLOWED_AGENT_NAMES" ]]; then
     printf 'airlock: rendered native Agents do not match the session route policy.\n' >&2

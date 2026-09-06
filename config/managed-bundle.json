@@ -4,7 +4,7 @@
   "protocol_version": 6,
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
-    "bin/airlock": "d0001d5d9721fbbda61d8eed3a7572a05d79f4e27596e874d1ee9228e1c595ae",
+    "bin/airlock": "707cd35634312d59f532f3328f880561a2217c158e9153c4ba080ed3ad44d1b7",
     "bin/airlock-access.py": "37d1d9794298b786eb56c74b1dffd392ed62d6ed12f27fa24d9b21d5c89c1062",
     "bin/airlock-hybrid.py": "22553b26c18634566286d05feb3383a960d98265d031ef4517039e64f8a65735",
     "bin/airlock-router.py": "b1a1d4f3d0dd8d5a30f69564623fdabba24520aede355b403c7e07b4905d31bb",
