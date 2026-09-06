@@ -3364,13 +3364,28 @@ class OpenModelTransportTests(unittest.TestCase):
         connection.close()
         self.wait_for_upstream_idle()
         self.upstream.mode = "text_json"
+        # The slot is proven free by this request completing at all: with the
+        # endpoint's concurrency of one, a leaked semaphore would stall it past
+        # its timeout.
         status, _raw, _headers = self.request(model=self.WIRE_B, timeout=2)
         self.assertEqual(status, 200)
-        outcomes = {
-            event.get("outcome")
-            for event in self.gateway.diagnostic_report()["events"]
-        }
-        self.assertIn("connection_interrupted", outcomes)
+        # Which side the router notices first is a race the platform decides.
+        # Linux fails the next client write at once (connection_interrupted);
+        # macOS accepts one more write after the peer's shutdown and only the
+        # following one raises, so when the upstream ends first the record says
+        # upstream_error. Both mean the stream ended abnormally and was cleaned
+        # up, so poll briefly and accept either.
+        deadline = time.monotonic() + 3
+        abnormal = {"connection_interrupted", "upstream_error"}
+        while time.monotonic() < deadline:
+            outcomes = {
+                event.get("outcome")
+                for event in self.gateway.diagnostic_report()["events"]
+            }
+            if outcomes & abnormal:
+                break
+            time.sleep(0.02)
+        self.assertTrue(outcomes & abnormal, outcomes)
 
     def test_stream_diagnostics_distinguish_omitted_and_real_usage(self) -> None:
         stream_payload = {

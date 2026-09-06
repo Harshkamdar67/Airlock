@@ -1283,7 +1283,13 @@ server.server_close()
   $StatusPort = $null
   for ($attempt = 0; $attempt -lt 100; $attempt++) {
     if (Test-Path -LiteralPath $StatusPortFile -PathType Leaf) {
-      $candidatePort = [IO.File]::ReadAllText($StatusPortFile).Trim()
+      # The stub may still hold the file open while it writes the port, and
+      # Windows refuses a shared read then; treat that as "not ready yet".
+      try {
+        $candidatePort = [IO.File]::ReadAllText($StatusPortFile).Trim()
+      } catch [System.IO.IOException] {
+        $candidatePort = ''
+      }
       if ($candidatePort -match '^[1-9][0-9]{0,4}$') {
         $StatusPort = $candidatePort
         break
