@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import hashlib
 import hmac
 import http.client
@@ -71,8 +72,8 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.08.26.1"
-MANAGED_PROTOCOL_VERSION = 5
+MANAGED_BUNDLE_VERSION = "2026.09.06.1"
+MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
 MAX_MODELS_FILE_BYTES = 128 * 1024
@@ -225,12 +226,13 @@ ROUTING_OBJECTIVES = {
 }
 PROVIDER_ROUTES = {
     "anthropic": ("opus", "sonnet", "fable", "haiku"),
-    "openai": ("sol", "terra", "luna", "luna-fast"),
+    "openai": ("astra", "sol", "terra", "luna", "luna-fast"),
     "grok": ("grok", "composer"),
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
 PROFILE_COMPONENTS = {
     "openrouter-pure": (),
+    "openmodel-pure": (),
     "openai-pure": (("openai", "openai_direct"),),
     "grok-pure": (("grok", "grok_direct"),),
     "hybrid-openai-root": (
@@ -253,19 +255,30 @@ PROFILE_COMPONENTS = {
         ("anthropic", "anthropic_wrappers"),
         ("grok", "grok_wrappers"),
     ),
+    "hybrid-openmodel-root": (
+        ("openai", "openai_wrappers"),
+        ("anthropic", "anthropic_wrappers"),
+        ("grok", "grok_wrappers"),
+    ),
 }
 PROFILE_ROOT_PROVIDERS = {
     "openrouter-pure": "openrouter",
+    "openmodel-pure": "openmodel",
     "openai-pure": "openai",
     "grok-pure": "grok",
     "hybrid-openai-root": "openai",
     "hybrid-anthropic-root": "anthropic",
     "hybrid-grok-root": "grok",
     "hybrid-openrouter-root": "openrouter",
+    "hybrid-openmodel-root": "openmodel",
 }
 CATALOG_EXPECTED_AGENTS = {
-    "openai_direct": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
-    "openai_wrappers": {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast"},
+    "openai_direct": {
+        "airlock-astra", "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+    },
+    "openai_wrappers": {
+        "airlock-astra", "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+    },
     "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
     "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
     "grok_direct": {"airlock-grok", "airlock-composer"},
@@ -304,6 +317,15 @@ MODEL_PROFILES = {
         },
     },
     "openai": {
+        "astra": {
+            # OpenAI documents a 1,050,000-token window for GPT-6 Astra with
+            # 922,000 tokens of input, so the input ceiling is the value that
+            # matters for overflow pre-screening. No Airlock proof above
+            # 300,000 tokens has run on this route yet.
+            "agent": "airlock-astra", "model": "gpt-6-astra", "effort": "xhigh",
+            "capability": "frontier", "cost": "premium", "window": 922000,
+            "strength": "the hardest implementation, long-horizon agentic work across very large repositories, computer use and browsing, security reasoning, difficult debugging, and synthesis",
+        },
         "sol": {
             "agent": "airlock-sol", "model": "gpt-5.6-sol", "effort": "xhigh",
             "capability": "frontier", "cost": "premium", "window": 272000,
@@ -373,6 +395,10 @@ PLAN_KEYS = ("plan", "tier", "subscriptionPlan", "subscriptionTier")
 
 class AccessError(RuntimeError):
     pass
+
+
+class FailoverConflictError(AccessError):
+    """Raised when failover.json changed under a compare-and-swap."""
 
 
 class CustomModelEntry(NamedTuple):
@@ -468,10 +494,11 @@ HANDOFF_PROFILES = (
 # and the smaller tiers fall to the nearest capable neighbour. Peers that are
 # not enabled are dropped, so the shape adapts to the providers you connect.
 RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
-    "opus": ("sol", "grok", "fable"),
-    "sol": ("opus", "grok", "fable"),
-    "grok": ("sol", "opus", "fable"),
-    "fable": ("sol", "opus", "grok"),
+    "astra": ("sol", "opus", "grok", "fable"),
+    "opus": ("astra", "sol", "grok", "fable"),
+    "sol": ("astra", "opus", "grok", "fable"),
+    "grok": ("astra", "sol", "opus", "fable"),
+    "fable": ("astra", "sol", "opus", "grok"),
     "sonnet": ("terra", "luna"),
     "terra": ("sonnet", "luna"),
     "luna": ("sonnet", "composer", "haiku"),
@@ -577,22 +604,390 @@ def handoff_lines(policy: dict[str, Any], profile: str) -> list[str]:
     return lines
 
 
+FAILOVER_LOCK_TIMEOUT_SECONDS = 2.0
+FAILOVER_LOCK_RETRY_SECONDS = 0.05
+
+
+class FailoverChainsState(NamedTuple):
+    """Current logical failover chains and their canonical digest."""
+
+    chains: dict[str, tuple[str, ...]]
+    digest: str
+
+
+class FailoverWriteResult(NamedTuple):
+    """Outcome of a locked failover.json compare-and-swap write."""
+
+    changed: bool
+    previous_digest: str
+    current_digest: str
+    chains: dict[str, tuple[str, ...]]
+
+
+def _canonical_failover_payload(
+    chains: dict[str, list[str]] | dict[str, tuple[str, ...]],
+) -> dict[str, object]:
+    """Build the schema_version 1 object used for digests and on-disk writes."""
+
+    return {
+        "schema_version": 1,
+        "chains": {str(key): list(peers) for key, peers in chains.items()},
+    }
+
+
+def failover_chains_digest(
+    chains: dict[str, list[str]] | dict[str, tuple[str, ...]],
+) -> str:
+    """Return the lower-case SHA-256 digest of the canonical failover map.
+
+    Keys are sorted. Each peer list keeps the order the caller declared. The
+    digest covers compact UTF-8 JSON, not the pretty form written to disk.
+    """
+
+    payload = _canonical_failover_payload(chains)
+    text = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_failover_chains_state(
+    path: Path | None = None,
+) -> FailoverChainsState:
+    """Load the current logical chains together with their canonical digest."""
+
+    chains = load_failover_chains(path)
+    return FailoverChainsState(chains=chains, digest=failover_chains_digest(chains))
+
+
+def _failover_lock_path(target: Path) -> Path:
+    return target.parent / ".failover.lock"
+
+
+def _prepare_failover_parent(parent: Path) -> Path:
+    """Ensure the failover.json parent is a plain private directory."""
+
+    if parent.is_symlink() or (
+        parent.exists()
+        and (not parent.is_dir() or _is_reparse_point(parent.lstat()))
+    ):
+        raise AccessError("failover.json parent is not a safe directory")
+    parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if (
+        parent.is_symlink()
+        or not parent.is_dir()
+        or _is_reparse_point(parent.lstat())
+    ):
+        raise AccessError("failover.json parent is not a safe directory")
+    if os.name != "nt":
+        details = parent.stat()
+        if hasattr(os, "geteuid") and details.st_uid != os.geteuid():
+            raise AccessError("failover.json parent is not owned by this user")
+        if details.st_mode & 0o077:
+            os.chmod(parent, 0o700)
+    return parent
+
+
+def _fsync_failover_directory(parent: Path) -> None:
+    if os.name == "nt":
+        return
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(parent, directory_flags)
+        os.fsync(descriptor)
+    except OSError:
+        # Replacement already succeeded. Directory durability is best-effort.
+        pass
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+@contextmanager
+def _failover_chains_lock(target: Path) -> Any:
+    """Hold a private sidecar advisory lock beside failover.json.
+
+    The lock file stays in place after unlock so later writers can reopen it.
+    Acquisition is bounded; a timeout becomes AccessError instead of hanging.
+    """
+
+    parent = _prepare_failover_parent(target.parent)
+    lock_path = _failover_lock_path(target)
+    descriptor = -1
+    locked = False
+    try:
+        try:
+            before = os.lstat(lock_path)
+        except FileNotFoundError:
+            before = None
+        if before is not None:
+            if (
+                stat.S_ISLNK(before.st_mode)
+                or not stat.S_ISREG(before.st_mode)
+                or _is_reparse_point(before)
+            ):
+                raise AccessError("failover lock is not a safe regular file")
+
+        flags = os.O_RDWR | os.O_CREAT
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise AccessError("failover lock is not a safe regular file")
+        current = os.lstat(lock_path)
+        if before is not None and before.st_ino and current.st_ino and (
+            before.st_dev != current.st_dev or before.st_ino != current.st_ino
+        ):
+            raise AccessError("failover lock changed while it was opened")
+        if opened.st_ino and current.st_ino and (
+            opened.st_dev != current.st_dev or opened.st_ino != current.st_ino
+        ):
+            raise AccessError("failover lock changed while it was opened")
+        os.chmod(lock_path, 0o600)
+        try:
+            POLICY_SCHEMA.protect_private_path(lock_path)
+        except POLICY_SCHEMA.PolicyValidationError as exc:
+            raise AccessError("failover lock could not be made private") from exc
+
+        deadline = time.monotonic() + FAILOVER_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    if opened.st_size == 0:
+                        os.write(descriptor, b"\0")
+                        os.fsync(descriptor)
+                        opened = os.fstat(descriptor)
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise AccessError(
+                        "another Airlock failover update is in progress; try again"
+                    ) from exc
+                time.sleep(FAILOVER_LOCK_RETRY_SECONDS)
+        locked = True
+        yield
+    except AccessError:
+        raise
+    except OSError as exc:
+        raise AccessError("failover lock could not be acquired") from exc
+    finally:
+        if descriptor >= 0:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _remove_failover_file(target: Path) -> None:
+    try:
+        details = target.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        target.is_symlink()
+        or _is_reparse_point(details)
+        or not stat.S_ISREG(details.st_mode)
+    ):
+        raise AccessError("failover.json is not a safe regular file")
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_failover_directory(target.parent)
+
+
+def _atomic_write_failover_file(target: Path, payload: dict[str, object]) -> None:
+    parent = _prepare_failover_parent(target.parent)
+    if target.exists() or target.is_symlink():
+        details = target.lstat()
+        if (
+            target.is_symlink()
+            or _is_reparse_point(details)
+            or not stat.S_ISREG(details.st_mode)
+        ):
+            raise AccessError("refusing to replace symlinked failover.json")
+
+    serialized = (
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+    )
+    content = serialized.encode("utf-8")
+    if len(content) > MAX_FAILOVER_FILE_BYTES:
+        raise AccessError(
+            f"failover.json exceeds the {MAX_FAILOVER_FILE_BYTES}-byte limit"
+        )
+
+    temporary_path: Path | None = None
+    descriptor = -1
+    replaced = False
+    try:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        # Unique exclusive temp in the same directory so replace stays atomic.
+        for _ in range(32):
+            candidate = parent / f".failover.{secrets.token_hex(8)}.tmp"
+            try:
+                descriptor = os.open(candidate, flags, 0o600)
+                temporary_path = candidate
+                break
+            except FileExistsError:
+                continue
+        if temporary_path is None or descriptor < 0:
+            raise AccessError("failover.json could not be written securely")
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, 0o600)
+        try:
+            POLICY_SCHEMA.protect_private_path(temporary_path)
+        except POLICY_SCHEMA.PolicyValidationError as exc:
+            raise AccessError("failover.json could not be made private") from exc
+        if target.exists() or target.is_symlink():
+            details = target.lstat()
+            if (
+                target.is_symlink()
+                or _is_reparse_point(details)
+                or not stat.S_ISREG(details.st_mode)
+            ):
+                raise AccessError("refusing to replace symlinked failover.json")
+        os.replace(temporary_path, target)
+        replaced = True
+        temporary_path = None
+        os.chmod(target, 0o600)
+        try:
+            POLICY_SCHEMA.protect_private_path(target)
+        except POLICY_SCHEMA.PolicyValidationError as exc:
+            raise AccessError("failover.json could not be made private") from exc
+        _fsync_failover_directory(parent)
+    except AccessError:
+        raise
+    except OSError as exc:
+        raise AccessError("failover.json could not be written securely") from exc
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None and not replaced:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def compare_and_swap_failover_chains(
+    chains: dict[str, list[str]] | dict[str, tuple[str, ...]],
+    expected_digest: str | None = None,
+    *,
+    path: Path | None = None,
+) -> FailoverWriteResult:
+    """Replace failover.json under lock when the digest still matches.
+
+    Pass expected_digest=None to skip the compare step. An empty map removes
+    the file. Writing the same logical value again is idempotent and does not
+    replace the bytes on disk.
+
+    One exception: a stale on-disk file whose logical value is already the
+    empty map (for example ``{"schema_version": 1, "chains": {}}``) is still
+    removed when the caller asks for ``{}``. Digests already match, so the
+    result reports ``changed=False``, but the empty file is gone afterward.
+    """
+
+    if expected_digest is not None and re.fullmatch(
+        r"[0-9a-f]{64}", expected_digest
+    ) is None:
+        raise AccessError("expected failover digest is invalid")
+
+    payload = _canonical_failover_payload(chains)
+    # Validated before it lands so a bad write cannot break the next launch.
+    validated = validate_failover_chains(payload)
+    desired_digest = failover_chains_digest(validated)
+    target = path or failover_path()
+
+    with _failover_chains_lock(target):
+        if target.is_symlink() or (
+            target.exists()
+            and (
+                _is_reparse_point(target.lstat())
+                or not target.is_file()
+            )
+        ):
+            raise AccessError("refusing to replace symlinked failover.json")
+        current_state = read_failover_chains_state(target)
+        previous_digest = current_state.digest
+        if expected_digest is not None and expected_digest != previous_digest:
+            raise FailoverConflictError(
+                "failover.json changed during this operation; reload and try again"
+            )
+        if desired_digest == previous_digest:
+            # Digests match, but an empty logical map must not leave a stale
+            # empty failover.json behind for later readers to trip over.
+            if not validated and target.exists():
+                _remove_failover_file(target)
+            return FailoverWriteResult(
+                changed=False,
+                previous_digest=previous_digest,
+                current_digest=previous_digest,
+                chains=current_state.chains,
+            )
+        if not validated:
+            _remove_failover_file(target)
+        else:
+            _atomic_write_failover_file(
+                target, _canonical_failover_payload(validated)
+            )
+        current_state = read_failover_chains_state(target)
+        return FailoverWriteResult(
+            changed=True,
+            previous_digest=previous_digest,
+            current_digest=current_state.digest,
+            chains=current_state.chains,
+        )
+
+
 def write_failover_chains(chains: dict[str, list[str]]) -> None:
     """Write failover.json, or remove it when nothing is declared."""
-    target = failover_path()
-    if not chains:
-        try:
-            target.unlink()
-        except FileNotFoundError:
-            pass
-        return
-    payload = {"schema_version": 1, "chains": {k: list(v) for k, v in chains.items()}}
-    # Validated before it lands so a bad write cannot break the next launch.
-    validate_failover_chains(payload)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + chr(10), encoding="utf-8"
-    )
+
+    compare_and_swap_failover_chains(chains)
 
 
 def run_handoff(action: str | None, names: list[str], profile: str) -> list[str]:
@@ -841,6 +1236,7 @@ def validate_failover_chains(value: object) -> dict[str, tuple[str, ...]]:
         )
     known = known_failover_model_ids()
     chains: dict[str, tuple[str, ...]] = {}
+    seen_wire_sources: set[str] = set()
     for raw_source, raw_peers in raw_chains.items():
         location = f'chains["{raw_source}"]'
         if (
@@ -850,7 +1246,14 @@ def validate_failover_chains(value: object) -> dict[str, tuple[str, ...]]:
             or len(raw_source) > 200
         ):
             raise AccessError("failover.json chain keys must be exact model IDs")
-        source_forms = {raw_source, wire_model_id(raw_source)}
+        wire_source = wire_model_id(raw_source)
+        if wire_source in seen_wire_sources:
+            raise AccessError(
+                f"failover.json {location} duplicates an earlier source "
+                f"that already covers {wire_source}"
+            )
+        seen_wire_sources.add(wire_source)
+        source_forms = {raw_source, wire_source}
         if not any(form in known for form in source_forms):
             raise AccessError(f"failover.json {location} names an unknown model")
         if not isinstance(raw_peers, list):
@@ -975,6 +1378,27 @@ def load_openrouter_registry() -> Any:
         raise AccessError(f"OpenRouter registry is invalid: {exc}") from exc
 
 
+def openmodel_registry_path() -> Path:
+    configured = os.environ.get("AIRLOCK_OPENMODEL_REGISTRY_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return config_path().parent / "openmodel-registry.json"
+
+
+def load_openmodel_registry() -> Any:
+    path = openmodel_registry_path()
+    try:
+        return POLICY_SCHEMA.load_openmodel_registry(path)
+    except POLICY_SCHEMA.RegistryNotFoundError:
+        return POLICY_SCHEMA.validate_openmodel_registry({
+            "schema_version": 1,
+            "endpoints": [],
+            "models": [],
+        })
+    except POLICY_SCHEMA.PolicyValidationError as exc:
+        raise AccessError("open-model registry is invalid") from exc
+
+
 def access_path() -> Path:
     configured = os.environ.get("AIRLOCK_ACCESS_FILE")
     if configured:
@@ -1038,8 +1462,12 @@ def default_policy() -> dict[str, Any]:
                 "plan_source": "not_checked",
                 "account_metadata": {},
                 "usage": _default_usage("openai"),
+                # Astra is the priciest OpenAI route and carries a long-context
+                # price premium, so it stays off until AIRLOCK_OPENAI_MODELS
+                # lists it or a launch selects it as the root.
                 "models": {
-                    route: {"access": "unknown"} for route in PROVIDER_ROUTES["openai"]
+                    route: {"access": "unavailable" if route == "astra" else "unknown"}
+                    for route in PROVIDER_ROUTES["openai"]
                 },
             },
             "grok": {
@@ -1784,7 +2212,9 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
 def load_policy(path: Path | None = None) -> dict[str, Any]:
     policy = apply_runtime_overrides(load_cached_policy(path))
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_openmodel_registry"] = load_openmodel_registry()
     policy["_custom_models"] = load_custom_models()
+    validate_declared_identity_collisions(policy)
     return policy
 
 
@@ -1870,7 +2300,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.8",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.9",
             }},
         }):
             return None
@@ -2124,7 +2554,9 @@ def refresh_policy(path: Path | None = None) -> dict[str, Any]:
     _write_policy(policy, target)
     policy = apply_runtime_overrides(policy)
     policy["_openrouter_registry"] = load_openrouter_registry()
+    policy["_openmodel_registry"] = load_openmodel_registry()
     policy["_custom_models"] = load_custom_models()
+    validate_declared_identity_collisions(policy)
     return policy
 
 
@@ -2687,6 +3119,134 @@ def provider_headroom(policy: dict[str, Any], provider: str) -> dict[str, object
     }
 
 
+def _openmodel_route_fields(entry: Any) -> dict[str, object]:
+    """Return only public launcher-safe fields from one registry entry."""
+
+    return {
+        "route": entry.route,
+        "agent": entry.agent_name,
+        "model": entry.wire_model,
+        "context_window": entry.context_window,
+        "max_output_tokens": entry.max_output_tokens,
+        "streaming": entry.streaming,
+        "tools": entry.tools,
+        "tool_choice": list(entry.tool_choice),
+        "worker": entry.worker,
+    }
+
+
+def list_enabled_openmodel_routes(policy: dict[str, Any]) -> list[dict[str, object]]:
+    """List active local routes without exposing endpoint or upstream identity."""
+
+    registry = policy.get("_openmodel_registry")
+    entries = getattr(registry, "active_models", lambda: ())()
+    return [
+        _openmodel_route_fields(entry)
+        for entry in sorted(entries, key=lambda item: item.route)
+    ]
+
+
+def resolve_openmodel_route(policy: dict[str, Any], route: str) -> Any:
+    """Resolve one exact active local route from the validated registry."""
+
+    registry = policy.get("_openmodel_registry")
+    entries = getattr(registry, "active_models", lambda: ())()
+    if isinstance(route, str):
+        for entry in entries:
+            if entry.route == route:
+                return entry
+    raise AccessError(f"unknown or disabled open-model route: {route!r}")
+
+
+def validate_declared_identity_collisions(policy: dict[str, Any]) -> None:
+    """Reject active local identities that collide with any managed identity."""
+
+    registry = policy.get("_openmodel_registry")
+    local_entries = getattr(registry, "active_models", lambda: ())()
+    core_models = {
+        form
+        for profiles in MODEL_PROFILES.values()
+        for profile in profiles.values()
+        for form in {profile["model"], wire_model_id(profile["model"])}
+    }
+    core_agents = set(MANAGED_AGENT_NAMES)
+    openrouter_registry = policy.get("_openrouter_registry")
+    openrouter_entries = getattr(openrouter_registry, "models", ())
+    declared_models = {
+        entry.model for entry in openrouter_entries if entry.enabled
+    } | {
+        entry.model_id for entry in enabled_custom_models(policy)
+    }
+    declared_agents = {
+        entry.agent_name for entry in openrouter_entries if entry.enabled
+    } | {
+        entry.agent_name for entry in enabled_custom_models(policy)
+    }
+    for entry in local_entries:
+        if entry.wire_model in core_models | declared_models:
+            raise AccessError(
+                f"open-model route collides with an existing model identity: {entry.route}"
+            )
+        if entry.agent_name in core_agents | declared_agents:
+            raise AccessError(
+                f"open-model route collides with an existing Agent identity: {entry.route}"
+            )
+
+
+def _validate_openmodel_root_route(
+    policy: dict[str, Any], profile: str, openmodel_root_route: str | None
+) -> Any | None:
+    if profile in {"openmodel-pure", "hybrid-openmodel-root"}:
+        if openmodel_root_route is None:
+            raise AccessError(f"{profile} requires an exact open-model root route")
+        return resolve_openmodel_route(policy, openmodel_root_route)
+    if openmodel_root_route is not None:
+        raise AccessError(
+            f"open-model root route is not valid for session profile: {profile}"
+        )
+    return None
+
+
+def enabled_openmodel_workers(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openmodel_root_route: str | None = None,
+) -> list[dict[str, Any]]:
+    root_entry = _validate_openmodel_root_route(
+        policy, profile, openmodel_root_route
+    )
+    if root_entry is None:
+        return []
+    registry = policy.get("_openmodel_registry")
+    entries = getattr(registry, "active_models", lambda: ())()
+    workers: list[dict[str, Any]] = []
+    for entry in entries:
+        if not entry.worker:
+            continue
+        workers.append({
+            "provider": "openmodel",
+            "route": f"om-{entry.route}",
+            "agent": entry.agent_name,
+            "model": entry.wire_model,
+            "effort": INHERIT_EFFORT,
+            "effort_ceiling": None,
+            "access": "included",
+            "capability": "user-declared-unverified",
+            "cost": "local",
+            "strength": (
+                "user-declared local route; Airlock does not infer capability, "
+                "best use, availability, or relative performance"
+            ),
+            "context_window": entry.context_window,
+            "max_output_tokens": entry.max_output_tokens,
+            "streaming": entry.streaming,
+            "tools": entry.tools,
+            "tool_choice": entry.tool_choice,
+        })
+    return workers
+
+
 def _openrouter_route_fields(entry: Any) -> dict[str, str]:
     """Return only validated launcher-safe fields from one registry entry."""
     return {
@@ -2866,11 +3426,13 @@ def enabled_profile_workers(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
-) -> list[dict[str, str]]:
+    openmodel_root_route: str | None = None,
+) -> list[dict[str, Any]]:
     components = PROFILE_COMPONENTS.get(profile)
     if components is None:
         raise AccessError(f"unknown session profile: {profile}")
     _validate_openrouter_root_route(policy, profile, openrouter_root_route)
+    _validate_openmodel_root_route(policy, profile, openmodel_root_route)
     extra_policy = policy["policies"]["extra_usage"]
     workers: list[dict[str, str]] = []
     for provider, catalog_name in components:
@@ -2912,6 +3474,11 @@ def enabled_profile_workers(
             "openrouter",
             openrouter_root_route=openrouter_root_route,
         ))
+    workers.extend(enabled_openmodel_workers(
+        policy,
+        profile,
+        openmodel_root_route=openmodel_root_route,
+    ))
     if len(workers) > MAX_CONFIGURED_SUBAGENTS:
         raise AccessError(
             f"{profile} enables more than {MAX_CONFIGURED_SUBAGENTS} named Agents"
@@ -2933,6 +3500,18 @@ def wire_model_id(model: str) -> str:
     return model
 
 
+def permission_model_forms(model: str) -> frozenset[str]:
+    """Return every exact form callable through one declared model route.
+
+    Agent definitions keep the declared ID so Claude Code can apply native
+    model instructions such as ``[1m]``. The router also admits the one
+    deterministic wire form Claude Code produces. Permission allowlists must
+    carry both forms or the signed route snapshot and the hook environment
+    describe different sessions.
+    """
+    return frozenset({model, wire_model_id(model)})
+
+
 DISCOVERY_ROUTES = (
     "luna",
     "composer",
@@ -2944,6 +3523,7 @@ DISCOVERY_ROUTES = (
     "sol",
     "fable",
     "opus",
+    "astra",
 )
 
 
@@ -3005,7 +3585,9 @@ def session_failover_chains(
         return {}
     allow_extra = policy["policies"]["extra_usage"] == "allow"
     eligible = [
-        worker for worker in workers if allow_extra or worker["access"] != "extra"
+        worker for worker in workers
+        if worker["provider"] != "openmodel"
+        and (allow_extra or worker["access"] != "extra")
     ]
     openrouter_models = {
         form
@@ -3095,9 +3677,49 @@ def session_failover_chains(
                 entry.append(peer)
             # A declaration that filters to nothing still owns the source:
             # the user named the only acceptable targets, so keep no chain.
+            # Drop the key rather than storing an empty list, which the
+            # session policy snapshot rejects and which would fail the launch
+            # of any profile that routes none of the declared peers.
             for form in forms:
-                chains[form] = entry
+                if entry:
+                    chains[form] = entry
+                else:
+                    chains.pop(form, None)
     return dict(sorted(chains.items()))
+
+
+def session_route_metadata(
+    workers: list[dict[str, Any]],
+    routes: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Freeze console route categories and effort ceilings for this session.
+
+    These values come from the same enabled worker records used to derive
+    failover chains. No router-side model catalog is needed or trusted.
+    """
+    categories = {model: "unknown" for model in routes}
+    effort_ceilings: dict[str, str] = {}
+    for worker in workers:
+        access = worker.get("access")
+        cost = worker.get("cost")
+        if access == "extra":
+            category = "extra"
+        elif cost == "metered":
+            category = "metered"
+        elif cost == "unknown" or access == "unknown":
+            category = "unknown"
+        elif access == "included":
+            category = "included"
+        else:
+            category = "unknown"
+        ceiling = worker.get("effort_ceiling")
+        for form in permission_model_forms(worker["model"]):
+            if form not in routes:
+                continue
+            categories[form] = category
+            if isinstance(ceiling, str):
+                effort_ceilings[form] = ceiling
+    return dict(sorted(categories.items())), dict(sorted(effort_ceilings.items()))
 
 
 def session_context_windows(
@@ -3125,6 +3747,10 @@ def session_context_windows(
         for form in {declaration.model_id, wire_model_id(declaration.model_id)}:
             if form in routes and declaration.context_window:
                 windows[form] = declaration.context_window
+    registry = policy.get("_openmodel_registry")
+    for entry in getattr(registry, "active_models", lambda: ())():
+        if entry.wire_model in routes:
+            windows[entry.wire_model] = entry.context_window
     return dict(sorted(windows.items()))
 
 
@@ -3169,14 +3795,18 @@ def discovery_model(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> str | None:
     workers = enabled_profile_workers(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     if profile == "openrouter-pure":
         return resolve_openrouter_route(policy, openrouter_root_route).model
+    if profile == "openmodel-pure":
+        return resolve_openmodel_route(policy, openmodel_root_route).wire_model
     return discovery_model_from_workers(policy, workers)
 
 
@@ -3185,6 +3815,7 @@ def proxy_picker_models(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> dict[str, str]:
     """Map Claude Code's four Agent/model family aliases to exact enabled models.
 
@@ -3208,6 +3839,7 @@ def proxy_picker_models(
             policy,
             profile,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         )
         if not (
             worker["access"] == "extra"
@@ -3234,23 +3866,28 @@ def proxy_picker_models(
     if profile == "openrouter-pure":
         root = resolve_openrouter_route(policy, str(openrouter_root_route)).model
         return {family: root for family in ("fable", "opus", "sonnet", "haiku")}
+    if profile == "openmodel-pure":
+        root = resolve_openmodel_route(
+            policy, str(openmodel_root_route)
+        ).wire_model
+        return {family: root for family in ("fable", "opus", "sonnet", "haiku")}
     if profile == "openai-pure":
-        fable = opus = first("sol", "terra", "luna", "luna-fast")
-        sonnet = first("terra", "sol", "luna", "luna-fast")
+        fable = opus = first("astra", "sol", "terra", "luna", "luna-fast")
+        sonnet = first("terra", "sol", "astra", "luna", "luna-fast")
     elif profile == "grok-pure":
         fable = opus = first("grok", "composer")
         sonnet = first("composer", "grok")
     else:
         fable = first(
-            "fable", "sol", "opus", "grok", "sonnet", "terra",
+            "fable", "astra", "sol", "opus", "grok", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         opus = first(
-            "opus", "sol", "grok", "fable", "sonnet", "terra",
+            "opus", "astra", "sol", "grok", "fable", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         sonnet = first(
-            "sonnet", "terra", "fable", "sol", "opus", "composer",
+            "sonnet", "terra", "fable", "sol", "astra", "opus", "composer",
             "luna", "haiku", "grok", "luna-fast",
         )
     utility = discovery_model_from_workers(policy, workers)
@@ -3276,47 +3913,56 @@ def session_route_policy(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> dict[str, object]:
+    openmodel_root = _validate_openmodel_root_route(
+        policy, profile, openmodel_root_route
+    )
     workers = enabled_profile_workers(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     routes: dict[str, str] = {}
-    model_ids: list[str] = []
     agent_names: list[str] = []
     extra_agent_names: list[str] = []
-    extra_model_ids: list[str] = []
+    extra_model_ids: set[str] = set()
     require_confirmation = policy["policies"]["extra_usage"] == "ask"
     for worker in workers:
         model = worker["model"]
         provider = worker["provider"]
-        model_ids.append(model)
-        for routed_model in {model, wire_model_id(model)}:
+        permission_models = permission_model_forms(model)
+        for routed_model in permission_models:
             if routed_model in routes and routes[routed_model] != provider:
                 raise AccessError(f"model route is ambiguous: {routed_model}")
             routes[routed_model] = provider
         agent_names.append(worker["agent"])
         if require_confirmation and worker["access"] == "extra":
             extra_agent_names.append(worker["agent"])
-            extra_model_ids.append(model)
+            extra_model_ids.update(permission_models)
+    if openmodel_root is not None:
+        routes[openmodel_root.wire_model] = "openmodel"
     if not routes or len(agent_names) != len(set(agent_names)):
         raise AccessError("native session route policy is empty or ambiguous")
     discovery = (
         resolve_openrouter_route(policy, str(openrouter_root_route)).model
         if profile == "openrouter-pure"
+        else openmodel_root.wire_model
+        if profile == "openmodel-pure" and openmodel_root is not None
         else discovery_model_from_workers(policy, workers)
     )
     return {
         "routes": {model: routes[model] for model in sorted(routes)},
-        "model_ids": sorted(set(model_ids)),
+        "model_ids": sorted(routes),
         "agent_names": sorted(agent_names),
-        "extra_model_ids": sorted(set(extra_model_ids)),
+        "extra_model_ids": sorted(extra_model_ids),
         "extra_agent_names": sorted(extra_agent_names),
         "picker_models": proxy_picker_models(
             policy,
             profile,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         ),
         "discovery_model": discovery,
     }
@@ -3328,6 +3974,7 @@ def build_session_snapshot(
     root_model: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> Any:
     root_provider = PROFILE_ROOT_PROVIDERS.get(profile)
     if root_provider is None:
@@ -3335,14 +3982,22 @@ def build_session_snapshot(
     root_entry = _validate_openrouter_root_route(
         policy, profile, openrouter_root_route
     )
+    openmodel_root = _validate_openmodel_root_route(
+        policy, profile, openmodel_root_route
+    )
     if root_entry is not None and root_model != root_entry.model:
         raise AccessError(
             "session root model does not match the selected OpenRouter route"
+        )
+    if openmodel_root is not None and root_model != openmodel_root.wire_model:
+        raise AccessError(
+            "session root model does not match the selected open-model route"
         )
     route_policy = session_route_policy(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     raw_routes = route_policy["routes"]
     if not isinstance(raw_routes, dict):
@@ -3358,6 +4013,7 @@ def build_session_snapshot(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     extra_agents = set(route_policy["extra_agent_names"])
     agents = {
@@ -3389,6 +4045,40 @@ def build_session_snapshot(
         for worker in workers
         if worker["provider"] == "openrouter"
     }
+    openmodel_registry = policy.get("_openmodel_registry")
+    active_openmodel = {
+        entry.wire_model: entry
+        for entry in getattr(openmodel_registry, "active_models", lambda: ())()
+        if entry.wire_model in routes
+    }
+    endpoint_ids = {entry.endpoint for entry in active_openmodel.values()}
+    openmodel = {
+        "endpoints": {
+            endpoint.id: {
+                "base_url": endpoint.base_url,
+                "trust": endpoint.trust,
+                "protocol": endpoint.protocol,
+                "auth": endpoint.auth,
+                "max_concurrency": endpoint.max_concurrency,
+            }
+            for endpoint in getattr(openmodel_registry, "endpoints", ())
+            if endpoint.id in endpoint_ids
+        },
+        "models": {
+            model: {
+                "endpoint": entry.endpoint,
+                "upstream_model": entry.upstream_model,
+                "accepted_response_models": list(entry.accepted_response_models),
+                "context_window": entry.context_window,
+                "max_output_tokens": entry.max_output_tokens,
+                "streaming": entry.streaming,
+                "tools": entry.tools,
+                "tool_choice": list(entry.tool_choice),
+            }
+            for model, entry in sorted(active_openmodel.items())
+        },
+    }
+    route_categories, effort_ceilings = session_route_metadata(workers, routes)
     try:
         return POLICY_SCHEMA.validate_session_snapshot({
             "schema_version": 1,
@@ -3399,8 +4089,11 @@ def build_session_snapshot(
             "routes": routes,
             "agents": agents,
             "openrouter": openrouter,
+            "openmodel": openmodel,
             "failover": session_failover_chains(policy, workers, routes),
             "context_windows": session_context_windows(policy, routes),
+            "route_categories": route_categories,
+            "effort_ceilings": effort_ceilings,
             "compactors": session_compactors(policy, workers, routes),
             "overflow_shrink": policy["policies"]["overflow_shrink"],
         })
@@ -3974,12 +4667,14 @@ def write_session_snapshot(
     directory: Path | None = None,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> tuple[Path, str]:
     snapshot = build_session_snapshot(
         policy,
         profile,
         root_model,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     temporary_path: Path | None = None
     descriptor = -1
@@ -4479,11 +5174,13 @@ def session_route_field(
     field: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> str:
     route_policy = session_route_policy(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     if field == "routes":
         return json.dumps(
@@ -4514,9 +5211,10 @@ def session_route_field(
 
 
 def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str, str]]) -> str:
-    if profile == "openrouter-pure":
+    if profile in {"openrouter-pure", "openmodel-pure"}:
+        provider_label = "OpenRouter" if profile == "openrouter-pure" else "local open-model"
         return (
-            "UI/UX routing: this OpenRouter-only profile has no verified design specialist. "
+            f"UI/UX routing: this {provider_label}-only profile has no verified design specialist. "
             "Do not infer capability or cost from the selected model or substitute another route; "
             "follow the user's exact selected root and verify rendered behavior and accessibility."
         )
@@ -4588,7 +5286,7 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
         agent for route, agent in by_route.items() if route not in SWARM_ROUTES
     )
     strong = [
-        by_route[route] for route in ("sol", "opus", "grok") if route in by_route
+        by_route[route] for route in ("astra", "sol", "opus", "grok") if route in by_route
     ]
     if swarm:
         launch = (
@@ -4641,32 +5339,37 @@ def root_orchestration_guidance(
     workers: list[dict[str, str]],
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> str:
     plan = swarm_plan(workers)
-    # Only openrouter-pure maps every family alias to the selected root. A
-    # hybrid OpenRouter root keeps normal wrapper-backed family slots, and the
-    # guidance must name the model a caller actually receives from the Haiku
-    # slot rather than the separate discovery route.
-    pure_openrouter_root = (
-        profile == "openrouter-pure" and openrouter_root_route is not None
-    )
-    if pure_openrouter_root:
+    pure_explicit_root = profile in {"openrouter-pure", "openmodel-pure"}
+    if profile == "openrouter-pure" and openrouter_root_route is not None:
         recommended_discovery: str | None = resolve_openrouter_route(
             policy, openrouter_root_route
         ).model
+        explicit_provider = "OpenRouter"
+    elif profile == "openmodel-pure" and openmodel_root_route is not None:
+        recommended_discovery = resolve_openmodel_route(
+            policy, openmodel_root_route
+        ).wire_model
+        explicit_provider = "local open-model"
     else:
+        explicit_provider = ""
         try:
             recommended_discovery = proxy_picker_models(
-                policy, profile, openrouter_root_route=openrouter_root_route
+                policy,
+                profile,
+                openrouter_root_route=openrouter_root_route,
+                openmodel_root_route=openmodel_root_route,
             )["haiku"]
         except AccessError:
             recommended_discovery = None
-    if pure_openrouter_root:
+    if pure_explicit_root:
         discovery_guidance = (
             "Built-in Explore, Plan, and general-purpose accept Claude Code's fable, opus, sonnet, and haiku family aliases; "
-            f"Airlock resolves every alias to the exact selected OpenRouter root model {recommended_discovery}. "
+            f"Airlock resolves every alias to the exact selected {explicit_provider} root model {recommended_discovery}. "
             "Passing `model=haiku` selects that same root for bounded read-only discovery and does not claim a cheaper, "
-            "smaller, or more capable route. No other OpenRouter route may enter a built-in alias. Named airlock-* Agents "
+            f"smaller, or more capable route. No other {explicit_provider} route may enter a built-in alias. Named airlock-* Agents "
             "remain the exact-model interface for separately enabled routes. "
         )
     elif recommended_discovery:
@@ -4717,6 +5420,7 @@ def worker_handoff_guidance(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> str:
     providers = {
         worker["provider"]
@@ -4724,6 +5428,7 @@ def worker_handoff_guidance(
             policy,
             profile,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         )
     }
     parts = [
@@ -4777,11 +5482,13 @@ def portfolio_guidance(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> str:
     workers = enabled_profile_workers(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     routing = policy["policies"]["routing"]
     mode = mode_state()
@@ -4789,7 +5496,10 @@ def portfolio_guidance(
     initial_breadth = {"economy": 1, "balanced": 2, "quality": 3}[routing]
     if configured_max != "off":
         initial_breadth = min(initial_breadth, int(configured_max))
-    providers = sorted({worker["provider"] for worker in workers})
+    providers = sorted({
+        worker["provider"] for worker in workers
+        if worker["provider"] in policy.get("providers", {})
+    })
     headrooms = {provider: provider_headroom(policy, provider) for provider in providers}
     if routing == "quality" and headrooms and all(
         item["state"] in {"unknown", "stale", "low", "critical"}
@@ -4816,6 +5526,10 @@ def portfolio_guidance(
     if by_route.get("opus"):
         role_rules.append(
             f"prefer {by_route['opus']} for difficult architecture, UI/UX design and visual direction, product-flow or design-system work, long-horizon planning, complex root-cause analysis, security reasoning, high-impact review, or final synthesis"
+        )
+    if by_route.get("astra"):
+        role_rules.append(
+            f"reserve {by_route['astra']} for the hardest implementation, long-horizon agentic work across very large repositories, computer use and browsing, security reasoning, or difficult debugging that a cheaper frontier route already failed; it carries premium usage and a long-context price premium above 272000 input tokens"
         )
     if by_route.get("sol"):
         role_rules.append(
@@ -4942,6 +5656,7 @@ def profile_guidance(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
     web_tools_script: str | None = None,
 ) -> str:
     if profile not in PROFILE_COMPONENTS:
@@ -4952,6 +5667,7 @@ def profile_guidance(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     workers = [
         f"{worker['route']}={worker['provider']}/native/{worker['access']}/"
@@ -4981,7 +5697,21 @@ def profile_guidance(
                 "openrouter(registry=pinned/key=separate/usage=extra)"
             )
         signals = ", ".join(filter(None, (signals, openrouter_signal)))
-    if profile == "openrouter-pure":
+    if "openmodel" in enabled_providers:
+        local_signal = "openmodel(registry=private/loopback-only/capabilities=user-declared)"
+        signals = ", ".join(filter(None, (signals, local_signal)))
+    if profile == "openmodel-pure":
+        selected = resolve_openmodel_route(policy, str(openmodel_root_route))
+        boundary = (
+            "Provider boundary: this is a local open-model-only session. The exact "
+            f"user-selected route {selected.route} carries root traffic through Airlock's "
+            "credential-free loopback adapter. Built-in family aliases map only to that root. "
+            "Named airlock-om-* Agents are available only for routes explicitly declared as "
+            "workers. Never expose the private endpoint URL or upstream model identity, and do "
+            "not infer capability, availability, cost, effort, or thinking support. No local "
+            "route participates in automatic routing, failover, compaction, or automatic swarms."
+        )
+    elif profile == "openrouter-pure":
         selected = resolve_openrouter_route(policy, str(openrouter_root_route))
         extra_policy = policy["policies"]["extra_usage"]
         if extra_policy == "never":
@@ -5048,6 +5778,13 @@ def profile_guidance(
                 "endpoint provider pinned in the local registry. OpenRouter uses a separate key; "
                 "Airlock does not infer these models' capability, context window, or relative cost."
             )
+        if "openmodel" in enabled_providers:
+            routes.append(
+                "Exact openmodel/* IDs go only to user-declared credential-free loopback endpoints. "
+                "Their endpoint URLs and upstream model identities remain private, and Airlock does "
+                "not infer capability, availability, cost, effort, or thinking support. Local routes "
+                "never enter automatic routing, failover, compaction, or automatic swarms."
+            )
         if profile == "hybrid-openrouter-root":
             selected = resolve_openrouter_route(policy, str(openrouter_root_route))
             routes.append(
@@ -5055,6 +5792,13 @@ def profile_guidance(
                 f"{selected.model} through endpoint provider {selected.endpoint_provider}. The fable, opus, "
                 "sonnet, and haiku family aliases stay wrapper backed and never carry an OpenRouter model; "
                 "Claude Code's single custom model option carries the root."
+            )
+        elif profile == "hybrid-openmodel-root":
+            selected = resolve_openmodel_route(policy, str(openmodel_root_route))
+            routes.append(
+                f"The root itself is the explicitly selected local route {selected.route}. The fable, "
+                "opus, sonnet, and haiku family aliases stay on the normal non-local worker seats; "
+                "Claude Code's custom model option carries the exact openmodel root."
             )
         excluded = [
             label
@@ -5087,6 +5831,7 @@ def profile_guidance(
             "openai": "GPT",
             "grok": "Grok",
             "openrouter": "OpenRouter",
+            "openmodel": "local open-model",
         }[PROFILE_ROOT_PROVIDERS[profile]]
         seat_note = (
             "Built-in WebFetch still works here because the Haiku family slot seats a Claude model."
@@ -5137,6 +5882,7 @@ def profile_guidance(
             policy,
             profile,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         ),
         ui_ux_guidance(policy, profile, enabled_workers),
         root_orchestration_guidance(
@@ -5144,11 +5890,13 @@ def profile_guidance(
             profile,
             enabled_workers,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         ),
         worker_handoff_guidance(
             policy,
             profile,
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         ),
         managed_result_guidance(),
         root_communication_guidance(),
@@ -5349,6 +6097,7 @@ def render_custom_agents(
     profile: str,
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> dict[str, Any]:
     """Build native Agent definitions for enabled models.json declarations."""
 
@@ -5361,6 +6110,7 @@ def render_custom_agents(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     ):
         declaration = declarations.get(worker["agent"])
         if declaration is None:
@@ -5412,17 +6162,60 @@ def render_custom_agents(
     return rendered
 
 
+def render_openmodel_agents(
+    policy: dict[str, Any],
+    profile: str,
+    *,
+    openmodel_root_route: str | None = None,
+) -> dict[str, Any]:
+    """Build exact local Agent definitions without private registry values."""
+
+    rendered: dict[str, Any] = {}
+    for worker in enabled_openmodel_workers(
+        policy,
+        profile,
+        openmodel_root_route=openmodel_root_route,
+    ):
+        tool_modes = ", ".join(worker["tool_choice"]) or "none"
+        definition: dict[str, Any] = {
+            "description": (
+                f"User-declared local open-model worker for route {worker['model']}. "
+                "Airlock does not verify its capability, best use, availability, or "
+                f"relative performance. Declared context window: {worker['context_window']} "
+                f"tokens; maximum output: {worker['max_output_tokens']} tokens; streaming: "
+                f"{'yes' if worker['streaming'] else 'no'}; tools: {worker['tools']}; "
+                f"tool choices: {tool_modes}. Local compute is never extra usage."
+            ),
+            "prompt": (
+                "Complete the assigned task with the available tools and return the full "
+                "technical result. This exact local route was declared by the user. Keep "
+                "the assigned scope, do not change model or provider, do not expose private "
+                "endpoint or upstream model details, and do not infer capability guarantees."
+            ),
+            "model": worker["model"],
+        }
+        if policy["policies"].get("agent_depth") == "2":
+            definition["tools"] = ["*"]
+            definition["prompt"] += " " + NESTED_AGENT_RULE
+        else:
+            definition["disallowedTools"] = ["Agent"]
+        rendered[worker["agent"]] = definition
+    return rendered
+
+
 def render_profile(
     policy: dict[str, Any],
     profile: str,
     catalogs: dict[str, dict[str, Any]],
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> dict[str, Any]:
     components = PROFILE_COMPONENTS.get(profile)
     if components is None:
         raise AccessError(f"unknown session profile: {profile}")
     _validate_openrouter_root_route(policy, profile, openrouter_root_route)
+    _validate_openmodel_root_route(policy, profile, openmodel_root_route)
     rendered: dict[str, Any] = {}
     for provider, catalog_name in components:
         catalog = catalogs.get(catalog_name)
@@ -5446,12 +6239,22 @@ def render_profile(
         policy,
         profile,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
     duplicates = set(rendered).intersection(custom_agents)
     if duplicates:
         raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
     rendered.update(custom_agents)
-    if not rendered:
+    openmodel_agents = render_openmodel_agents(
+        policy,
+        profile,
+        openmodel_root_route=openmodel_root_route,
+    )
+    duplicates = set(rendered).intersection(openmodel_agents)
+    if duplicates:
+        raise AccessError(f"duplicate agent definitions: {', '.join(sorted(duplicates))}")
+    rendered.update(openmodel_agents)
+    if not rendered and profile != "openmodel-pure":
         raise AccessError("user policy disables every worker in this session profile")
     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
     if len(serialized.encode("utf-8")) > MAX_RENDERED_AGENTS_BYTES:
@@ -5466,13 +6269,25 @@ def managed_agent_name_set(policy: dict[str, Any] | None = None) -> set[str]:
         entries = getattr(registry, "models", ())
         names.update(entry.agent_name for entry in entries if entry.enabled)
         names.update(entry.agent_name for entry in enabled_custom_models(policy))
+        openmodel_registry = policy.get("_openmodel_registry")
+        names.update(
+            entry.agent_name
+            for entry in getattr(openmodel_registry, "active_models", lambda: ())()
+            if entry.worker
+        )
     return names
 
 
 def managed_agent_names(
-    rendered_profile: object, policy: dict[str, Any] | None = None
+    rendered_profile: object,
+    policy: dict[str, Any] | None = None,
+    *,
+    allow_empty: bool = False,
 ) -> list[str]:
-    if not isinstance(rendered_profile, dict) or not rendered_profile:
+    if (
+        not isinstance(rendered_profile, dict)
+        or (not rendered_profile and not allow_empty)
+    ):
         raise AccessError("rendered agent profile is empty or invalid")
     names = sorted(rendered_profile)
     expected_names = managed_agent_name_set(policy)
@@ -5487,7 +6302,10 @@ def managed_agent_names(
 
 
 def managed_agent_names_json(
-    serialized: str, policy: dict[str, Any] | None = None
+    serialized: str,
+    policy: dict[str, Any] | None = None,
+    *,
+    allow_empty: bool = False,
 ) -> list[str]:
     if not isinstance(serialized, str) or len(serialized.encode("utf-8")) > MAX_RENDERED_AGENTS_BYTES:
         raise AccessError("rendered agent profile is missing or too large")
@@ -5495,7 +6313,7 @@ def managed_agent_names_json(
         rendered = json.loads(serialized)
     except json.JSONDecodeError as exc:
         raise AccessError("rendered agent profile is invalid JSON") from exc
-    return managed_agent_names(rendered, policy)
+    return managed_agent_names(rendered, policy, allow_empty=allow_empty)
 
 
 def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
@@ -5507,7 +6325,7 @@ def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
     feature off for users who prefer no extra outbound-capable helper.
     """
 
-    if os.environ.get("AIRLOCK_WEB_TOOLS", "").strip().lower() == "off":
+    if os.environ.get("AIRLOCK_WEB_TOOLS", "") == "off":
         return None
     if not script:
         return None
@@ -5515,6 +6333,34 @@ def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
     if path.is_symlink() or not path.is_file():
         return None
     return {"command": sys.executable, "args": [str(path.resolve())]}
+
+
+def console_tools_server_entry(
+    script: str | None, contract: str | None
+) -> dict[str, object] | None:
+    """Build the stdio MCP entry for Airlock Console tools, or None."""
+
+    if os.environ.get("AIRLOCK_CONSOLE_TOOLS", "") == "off":
+        return None
+    if not script or not contract:
+        return None
+    script_path = Path(script)
+    contract_path = Path(contract)
+    if (
+        script_path.is_symlink()
+        or not script_path.is_file()
+        or contract_path.is_symlink()
+        or not contract_path.is_file()
+    ):
+        return None
+    return {
+        "command": sys.executable,
+        "args": [
+            str(script_path.resolve()),
+            "--contract",
+            str(contract_path.resolve()),
+        ],
+    }
 
 
 def web_tools_active_for(profile: str) -> bool:
@@ -5560,35 +6406,64 @@ def web_tool_allowances() -> list[str]:
     ]
 
 
-def write_web_tools_mcp_config(
-    script: str | None, profile: str | None = None
-) -> str:
-    """Write the web tools server as an standalone MCP config file handle.
-
-    Claude Code does not start mcpServers entries carried in --settings on
-    every supported version, so launchers also hand this file to
-    --mcp-config. The file names the helper interpreter and the plugin server
-    script; it holds no credentials. An Anthropic root, the off switch, or a
-    missing server script returns an empty string instead of a file so
-    launchers can skip the flag entirely.
-    """
+def managed_mcp_servers(
+    web_tools_script: str | None,
+    profile: str | None = None,
+    *,
+    console_tools_script: str | None = None,
+    console_tools_contract: str | None = None,
+) -> dict[str, dict[str, object]]:
+    """Return the exact managed MCP server map for one session profile."""
 
     if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
         raise AccessError(f"unknown session profile: {profile}")
-    entry = web_tools_server_entry(script)
-    if entry is None or (
-        profile is not None and not web_tools_active_for(profile)
+    servers: dict[str, dict[str, object]] = {}
+    web_entry = web_tools_server_entry(web_tools_script)
+    if web_entry is not None and (
+        profile is None or web_tools_active_for(profile)
     ):
+        servers["airlock-web-tools"] = web_entry
+    console_entry = console_tools_server_entry(
+        console_tools_script, console_tools_contract
+    )
+    if console_entry is not None:
+        servers["airlock-console-tools"] = console_entry
+    return servers
+
+
+def write_web_tools_mcp_config(
+    script: str | None,
+    profile: str | None = None,
+    *,
+    console_tools_script: str | None = None,
+    console_tools_contract: str | None = None,
+) -> str:
+    """Write all active managed servers as one MCP config file handle.
+
+    Claude Code does not start mcpServers entries carried in --settings on
+    every supported version, so launchers also hand this file to
+    --mcp-config. The file names only managed helper paths and the helper
+    interpreter and holds no credentials. When both independently controlled
+    servers are unavailable or disabled, return an empty string.
+    """
+
+    servers = managed_mcp_servers(
+        script,
+        profile,
+        console_tools_script=console_tools_script,
+        console_tools_contract=console_tools_contract,
+    )
+    if not servers:
         return ""
     payload = json.dumps(
-        {"mcpServers": {"airlock-web-tools": entry}},
+        {"mcpServers": servers},
         separators=(",", ":"),
         ensure_ascii=True,
     )
     path, digest, size = write_session_artifact(
         payload.encode("utf-8"), "airlock-mcp-", ".json"
     )
-    return f"{path}\t{digest}\t{size}"
+    return f"{path}	{digest}	{size}"
 
 
 def managed_session_settings_json(
@@ -5597,12 +6472,18 @@ def managed_session_settings_json(
     policy: dict[str, Any] | None = None,
     web_tools_script: str | None = None,
     profile: str | None = None,
+    console_tools_script: str | None = None,
+    console_tools_contract: str | None = None,
 ) -> str:
     if fast_mode not in {"inherit", "on", "off"}:
         raise AccessError("managed session Fast mode must be inherit, on, or off")
     if profile is not None and profile not in PROFILE_ROOT_PROVIDERS:
         raise AccessError(f"unknown session profile: {profile}")
-    names = managed_agent_names_json(serialized, policy)
+    names = managed_agent_names_json(
+        serialized,
+        policy,
+        allow_empty=profile == "openmodel-pure",
+    )
     enabled = set(names)
     services: list[str] = []
     if enabled.intersection(OPENAI_MANAGED_AGENT_NAMES):
@@ -5621,15 +6502,27 @@ def managed_session_settings_json(
         services.append(
             "user-declared OpenRouter models reached through Claude Code's native Agent runtime, the active loopback router, and exact pinned OpenRouter endpoints"
         )
+    if (
+        profile in {"openmodel-pure", "hybrid-openmodel-root"}
+        or any(name.startswith("airlock-om-") for name in enabled)
+    ):
+        services.append(
+            "user-declared local open models reached through the active loopback Airlock router"
+        )
     if not services:
         raise AccessError("rendered Agent profile has no native provider")
+    agent_scope = (
+        "these exact native Agents: " + ", ".join(names) + ". "
+        if names
+        else "No named airlock-* Agents are enabled in this session. "
+    )
     context = (
         "Key internal services: "
         + "; ".join(services)
         + " are trusted processors for tracked files and eligible non-ignored untracked regular files from the current "
-        "working Git repository only when invoked through these exact native Agents: "
-        + ", ".join(names)
-        + ". The current session root provider and built-in Explore, Plan, and general-purpose Agent types are "
+        "working Git repository. Native Agent work may use only "
+        + agent_scope
+        + "The current session root provider and built-in Explore, Plan, and general-purpose Agent types are "
         "trusted processors for the same repository scope. Built-ins inherit the orchestrator model unless a "
         "schema-valid family alias owned by the active session is supplied. Credentials, OAuth or token material, "
         "raw sensitive values, Git-ignored or unsafe paths, files outside the working repository, unknown or bare "
@@ -5638,7 +6531,13 @@ def managed_session_settings_json(
     settings: dict[str, object] = {"autoMode": {"environment": ["$defaults", context]}}
     if fast_mode != "inherit":
         settings["fastMode"] = fast_mode == "on"
-    web_tools = web_tools_server_entry(web_tools_script)
+    servers = managed_mcp_servers(
+        web_tools_script,
+        profile,
+        console_tools_script=console_tools_script,
+        console_tools_contract=console_tools_contract,
+    )
+    web_tools = servers.get("airlock-web-tools")
     denials = built_in_web_tool_denials(profile) if (
         profile is not None and web_tools is not None
     ) else []
@@ -5647,8 +6546,8 @@ def managed_session_settings_json(
             "allow": web_tool_allowances(),
             "deny": denials,
         }
-    if web_tools is not None and (profile is None or web_tools_active_for(profile)):
-        settings["mcpServers"] = {"airlock-web-tools": web_tools}
+    if servers:
+        settings["mcpServers"] = servers
     return json.dumps(settings, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -5658,6 +6557,7 @@ def render_profile_from_paths(
     catalog_paths: dict[str, object],
     *,
     openrouter_root_route: str | None = None,
+    openmodel_root_route: str | None = None,
 ) -> dict[str, Any]:
     components = PROFILE_COMPONENTS.get(profile)
     if components is None:
@@ -5674,6 +6574,7 @@ def render_profile_from_paths(
         profile,
         catalogs,
         openrouter_root_route=openrouter_root_route,
+        openmodel_root_route=openmodel_root_route,
     )
 
 
@@ -5927,6 +6828,7 @@ def main() -> int:
     profile_render = subparsers.add_parser("render-profile")
     profile_render.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     profile_render.add_argument("--openrouter-root-route")
+    profile_render.add_argument("--openmodel-root-route")
     profile_render.add_argument("--openai-direct-file")
     profile_render.add_argument("--anthropic-direct-file")
     profile_render.add_argument("--openai-wrappers-file")
@@ -5935,17 +6837,24 @@ def main() -> int:
     profile_render.add_argument("--grok-wrappers-file")
     agent_names = subparsers.add_parser("managed-agent-names")
     agent_names.add_argument("--agents-json", required=True)
+    agent_names.add_argument(
+        "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
+    )
     session_settings = subparsers.add_parser("managed-session-settings")
     session_settings.add_argument("--agents-json", required=True)
     session_settings.add_argument(
         "--fast-mode", choices=("inherit", "on", "off"), default="inherit"
     )
     session_settings.add_argument("--web-tools-script")
+    session_settings.add_argument("--console-tools-script")
+    session_settings.add_argument("--console-tools-contract")
     session_settings.add_argument(
         "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
     )
     mcp_file = subparsers.add_parser("managed-web-tools-mcp-file")
     mcp_file.add_argument("--web-tools-script")
+    mcp_file.add_argument("--console-tools-script")
+    mcp_file.add_argument("--console-tools-contract")
     mcp_file.add_argument(
         "--profile", choices=sorted(PROFILE_COMPONENTS), default=None
     )
@@ -5959,6 +6868,7 @@ def main() -> int:
     session_routes = subparsers.add_parser("session-routes")
     session_routes.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     session_routes.add_argument("--openrouter-root-route")
+    session_routes.add_argument("--openmodel-root-route")
     session_routes.add_argument(
         "--field",
         choices=("routes", "model-ids", "agent-names", "extra-model-ids", "extra-agent-names", "picker-models", "discovery-model"),
@@ -5970,16 +6880,21 @@ def main() -> int:
     )
     session_snapshot.add_argument("--root-model", required=True)
     session_snapshot.add_argument("--openrouter-root-route")
+    session_snapshot.add_argument("--openmodel-root-route")
     snapshot_delete = subparsers.add_parser("session-snapshot-delete")
     snapshot_delete.add_argument("--snapshot", type=Path, required=True)
     snapshot_delete.add_argument("--snapshot-sha256", required=True)
     profile_help = subparsers.add_parser("profile-guidance")
     profile_help.add_argument("--profile", choices=sorted(PROFILE_COMPONENTS), required=True)
     profile_help.add_argument("--openrouter-root-route")
+    profile_help.add_argument("--openmodel-root-route")
     profile_help.add_argument("--web-tools-script")
     subparsers.add_parser("openrouter-routes")
     openrouter_resolve = subparsers.add_parser("openrouter-resolve")
     openrouter_resolve.add_argument("route")
+    subparsers.add_parser("openmodel-routes")
+    openmodel_resolve = subparsers.add_parser("openmodel-resolve")
+    openmodel_resolve.add_argument("route")
     subparsers.add_parser("custom-models")
     custom_model_resolve = subparsers.add_parser("custom-model-resolve")
     custom_model_resolve.add_argument("model_id")
@@ -6009,7 +6924,11 @@ def main() -> int:
             return 0
         if args.command == "managed-agent-names":
             policy = load_policy()
-            print("\n".join(managed_agent_names_json(args.agents_json, policy)))
+            print("\n".join(managed_agent_names_json(
+                args.agents_json,
+                policy,
+                allow_empty=args.profile == "openmodel-pure",
+            )))
             return 0
         if args.command == "managed-session-settings":
             policy = load_policy()
@@ -6017,11 +6936,16 @@ def main() -> int:
                 args.agents_json, args.fast_mode, policy,
                 web_tools_script=args.web_tools_script,
                 profile=args.profile,
+                console_tools_script=args.console_tools_script,
+                console_tools_contract=args.console_tools_contract,
             ))
             return 0
         if args.command == "managed-web-tools-mcp-file":
             output = write_web_tools_mcp_config(
-                args.web_tools_script, profile=args.profile
+                args.web_tools_script,
+                profile=args.profile,
+                console_tools_script=args.console_tools_script,
+                console_tools_contract=args.console_tools_contract,
             )
             if output:
                 print(output)
@@ -6165,6 +7089,22 @@ def main() -> int:
                 ensure_ascii=True,
             ))
             return 0
+        if args.command == "openmodel-routes":
+            print(json.dumps(
+                list_enabled_openmodel_routes(policy),
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ))
+            return 0
+        if args.command == "openmodel-resolve":
+            print(json.dumps(
+                _openmodel_route_fields(
+                    resolve_openmodel_route(policy, args.route)
+                ),
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ))
+            return 0
         if args.command == "hybrid-default-root":
             print(default_hybrid_root(policy))
             return 0
@@ -6174,6 +7114,7 @@ def main() -> int:
                 args.profile,
                 args.root_model,
                 openrouter_root_route=args.openrouter_root_route,
+                openmodel_root_route=args.openmodel_root_route,
             )
             if any(character in str(snapshot_path) for character in "\r\n\t"):
                 snapshot_path.unlink(missing_ok=True)
@@ -6186,6 +7127,7 @@ def main() -> int:
                 args.profile,
                 args.field,
                 openrouter_root_route=args.openrouter_root_route,
+                openmodel_root_route=args.openmodel_root_route,
             ))
             return 0
         if args.command == "render-profile":
@@ -6202,6 +7144,7 @@ def main() -> int:
                 args.profile,
                 catalog_paths,
                 openrouter_root_route=args.openrouter_root_route,
+                openmodel_root_route=args.openmodel_root_route,
             )
             print(json.dumps(rendered_profile, separators=(",", ":"), ensure_ascii=True))
             return 0
@@ -6210,6 +7153,7 @@ def main() -> int:
                 policy,
                 args.profile,
                 openrouter_root_route=args.openrouter_root_route,
+                openmodel_root_route=args.openmodel_root_route,
                 web_tools_script=args.web_tools_script,
             ))
             return 0

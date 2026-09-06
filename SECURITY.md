@@ -37,7 +37,7 @@ Do not include:
 - customer or private repository content
 - full logs that may contain any of the above
 
-## Keep both local services local
+## Keep local services local
 
 The OpenAI proxy uses:
 
@@ -45,9 +45,11 @@ The OpenAI proxy uses:
 http://127.0.0.1:18765
 ```
 
-Each hybrid session also starts a router on a temporary `127.0.0.1` port.
+Each hybrid or open-model session also starts a router on a temporary `127.0.0.1` port.
 
-Do not expose either service to a LAN, VPN, container bridge, tunnel, or the public internet. The OpenAI proxy does not require an incoming client password.
+A user-hosted open-model endpoint must use exactly `http://127.0.0.1:PORT/v1`, with a literal IPv4 address and an explicit port. Airlock rejects `localhost`, DNS names, IPv6, other loopback aliases, LAN or VPN addresses, HTTPS, user information, redirects, queries, fragments, encoded paths, and any other path. Do not expose the inference server to a LAN, VPN, container bridge, tunnel, or the public internet.
+
+Do not expose the Airlock router or OpenAI proxy either. The OpenAI proxy does not require an incoming client password.
 
 The hybrid router accepts only exact enabled model IDs, the deterministic wire form Claude Code creates by removing `[1m]` from an enabled native Claude ID that carries it, and a small set of Claude Code API paths. Legacy suffixed GPT IDs are normalized before they can enter the router policy. It rejects redirects and exits when its owning launcher exits.
 
@@ -134,6 +136,27 @@ The stored OpenRouter key is read only by the small process that needs it and on
 - **Diagnostics:** the router's loopback diagnostics endpoint reports only instance ID, provider, exact model, status, byte counts, duration, and integer token counts. It never includes the key or any request or response body.
 - **The launched Claude Code process's environment:** before starting an `opr` (or hybrid) session, Airlock explicitly unsets `OPENROUTER_API_KEY`, along with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`, and `GROK_API_KEY`, so the child Claude Code process and anything it spawns never inherit the OpenRouter key or any other provider credential. The router process itself also starts with a minimal, explicitly allow-listed environment and loads the key itself from OS credential storage rather than receiving it from its parent.
 
+## The private open-model registry
+
+Open-model support is optional and explicit. Airlock creates no local route during installation or guided setup. You add an endpoint and route yourself with `airlock open-model`. The protected `openmodel-registry.json` file keeps the private endpoint URL and upstream model identity separate from the public `openmodel/ROUTE` wire ID and `airlock-om-ROUTE` Agent name. Add commands never accept those private values in argv: an interactive command uses a bounded hidden prompt, while `--stdin` accepts only a bounded, exact-schema UTF-8 JSON object.
+
+Airlock accepts only regular, non-linked registry files protected for the current user. Registry updates use a private lock, canonical JSON, atomic replacement, and digest comparison. If another update wins first, the later command stops instead of overwriting it. The signed session snapshot freezes the exact endpoint and route metadata used by that router process, so a registry edit cannot redirect a running session.
+
+`airlock open-model check ROUTE` makes one bounded, credential-free `GET /v1/models` request to that route's loopback endpoint and requires its exact private model identity. It follows no redirect and changes no registry state. Ordinary lists, errors, Doctor output, guidance, Agent definitions, diagnostics, and router errors do not print the endpoint URL or upstream identity. Doctor never contacts an inference server.
+
+Capability declarations are the user's claim, not an Airlock benchmark. A route must declare its context window, output ceiling, streaming support, tool count, supported tool-choice modes, and whether to create a named worker. Airlock enforces those declarations but does not infer or verify them. Endpoint concurrency belongs to the endpoint, so every route alias that shares one server also shares its single bounded semaphore.
+
+## Explicit open-model roots
+
+```bash
+airlock om ROUTE
+airlock hybrid om:ROUTE
+```
+
+A pure open-model session needs no Claude, Codex, Grok, or OpenRouter login and does not start the subscription proxy. A hybrid open-model root keeps the ordinary non-local worker pool and starts only the provider services those routes need. Open models are never saved defaults and never join `auto`, discovery, automatic swarms, handoff, provider fallback, capacity routing, or synthesized compactor routing. A local route is used only when the user names its root or exact Agent.
+
+Airlock connects to an already-running server. It never downloads a model, changes GPU settings, selects llama.cpp or another server's flags, starts the server, or stops it.
+
 ## Windows session launch files
 
 Windows limits the complete command passed to `CreateProcessW`. Airlock therefore writes generated Claude Code settings and combined routing guidance to private files in its per-user session runtime directory, then passes only their paths through `--settings` and `--append-system-prompt-file`. This avoids putting the guidance text on the Windows command line. Exact Agent JSON remains inline because Claude Code has no Agent-file option.
@@ -157,6 +180,10 @@ On OpenAI routes, it removes:
 It then calls only the loopback OpenAI proxy.
 
 On OpenRouter routes, it strips the same incoming headers, adds only the locally stored OpenRouter key, and constrains OpenRouter routing to the verified provider-registry slug and endpoint quantization with fallback routing turned off. Catalog verification still requires `tools` and `tool_choice`, but the request does not require the endpoint to advertise every optional field in Claude Code's native Messages payload. Claude Code's custom-model notice can arrive as a non-standard `messages` entry with the `system` role; Airlock preserves its text and moves it into the Anthropic Messages API's top-level `system` field before forwarding. Any such entry with extra message fields, non-text content, or no remaining user or assistant message is rejected locally rather than transformed ambiguously. Airlock accepts a successful response only when its model is the exact routable ID or the frozen canonical slug. It does not support OpenRouter's `count_tokens` operation; it refuses that request instead of inventing a token estimate for a model it has not verified.
+
+On open-model routes, the router creates a fresh OpenAI Chat Completions request from an allowlist. It never forwards the original Anthropic body, incoming authorization, cookies, API keys, proxy authorization, arbitrary configured headers, or inherited proxy settings. It connects directly to the signed snapshot's literal `127.0.0.1` port, follows no redirect, and accepts only an exact declared private response identity before committing a successful response. Errors can name only the public `openmodel/ROUTE` identity. Open-model traffic is never retried on another model.
+
+The adapter rejects unsupported content and undeclared tool behavior before network access. It converts text, client function calls, and successful tool results in both directions and preserves ordering that Chat Completions can represent. Every pending call must receive one immediate result before user text or a later message; failed, missing, duplicate, late, or interrupted results and assistant text after a tool call are rejected instead of changing their meaning. It bounds streamed state and discards `reasoning_content` without logging it. The local MVP does not support the Responses API, native Ollama API, images, documents, audio, embeddings, server-side tools, thinking or redacted-thinking blocks, token counting, or any path except `/v1/messages`.
 
 The router does not log or persist request bodies, response bodies, prompts, authorization headers, or credentials. Its loopback diagnostics endpoint keeps at most 256 in-memory events containing only the router instance ID, provider, exact enabled model, status, request and response byte counts, duration, sanitized outcome, and integer token counts read from the response that was already forwarded. The router reads only the numeric fields of a usage object and never keeps prompt or response text.
 
@@ -247,6 +274,20 @@ The managed reader rejects links, non-regular or oversized files, malformed or u
 
 The notice does not install code or weaken updater verification. Exit the active session and run `airlock update` to download, verify, confirm, and install the release.
 
+## The console
+
+`airlock console` starts a local server that shows every Airlock session on the machine. It binds to `127.0.0.1` only and refuses to start if the port is already used by something that is not an Airlock console. One live console is allowed per runtime root. It holds a private, process-lifetime `console.lock` next to its address marker, so another start exits safely. A validated marker lets the launcher open the existing console. Operating-system lock release permits hard-crash recovery; a stale non-secret marker may remain, and the next start that obtains the lock replaces it. Different runtime roots are independent. While the console serves, on port 4783 or a port chosen with `--port`, it atomically writes a private, non-secret `<console runtime root>/console-address.json` marker with a schema version, loopback URL, process ID, and random instance identity. It carries no CSRF token or router control token. Because a runtime root permits only one live console, that console owns the only marker. Clean shutdown removes only the serving console's own marker.
+
+Every API and SSE request is checked against a loopback `Origin` when one is present; a non-loopback origin gets a 403. There is no wildcard CORS and no caching header that would let a shared proxy keep a response. The console renders only an allowlisted set of fields from routers and registry files, treats those files as untrusted input, and validates their schema and size before using them. It never renders prompt or response text, provider error bodies, tokens, or account identifiers.
+
+Each router's registry file carries a private control token, at least 256 random bits, stored only in that mode-0600 file. The token lets the console pin or unpin that one router's live session; it does nothing else, and the router never accepts a chain edit, a process operation, or a generic action through it. The token, and the browser's separate per-process CSRF token, never appear in diagnostics, console JSON, page state, logs, events, reports, MCP responses, or WebMCP.
+
+Browser mutations, meaning anything a person does by clicking Approve, Reject, editing a proposal, or saving the chain editor, require an exact same-origin request and that CSRF token, which is injected only into the served root page and never returned by a JSON endpoint. Agent-facing channels, the MCP server, the HTTP tool endpoints, and WebMCP, can only read state and create proposals; none of them can approve, reject, pin, unpin, resume, or otherwise write to a router.
+
+The console never restarts, signals, or writes to a router or a session outside of an approved proposal or a direct pin. It does not read prompts or responses, and it is not a security boundary against software already running with your local account privileges: such software can read your files, call the CLI, or automate your browser the same way the console does.
+
+The installer copies the console's static site through a same-parent staging directory and keeps one recoverable managed backup container while replacing an existing managed site. A later installer can restore one validated backup after an interrupted update. Unsafe, ambiguous, writable, reparse-point or symlinked, and malformed backup state fails closed; it is not followed, replaced, or treated as managed. POSIX ownership checks refuse a backup owned by another user. Windows relies on the user-owned install root and reparse refusal; it does not apply POSIX ownership checks. The managed bundle marker is written only after the site and every other managed component have succeeded.
+
 ## What installation changes
 
 The installer changes only recognized Airlock managed files and the optional managed worker. It refuses unknown files and links. It writes the managed bundle marker after all protected launchers, helpers, catalogs, and plugin files are copied. Startup rejects a stale, changed, missing, or incomplete bundle.
@@ -266,6 +307,7 @@ Already running sessions keep their original permissions. Restart after a securi
 - Prompt rules and tool hooks reduce mistakes but do not make model behavior mathematically certain.
 - Native Claude Code controls which tools subagents can use.
 - Provider terms, billing rules, model access, and usage limits can change.
+- Approving a proposal in the console is not a security boundary against software already running with your local account privileges; it separates normal agent tool access from the approval path, nothing more.
 
 ## More detail
 

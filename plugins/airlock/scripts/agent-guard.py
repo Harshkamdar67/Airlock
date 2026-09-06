@@ -12,8 +12,8 @@ import sys
 
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_POLICY_HELPER_BYTES = 1024 * 1024
-MANAGED_BUNDLE_VERSION = "2026.08.11.3"
-MANAGED_PROTOCOL_VERSION = 5
+MANAGED_BUNDLE_VERSION = "2026.09.06.1"
+MANAGED_PROTOCOL_VERSION = 6
 EXTRA_USAGE_MARKER = "Extra usage authorized: yes"
 BUILTIN_AGENT_TYPES = {"Explore", "Plan", "general-purpose"}
 FAMILY_MODEL_VARIABLES = {
@@ -22,6 +22,18 @@ FAMILY_MODEL_VARIABLES = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+
+
+def permission_model_forms(model: str, provider: str, routes) -> set[str]:
+    """Return signed declared and wire forms for one exact Agent model."""
+    if routes.get(model) != provider:
+        return set()
+    forms = {model}
+    if model.endswith("[1m]"):
+        wire_model = model.removesuffix("[1m]")
+        if routes.get(wire_model) == provider:
+            forms.add(wire_model)
+    return forms
 
 
 def load_policy_schema():
@@ -108,11 +120,11 @@ def load_session_permission_set(schema):
     ):
         return None
     allowed_agents = set(snapshot.agents)
-    allowed_models = {agent.model for agent in snapshot.agents.values()}
+    allowed_models = set(snapshot.routes)
     builtin_models = {
         model
-        for model in allowed_models
-        if snapshot.routes.get(model) != "openrouter"
+        for model, provider in snapshot.routes.items()
+        if provider not in {"openrouter", "openmodel"}
     }
     if snapshot.profile == "openrouter-pure":
         root_agents = [
@@ -131,13 +143,44 @@ def load_session_permission_set(schema):
         ):
             return None
         builtin_models = {snapshot.root_model}
+    elif snapshot.profile == "openmodel-pure":
+        root_agents = [
+            agent
+            for agent in snapshot.agents.values()
+            if agent.provider == "openmodel"
+            and agent.model == snapshot.root_model
+            and not agent.extra_usage
+        ]
+        if (
+            snapshot.root_provider != "openmodel"
+            or snapshot.routes.get(snapshot.root_model) != "openmodel"
+            or set(snapshot.routes.values()) != {"openmodel"}
+            or any(
+                agent.provider != "openmodel" or agent.extra_usage
+                for agent in snapshot.agents.values()
+            )
+            or len(root_agents) > 1
+        ):
+            return None
+        builtin_models = {snapshot.root_model}
+    elif snapshot.profile == "hybrid-openmodel-root":
+        if (
+            snapshot.root_provider != "openmodel"
+            or snapshot.routes.get(snapshot.root_model) != "openmodel"
+        ):
+            return None
     extra_agents = {
         name for name, agent in snapshot.agents.items() if agent.extra_usage
     }
-    extra_models = {
-        agent.model for agent in snapshot.agents.values() if agent.extra_usage
-    }
-    if not allowed_agents or not allowed_models:
+    extra_models: set[str] = set()
+    for agent in snapshot.agents.values():
+        if agent.extra_usage:
+            extra_models.update(permission_model_forms(
+                agent.model, agent.provider, snapshot.routes
+            ))
+    if not allowed_models or (
+        not allowed_agents and snapshot.profile != "openmodel-pure"
+    ):
         return None
     expected = {
         "AIRLOCK_ALLOWED_AGENT_NAMES": allowed_agents,
@@ -243,11 +286,11 @@ def main() -> int:
             deny("Airlock does not allow a model override on a nested Agent call.")
             return 0
     if subagent_type in BUILTIN_AGENT_TYPES:
-        if snapshot.profile == "openrouter-pure" and (
+        if snapshot.profile in {"openrouter-pure", "openmodel-pure"} and (
             os.environ.get("AIRLOCK_DISCOVERY_MODEL") != snapshot.root_model
             or os.environ.get("ANTHROPIC_SMALL_FAST_MODEL") != snapshot.root_model
         ):
-            deny("Airlock blocked Agent because the OpenRouter root model map is invalid.")
+            deny("Airlock blocked Agent because the explicit root model map is invalid.")
             return 0
         family_models = configured_family_models(builtin_models, extra_models)
         if family_models is None:

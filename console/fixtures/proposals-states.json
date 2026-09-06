@@ -1,0 +1,155 @@
+[
+  {
+    "id": "shp_pending_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "A pending proposal awaiting a decision.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T09:00:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "pending",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": null
+  },
+  {
+    "id": "shp_applying_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "An approval that is being applied to the router right now.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T08:59:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "applying",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": null
+  },
+  {
+    "id": "shp_failed_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "The router could not be reached when this was approved.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T08:58:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 3,
+    "status": "failed",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": {
+      "code": "not_found",
+      "message": "Router is not reachable"
+    }
+  },
+  {
+    "id": "shp_rejected_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "A proposal a person looked at and turned down.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T08:57:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "rejected",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": null
+  },
+  {
+    "id": "shp_expired_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "A proposal nobody decided on within fifteen minutes.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T08:40:00Z",
+    "expires_at": "2026-09-05T08:55:00Z",
+    "revision": 1,
+    "status": "expired",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": {
+      "code": "expired",
+      "message": "Proposal expired before approval"
+    }
+  },
+  {
+    "id": "shp_applied2_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "An applied proposal, kept visible for an hour.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T08:56:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "applied",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": {
+      "attempts": 1,
+      "started_at": "2026-09-05T09:01:00Z",
+      "finished_at": "2026-09-05T09:01:02Z",
+      "router_instance_id": "r-8f2c1a",
+      "previous_pinned_model": null,
+      "pinned_model": "stealth/ox-alpha",
+      "changed": true,
+      "already_applied": true
+    },
+    "last_error": null
+  }
+]

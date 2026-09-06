@@ -6,6 +6,11 @@
 __pycache__/
 *.py[cod]
 dist/
+!console/dist/
 .claude/worktrees/
 .claude/settings.local.json
 %SystemDrive%/
+node_modules/
+
+# Console design scratch (exploration HTML and screenshots), not shipped
+console/design/

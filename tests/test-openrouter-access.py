@@ -331,7 +331,7 @@ class OpenRouterAccessTests(unittest.TestCase):
                     "anthropic/claude-sonnet-4.5",
                     openrouter_root_route="declared-sonnet",
                 )
-                self.assertEqual(snapshot.protocol_version, 5)
+                self.assertEqual(snapshot.protocol_version, 6)
                 self.assertEqual(snapshot.root_provider, "openrouter")
                 self.assertEqual(snapshot.root_model, "anthropic/claude-sonnet-4.5")
                 self.assertEqual(

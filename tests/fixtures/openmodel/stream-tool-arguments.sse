@@ -1,0 +1,12 @@
+data: {"id":"synthetic-stream-tool","object":"chat.completion.chunk","created":1785700002,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_private_zero","type":"function","function":{"name":"lookup_weather","arguments":"{\"city\":\""}},{"index":1,"id":"call_private_one","type":"function","function":{"name":"set_units","arguments":"{\"unit\":\""}}]},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-tool","object":"chat.completion.chunk","created":1785700002,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"celsius\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-tool","object":"chat.completion.chunk","created":1785700002,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"Exampleville\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-tool","object":"chat.completion.chunk","created":1785700002,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":null}
+
+data: {"id":"synthetic-stream-tool","object":"chat.completion.chunk","created":1785700002,"model":"local/open-model-synthetic","choices":[],"usage":{"prompt_tokens":38,"completion_tokens":17,"total_tokens":55,"prompt_tokens_details":{"cached_tokens":4}}}
+
+data: [DONE]
+

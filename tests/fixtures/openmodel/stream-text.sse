@@ -1,0 +1,14 @@
+: synthetic probe stream
+
+data: {"id":"synthetic-stream-1","object":"chat.completion.chunk","created":1785700000,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Hidden "},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-1","object":"chat.completion.chunk","created":1785700000,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{"reasoning_content":"reasoning.","content":"Synthetic "},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-1","object":"chat.completion.chunk","created":1785700000,"choices":[{"index":0,"delta":{"content":"visible answer."},"finish_reason":null}]}
+
+data: {"id":"synthetic-stream-1","object":"chat.completion.chunk","created":1785700000,"model":"local/open-model-synthetic","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"synthetic-stream-1","object":"chat.completion.chunk","created":1785700000,"model":"local/open-model-synthetic","choices":[],"usage":{"prompt_tokens":24,"completion_tokens":9,"total_tokens":33,"prompt_tokens_details":{"cached_tokens":6}}}
+
+data: [DONE]
+

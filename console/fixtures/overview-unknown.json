@@ -1,0 +1,85 @@
+{
+  "generated_at": "2026-09-05T09:02:12Z",
+  "console_version": "0.1.0",
+  "sessions": [
+    {
+      "id": "r-9d0c31",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "openmodel-local",
+      "root_model": "local-coder",
+      "root_provider": "openmodel",
+      "active_model": "local-coder",
+      "workdir": "D:\\agentquant",
+      "project": "agentquant",
+      "started_at": "2026-09-05T07:00:00Z",
+      "last_activity_at": "2026-09-05T08:31:12Z",
+      "context": {
+        "input_tokens": 22400,
+        "window": 131072
+      },
+      "workers": [],
+      "recent_handoffs": 0,
+      "url": "http://127.0.0.1:40000"
+    }
+  ],
+  "routes": [
+    {
+      "model": "local-coder",
+      "short_name": "local-coder",
+      "provider": "openmodel",
+      "category": "unknown",
+      "metered": false,
+      "context_window": null,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": [
+        "r-9d0c31"
+      ]
+    },
+    {
+      "model": "stealth/ox-alpha",
+      "short_name": "ox-alpha",
+      "provider": "openrouter",
+      "category": "extra",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    }
+  ],
+  "headroom": [
+    {
+      "provider": "anthropic",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openai",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "grok",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openrouter",
+      "window": "credits",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    }
+  ],
+  "attention": []
+}

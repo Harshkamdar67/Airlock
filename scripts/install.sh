@@ -386,7 +386,12 @@ install_managed_file() {
 
 install_managed_file "$repo_root/bin/airlock" "$launcher_target" 0755
 install_managed_file "$repo_root/bin/airlock-access.py" "$install_dir/airlock-access.py" 0755
+install_managed_file "$repo_root/bin/airlock_console.py" "$install_dir/airlock_console.py" 0755
+install_managed_file "$repo_root/bin/airlock_console_tools.py" "$install_dir/airlock_console_tools.py" 0755
+install_managed_file "$repo_root/bin/airlock_console_history.py" "$install_dir/airlock_console_history.py" 0755
 install_managed_file "$repo_root/bin/airlock_policy.py" "$install_dir/airlock_policy.py" 0755
+install_managed_file "$repo_root/bin/airlock_openmodel.py" "$install_dir/airlock_openmodel.py" 0755
+install_managed_file "$repo_root/bin/airlock_openmodel_adapter.py" "$install_dir/airlock_openmodel_adapter.py" 0755
 install_managed_file "$repo_root/bin/airlock_openrouter_auth.py" "$install_dir/airlock_openrouter_auth.py" 0755
 install_managed_file "$repo_root/bin/airlock_openrouter_presets.py" "$install_dir/airlock_openrouter_presets.py" 0755
 install_managed_file "$repo_root/bin/airlock_openrouter_models.py" "$install_dir/airlock_openrouter_models.py" 0755
@@ -425,6 +430,7 @@ install_managed_file "$repo_root/plugins/airlock/hooks/hooks.json" "$plugin_targ
 install_managed_file "$repo_root/plugins/airlock/skills/usage/SKILL.md" "$plugin_target/skills/usage/SKILL.md" 0644
 install_managed_file "$repo_root/plugins/airlock/skills/airlock-fast/SKILL.md" "$plugin_target/skills/airlock-fast/SKILL.md" 0644
 install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_web_tools.py" "$plugin_target/mcp-server/airlock_web_tools.py" 0755
+install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_console_mcp.py" "$plugin_target/mcp-server/airlock_console_mcp.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.sh" "$plugin_target/scripts/fast-session-end.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.py" "$plugin_target/scripts/fast-session-end.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/router-session-end.sh" "$plugin_target/scripts/router-session-end.sh" 0755
@@ -441,6 +447,313 @@ install_managed_file "$repo_root/plugins/airlock/scripts/file_safety.py" "$plugi
 install_managed_file "$repo_root/plugins/airlock/scripts/worktree.py" "$plugin_target/scripts/worktree.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/worktree-create.sh" "$plugin_target/scripts/worktree-create.sh" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/worktree-remove.sh" "$plugin_target/scripts/worktree-remove.sh" 0755
+
+console_site_has_exact_marker() {
+  local site="$1"
+  local marker_text="$2"
+  local marker="$site/.airlock-managed"
+  [[ ! -L "$marker" && -f "$marker" ]] || return 1
+  printf '%s\n' "$marker_text" | cmp -s - "$marker"
+}
+
+console_site_is_safe_tree() {
+  local site="$1"
+  local unsafe_link=''
+  [[ ! -L "$site" && -d "$site" ]] || return 1
+  if ! unsafe_link="$(find "$site" -type l -print -quit 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -z "$unsafe_link" ]]
+}
+
+console_site_backup_is_private_plain() {
+  local container="$1"
+  local python_bin=''
+  [[ ! -L "$container" && -d "$container" ]] || return 1
+  python_bin="$(airlock_python)"
+  [[ -n "$python_bin" ]] || return 1
+  "$python_bin" - "$container" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+try:
+    metadata = Path(sys.argv[1]).lstat()
+    effective_uid = os.geteuid()
+except (AttributeError, OSError):
+    raise SystemExit(1)
+valid = (
+    stat.S_ISDIR(metadata.st_mode)
+    and metadata.st_uid == effective_uid
+    and stat.S_IMODE(metadata.st_mode) == 0o700
+)
+raise SystemExit(0 if valid else 1)
+PY
+}
+
+console_site_directory_is_empty() {
+  local directory="$1"
+  local entry=''
+  for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    return 1
+  done
+  return 0
+}
+
+console_site_has_safe_permissions() {
+  local site="$1"
+  local python_bin=''
+  python_bin="$(airlock_python)"
+  [[ -n "$python_bin" ]] || return 1
+  "$python_bin" - "$site" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+try:
+    paths = [root, *root.rglob("*")]
+    for path in paths:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise SystemExit(1)
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+console_site_is_valid() {
+  local site="$1"
+  local marker_text="$2"
+  console_site_is_safe_tree "$site" &&
+    console_site_has_exact_marker "$site" "$marker_text"
+}
+
+console_site_backup_is_valid() {
+  local container="$1"
+  local marker_text="$2"
+  local entry=''
+  local entry_count=0
+  console_site_backup_is_private_plain "$container" || return 1
+  for entry in "$container"/* "$container"/.[!.]* "$container"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    entry_count=$((entry_count + 1))
+    [[ "$entry" == "$container/site" ]] || return 1
+  done
+  [[ "$entry_count" -eq 1 ]] || return 1
+  console_site_is_valid "$container/site" "$marker_text" &&
+    console_site_has_safe_permissions "$container/site"
+}
+
+install_console_site() {
+  local source="$repo_root/console/dist"
+  local target="$install_dir/../share/airlock/console"
+  local share_dir="$install_dir/../share"
+  local airlock_share_dir="$share_dir/airlock"
+  local marker_text='Managed by https://github.com/Harshkamdar67/Airlock (console site)'
+  local staging=''
+  local backup=''
+  local candidate=''
+  local directory=''
+  local -a backups=()
+
+  for directory in "$share_dir" "$airlock_share_dir"; do
+    if [[ -L "$directory" || ( -e "$directory" && ! -d "$directory" ) ]]; then
+      printf 'install: refusing unsafe Airlock Console site directory: %s\n' "$directory" >&2
+      return 1
+    fi
+    mkdir -p "$directory"
+  done
+
+  # Validate the public target first so a stale backup can never weaken the
+  # existing symlink and unmanaged-content refusals.
+  if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+    printf 'install: refusing unsafe Airlock Console site directory: %s\n' "$target" >&2
+    return 1
+  fi
+  if [[ -d "$target" ]]; then
+    if ! console_site_has_exact_marker "$target" "$marker_text"; then
+      printf 'install: refusing to replace unmanaged Airlock Console site: %s\n' "$target" >&2
+      return 1
+    fi
+    if ! console_site_is_safe_tree "$target" ||
+       ! console_site_has_safe_permissions "$target"; then
+      printf 'install: refusing unsafe Airlock Console site directory: %s\n' "$target" >&2
+      return 1
+    fi
+  fi
+
+  # Finish or clean up an interrupted same-parent swap before staging the next
+  # site. Any invalid or ambiguous state is left untouched for inspection.
+  for candidate in "$airlock_share_dir"/.airlock-console-backup-*; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    if console_site_backup_is_private_plain "$candidate" &&
+       console_site_directory_is_empty "$candidate" &&
+       [[ -d "$target" ]]; then
+      if ! rmdir "$candidate"; then
+        printf 'install: could not remove an empty Airlock Console site backup reservation: %s\n' \
+          "$candidate" >&2
+        return 1
+      fi
+      printf 'Removed empty Airlock Console site backup reservation: %s\n' "$candidate"
+      continue
+    fi
+    backups+=("$candidate")
+  done
+  if [[ "${#backups[@]}" -gt 1 ]]; then
+    printf 'install: refusing ambiguous Airlock Console site backup state in: %s\n' \
+      "$airlock_share_dir" >&2
+    return 1
+  fi
+  if [[ "${#backups[@]}" -eq 1 ]]; then
+    backup="${backups[0]}"
+    if ! console_site_backup_is_valid "$backup" "$marker_text"; then
+      printf 'install: refusing unsafe Airlock Console site backup: %s\n' "$backup" >&2
+      return 1
+    fi
+    if [[ -d "$target" ]]; then
+      if ! rm -rf -- "$backup"; then
+        printf 'install: could not remove stale Airlock Console site backup: %s\n' \
+          "$backup" >&2
+        return 1
+      fi
+      printf 'Removed stale Airlock Console site backup: %s\n' "$backup"
+    else
+      if ! mv "$backup/site" "$target"; then
+        printf 'install: could not recover the Airlock Console site; previous site retained at: %s\n' \
+          "$backup/site" >&2
+        return 1
+      fi
+      if ! rmdir "$backup"; then
+        printf 'install: recovered the Airlock Console site but could not remove its empty backup: %s\n' \
+          "$backup" >&2
+        return 1
+      fi
+      printf 'Recovered Airlock Console site backup: %s\n' "$target"
+    fi
+    backup=''
+  fi
+
+  if [[ ! -e "$source" ]]; then
+    printf 'Skipping Airlock Console site: console/dist is absent.\n'
+    return 0
+  fi
+  if [[ -L "$source" || ! -d "$source" ]] ||
+     ! console_site_is_safe_tree "$source"; then
+    printf 'install: refusing unsafe Airlock Console site source: %s\n' "$source" >&2
+    return 1
+  fi
+
+  staging="$(umask 077 && mktemp -d \
+    "$airlock_share_dir/.airlock-console-stage-XXXXXX")" || {
+    printf 'install: could not stage the Airlock Console site.\n' >&2
+    return 1
+  }
+  if [[ -L "$staging" || ! -d "$staging" ]]; then
+    printf 'install: could not create a plain Airlock Console staging directory.\n' >&2
+    return 1
+  fi
+  if ! cp -R "$source"/. "$staging"/; then
+    rm -rf -- "$staging" || true
+    printf 'install: could not copy the Airlock Console site.\n' >&2
+    return 1
+  fi
+  if ! find "$staging" -type d -exec chmod 0755 {} + ||
+     ! find "$staging" -type f -exec chmod 0644 {} + ||
+     ! printf '%s\n' "$marker_text" > "$staging/.airlock-managed" ||
+     ! chmod 0644 "$staging/.airlock-managed" ||
+     ! console_site_is_valid "$staging" "$marker_text"; then
+    rm -rf -- "$staging" || true
+    printf 'install: could not validate the staged Airlock Console site.\n' >&2
+    return 1
+  fi
+
+  if [[ -d "$target" ]]; then
+    backup="$(umask 077 && mktemp -d \
+      "$airlock_share_dir/.airlock-console-backup-XXXXXX")" || {
+      rm -rf -- "$staging" || true
+      printf 'install: could not create an Airlock Console site backup.\n' >&2
+      return 1
+    }
+    if [[ -L "$backup" || ! -d "$backup" ]]; then
+      rm -rf -- "$staging" || true
+      printf 'install: could not create a plain Airlock Console site backup.\n' >&2
+      return 1
+    fi
+    if ! chmod 0700 "$backup"; then
+      rmdir "$backup" || true
+      rm -rf -- "$staging" || true
+      printf 'install: could not make the Airlock Console site backup private.\n' >&2
+      return 1
+    fi
+    if ! console_site_backup_is_private_plain "$backup" ||
+       ! console_site_directory_is_empty "$backup"; then
+      rmdir "$backup" || true
+      rm -rf -- "$staging" || true
+      printf 'install: could not validate the private Airlock Console site backup.\n' >&2
+      return 1
+    fi
+    if ! mv "$target" "$backup/site"; then
+      rm -rf -- "$staging" || true
+      printf 'install: could not back up the existing Airlock Console site.\n' >&2
+      return 1
+    fi
+    if ! console_site_backup_is_valid "$backup" "$marker_text"; then
+      if [[ ! -e "$target" && ! -L "$target" ]] && mv "$backup/site" "$target"; then
+        rmdir "$backup" || true
+      fi
+      rm -rf -- "$staging" || true
+      printf 'install: could not validate the Airlock Console site backup.\n' >&2
+      return 1
+    fi
+  fi
+
+  if ! mv "$staging" "$target"; then
+    rm -rf -- "$staging" || true
+    if [[ -n "$backup" && ! -e "$target" && ! -L "$target" ]] &&
+       mv "$backup/site" "$target"; then
+      rmdir "$backup" || true
+      printf 'install: could not activate the Airlock Console site; the previous site was restored.\n' >&2
+    elif [[ -n "$backup" ]]; then
+      printf 'install: could not activate the Airlock Console site; previous site retained at: %s\n' \
+        "$backup/site" >&2
+    else
+      printf 'install: could not activate the Airlock Console site.\n' >&2
+    fi
+    return 1
+  fi
+
+  # The backup is not deleted until the activated tree still has the exact
+  # managed marker and contains no links.
+  if ! console_site_is_valid "$target" "$marker_text"; then
+    if [[ -n "$backup" && ! -e "$staging" && ! -L "$staging" ]] &&
+       mv "$target" "$staging" &&
+       mv "$backup/site" "$target"; then
+      rm -rf -- "$staging" || true
+      rmdir "$backup" || true
+      printf 'install: could not activate the Airlock Console site; the previous site was restored.\n' >&2
+    elif [[ -n "$backup" ]]; then
+      rm -rf -- "$staging" || true
+      printf 'install: could not activate the Airlock Console site; previous site retained at: %s\n' \
+        "$backup/site" >&2
+    else
+      rm -rf -- "$target" || true
+      printf 'install: activated Airlock Console site failed validation.\n' >&2
+    fi
+    return 1
+  fi
+  if [[ -n "$backup" ]] && ! rm -rf -- "$backup"; then
+    printf 'install: activated the Airlock Console site but could not remove its backup: %s\n' \
+      "$backup" >&2
+    return 1
+  fi
+  printf 'Installed Airlock Console site: %s\n' "$target"
+}
+
+install_console_site
 
 # Write the bundle marker last so interrupted installs fail closed as incomplete.
 install_managed_file "$repo_root/config/managed-bundle.json" "$bundle_target" 0644

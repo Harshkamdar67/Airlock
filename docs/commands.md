@@ -12,20 +12,23 @@ and Linux and `powershell -NoProfile -File .\scripts\doctor.ps1` on Windows.
 
 | Capability | Where it is explained |
 |---|---|
-| Run GPT, Grok, and OpenRouter models inside Claude Code on subscriptions rather than API keys | [How it works](how-it-works.md) |
+| Run GPT, Grok, and OpenRouter models inside Claude Code on subscriptions or a separate declared key | [How it works](how-it-works.md) |
+| Run a user-hosted Chat Completions model through an explicit loopback-only route | [Open models](#open-models) below |
 | Mix providers in one session, each as a named worker with its own model | [Models and usage](models-and-usage.md) |
 | Hand a rate-limited or oversized request to another enabled model automatically | [Handoff](#handoff) below |
 | Keep the model that answered visible and honest | [Handoff](#handoff) below |
 | Declare extra provider models without waiting for a release | [Declaring your own models](models-and-usage.md#declaring-your-own-models) |
 | Block direct reads of credential and env files during a session | [Threat model](threat-model.md) |
 | Give a worker an isolated git worktree built from a safe snapshot | [Security and file access](../README.md#security-and-file-access) |
+| See every session's state, why one is blocked, and which routes have room | [Console](console.md) |
 
 ## Starting a session
 
 ```bash
 airlock                          # the saved default profile and root
 airlock openai                   # OpenAI-only session on the saved OpenAI root
-airlock terra                    # OpenAI-only session on an exact root
+airlock astra                    # OpenAI-only session on an exact root
+airlock terra
 airlock luna
 airlock 5.5
 airlock 5.4
@@ -41,21 +44,25 @@ airlock hybrid opus              # exact hybrid root
 airlock hybrid sonnet
 airlock hybrid fable
 airlock hybrid haiku
+airlock hybrid astra
 airlock hybrid sol
 airlock hybrid grok
 airlock opr                      # OpenRouter-only session, interactive picker
 airlock opr kimi-k3              # OpenRouter-only session on an exact route
+airlock om local-coder           # open-model-only session on an exact route
+airlock hybrid om:local-coder    # open-model root with mixed-provider workers
 airlock bg                       # background convenience command
 ```
 
-`airlock hybrid ROUTE` can also take a declared OpenRouter route as the root.
+`airlock hybrid ROUTE` can also take a declared OpenRouter route as the root. An open model always uses the reserved `om:` prefix in a hybrid command, so Airlock never guesses between private registries.
 
 ## Handoff
 
 When an upstream answers 402, 429, or 529, Airlock retries the same request on
 another enabled model in the same usage category, up to three hops. It does the
 same when a peer rejects a conversation for being too large, and it can condense
-history so a smaller peer can still serve the request.
+history so a smaller peer can still serve the request. User-declared open models
+never appear as a handoff source, peer, or compaction model.
 
 ```bash
 airlock mode failover ask        # default: chains use included models only
@@ -173,6 +180,80 @@ airlock openrouter models add-preset NAME
 Declared routes appear as `airlock-or-ROUTE` workers in a hybrid session and can
 lead an `airlock opr` session as the root.
 
+## Open models
+
+Airlock does not create any open-model route during installation. First declare
+an already-running loopback Chat Completions endpoint:
+
+```bash
+airlock open-model endpoint add local-server --max-concurrency 1
+# Hidden prompt: Loopback base URL
+airlock open-model endpoint list
+```
+
+Then declare the route and every capability you intend Airlock to permit:
+
+```bash
+airlock open-model add local-coder local-server \
+  --context-window 32768 \
+  --max-output-tokens 4096 \
+  --streaming \
+  --tools single \
+  --tool-choice auto \
+  --worker
+# Hidden prompts: upstream model identity and accepted response identities
+airlock open-model list
+airlock open-model check local-coder
+airlock open-model remove local-coder
+airlock open-model endpoint remove local-server
+```
+
+Private endpoint and model identities are never command arguments. By default,
+`add` reads them through bounded hidden prompts and requires an interactive terminal.
+Each prompt retains at most 1,024 Unicode characters and 4,096 UTF-8 bytes. For
+automation, pass `--stdin` and send one bounded UTF-8 JSON object to standard
+input. Endpoint input has exactly `{"base_url":"..."}`. Route input has exactly
+`{"upstream_model":"...","accepted_response_models":["..."]}`. For example,
+a protected producer can pipe route JSON into:
+
+```bash
+generate-private-route-json | airlock open-model add local-coder local-server \
+  --stdin --context-window 32768 --max-output-tokens 4096 \
+  --streaming --tools single --tool-choice auto --worker
+```
+
+List every exact identity the same configured model can return in
+`accepted_response_models`. Repeat `--tool-choice` for each mode that the
+server actually supports: `auto`, `named`, `none`, or `required`. A route with
+`--tools none` declares no tool-choice mode. Choose exactly one of `--streaming`
+or `--no-streaming`, and exactly one of `--worker` or `--no-worker`. Add
+`--disabled` to create an inactive endpoint or route. Removal asks for
+confirmation unless `--yes` is present.
+
+`check` is the only management command here that contacts the inference server.
+It makes one bounded, credential-free `GET /v1/models` request, follows no
+redirect, and compares the exact private identity without printing it. It does
+not send a generation request. Doctor never performs this check.
+
+A route can lead a pure `airlock om ROUTE` session. If it declares `--worker`,
+it also appears as the exact `airlock-om-ROUTE` Agent in eligible open-model and
+hybrid sessions. Use `airlock hybrid om:ROUTE` when the open model should lead
+while normal subscription workers remain available. Open models are explicit
+only and never become a saved root, `auto` choice, discovery seat, handoff peer,
+compactor, or automatic swarm worker.
+
+## Console
+
+```bash
+airlock console               # start the console, print its address, open a browser
+airlock console --port 4900   # use a different port
+airlock console --no-open     # start the server without opening a browser
+airlock console --scan        # also probe for routers with no registry file yet
+airlock console --once        # print one JSON overview to stdout and exit
+```
+
+The console is a local page that shows every Airlock session, why one is blocked, what the router already tried, and which routes still have room. The default address is `http://127.0.0.1:4783`. See the [console guide](console.md).
+
 ## Provider sign-in
 
 ```bash
@@ -208,6 +289,11 @@ powershell -NoProfile -File .\scripts\doctor.ps1      # Windows
 | `$AIRLOCK_CONFIG_DIR/models.json` | extra provider models you declare |
 | `$AIRLOCK_CONFIG_DIR/failover.json` | your own handoff order per model |
 | `$AIRLOCK_CONFIG_DIR/openrouter-registry.json` | declared OpenRouter routes |
+| `$AIRLOCK_CONFIG_DIR/openmodel-registry.json` | private loopback endpoints and declared open-model routes |
+
+Every running router also writes one small registry file describing itself, so the console can find it. On Windows this lives under `%LOCALAPPDATA%\Airlock\sessions\`, elsewhere under `$XDG_STATE_HOME/airlock/sessions/` (default `~/.local/state/airlock/sessions/`). The router writes this file when it is ready and removes it when it shuts down; it holds no credentials and is not meant to be edited by hand. See [How it works](how-it-works.md#the-session-registry) for what it contains.
+
+While the console serves, on port 4783 or one supplied with `--port`, it atomically writes its private, non-secret address marker at `<console runtime root>/console-address.json`. The marker records a schema version, its loopback URL, process ID, and random instance identity, never a CSRF token or router control token. `airlock-console-tools` rereads it on every call, so a custom port works automatically; an absent or stale marker falls back to `http://127.0.0.1:4783`, while an explicit MCP `--console-url` bypasses discovery.
 
 ## Environment settings
 
@@ -218,7 +304,10 @@ variables in this table have no `airlock mode` equivalent.
 |---|---|
 | `AIRLOCK_ANTHROPIC_RATE_LIMIT` | one-launch override for `airlock mode anthropic-rate-limit` (`native` or `handoff`) |
 | `AIRLOCK_OPENROUTER_CHAIN_PEER` | `off` removes the declared OpenRouter route as the last-resort peer |
+| `AIRLOCK_OPENMODEL_REGISTRY_FILE` | path to the private open-model endpoint and route registry |
 | `AIRLOCK_FAILOVER_FILE` | path to your handoff file |
+| `AIRLOCK_CONSOLE_TOOLS` | `off` skips registering the `airlock-console-tools` MCP server for this session |
+| `AIRLOCK_CONSOLE_SITE` | path to the built console page, overriding the one installed beside `bin/` |
 | `AIRLOCK_MODELS_FILE` | path to your declared models file |
 | `AIRLOCK_PYTHON` | exact Python 3 interpreter to use |
 | `AIRLOCK_EXTRA_USAGE_POLICY` | `ask`, `never`, or `allow` for this session |

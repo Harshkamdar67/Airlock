@@ -91,13 +91,21 @@ $OpenRouterAuthHelper = if ($env:AIRLOCK_OPENROUTER_AUTH_HELPER) { $env:AIRLOCK_
 $OpenRouterPresetsHelper = if ($env:AIRLOCK_OPENROUTER_PRESETS_HELPER) { $env:AIRLOCK_OPENROUTER_PRESETS_HELPER } else { Join-Path $PSScriptRoot 'airlock_openrouter_presets.py' }
 $OpenRouterModelsHelper = if ($env:AIRLOCK_OPENROUTER_MODELS_HELPER) { $env:AIRLOCK_OPENROUTER_MODELS_HELPER } else { Join-Path $PSScriptRoot 'airlock_openrouter_models.py' }
 $OpenRouterRegistryFile = if ($env:AIRLOCK_OPENROUTER_REGISTRY_FILE) { $env:AIRLOCK_OPENROUTER_REGISTRY_FILE } else { Join-Path $ConfigDir 'openrouter-registry.json' }
+$OpenModelHelper = if ($env:AIRLOCK_OPENMODEL_HELPER) { $env:AIRLOCK_OPENMODEL_HELPER } else { Join-Path $PSScriptRoot 'airlock_openmodel.py' }
+$OpenModelAdapterHelper = if ($env:AIRLOCK_OPENMODEL_ADAPTER_HELPER) { $env:AIRLOCK_OPENMODEL_ADAPTER_HELPER } else { Join-Path $PSScriptRoot 'airlock_openmodel_adapter.py' }
+$OpenModelRegistryFile = if ($env:AIRLOCK_OPENMODEL_REGISTRY_FILE) { $env:AIRLOCK_OPENMODEL_REGISTRY_FILE } else { Join-Path $ConfigDir 'openmodel-registry.json' }
 $RouterHelper = if ($env:AIRLOCK_ROUTER_HELPER) { $env:AIRLOCK_ROUTER_HELPER } else { Join-Path $PSScriptRoot 'airlock-router.py' }
 $UpdateHelper = if ($env:AIRLOCK_UPDATE_HELPER) { $env:AIRLOCK_UPDATE_HELPER } else { Join-Path $PSScriptRoot 'airlock-update.py' }
 $ManagedBinDir = if ($env:AIRLOCK_MANAGED_BIN_DIR) { $env:AIRLOCK_MANAGED_BIN_DIR } else { $PSScriptRoot }
+$ConsoleHelper = if ($env:AIRLOCK_CONSOLE_HELPER) { $env:AIRLOCK_CONSOLE_HELPER } else { Join-Path $ManagedBinDir 'airlock_console.py' }
+$ConsoleToolsHelper = Join-Path $ManagedBinDir 'airlock_console_tools.py'
+$ConsoleHistoryHelper = Join-Path $ManagedBinDir 'airlock_console_history.py'
+$ConsoleMcpHelper = Join-Path $PluginDir 'mcp-server\airlock_console_mcp.py'
 $ManagedBundleFile = if ($env:AIRLOCK_MANAGED_BUNDLE_FILE) { $env:AIRLOCK_MANAGED_BUNDLE_FILE } else { Join-Path $ConfigDir 'managed-bundle.json' }
 $UpdateNoticeFile = Join-Path $ConfigDir 'update-notice.json'
 
 $Models = @{
+  'astra'    = @('gpt-6-astra',        'GPT-6 Astra')
   'sol'      = @('gpt-5.6-sol',        'GPT-5.6 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
@@ -115,7 +123,33 @@ $GrokModels = @{
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast')
 }
 
+# Astra is off by default because it is the priciest OpenAI route. An explicit
+# Astra root cannot start without its route, so selecting it turns the route
+# on for this session, the way an explicit Grok root enables Grok. The rest of
+# the saved pool is kept as it is, and other roots leave the pool alone.
+function Enable-ExplicitOpenAIRoot {
+  param([string]$RootModel)
+  if ($RootModel -ne 'gpt-6-astra') { return }
+  $pool = if ($null -ne $env:AIRLOCK_OPENAI_MODELS) { [string]$env:AIRLOCK_OPENAI_MODELS }
+    elseif ($ConfigValues.ContainsKey('AIRLOCK_OPENAI_MODELS')) { $ConfigValues['AIRLOCK_OPENAI_MODELS'] }
+    else { '' }
+  if ((",$pool,") -like '*,astra,*') { return }
+  # No saved pool means the helper's defaults, which enable every OpenAI
+  # route except Astra; name them so nothing else changes.
+  if (-not $pool) { $pool = 'sol,terra,luna,luna-fast' }
+  $env:AIRLOCK_OPENAI_MODELS = "astra,$pool"
+}
+
+# Roots whose documented window exceeds the conservative fallback:
+# wire ID -> @(hard limit, compaction threshold at 80%). Mirrors
+# bin/airlock and bin/airlock-hybrid.py; tests/test-windows.ps1 guards parity.
+$DeclaredContextLimits = @{
+  'grok-4.6'    = @('500000', '400000')
+  'gpt-6-astra' = @('922000', '736000')
+}
+
 $HybridRoots = @{
+  'astra'  = @('gpt-6-astra', 'GPT-6 Astra', 'openai')
   'sol'    = @('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
   'luna'   = @('gpt-5.6-luna', 'GPT-5.6 Luna', 'openai')
@@ -159,10 +193,12 @@ $ProxyVariables = @(
 
 function Show-Models {
   Write-Host 'Usage: airlock [claude arguments]'
+  Write-Host '       airlock console [--port N] [--no-open] [--scan] [--once]'
   Write-Host '       airlock openai [model] [claude arguments]'
   Write-Host '       airlock grok [model] [claude arguments]'
   Write-Host '       airlock hybrid [model|choose] [claude arguments]'
   Write-Host '       airlock opr [route] [claude arguments]'
+  Write-Host '       airlock om [route] [claude arguments]'
   Write-Host '       airlock [sol|terra|luna|...] [claude arguments]'
   Write-Host ''
   Write-Host 'Profiles:'
@@ -172,15 +208,18 @@ function Show-Models {
   Write-Host '  airlock hybrid   Start the saved hybrid orchestrator'
   Write-Host '  airlock fast     Start one session with OpenAI Fast without saving the mode'
   Write-Host '  airlock opr      Start an OpenRouter-only session on an exact registry route'
+  Write-Host '  airlock om       Start a local open-model-only session on an exact registry route'
+  Write-Host '  airlock console  Start the local-only session console on 127.0.0.1'
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
-  Write-Host 'OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
+  Write-Host 'OpenAI root aliases: astra, sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku, grok, composer'
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
-  Write-Host 'Other commands: fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update'
+  Write-Host 'Open-model roots: exact enabled local registry routes from airlock open-model list'
+  Write-Host 'Other commands: console, fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, open-model, proxy auth, version, update'
   Write-Host ''
   Write-Host 'OpenRouter credential commands:'
   Write-Host '  airlock openrouter auth set-key     Store a key using a hidden prompt'
@@ -195,6 +234,15 @@ function Show-Models {
   Write-Host '  airlock openrouter models add ROUTE MODEL ENDPOINT [--yes]'
   Write-Host '  airlock openrouter models remove ROUTE [--yes]'
   Write-Host '  airlock openrouter models refresh [ROUTE] [--apply] [--yes]'
+  Write-Host ''
+  Write-Host 'Open-model registry commands (private values use a hidden prompt or --stdin):'
+  Write-Host '  airlock open-model endpoint list'
+  Write-Host '  airlock open-model endpoint add ID --max-concurrency N [--stdin] [--disabled]'
+  Write-Host '  airlock open-model endpoint remove ID [--yes]'
+  Write-Host '  airlock open-model list'
+  Write-Host '  airlock open-model add ROUTE ENDPOINT [--stdin] --context-window N --max-output-tokens N (--streaming|--no-streaming) --tools none|single|parallel [--tool-choice MODE ...] (--worker|--no-worker) [--disabled]'
+  Write-Host '  airlock open-model remove ROUTE [--yes]'
+  Write-Host '  airlock open-model check ROUTE'
   Write-Host ''
   Write-Host 'Proxy login commands:'
   Write-Host '  airlock proxy auth status          Check Codex OAuth in Airlock''s selected proxy directory'
@@ -241,6 +289,9 @@ function Show-Models {
   Write-Host '  airlock hybrid opus              # explicit hybrid root'
   Write-Host '  airlock opr kimi-k3 -r           # exact OpenRouter-only root and resume'
   Write-Host '  airlock opr                      # interactive OpenRouter route picker'
+  Write-Host '  airlock om my-local-route        # exact local open-model-only root'
+  Write-Host '  airlock hybrid om:my-local-route # that local open model drives a hybrid session'
+  Write-Host '  airlock console --no-open           # foreground console without opening a browser'
   Write-Host '  airlock access refresh'
   Write-Host ''
   Write-Host 'Inside a session:'
@@ -464,8 +515,92 @@ function Test-OpenRouterRouteEnabled {
   if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) { return $false }
   $python = Resolve-Python
   if (-not $python) { return $false }
-  & $python $AccessHelper 'openrouter-resolve' $Route *> $null
-  return ($LASTEXITCODE -eq 0)
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    # Windows PowerShell 5 turns a native process's redirected stderr into an
+    # ErrorRecord. This is an expected negative probe, not a script failure.
+    $ErrorActionPreference = 'SilentlyContinue'
+    & $python $AccessHelper 'openrouter-resolve' $Route *> $null
+    $routeStatus = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
+  return ($routeStatus -eq 0)
+}
+
+function Test-OpenModelRouteRecord {
+  param([object]$Value, [string]$ExpectedRoute = '')
+  if ($null -eq $Value) { return $false }
+  foreach ($field in @('route', 'model')) {
+    $property = $Value.PSObject.Properties[$field]
+    if ($null -eq $property -or -not ($property.Value -is [string]) -or -not $property.Value) {
+      return $false
+    }
+  }
+  return (-not $ExpectedRoute -or [string]$Value.route -ceq $ExpectedRoute)
+}
+
+function Resolve-OpenModelRootRoute {
+  param([string]$Route)
+  $resolved = Invoke-AccessJson -PolicyArguments @('openmodel-resolve', $Route)
+  if (-not (Test-OpenModelRouteRecord -Value $resolved -ExpectedRoute $Route)) {
+    [Console]::Error.WriteLine('airlock: local open-model route resolver returned an invalid result.')
+    exit 1
+  }
+  return $resolved
+}
+
+function Test-OpenModelRouteEnabled {
+  # Non-exiting registry probe used before committing to a route-shaped hybrid
+  # candidate. Returns $true only when openmodel-resolve accepts the route.
+  param([string]$Route)
+  if (-not (Test-Path -LiteralPath $AccessHelper -PathType Leaf)) { return $false }
+  $python = Resolve-Python
+  if (-not $python) { return $false }
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    # As above, a rejected route is ordinary probe output under Windows
+    # PowerShell 5 and must not become a terminating NativeCommandError.
+    $ErrorActionPreference = 'SilentlyContinue'
+    & $python $AccessHelper 'openmodel-resolve' $Route *> $null
+    $routeStatus = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
+  return ($routeStatus -eq 0)
+}
+
+function Select-OpenModelRootRoute {
+  $interactive = [Environment]::UserInteractive
+  try {
+    $interactive = $interactive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+  } catch { }
+  if (-not $interactive) {
+    [Console]::Error.WriteLine('airlock: a local open-model route is required outside an interactive terminal; use airlock om ROUTE.')
+    exit 2
+  }
+  $routes = @(Invoke-AccessJson -PolicyArguments @('openmodel-routes'))
+  foreach ($route in $routes) {
+    if (-not (Test-OpenModelRouteRecord -Value $route)) {
+      [Console]::Error.WriteLine('airlock: local open-model route list returned an invalid result.')
+      exit 1
+    }
+  }
+  if ($routes.Count -eq 0) {
+    [Console]::Error.WriteLine('airlock: no enabled local open-model routes are available; add one with airlock open-model add.')
+    exit 2
+  }
+  Write-Host 'Choose the exact local open-model root route:'
+  for ($index = 0; $index -lt $routes.Count; $index++) {
+    Write-Host ("  {0}) {1}" -f ($index + 1), $routes[$index].route)
+  }
+  $selection = Read-Host "Selection [1-$($routes.Count)]"
+  $selectedIndex = 0
+  if (-not [int]::TryParse($selection, [ref]$selectedIndex) -or $selectedIndex -lt 1 -or $selectedIndex -gt $routes.Count) {
+    [Console]::Error.WriteLine('airlock: invalid local open-model route selection.')
+    exit 2
+  }
+  return [string]$routes[$selectedIndex - 1].route
 }
 
 function Resolve-AutoHybridRoot {
@@ -539,6 +674,279 @@ function Select-OpenRouterRootRoute {
   return [string]$routes[$selectedIndex - 1].route
 }
 
+function Show-ConsoleUsage {
+  Write-Host 'Usage: airlock console [--port N] [--no-open] [--scan] [--once]'
+  Write-Host ''
+  Write-Host 'Options:'
+  Write-Host '  --port N    Listen on 127.0.0.1:N (default 4783)'
+  Write-Host '  --no-open   Do not open the platform browser'
+  Write-Host '  --scan      Include bounded process-table fallback discovery'
+  Write-Host '  --once      Print one JSON overview and exit without opening a browser'
+  Write-Host '  -h, --help  Show this help'
+}
+
+function ConvertTo-WindowsCommandLineArgument {
+  param([AllowEmptyString()][string]$Argument)
+  if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') { return $Argument }
+  $builder = New-Object Text.StringBuilder
+  $null = $builder.Append('"')
+  $backslashes = 0
+  foreach ($character in $Argument.ToCharArray()) {
+    if ($character -eq '\') {
+      $backslashes++
+      continue
+    }
+    if ($character -eq '"') {
+      if ($backslashes -gt 0) {
+        $null = $builder.Append((('\' * (2 * $backslashes + 1)) -join ''))
+      } else {
+        $null = $builder.Append('\')
+      }
+      $null = $builder.Append('"')
+      $backslashes = 0
+      continue
+    }
+    if ($backslashes -gt 0) {
+      $null = $builder.Append((('\' * $backslashes) -join ''))
+      $backslashes = 0
+    }
+    $null = $builder.Append($character)
+  }
+  if ($backslashes -gt 0) {
+    $null = $builder.Append((('\' * (2 * $backslashes)) -join ''))
+  }
+  $null = $builder.Append('"')
+  return $builder.ToString()
+}
+
+function Get-ExistingAirlockConsoleUrl {
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$ErrorText)
+  $prefix = 'airlock-console: console already running at '
+  if (-not $ErrorText.StartsWith($prefix)) { return $null }
+  $url = $ErrorText.Substring($prefix.Length)
+  if ($url -notmatch '^http://127\.0\.0\.1:([1-9][0-9]{0,4})$') { return $null }
+  $port = [int]$Matches[1]
+  if ($port -gt 65535) { return $null }
+  return $url
+}
+
+function Test-AirlockConsoleEndpoint {
+  param([Parameter(Mandatory)][string]$Url)
+  $response = $null
+  $reader = $null
+  try {
+    $request = [Net.HttpWebRequest]::Create("$Url/healthz")
+    $request.Method = 'GET'
+    $request.Timeout = 250
+    $request.ReadWriteTimeout = 250
+    $request.Proxy = $null
+    $response = [Net.HttpWebResponse]$request.GetResponse()
+    if ([int]$response.StatusCode -ne 200) { return $false }
+    $server = [string]$response.Headers['Server']
+    if (-not $server.StartsWith('AirlockConsole')) { return $false }
+    $reader = New-Object IO.StreamReader($response.GetResponseStream())
+    $body = $reader.ReadToEnd()
+    if ($body.Length -gt 4096) { return $false }
+    $payload = $body | ConvertFrom-Json -ErrorAction Stop
+    return $payload.ok -eq $true
+  } catch {
+    return $false
+  } finally {
+    if ($reader) { $reader.Dispose() }
+    if ($response) { $response.Dispose() }
+  }
+}
+
+function Open-AirlockConsoleBrowser {
+  param([Parameter(Mandatory)][string]$Url)
+  try {
+    Start-Process -FilePath $Url | Out-Null
+  } catch {
+    [Console]::Error.WriteLine('airlock console: the platform browser could not be opened.')
+  }
+}
+
+function Invoke-AirlockConsole {
+  param([string[]]$ConsoleArguments)
+  $portText = '4783'
+  $noOpen = $false
+  $scan = $false
+  $once = $false
+  $index = 0
+  while ($index -lt $ConsoleArguments.Count) {
+    $option = $ConsoleArguments[$index]
+    switch -Wildcard ($option) {
+      '--port' {
+        if ($index + 1 -ge $ConsoleArguments.Count) {
+          [Console]::Error.WriteLine('airlock console: --port requires a value.')
+          return 2
+        }
+        $portText = $ConsoleArguments[$index + 1]
+        $index += 2
+        continue
+      }
+      '--port=*' {
+        $portText = $option.Substring('--port='.Length)
+        $index++
+        continue
+      }
+      '--no-open' { $noOpen = $true; $index++; continue }
+      '--scan' { $scan = $true; $index++; continue }
+      '--once' { $once = $true; $index++; continue }
+      '-h' { Show-ConsoleUsage; return 0 }
+      '--help' { Show-ConsoleUsage; return 0 }
+      default {
+        [Console]::Error.WriteLine("airlock console: unknown option: $option")
+        return 2
+      }
+    }
+  }
+  if ($portText -notmatch '^[1-9][0-9]{0,4}$') {
+    [Console]::Error.WriteLine('airlock console: --port must be an integer from 1 to 65535.')
+    return 2
+  }
+  $port = [int]$portText
+  if ($port -gt 65535) {
+    [Console]::Error.WriteLine('airlock console: --port must be an integer from 1 to 65535.')
+    return 2
+  }
+  if ((Test-ManagedBundle) -ne 0) { return 1 }
+  if (-not (Test-Path -LiteralPath $ConsoleHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed console helper is missing or unsafe: $ConsoleHelper")
+    return 1
+  }
+  $consoleItem = Get-Item -LiteralPath $ConsoleHelper -Force
+  if ($consoleItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    [Console]::Error.WriteLine("airlock: managed console helper is missing or unsafe: $ConsoleHelper")
+    return 1
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python 3 is required for Airlock Console.')
+    return 1
+  }
+
+  $managedSite = Join-Path $ManagedBinDir 'share\airlock\console'
+  $checkoutSite = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\console\dist'))
+  if ($env:AIRLOCK_CONSOLE_SITE) {
+    $site = $env:AIRLOCK_CONSOLE_SITE
+  } elseif (Test-Path -LiteralPath $managedSite) {
+    $site = $managedSite
+  } elseif (Test-Path -LiteralPath $checkoutSite -PathType Container) {
+    $site = $checkoutSite
+  } else {
+    $site = $managedSite
+  }
+  if (Test-Path -LiteralPath $site) {
+    $siteItem = Get-Item -LiteralPath $site -Force
+    if (-not $siteItem.PSIsContainer -or ($siteItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      [Console]::Error.WriteLine("airlock: Airlock Console site is unsafe: $site")
+      return 1
+    }
+  }
+  $helperArguments = @(
+    $ConsoleHelper,
+    '--port', [string]$port,
+    '--site', $site,
+    '--access-helper', $AccessHelper,
+    '--tools-helper', $ConsoleToolsHelper
+  )
+  if ($scan) { $helperArguments += '--scan' }
+  if ($once) { $helperArguments += '--once' }
+  if ($once) {
+    # The dispatcher evaluates this function inside exit (...), which captures
+    # success-stream output. Write helper output directly to stdout so --once
+    # remains observable while the function returns only its numeric status.
+    & $python @helperArguments | ForEach-Object {
+      [Console]::Out.WriteLine([string]$_)
+    }
+    return $LASTEXITCODE
+  }
+
+  $stderrPath = [IO.Path]::GetTempFileName()
+  $process = $null
+  try {
+    $nativeArguments = (($helperArguments | ForEach-Object {
+      ConvertTo-WindowsCommandLineArgument ([string]$_)
+    }) -join ' ')
+    $process = Start-Process -FilePath $python -ArgumentList $nativeArguments `
+      -NoNewWindow -PassThru -RedirectStandardError $stderrPath
+    # Windows PowerShell 5.1 can lose ExitCode when Start-Process has not
+    # opened its process handle before a short-lived helper exits.
+    $null = $process.Handle
+  } catch {
+    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    [Console]::Error.WriteLine('airlock console: the console helper could not be started.')
+    return 1
+  }
+  $url = "http://127.0.0.1:$port"
+  try {
+    $ready = $false
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+      if ($process.HasExited) { break }
+      if (Test-AirlockConsoleEndpoint -Url $url) {
+        $ready = $true
+        break
+      }
+      Start-Sleep -Milliseconds 50
+    }
+    if ($ready) {
+      Write-Host "Airlock Console: $url"
+      if (-not $noOpen) { Open-AirlockConsoleBrowser -Url $url }
+      while (-not $process.WaitForExit(250)) { }
+      $exitCode = $process.ExitCode
+      $stderrText = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+        [IO.File]::ReadAllText($stderrPath)
+      } else { '' }
+      $trimmedError = $stderrText.TrimEnd([char[]]@("`r", "`n"))
+      $existingUrl = Get-ExistingAirlockConsoleUrl -ErrorText $trimmedError
+      if ($exitCode -eq 2 -and $existingUrl) {
+        return 0
+      }
+      if ($stderrText) { [Console]::Error.Write($stderrText) }
+      return $exitCode
+    }
+
+    if (-not $process.HasExited) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+    $stderrText = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+      [IO.File]::ReadAllText($stderrPath)
+    } else { '' }
+    $trimmedError = $stderrText.TrimEnd([char[]]@("`r", "`n"))
+    $existingUrl = Get-ExistingAirlockConsoleUrl -ErrorText $trimmedError
+    if ($exitCode -eq 2 -and $existingUrl) {
+      Write-Host "Airlock Console: $existingUrl"
+      if (-not $noOpen) { Open-AirlockConsoleBrowser -Url $existingUrl }
+      return 0
+    }
+    if ($stderrText) { [Console]::Error.Write($stderrText) }
+    if ($exitCode -eq 0) {
+      [Console]::Error.WriteLine('airlock console: helper exited before its loopback health check passed.')
+      return 1
+    }
+    return $exitCode
+  } finally {
+    if ($process) {
+      try {
+        if (-not $process.HasExited) {
+          # Ctrl+C reaches both this launcher and the Console helper because
+          # they share the native console. Give Python's cleanup path time to
+          # remove its address marker before forced termination is the fallback.
+          if (-not $process.WaitForExit(2000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+        }
+      } catch { }
+      try { $process.WaitForExit() } catch { }
+      $process.Dispose()
+    }
+    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Invoke-OpenRouterAuth {
   param([string[]]$AuthArguments, [ref]$Result)
   $Result.Value = 1
@@ -581,6 +989,27 @@ function Invoke-OpenRouterModels {
   $Result.Value = $LASTEXITCODE
 }
 
+function Invoke-OpenModelRegistry {
+  param([string[]]$ModelArguments, [ref]$Result)
+  $Result.Value = 1
+  if (-not (Test-Path -LiteralPath $OpenModelHelper -PathType Leaf)) {
+    [Console]::Error.WriteLine("airlock: managed open-model registry helper is missing: $OpenModelHelper")
+    return
+  }
+  $helperItem = Get-Item -LiteralPath $OpenModelHelper
+  if (($helperItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    [Console]::Error.WriteLine("airlock: managed open-model registry helper is unsafe: $OpenModelHelper")
+    return
+  }
+  $python = Resolve-Python
+  if (-not $python) {
+    [Console]::Error.WriteLine('airlock: Python is required for local open-model registry management.')
+    return
+  }
+  & $python $OpenModelHelper --registry $OpenModelRegistryFile @ModelArguments
+  $Result.Value = $LASTEXITCODE
+}
+
 function Test-FastRootModel {
   param([string]$Model, [switch]$Ephemeral)
   $route = if ($Model -eq 'gpt-5.6-sol-fast') {
@@ -608,10 +1037,15 @@ function Test-ManagedBundle {
     '--component', "bin/airlock.cmd=$(Join-Path $PSScriptRoot 'airlock.cmd')",
     '--component', "bin/airlock.ps1=$(Join-Path $PSScriptRoot 'airlock.ps1')",
     '--component', "bin/airlock-access.py=$AccessHelper",
+    '--component', "bin/airlock_console.py=$ConsoleHelper",
+    '--component', "bin/airlock_console_tools.py=$ConsoleToolsHelper",
+    '--component', "bin/airlock_console_history.py=$ConsoleHistoryHelper",
     '--component', "bin/airlock_policy.py=$PolicyHelper",
     '--component', "bin/airlock_openrouter_auth.py=$OpenRouterAuthHelper",
     '--component', "bin/airlock_openrouter_presets.py=$OpenRouterPresetsHelper",
     '--component', "bin/airlock_openrouter_models.py=$OpenRouterModelsHelper",
+    '--component', "bin/airlock_openmodel.py=$OpenModelHelper",
+    '--component', "bin/airlock_openmodel_adapter.py=$OpenModelAdapterHelper",
     '--component', "bin/airlock-update.py=$UpdateHelper",
     '--component', "bin/airlock-router.py=$RouterHelper",
     '--component', "bin/airlock-hybrid.py=$(Join-Path $ManagedBinDir 'airlock-hybrid.py')",
@@ -625,6 +1059,7 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/skills/usage/SKILL.md=$(Join-Path $PluginDir 'skills\usage\SKILL.md')",
     '--component', "plugins/airlock/skills/airlock-fast/SKILL.md=$(Join-Path $PluginDir 'skills\airlock-fast\SKILL.md')",
     '--component', "plugins/airlock/mcp-server/airlock_web_tools.py=$(Join-Path $PluginDir 'mcp-server\airlock_web_tools.py')",
+    '--component', "plugins/airlock/mcp-server/airlock_console_mcp.py=$ConsoleMcpHelper",
     '--component', "plugins/airlock/scripts/fast-session-end.sh=$(Join-Path $PluginDir 'scripts\fast-session-end.sh')",
     '--component', "plugins/airlock/scripts/fast-session-end.py=$(Join-Path $PluginDir 'scripts\fast-session-end.py')",
     '--component', "plugins/airlock/scripts/router-session-end.sh=$(Join-Path $PluginDir 'scripts\router-session-end.sh')",
@@ -747,12 +1182,14 @@ function Set-OpenAIEnvironment {
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_SONNET_MODEL' $Model
   Set-GptEffortCapabilities 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $SmallFast
   Set-GptEffortCapabilities 'ANTHROPIC_CUSTOM_MODEL_OPTION' $Model
-  # grok-4.6 is documented at 500000. Declare that hard limit and compact at
-  # 80% so the summary request still fits. Other OpenAI and Grok roots keep
-  # the conservative fallback unless the user overrides it, and any inherited
-  # value is dropped so it can never silently cap this session's workers.
-  if ($Model -eq 'grok-4.6') {
-    $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = '500000'
+  # grok-4.6 is documented at 500000 and gpt-6-astra at 1050000 total with
+  # 922000 of input, which is the ceiling a request must fit. Declare that
+  # hard limit and compact at 80% so the summary request still fits. Other
+  # OpenAI and Grok roots keep the conservative fallback unless the user
+  # overrides it, and any inherited value is dropped so it can never silently
+  # cap this session's workers. Airlock has not proved the Astra window live.
+  if ($DeclaredContextLimits.ContainsKey($Model)) {
+    $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = $DeclaredContextLimits[$Model][0]
   } else {
     Remove-Item Env:\CLAUDE_CODE_MAX_CONTEXT_TOKENS -ErrorAction SilentlyContinue
   }
@@ -762,8 +1199,8 @@ function Set-OpenAIEnvironment {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   } elseif ($ContextWin -eq 'auto') {
     Remove-Item Env:\CLAUDE_CODE_AUTO_COMPACT_WINDOW -ErrorAction SilentlyContinue
-  } elseif ($Model -eq 'grok-4.6') {
-    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000'
+  } elseif ($DeclaredContextLimits.ContainsKey($Model)) {
+    $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $DeclaredContextLimits[$Model][1]
   } else {
     $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWin
   }
@@ -780,19 +1217,40 @@ function Clear-ProxyEnvironment {
 
 function Get-ExplicitModel {
   param([string[]]$ChildArguments)
+  $model = $null
+  $selectorCount = 0
   for ($i = 0; $i -lt $ChildArguments.Count; $i++) {
-    if ($ChildArguments[$i] -eq '--model') {
-      if ($i + 1 -ge $ChildArguments.Count) {
-        Write-Error 'airlock: --model requires a value.'
+    $argument = [string]$ChildArguments[$i]
+    if ($argument -eq '--') { break }
+    if ($argument -in @('--model', '-m')) {
+      if ($i + 1 -ge $ChildArguments.Count -or -not [string]$ChildArguments[$i + 1]) {
+        [Console]::Error.WriteLine("airlock: $argument requires a value.")
         exit 2
       }
-      return $ChildArguments[$i + 1]
+      $selectorCount++
+      if ($selectorCount -gt 1) {
+        [Console]::Error.WriteLine('airlock: --model or -m may be provided only once.')
+        exit 2
+      }
+      $model = [string]$ChildArguments[$i + 1]
+      $i++
+      continue
     }
-    if ($ChildArguments[$i] -like '--model=*') {
-      return $ChildArguments[$i].Substring('--model='.Length)
+    if ($argument -like '--model=*' -or $argument -like '-m=*') {
+      $value = $argument.Substring($argument.IndexOf('=') + 1)
+      if (-not $value) {
+        [Console]::Error.WriteLine("airlock: $($argument.Split('=')[0]) requires a value.")
+        exit 2
+      }
+      $selectorCount++
+      if ($selectorCount -gt 1) {
+        [Console]::Error.WriteLine('airlock: --model or -m may be provided only once.')
+        exit 2
+      }
+      $model = $value
     }
   }
-  return $null
+  return $model
 }
 
 function Resolve-GrokAlias {
@@ -884,7 +1342,8 @@ function Invoke-AirlockSession {
     [string]$RootModel,
     [string]$RootName,
     [string[]]$ChildArguments,
-    [string]$OpenRouterRootRoute = ''
+    [string]$OpenRouterRootRoute = '',
+    [string]$OpenModelRootRoute = ''
   )
 
   if ($Profile -eq 'openrouter-pure') {
@@ -897,7 +1356,7 @@ function Invoke-AirlockSession {
       exit 2
     }
     foreach ($argument in $ChildArguments) {
-      if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+      if ($argument -in @('--model', '-m') -or $argument -like '--model=*' -or $argument -like '-m=*') {
         [Console]::Error.WriteLine('airlock: OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded.')
         exit 2
       }
@@ -913,6 +1372,35 @@ function Invoke-AirlockSession {
     }
   } elseif ($OpenRouterRootRoute) {
     [Console]::Error.WriteLine('airlock: an OpenRouter root route is valid only for openrouter-pure or hybrid-openrouter-root.')
+    exit 2
+  }
+
+  if ($Profile -eq 'openmodel-pure') {
+    if (-not $OpenModelRootRoute) {
+      [Console]::Error.WriteLine('airlock: openmodel-pure requires an exact local open-model root route.')
+      exit 2
+    }
+    if ($RootModel -or $RootName) {
+      [Console]::Error.WriteLine('airlock: the local open-model root identity must be derived by the managed bridge.')
+      exit 2
+    }
+    foreach ($argument in $ChildArguments) {
+      if ($argument -in @('--model', '-m') -or $argument -like '--model=*' -or $argument -like '-m=*') {
+        [Console]::Error.WriteLine('airlock: local open-model roots are selected by exact registry route; --model and -m cannot be forwarded.')
+        exit 2
+      }
+    }
+  } elseif ($Profile -eq 'hybrid-openmodel-root') {
+    if (-not $OpenModelRootRoute) {
+      [Console]::Error.WriteLine('airlock: hybrid-openmodel-root requires an exact local open-model root route.')
+      exit 2
+    }
+    if ($RootModel -or $RootName) {
+      [Console]::Error.WriteLine('airlock: the local open-model root identity must be derived by the managed bridge.')
+      exit 2
+    }
+  } elseif ($OpenModelRootRoute) {
+    [Console]::Error.WriteLine('airlock: a local open-model root route is valid only for openmodel-pure or hybrid-openmodel-root.')
     exit 2
   }
 
@@ -973,24 +1461,31 @@ function Invoke-AirlockSession {
   $transitionChannel = ''
   $transitionNonce = ''
   $launchCwd = [IO.Path]::GetFullPath((Get-Location).Path)
-  $transitionRaw = @(& $pythonBin $AccessHelper 'fast-transition-create' '--launcher-pid' ([string]$PID) '--cwd' $launchCwd)
-  if ($LASTEXITCODE -ne 0) {
+  $localOpenModelProfile = $Profile -in @('openmodel-pure', 'hybrid-openmodel-root')
+  if (-not $localOpenModelProfile) {
+    $transitionRaw = @(& $pythonBin $AccessHelper 'fast-transition-create' '--launcher-pid' ([string]$PID) '--cwd' $launchCwd)
+    if ($LASTEXITCODE -ne 0) {
+      Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
+      exit $LASTEXITCODE
+    }
+    $transitionLine = $transitionRaw -join "`n"
+    $transitionParts = $transitionLine -split "`t", -1
+    if ($transitionParts.Count -ne 2 -or -not $transitionParts[0] -or -not $transitionParts[1] -or $transitionLine.Contains("`n")) {
+      Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
+      [Console]::Error.WriteLine('airlock: Fast handoff helper returned invalid channel metadata.')
+      exit 1
+    }
+    $transitionChannel = [string]$transitionParts[0]
+    $transitionNonce = [string]$transitionParts[1]
+    $env:AIRLOCK_FAST_TRANSITION_CHANNEL = $transitionChannel
+    $env:AIRLOCK_FAST_TRANSITION_NONCE = $transitionNonce
+  } else {
+    # Local routes are explicit-only and can never be selected by Fast handoff.
     Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
-    exit $LASTEXITCODE
   }
-  $transitionLine = $transitionRaw -join "`n"
-  $transitionParts = $transitionLine -split "`t", -1
-  if ($transitionParts.Count -ne 2 -or -not $transitionParts[0] -or -not $transitionParts[1] -or $transitionLine.Contains("`n")) {
-    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_CHANNEL' -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath 'Env:AIRLOCK_FAST_TRANSITION_NONCE' -ErrorAction SilentlyContinue
-    [Console]::Error.WriteLine('airlock: Fast handoff helper returned invalid channel metadata.')
-    exit 1
-  }
-  $transitionChannel = [string]$transitionParts[0]
-  $transitionNonce = [string]$transitionParts[1]
-  $env:AIRLOCK_FAST_TRANSITION_CHANNEL = $transitionChannel
-  $env:AIRLOCK_FAST_TRANSITION_NONCE = $transitionNonce
   $sessionFastMode = Get-SessionFastMode -RootModel $RootModel
   $launchRequest = [ordered]@{
     profile = $Profile
@@ -998,13 +1493,16 @@ function Invoke-AirlockSession {
     catalog_files = $catalogFiles
     plugin_dir = [IO.Path]::GetFullPath($PluginDir)
     router_helper = [IO.Path]::GetFullPath($RouterHelper)
+    workdir = [string]$launchCwd
     context_window = [string]$ContextWin
     force_context_window = [bool]$ExplicitContextWin
     max_agents = [string]$MaxAgents
     fast_mode = [string]$sessionFastMode
-    fast_transition_launcher_pid = [int64]$PID
-    fast_transition_cwd = [string]$launchCwd
     args = [string[]]$ChildArguments
+  }
+  if (-not $localOpenModelProfile) {
+    $launchRequest['fast_transition_launcher_pid'] = [int64]$PID
+    $launchRequest['fast_transition_cwd'] = [string]$launchCwd
   }
   if ($Profile -eq 'openrouter-pure') {
     $launchRequest['openrouter_root_route'] = [string]$OpenRouterRootRoute
@@ -1013,6 +1511,14 @@ function Invoke-AirlockSession {
     # router refuses to start without a subscription endpoint for them. The
     # root identity itself stays bridge-derived from the exact route.
     $launchRequest['openrouter_root_route'] = [string]$OpenRouterRootRoute
+    $launchRequest['proxy_url'] = [string]$ProxyUrl
+  } elseif ($Profile -eq 'openmodel-pure') {
+    $launchRequest['openmodel_root_route'] = [string]$OpenModelRootRoute
+  } elseif ($Profile -eq 'hybrid-openmodel-root') {
+    # Hybrid open-model retains the existing mixed non-local worker pool, so
+    # the router still needs a subscription endpoint for GPT/Grok routes. The
+    # root identity itself stays bridge-derived from the exact route.
+    $launchRequest['openmodel_root_route'] = [string]$OpenModelRootRoute
     $launchRequest['proxy_url'] = [string]$ProxyUrl
   } else {
     $launchRequest['proxy_url'] = [string]$ProxyUrl
@@ -1057,16 +1563,25 @@ function Select-HybridRoot {
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
   Write-Host '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)'
   Write-Host '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)'
-  Write-Host ' 10) An exact OpenRouter registry route'
-  $selection = Read-Host 'Selection [1-10]'
-  if ($selection -eq '10') {
+  Write-Host ' 10) GPT-6 Astra (gpt-6-astra; premium usage)'
+  Write-Host ' 11) An exact OpenRouter registry route'
+  Write-Host ' 12) An exact local open-model registry route'
+  $selection = Read-Host 'Selection [1-12]'
+  if ($selection -eq '11') {
     $route = Select-OpenRouterRootRoute
     $record = Resolve-OpenRouterRootRoute -Route $route
     $script:HybridSelectedRoute = [string]$record.route
     $script:HybridSelectedModel = [string]$record.model
     return $null
   }
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer' }
+  if ($selection -eq '12') {
+    $route = Select-OpenModelRootRoute
+    $record = Resolve-OpenModelRootRoute -Route $route
+    $script:HybridSelectedOpenModelRoute = [string]$record.route
+    $script:HybridSelectedOpenModelModel = [string]$record.model
+    return $null
+  }
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
@@ -1080,6 +1595,14 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'orp') {
   [Console]::Error.WriteLine("airlock: command 'orp' was renamed to 'opr'; use airlock opr.")
   exit 2
 }
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'console') {
+  $consoleArguments = @()
+  if ($Arguments.Count -gt 1) {
+    $consoleArguments = @($Arguments[1..($Arguments.Count - 1)])
+  }
+  exit (Invoke-AirlockConsole -ConsoleArguments $consoleArguments)
+}
+
 # Parse the user-owned catalog before any saved-model probes. The helper emits
 # models[index] diagnostics for malformed entries and never changes the file.
 Import-CustomModels
@@ -1115,6 +1638,7 @@ $DefaultOpenAIModel = $DefaultOpenAIAlias
 # the alias tables; the resolved alias stays cached for the hybrid branch.
 $script:ResolvedAutoAlias = $null
 $script:HybridSelectedRoute = $null
+$script:HybridSelectedOpenModelRoute = $null
 if ($DefaultHybridModel -eq 'auto') {
   $null = Resolve-AutoHybridRoot
 } else {
@@ -1125,11 +1649,11 @@ if ($DefaultHybridModel -eq 'auto') {
   )
   if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and
       -not $customOpenRouterDefault -and
-      $hybridOpenAIAlias -notin @('sol', 'terra', 'luna')) {
+      $hybridOpenAIAlias -notin @('astra', 'sol', 'terra', 'luna')) {
     [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
     exit 2
   }
-  if ($hybridOpenAIAlias -in @('sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
+  if ($hybridOpenAIAlias -in @('astra', 'sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 }
 $DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
 if (-not $DefaultBgAlias) {
@@ -1138,8 +1662,8 @@ if (-not $DefaultBgAlias) {
 }
 $DefaultBgModel = $DefaultBgAlias
 $ExplicitCommands = @(
-  'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'proxy', 'models', '--models', 'config', '--config',
-  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'sol', 'sol-fast', 'terra',
+  'console', 'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'om', 'open-model', 'proxy', 'models', '--models', 'config', '--config',
+  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'astra', 'sol', 'sol-fast', 'terra',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
 if ($DefaultProfile -eq 'grok') {
@@ -1369,18 +1893,63 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'opr') {
   }
   $null = Resolve-OpenRouterRootRoute -Route $openRouterRootRoute
   foreach ($argument in $oprArguments) {
-    if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+    if ($argument -in @('--model', '-m') -or $argument -like '--model=*' -or $argument -like '-m=*') {
       [Console]::Error.WriteLine('airlock: OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded.')
       exit 2
     }
   }
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
   # Every other root seeds the session effort here. Without it the Fast
   # transition binding has no managed effort to validate and the launch fails.
   $oprArguments = Add-DefaultEffort $oprArguments $MainEffort
   Invoke-AirlockSession 'openrouter-pure' '' '' $oprArguments $openRouterRootRoute
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'om') {
+  $omArguments = @()
+  if ($Arguments.Count -gt 1) {
+    $omArguments = @($Arguments[1..($Arguments.Count - 1)])
+  }
+  if ($omArguments.Count -gt 0 -and $omArguments[0] -in @('--help', '-h')) {
+    Write-Host 'Usage: airlock om [ROUTE] [Claude arguments...]'
+    Write-Host ''
+    Write-Host 'Start a local open-model-only session on one exact enabled registry route.'
+    Write-Host 'Omit ROUTE in an interactive terminal to choose from the offline registry.'
+    Write-Host 'Use airlock open-model to manage the loopback registry.'
+    return
+  }
+  $openModelRootRoute = ''
+  if ($omArguments.Count -gt 0 -and $omArguments[0] -notlike '-*') {
+    $openModelRootRoute = [string]$omArguments[0]
+    $omArguments = if ($omArguments.Count -gt 1) { @($omArguments[1..($omArguments.Count - 1)]) } else { @() }
+  } else {
+    $openModelRootRoute = Select-OpenModelRootRoute
+  }
+  $null = Resolve-OpenModelRootRoute -Route $openModelRootRoute
+  foreach ($argument in $omArguments) {
+    if ($argument -in @('--model', '-m') -or $argument -like '--model=*' -or $argument -like '-m=*') {
+      [Console]::Error.WriteLine('airlock: local open-model roots are selected by exact registry route; --model and -m cannot be forwarded.')
+      exit 2
+    }
+  }
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
+    Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
+  }
+  # No Add-DefaultEffort here on purpose: the loopback adapter's
+  # translate_request() accepts no thinking/reasoning/effort field, so this
+  # root never advertises effort capabilities in the first place. The exact
+  # wire model itself is resolved server-side from the registry route.
+  Invoke-AirlockSession 'openmodel-pure' '' '' $omArguments '' $openModelRootRoute
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'open-model') {
+  $openModelRest = @()
+  if ($Arguments.Count -gt 1) { $openModelRest = @($Arguments[1..($Arguments.Count - 1)]) }
+  $openModelExitCode = 1
+  Invoke-OpenModelRegistry -ModelArguments $openModelRest -Result ([ref]$openModelExitCode)
+  exit $openModelExitCode
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'proxy') {
@@ -1438,7 +2007,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'grok') {
   # them off, because the user asked for this provider by name.
   if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
   Set-OpenAIEnvironment $grokModel $grokName 'Grok subscription'
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
   $grokCmdArgs = @('--model', $grokModel)
@@ -1461,6 +2030,19 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     if ($hybridCandidate -eq 'auto') {
       # Reserved value: resolve under the local access policy, never an alias.
       $rootAlias = 'auto'
+    } elseif ($hybridCandidate -like 'om:*') {
+      # om: is the sole hybrid local-open-model namespace, checked before the
+      # generic route-shaped probe below so it is never ambiguous with an
+      # OpenRouter registry lookup.
+      $omHybridRoute = $hybridCandidate.Substring(3)
+      if (Test-OpenModelRouteEnabled -Route $omHybridRoute) {
+        $record = Resolve-OpenModelRootRoute -Route $omHybridRoute
+        $script:HybridSelectedOpenModelRoute = [string]$record.route
+        $script:HybridSelectedOpenModelModel = [string]$record.model
+      } else {
+        [Console]::Error.WriteLine("airlock: '$omHybridRoute' is not an enabled local open-model route.")
+        exit 2
+      }
     } elseif ($CustomOpenRouterRoutes.ContainsKey($hybridCandidate) -and
               [string]$CustomModelRecords[$hybridCandidate].id -ceq $hybridCandidate) {
       $customRoute = [string]$CustomOpenRouterRoutes[$hybridCandidate]
@@ -1476,9 +2058,11 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       $rootAlias = $hybridCandidate
     } else {
       $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
-      if ($hybridCandidateAlias -in @('sol', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
+      if ($hybridCandidateAlias -in @('astra', 'sol', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
     }
-    if (-not $rootAlias -and $hybridCandidate -and $hybridCandidate -notlike '-*' -and
+    if (-not $rootAlias -and -not $script:HybridSelectedRoute -and
+        -not $script:HybridSelectedOpenModelRoute -and $hybridCandidate -and
+        $hybridCandidate -notlike '-*' -and
         $hybridCandidate -cmatch '^[a-z0-9]+([._:-][a-z0-9]+)*$') {
       # A route-shaped first word tries the OpenRouter registry before anything
       # else. Anything that cannot be a route slug (flags, prose) stays untouched.
@@ -1493,7 +2077,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
         exit 2
       }
     }
-    if ($rootAlias -or $script:HybridSelectedRoute) {
+    if ($rootAlias -or $script:HybridSelectedRoute -or $script:HybridSelectedOpenModelRoute) {
       if ($hybridArgs.Count -gt 1) { $hybridArgs = @($hybridArgs[1..($hybridArgs.Count - 1)]) } else { $hybridArgs = @() }
     }
   }
@@ -1501,8 +2085,9 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
   for ($i = 0; $i -lt $hybridArgs.Count; $i++) {
     if ($hybridArgs[$i] -eq '--model' -or $hybridArgs[$i] -eq '-m') {
       if ($i + 1 -lt $hybridArgs.Count) { $hybridArgs[$i + 1] = Normalize-OpenAIModelId $hybridArgs[$i + 1] }
-    } elseif ($hybridArgs[$i] -like '--model=*') {
-      $hybridArgs[$i] = '--model=' + (Normalize-OpenAIModelId $hybridArgs[$i].Substring('--model='.Length))
+    } elseif ($hybridArgs[$i] -like '--model=*' -or $hybridArgs[$i] -like '-m=*') {
+      $separator = $hybridArgs[$i].IndexOf('=')
+      $hybridArgs[$i] = $hybridArgs[$i].Substring(0, $separator + 1) + (Normalize-OpenAIModelId $hybridArgs[$i].Substring($separator + 1))
     }
   }
   $explicitModel = Get-ExplicitModel $hybridArgs
@@ -1519,7 +2104,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       }
     } elseif ($explicitModel -like 'claude-*') {
       # Native Claude exact IDs keep their existing launcher behavior.
-    } elseif (-not $rootAlias -and -not $script:HybridSelectedRoute) {
+    } elseif (-not $rootAlias -and -not $script:HybridSelectedRoute -and -not $script:HybridSelectedOpenModelRoute) {
       # A bare unrecognized ID may declare itself through models.json, but only
       # when nothing else has chosen the root; otherwise the provider and
       # OpenRouter mismatch checks below keep their exact messages.
@@ -1535,14 +2120,29 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       }
     }
   }
-  if (-not $script:HybridSelectedRoute -and -not $rootAlias -and -not $explicitModel) {
+  if (-not $script:HybridSelectedRoute -and -not $script:HybridSelectedOpenModelRoute -and -not $rootAlias -and -not $explicitModel) {
     $rootAlias = if ($chooseRoot) { Select-HybridRoot } else { $DefaultHybridModel }
   }
   if ($rootAlias -eq 'auto') {
     $rootAlias = Resolve-AutoHybridRoot
   }
 
-  if ($script:HybridSelectedRoute) {
+  if ($script:HybridSelectedOpenModelRoute) {
+    # A local open-model route is selected by exact registry slug. A
+    # forwarded --model may only restate the resolved root wire model;
+    # anything else would move root traffic off the selected route inside
+    # one argv.
+    $rootModel = $script:HybridSelectedOpenModelModel
+    $rootName = "local open-model $($script:HybridSelectedOpenModelRoute)"
+    $rootProvider = 'openmodel'
+    if ($explicitModel -and $explicitModel -ne $rootModel) {
+      [Console]::Error.WriteLine("airlock: forwarded --model disagrees with the selected local open-model root route ($rootModel).")
+      exit 2
+    }
+    if (-not $explicitModel) {
+      $hybridArgs = @('--model', $rootModel) + $hybridArgs
+    }
+  } elseif ($script:HybridSelectedRoute) {
     # An OpenRouter route is selected by exact registry slug. A forwarded
     # --model may only restate the resolved root model; anything else would
     # move root traffic off the selected route inside one argv.
@@ -1580,10 +2180,15 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       exit 2
     }
   }
-  $hybridArgs = Add-DefaultEffort $hybridArgs $MainEffort
+  if ($rootProvider -ne 'openmodel') {
+    $hybridArgs = Add-DefaultEffort $hybridArgs $MainEffort
+  }
+  # No default effort injection for an open-model root: the loopback
+  # adapter's translate_request() accepts no thinking/reasoning/effort field.
+  # An explicit user --effort still passes through unchanged.
 
   Start-ProxyIfNeeded
-  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID')) {
+  foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
   }
   if ($rootProvider -eq 'openrouter') {
@@ -1595,8 +2200,15 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     # the route travels.
     Invoke-AirlockSession 'hybrid-openrouter-root' '' '' $hybridArgs $script:HybridSelectedRoute
   }
+  if ($rootProvider -eq 'openmodel') {
+    $env:AIRLOCK_OPENMODEL_HYBRID = '1'
+    # Same rationale as the OpenRouter hybrid root above: only the exact
+    # registry route travels, and the bridge resolves the wire model itself.
+    Invoke-AirlockSession 'hybrid-openmodel-root' '' '' $hybridArgs '' $script:HybridSelectedOpenModelRoute
+  }
   if ($rootProvider -eq 'openai') {
     Test-FastRootModel $rootModel
+    Enable-ExplicitOpenAIRoot $rootModel
     $env:AIRLOCK_GPT_HYBRID = '1'
     Invoke-AirlockSession 'hybrid-openai-root' $rootModel $rootName $hybridArgs
   }
@@ -1720,7 +2332,7 @@ if ($Arguments.Count -gt 0) {
       if ($Arguments.Count -gt 1) {
         $rest = @($Arguments[1..($Arguments.Count - 1)])
         foreach ($argument in $rest) {
-          if ($argument -in @('--model', '-m') -or $argument -like '--model=*') {
+          if ($argument -in @('--model', '-m') -or $argument -like '--model=*' -or $argument -like '-m=*') {
             [Console]::Error.WriteLine("airlock: Fast uses the fixed gpt-5.6-sol-fast root; $argument cannot be forwarded.")
             exit 2
           }
@@ -1769,4 +2381,5 @@ Remove-Item -LiteralPath 'Env:AIRLOCK_GPT_HYBRID' -ErrorAction SilentlyContinue
 
 $cmdArgs = @('--model', $selected)
 $cmdArgs += Add-DefaultEffort $rest $effort
+Enable-ExplicitOpenAIRoot $selected
 Invoke-AirlockSession 'openai-pure' $selected $modelName $cmdArgs

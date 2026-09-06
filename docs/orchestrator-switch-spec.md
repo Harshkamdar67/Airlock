@@ -240,6 +240,7 @@ Airlock uses. Claude roots keep native sizing and must not receive the variable.
 | `claude-haiku-4-5-20251001` | 200,000 | leave native | leave native |
 | `gpt-5.6-*` | believed 272,000, unproven above 300,000 | 272,000 | 218,000 |
 | `grok-4.6` | documented 500,000 | 500,000 via `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | 400,000 |
+| `gpt-6-astra` | documented 922,000 input, 128,000 output, unproven by Airlock | 922,000 via `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | 736,000 |
 | `grok-4.5`, `grok-composer-2.5-fast` | unknown | 272,000 as the conservative fallback | 218,000 |
 | OpenRouter route | the pinned endpoint's context length | that value | `0.8 *` that value |
 

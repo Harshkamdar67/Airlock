@@ -1,0 +1,25 @@
+[
+  {
+    "id": "shp_pending_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "stealth/ox-alpha",
+    "reason": "Fable and its whole chain are cooling. Ox-alpha is ready and fits this 612k conversation.",
+    "allow_metered": true,
+    "created_by": "agent",
+    "created_at": "2026-09-05T09:00:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "pending",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": null,
+    "last_error": null
+  }
+]

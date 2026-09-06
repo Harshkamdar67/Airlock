@@ -1,0 +1,148 @@
+{
+  "generated_at": "2026-09-05T09:02:12Z",
+  "console_version": "0.1.0",
+  "sessions": [
+    {
+      "id": "r-2b77e0",
+      "state": "running",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-sonnet-5[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-sonnet-5[1m]",
+      "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\airlock-relay",
+      "project": "airlock-relay",
+      "started_at": "2026-09-05T07:00:00Z",
+      "last_activity_at": "2026-09-05T09:01:00Z",
+      "context": {
+        "input_tokens": 88210,
+        "window": 1000000
+      },
+      "workers": [],
+      "recent_handoffs": 0,
+      "url": "http://127.0.0.1:41880"
+    },
+    {
+      "id": "r-8f2c1a",
+      "state": "ended",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-fable-5-1[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-fable-5-1[1m]",
+      "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\claudex",
+      "project": "claudex",
+      "started_at": "2026-09-05T06:41:03Z",
+      "last_activity_at": "2026-09-05T08:58:40Z",
+      "context": {
+        "input_tokens": 612340,
+        "window": 1000000
+      },
+      "workers": [
+        {
+          "model": "gpt-5.6-luna",
+          "requests": 14
+        },
+        {
+          "model": "gpt-5.6-sol",
+          "requests": 3
+        }
+      ],
+      "recent_handoffs": 2,
+      "url": "http://127.0.0.1:39123"
+    }
+  ],
+  "routes": [
+    {
+      "model": "claude-fable-5-1[1m]",
+      "short_name": "fable",
+      "provider": "anthropic",
+      "category": "metered",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "claude-sonnet-5[1m]",
+      "short_name": "sonnet",
+      "provider": "anthropic",
+      "category": "included",
+      "metered": false,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "short_name": "sol",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "xhigh",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "short_name": "luna",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "grok-4.6",
+      "short_name": "grok",
+      "provider": "grok",
+      "category": "included",
+      "metered": false,
+      "context_window": 2000000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    }
+  ],
+  "headroom": [
+    {
+      "provider": "anthropic",
+      "window": "5h",
+      "used_percent": 100,
+      "resets_at": "2026-09-05T09:50:00Z",
+      "source": "status_line"
+    },
+    {
+      "provider": "openai",
+      "window": "5h",
+      "used_percent": 38,
+      "resets_at": "2026-09-05T12:15:00Z",
+      "source": "status_line"
+    },
+    {
+      "provider": "grok",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openrouter",
+      "window": "credits",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    }
+  ],
+  "attention": []
+}

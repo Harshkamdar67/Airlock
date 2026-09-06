@@ -24,11 +24,13 @@ SECRET_GUARD_SH = GUARD.parent / "secret-guard.sh"
 MARKER = "Extra usage authorized: yes"
 ROOT_MODELS = {
     "openrouter-pure": "anthropic/claude-sonnet-4.5",
+    "openmodel-pure": "openmodel/local-root",
     "openai-pure": "gpt-5.6-sol",
     "grok-pure": "grok-4.6",
     "hybrid-openai-root": "gpt-5.6-sol",
     "hybrid-anthropic-root": "claude-sonnet-5[1m]",
     "hybrid-grok-root": "grok-4.6",
+    "hybrid-openmodel-root": "openmodel/local-root",
 }
 FAMILY_VARIABLES = {
     "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
@@ -57,10 +59,12 @@ class AgentGuardTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.registry = self.root / "openrouter-registry.json"
+        self.openmodel_registry = self.root / "openmodel-registry.json"
         self.environment = {
             "AIRLOCK_CONFIG_FILE": str(self.root / "config"),
             "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
             "AIRLOCK_OPENROUTER_REGISTRY_FILE": str(self.registry),
+            "AIRLOCK_OPENMODEL_REGISTRY_FILE": str(self.openmodel_registry),
             "AIRLOCK_SESSION_RUNTIME_DIR": str(self.root / "runtime"),
             "AIRLOCK_ACCESS_GROK_AUTH": "1",
             "AIRLOCK_GROK_MODELS": "grok,composer",
@@ -107,6 +111,33 @@ class AgentGuardTests(unittest.TestCase):
             "models": entries,
         }), encoding="utf-8")
 
+    def write_openmodel_registry(self, *, worker: bool = True) -> None:
+        POLICY.write_openmodel_registry(self.openmodel_registry, {
+            "schema_version": 1,
+            "endpoints": [{
+                "id": "private-endpoint",
+                "base_url": "http://127.0.0.1:18096/v1",
+                "trust": "loopback",
+                "protocol": "openai-chat-completions-v1",
+                "auth": "none",
+                "max_concurrency": 1,
+                "enabled": True,
+            }],
+            "models": [{
+                "route": "local-root",
+                "endpoint": "private-endpoint",
+                "upstream_model": "synthetic-private-model",
+                "accepted_response_models": ["synthetic-private-model"],
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+                "streaming": True,
+                "tools": "single",
+                "tool_choice": ["auto"],
+                "worker": worker,
+                "enabled": True,
+            }],
+        })
+
     def session(
         self,
         profile: str,
@@ -114,12 +145,25 @@ class AgentGuardTests(unittest.TestCase):
         openrouter: bool = False,
         openrouter_root_route: str | None = None,
         include_other_openrouter: bool = False,
+        openmodel_worker: bool = True,
+        extra_claude_route: str | None = None,
+        extra_usage_policy: str | None = None,
     ) -> dict[str, object]:
         if openrouter:
             self.write_registry(include_other=include_other_openrouter)
         elif self.registry.exists():
             self.registry.unlink()
+        openmodel_root_route = None
+        if profile in {"openmodel-pure", "hybrid-openmodel-root"}:
+            self.write_openmodel_registry(worker=openmodel_worker)
+            openmodel_root_route = "local-root"
+        elif self.openmodel_registry.exists():
+            self.openmodel_registry.unlink()
         policy = ACCESS.load_policy()
+        if extra_claude_route is not None:
+            policy["providers"]["anthropic"]["models"][extra_claude_route]["access"] = "extra"
+        if extra_usage_policy is not None:
+            policy["policies"]["extra_usage"] = extra_usage_policy
         root_model = ROOT_MODELS[profile]
         path, digest = ACCESS.write_session_snapshot(
             policy,
@@ -127,14 +171,35 @@ class AgentGuardTests(unittest.TestCase):
             root_model,
             self.root / f"runtime-{profile}-{openrouter}",
             openrouter_root_route=openrouter_root_route,
+            openmodel_root_route=openmodel_root_route,
         )
         snapshot = POLICY.load_session_snapshot(path, digest)
+        route_options = {
+            "openrouter_root_route": openrouter_root_route,
+            "openmodel_root_route": openmodel_root_route,
+        }
+        permission_environment = {
+            "AIRLOCK_ALLOWED_AGENT_NAMES": ACCESS.session_route_field(
+                policy, profile, "agent-names", **route_options
+            ),
+            "AIRLOCK_ALLOWED_AGENT_MODELS": ACCESS.session_route_field(
+                policy, profile, "model-ids", **route_options
+            ),
+            "AIRLOCK_EXTRA_USAGE_AGENT_NAMES": ACCESS.session_route_field(
+                policy, profile, "extra-agent-names", **route_options
+            ),
+            "AIRLOCK_EXTRA_USAGE_AGENT_MODELS": ACCESS.session_route_field(
+                policy, profile, "extra-model-ids", **route_options
+            ),
+        }
         return {
             "policy": policy,
             "snapshot": snapshot,
             "path": path,
             "digest": digest,
             "openrouter_root_route": openrouter_root_route,
+            "openmodel_root_route": openmodel_root_route,
+            "permission_environment": permission_environment,
         }
 
     def rewrite_snapshot(self, session: dict[str, object], **changes: object) -> None:
@@ -175,19 +240,9 @@ class AgentGuardTests(unittest.TestCase):
         if session is not None:
             snapshot = session["snapshot"]
             policy = session["policy"]
-            agents = snapshot.agents
             environment.update({
                 "AIRLOCK_ACTIVE_PROFILE": snapshot.profile,
-                "AIRLOCK_ALLOWED_AGENT_NAMES": ",".join(sorted(agents)),
-                "AIRLOCK_ALLOWED_AGENT_MODELS": ",".join(sorted({
-                    agent.model for agent in agents.values()
-                })),
-                "AIRLOCK_EXTRA_USAGE_AGENT_NAMES": ",".join(sorted(
-                    name for name, agent in agents.items() if agent.extra_usage
-                )),
-                "AIRLOCK_EXTRA_USAGE_AGENT_MODELS": ",".join(sorted({
-                    agent.model for agent in agents.values() if agent.extra_usage
-                })),
+                **session["permission_environment"],
                 "AIRLOCK_ROOT_MODEL": snapshot.root_model,
                 "AIRLOCK_POLICY_HELPER": str(POLICY_PATH),
                 "AIRLOCK_SESSION_SNAPSHOT": str(session["path"]),
@@ -197,6 +252,7 @@ class AgentGuardTests(unittest.TestCase):
                 policy,
                 snapshot.profile,
                 openrouter_root_route=session.get("openrouter_root_route"),
+                openmodel_root_route=session.get("openmodel_root_route"),
             )
             for family, model in family_models.items():
                 environment[FAMILY_VARIABLES[family]] = model
@@ -204,10 +260,11 @@ class AgentGuardTests(unittest.TestCase):
                 policy,
                 snapshot.profile,
                 openrouter_root_route=session.get("openrouter_root_route"),
+                openmodel_root_route=session.get("openmodel_root_route"),
             )
             if discovery:
                 environment["AIRLOCK_DISCOVERY_MODEL"] = discovery
-            if snapshot.profile == "openrouter-pure":
+            if snapshot.profile in {"openrouter-pure", "openmodel-pure"}:
                 environment["ANTHROPIC_SMALL_FAST_MODEL"] = snapshot.root_model
         for variable, value in (environment_changes or {}).items():
             if value is None:
@@ -242,6 +299,60 @@ class AgentGuardTests(unittest.TestCase):
             GUARD_MODULE.MANAGED_PROTOCOL_VERSION,
             ACCESS.MANAGED_PROTOCOL_VERSION,
         )
+
+    def test_access_permission_models_match_the_signed_hybrid_openmodel_snapshot(self) -> None:
+        session = self.session("hybrid-openmodel-root")
+        snapshot_models = set(session["snapshot"].routes)
+        configured = session["permission_environment"][
+            "AIRLOCK_ALLOWED_AGENT_MODELS"
+        ]
+        permission_models = set(configured.split(",")) if configured else set()
+        self.assertTrue(any(model.endswith("[1m]") for model in permission_models))
+        self.assertIn("claude-opus-5", permission_models)
+        self.assertEqual(permission_models, snapshot_models)
+
+    def test_extra_usage_claude_declared_and_wire_aliases_share_authorization(self) -> None:
+        canonical = "claude-opus-5[1m]"
+        wire = "claude-opus-5"
+        ask = self.session(
+            "hybrid-openai-root",
+            extra_claude_route="opus",
+            extra_usage_policy="ask",
+        )
+        configured = ask["permission_environment"][
+            "AIRLOCK_EXTRA_USAGE_AGENT_MODELS"
+        ]
+        self.assertEqual(set(configured.split(",")), {canonical, wire})
+        for model in (canonical, wire):
+            with self.subTest(policy="ask", model=model, authorized=False):
+                self.assert_denied(self.invoke(ask, {
+                    "subagent_type": "Plan", "model": model, "prompt": "work",
+                }), "extra-usage")
+            with self.subTest(policy="ask", model=model, authorized=True):
+                self.assertIsNone(self.invoke(ask, {
+                    "subagent_type": "Plan", "model": model, "prompt": MARKER,
+                }))
+        self.assert_denied(self.invoke(ask, {
+            "subagent_type": "Plan",
+            "model": "claude-opus-5[2m]",
+            "prompt": MARKER,
+        }), "configured family alias")
+
+        never = self.session(
+            "hybrid-openai-root",
+            extra_claude_route="opus",
+            extra_usage_policy="never",
+        )
+        configured = never["permission_environment"][
+            "AIRLOCK_ALLOWED_AGENT_MODELS"
+        ]
+        permission_models = set(configured.split(",")) if configured else set()
+        self.assertTrue({canonical, wire}.isdisjoint(permission_models))
+        for model in (canonical, wire):
+            with self.subTest(policy="never", model=model):
+                self.assert_denied(self.invoke(never, {
+                    "subagent_type": "Plan", "model": model, "prompt": MARKER,
+                }), "configured family alias")
 
     def test_all_profiles_accept_their_exact_workers_and_builtins(self) -> None:
         for profile in ROOT_MODELS:
@@ -383,6 +494,77 @@ class AgentGuardTests(unittest.TestCase):
                     {"subagent_type": "Plan", "model": "sonnet"},
                     **options,
                 ), reason)
+
+    def test_openmodel_pure_maps_builtins_and_exact_worker_to_the_local_root(self) -> None:
+        session = self.session("openmodel-pure")
+        root = session["snapshot"].root_model
+        self.assertEqual(root, "openmodel/local-root")
+        self.assertEqual(
+            ACCESS.proxy_picker_models(
+                session["policy"],
+                "openmodel-pure",
+                openmodel_root_route="local-root",
+            ),
+            {family: root for family in FAMILY_VARIABLES},
+        )
+        for model in (*FAMILY_VARIABLES, root):
+            with self.subTest(model=model):
+                self.assertIsNone(self.invoke(
+                    session, {"subagent_type": "Plan", "model": model}
+                ))
+        self.assertIsNone(self.invoke(
+            session,
+            {"subagent_type": "airlock-om-local-root", "prompt": "work"},
+        ))
+        self.assert_denied(self.invoke(
+            session,
+            {
+                "subagent_type": "airlock-om-local-root",
+                "model": root,
+                "prompt": "work",
+            },
+        ), "caller model overrides")
+
+    def test_openmodel_pure_without_a_named_worker_still_allows_builtins(self) -> None:
+        session = self.session("openmodel-pure", openmodel_worker=False)
+        self.assertEqual(session["snapshot"].agents, {})
+        self.assertIsNone(self.invoke(
+            session, {"subagent_type": "Plan", "model": "haiku"}
+        ))
+        self.assertIsNone(self.invoke(session, {"subagent_type": "Explore"}))
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "airlock-om-local-root", "prompt": "work"},
+        ))
+
+    def test_hybrid_openmodel_root_keeps_local_models_out_of_family_aliases(self) -> None:
+        session = self.session("hybrid-openmodel-root")
+        root = session["snapshot"].root_model
+        self.assertIsNone(self.invoke(
+            session,
+            {"subagent_type": "airlock-om-local-root", "prompt": "work"},
+        ))
+        self.assertIsNone(self.invoke(
+            session, {"subagent_type": "Plan", "model": "haiku"}
+        ))
+        self.assert_denied(self.invoke(
+            session, {"subagent_type": "Plan", "model": root}
+        ), "configured family alias")
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "Plan", "model": "haiku"},
+            environment_changes={"AIRLOCK_ALLOWED_AGENT_MODELS": ""},
+        ), "permission set")
+
+    def test_openmodel_snapshot_tampering_fails_closed(self) -> None:
+        session = self.session("openmodel-pure")
+        agents = session["snapshot"].to_dict()["agents"]
+        agents["airlock-om-local-root"]["extra_usage"] = True
+        self.rewrite_snapshot(session, agents=agents)
+        self.assert_denied(self.invoke(
+            session,
+            {"subagent_type": "airlock-om-local-root", "prompt": MARKER},
+        ), "permission set")
 
     def test_hybrid_profiles_still_block_openrouter_family_aliases(self) -> None:
         session = self.session("hybrid-anthropic-root", openrouter=True)
@@ -584,12 +766,7 @@ class AgentGuardTests(unittest.TestCase):
         snapshot = session["snapshot"]
         environment.update({
             "AIRLOCK_ACTIVE_PROFILE": snapshot.profile,
-            "AIRLOCK_ALLOWED_AGENT_NAMES": ",".join(sorted(snapshot.agents)),
-            "AIRLOCK_ALLOWED_AGENT_MODELS": ",".join(sorted({
-                agent.model for agent in snapshot.agents.values()
-            })),
-            "AIRLOCK_EXTRA_USAGE_AGENT_NAMES": "",
-            "AIRLOCK_EXTRA_USAGE_AGENT_MODELS": "",
+            **session["permission_environment"],
             "AIRLOCK_ROOT_MODEL": snapshot.root_model,
             "AIRLOCK_POLICY_HELPER": str(POLICY_PATH),
             "AIRLOCK_SESSION_SNAPSHOT": str(session["path"]),

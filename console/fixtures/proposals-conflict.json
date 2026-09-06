@@ -1,0 +1,37 @@
+[
+  {
+    "id": "shp_conflicted_devfixture",
+    "kind": "session_handoff",
+    "session_id": "r-8f2c1a",
+    "operation": "pin",
+    "target_model": "gpt-5.6-sol",
+    "reason": "Move the session to Sol now that the Anthropic plan is cooling.",
+    "allow_metered": false,
+    "created_by": "agent",
+    "created_at": "2026-09-05T09:00:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 2,
+    "status": "conflicted",
+    "basis": {
+      "observed_at": "2026-09-05T09:00:00Z",
+      "active_model": "claude-fable-5-1[1m]",
+      "pinned_model": null,
+      "context_input_tokens": 612340,
+      "route_status": "ready"
+    },
+    "application": {
+      "attempts": 1,
+      "started_at": "2026-09-05T09:01:00Z",
+      "finished_at": "2026-09-05T09:01:02Z",
+      "router_instance_id": "r-8f2c1a",
+      "previous_pinned_model": null,
+      "pinned_model": "stealth/ox-alpha",
+      "changed": false,
+      "already_applied": false
+    },
+    "last_error": {
+      "code": "context_too_large",
+      "message": "Conversation does not fit the target window"
+    }
+  }
+]

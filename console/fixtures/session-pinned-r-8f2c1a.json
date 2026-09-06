@@ -1,0 +1,335 @@
+{
+  "id": "r-8f2c1a",
+  "state": "blocked",
+  "blocked_reason": "chain_exhausted",
+  "profile": "hybrid-anthropic-root",
+  "root_model": "claude-fable-5-1[1m]",
+  "root_provider": "anthropic",
+  "active_model": "stealth/ox-alpha",
+  "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\claudex",
+  "project": "claudex",
+  "started_at": "2026-09-05T06:41:03Z",
+  "last_activity_at": "2026-09-05T08:58:40Z",
+  "context": {
+    "input_tokens": 612340,
+    "window": 1000000
+  },
+  "workers": [
+    {
+      "model": "gpt-5.6-luna",
+      "requests": 14
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "requests": 3
+    }
+  ],
+  "recent_handoffs": 2,
+  "url": "http://127.0.0.1:39123",
+  "routes": [
+    {
+      "model": "claude-fable-5-1[1m]",
+      "short_name": "fable",
+      "provider": "anthropic",
+      "category": "metered",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "fits_context": true,
+      "sessions_using": [
+        "r-8f2c1a"
+      ]
+    },
+    {
+      "model": "claude-opus-5[1m]",
+      "short_name": "opus",
+      "provider": "anthropic",
+      "category": "included",
+      "metered": false,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "fits_context": true,
+      "sessions_using": []
+    },
+    {
+      "model": "claude-sonnet-5[1m]",
+      "short_name": "sonnet",
+      "provider": "anthropic",
+      "category": "included",
+      "metered": false,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "fits_context": true,
+      "sessions_using": [
+        "r-2b77e0"
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "short_name": "sol",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "xhigh",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "fits_context": false,
+      "sessions_using": [
+        "r-c91d44"
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "short_name": "terra",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "xhigh",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "fits_context": false,
+      "sessions_using": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "short_name": "luna",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "fits_context": false,
+      "sessions_using": []
+    },
+    {
+      "model": "grok-4.6",
+      "short_name": "grok",
+      "provider": "grok",
+      "category": "included",
+      "metered": false,
+      "context_window": 2000000,
+      "effort_ceiling": "high",
+      "status": "unavailable",
+      "cooldown_remaining_seconds": null,
+      "fits_context": true,
+      "sessions_using": []
+    },
+    {
+      "model": "stealth/ox-alpha",
+      "short_name": "ox-alpha",
+      "provider": "openrouter",
+      "category": "extra",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "fits_context": true,
+      "sessions_using": []
+    }
+  ],
+  "cooldowns": [
+    {
+      "scope": "provider",
+      "provider": "anthropic",
+      "remaining_seconds": 2890,
+      "until": "2026-09-05T09:50:22Z"
+    },
+    {
+      "scope": "model",
+      "model": "claude-fable-5-1[1m]",
+      "provider": "anthropic",
+      "remaining_seconds": 2890,
+      "until": "2026-09-05T09:50:22Z"
+    },
+    {
+      "scope": "model",
+      "model": "claude-opus-5[1m]",
+      "provider": "anthropic",
+      "remaining_seconds": 2890,
+      "until": "2026-09-05T09:50:22Z"
+    }
+  ],
+  "chains": {
+    "claude-fable-5-1[1m]": [
+      "claude-opus-5[1m]",
+      "gpt-5.6-sol",
+      "stealth/ox-alpha"
+    ],
+    "claude-opus-5[1m]": [
+      "gpt-5.6-sol",
+      "grok-4.6",
+      "stealth/ox-alpha"
+    ],
+    "gpt-5.6-sol": [
+      "gpt-5.6-terra",
+      "claude-opus-5[1m]",
+      "stealth/ox-alpha"
+    ],
+    "gpt-5.6-luna": [
+      "grok-composer-2.5-fast",
+      "claude-haiku-4-5-20251001"
+    ]
+  },
+  "usage": [
+    {
+      "provider": "anthropic",
+      "model": "claude-fable-5-1[1m]",
+      "requests": 212,
+      "completed": 209,
+      "errors": 3,
+      "input_tokens": 61234000,
+      "output_tokens": 412300,
+      "cache_read_input_tokens": 58900000
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "requests": 14,
+      "completed": 14,
+      "errors": 0,
+      "input_tokens": 91200,
+      "output_tokens": 8100,
+      "cache_read_input_tokens": 60200
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "requests": 3,
+      "completed": 2,
+      "errors": 1,
+      "input_tokens": 240100,
+      "output_tokens": 19800,
+      "cache_read_input_tokens": 120000
+    }
+  ],
+  "events": [
+    {
+      "timestamp": "2026-09-05T08:41:12Z",
+      "provider": "anthropic",
+      "model": "claude-fable-5-1[1m]",
+      "status": 200,
+      "outcome": "completed",
+      "duration_ms": 18422,
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 2210,
+        "cache_read_input_tokens": 598000
+      }
+    },
+    {
+      "timestamp": "2026-09-05T08:44:03Z",
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "status": 200,
+      "outcome": "completed",
+      "duration_ms": 6210,
+      "usage": {
+        "input_tokens": 8100,
+        "output_tokens": 640,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "timestamp": "2026-09-05T08:51:30Z",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "status": 429,
+      "outcome": "rate_limited",
+      "duration_ms": 812
+    },
+    {
+      "timestamp": "2026-09-05T08:51:30Z",
+      "kind": "rate_limit_failover_attempted",
+      "model": "gpt-5.6-terra",
+      "provider": "openai",
+      "failover_from": "gpt-5.6-sol",
+      "models_considered": 2
+    },
+    {
+      "timestamp": "2026-09-05T08:51:44Z",
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "status": 200,
+      "outcome": "completed",
+      "duration_ms": 14020,
+      "failover_from": "gpt-5.6-sol",
+      "usage": {
+        "input_tokens": 80300,
+        "output_tokens": 5100,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "timestamp": "2026-09-05T08:57:58Z",
+      "provider": "anthropic",
+      "model": "claude-fable-5-1[1m]",
+      "status": 429,
+      "outcome": "rate_limited",
+      "duration_ms": 640
+    },
+    {
+      "timestamp": "2026-09-05T08:57:58Z",
+      "kind": "rate_limit_failover_attempted",
+      "model": "claude-opus-5[1m]",
+      "provider": "anthropic",
+      "failover_from": "claude-fable-5-1[1m]",
+      "models_considered": 3
+    },
+    {
+      "timestamp": "2026-09-05T08:57:59Z",
+      "provider": "anthropic",
+      "model": "claude-opus-5[1m]",
+      "status": 429,
+      "outcome": "rate_limited",
+      "duration_ms": 590,
+      "failover_from": "claude-fable-5-1[1m]"
+    },
+    {
+      "timestamp": "2026-09-05T08:57:59Z",
+      "kind": "rate_limit_provider_cooldown",
+      "provider": "anthropic",
+      "remaining_seconds": 2920
+    },
+    {
+      "timestamp": "2026-09-05T08:57:59Z",
+      "kind": "rate_limit_cooldown_skipped",
+      "model": "claude-sonnet-5[1m]",
+      "provider": "anthropic",
+      "failover_from": "claude-fable-5-1[1m]"
+    },
+    {
+      "timestamp": "2026-09-05T08:58:00Z",
+      "kind": "failover_overflow_skipped",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "failover_from": "claude-fable-5-1[1m]",
+      "reason": "context_window"
+    },
+    {
+      "timestamp": "2026-09-05T08:58:40Z",
+      "kind": "rate_limit_chain_exhausted",
+      "model": "claude-fable-5-1[1m]",
+      "provider": "anthropic",
+      "models_considered": 4
+    }
+  ],
+  "last_handoff": {
+    "at": "2026-09-05T08:51:30Z",
+    "from_model": "gpt-5.6-sol",
+    "to_model": "gpt-5.6-terra",
+    "reason": "rate_limit"
+  },
+  "pinned_model": "stealth/ox-alpha",
+  "controllable": true
+}

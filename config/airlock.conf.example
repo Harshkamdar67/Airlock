@@ -4,7 +4,9 @@
 # OpenAI-only profile. Older configs without this key keep their old behavior.
 AIRLOCK_DEFAULT_PROFILE=hybrid
 AIRLOCK_HYBRID_MODEL=sol
-# Saved OpenAI-only root, also used by `airlock openai`.
+# Saved OpenAI-only root, also used by `airlock openai`. Valid OpenAI aliases
+# are astra, sol, terra, and luna. astra is not in the default worker pool;
+# add it to AIRLOCK_OPENAI_MODELS below to use it as a worker.
 AIRLOCK_MODEL=sol
 # Saved Grok-only root, also used by `airlock grok`. Requires Grok OAuth on the
 # local subscription proxy (`airlock proxy grok auth login`).
@@ -21,6 +23,10 @@ AIRLOCK_GROK_MODELS=
 # has no key here on purpose; the key lives only in the operating system's own
 # credential storage. Turn it on with `airlock openrouter auth set-key` and
 # `airlock openrouter models add`, which write to a separate local registry file.
+# Open models are also not configured here and can never become the saved default.
+# Declare a protected loopback endpoint and exact route with `airlock open-model`,
+# then name it explicitly with `airlock om ROUTE` or `airlock hybrid om:ROUTE`.
+# Private endpoint and upstream model identities belong only in that registry.
 # Starting effort for the root session. Change it live with /effort.
 AIRLOCK_MAIN_EFFORT=high
 # Advanced: separate convenience command. Normal Agents do not use this lane.
@@ -28,9 +34,11 @@ AIRLOCK_BG_MODEL=sol
 AIRLOCK_BG_EFFORT=medium
 # Advanced: model for lightweight Claude Code requests such as titles.
 AIRLOCK_SMALL_FAST_MODEL=gpt-5.6-luna
-# Effort for every airlock-* worker. "inherit" means a worker follows the
-# session level, so /effort moves the root and its workers together, including
-# mid-session. Any named level pins workers and /effort no longer reaches them.
+# Effort for every subscription-backed airlock-* worker. "inherit" means a
+# worker follows the session level, so /effort moves the root and its workers
+# together, including mid-session. Open-model workers carry no Airlock effort
+# or thinking declaration because their capabilities are user-declared.
+# Any named level pins subscription workers and /effort no longer reaches them.
 AIRLOCK_WORKER_EFFORT=inherit
 # Pin one worker without pinning the rest. AIRLOCK_EFFORT_<ROUTE> wins over
 # AIRLOCK_WORKER_EFFORT, and accepts inherit to hand that worker back to /effort.
@@ -62,6 +70,8 @@ AIRLOCK_OVERFLOW_SHRINK=auto
 AIRLOCK_ANTHROPIC_PLAN=unknown
 AIRLOCK_OPENAI_CAPACITY=auto
 AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku
+# Enabled OpenAI workers. Valid entries are astra, sol, terra, and luna.
+# astra (GPT-6 Astra) is off by default; `astra,sol,terra,luna` enables it.
 AIRLOCK_OPENAI_MODELS=sol,terra,luna
 AIRLOCK_ANTHROPIC_EXTRA_MODELS=fable
 AIRLOCK_OPENAI_EXTRA_MODELS=

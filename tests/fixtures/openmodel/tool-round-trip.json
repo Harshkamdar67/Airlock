@@ -1,0 +1,121 @@
+{
+  "anthropic_request": {
+    "model": "wire-open-model",
+    "max_tokens": 9000,
+    "system": [
+      {
+        "type": "text",
+        "text": "Use tools only when needed.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "Synthetic Claude Code custom-model notice."
+      },
+      {
+        "role": "user",
+        "content": "Check the synthetic forecast."
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I will check."
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_synthetic_history",
+            "name": "lookup_weather",
+            "input": {
+              "city": "Exampleville"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_synthetic_history",
+            "content": [
+              {
+                "type": "text",
+                "text": "18 C and clear"
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "type": "text",
+            "text": "Summarize that result."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "lookup_weather",
+        "description": "Return synthetic weather data.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "auto"
+    },
+    "metadata": {
+      "user_id": "synthetic-user"
+    }
+  },
+  "chat_completion": {
+    "id": "synthetic-completion-tool",
+    "object": "chat.completion",
+    "created": 1785700001,
+    "model": "local/open-model-synthetic",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "reasoning_content": "Synthetic hidden planning.",
+          "tool_calls": [
+            {
+              "id": "call_private_synthetic",
+              "type": "function",
+              "function": {
+                "name": "lookup_weather",
+                "arguments": "{\"city\":\"Exampleville\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 31,
+      "completion_tokens": 12,
+      "total_tokens": 43,
+      "prompt_tokens_details": {
+        "cached_tokens": 8
+      }
+    }
+  }
+}

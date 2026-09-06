@@ -115,8 +115,8 @@ Options:
 Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
-  Hybrid: auto, sonnet, sol, terra, luna, opus, fable, haiku
-  OpenAI-only: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+  Hybrid: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku
+  OpenAI-only: astra, sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 
 The reserved hybrid value 'auto' resolves at launch time: Fable when Fable's
 access class is neither extra nor unavailable, otherwise Opus under the same
@@ -285,7 +285,7 @@ default_utility_wire="$CONFIG_VALUE"
 read_config_value AIRLOCK_WORKER_EFFORT inherit
 default_worker_effort="$CONFIG_VALUE"
 default_worker_pins=''
-for route in sol terra luna opus sonnet fable haiku grok composer; do
+for route in astra sol terra luna opus sonnet fable haiku grok composer; do
   key="AIRLOCK_EFFORT_$(printf '%s' "$route" | tr '[:lower:]-' '[:upper:]_')"
   read_config_value "$key" ''
   if [[ -n "$CONFIG_VALUE" ]]; then
@@ -360,6 +360,7 @@ setup_model_alias() {
   local model
   model="$(normalize_openai_model_id "$1")"
   case "$model" in
+    gpt-6-astra) printf 'astra' ;;
     gpt-5.6-sol) printf 'sol' ;;
     gpt-5.6-sol-fast) printf 'sol-fast' ;;
     gpt-5.6-terra) printf 'terra' ;;
@@ -378,6 +379,7 @@ utility_alias_from_wire() {
   local wire_model
   wire_model="$(normalize_openai_model_id "$1")"
   case "$wire_model" in
+    gpt-6-astra) UTILITY_ALIAS='astra' ;;
     gpt-5.6-sol) UTILITY_ALIAS='sol' ;;
     gpt-5.6-terra) UTILITY_ALIAS='terra' ;;
     gpt-5.6-luna) UTILITY_ALIAS='luna' ;;
@@ -398,6 +400,7 @@ set_model_info() {
     opus) MODEL_TITLE='Claude Opus 5'; MODEL_ID='claude-opus-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
     fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
+    astra) MODEL_TITLE='GPT-6 Astra'; MODEL_ID='gpt-6-astra'; MODEL_DETAIL='Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.' ;;
     sol) MODEL_TITLE='GPT-5.6 Sol'; MODEL_ID='gpt-5.6-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
     terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
@@ -421,6 +424,7 @@ model_summary() {
 
 wire_model_from_alias() {
   case "$1" in
+    astra) WIRE_MODEL='gpt-6-astra' ;;
     sol) WIRE_MODEL='gpt-5.6-sol' ;;
     sol-fast) WIRE_MODEL='gpt-5.6-sol-fast' ;;
     terra) WIRE_MODEL='gpt-5.6-terra' ;;
@@ -444,7 +448,7 @@ validate_default_profile() {
 
 validate_hybrid_model() {
   case "$1" in
-    auto|sonnet|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
+    auto|sonnet|astra|sol|terra|luna|opus|fable|haiku|grok|composer) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
@@ -474,7 +478,7 @@ validate_worker_pins() {
       printf 'setup: worker pin must use route=effort: %s\n' "$item" >&2
       exit 2
     fi
-    case "$route" in sol|terra|luna|opus|sonnet|fable|haiku) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
+    case "$route" in astra|sol|terra|luna|opus|sonnet|fable|haiku) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
     if [[ "$seen" == *",$route,"* ]]; then
       printf 'setup: duplicate worker pin route: %s\n' "$route" >&2
       exit 2
@@ -1306,6 +1310,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
     hybrid_options=(
       'auto|Auto (recommended)|auto|Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet. Never picks an extra-class model.'
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.'
+      'astra|GPT-6 Astra|gpt-6-astra|Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.'
       'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
       'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.'
@@ -1326,6 +1331,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_question 'Default orchestrator' 'OpenAI-only sessions can still use exact GPT workers.'
     choose_rich_option "${main_model:-$default_main_model}" sol \
       'sol|GPT-5.6 Sol|gpt-5.6-sol|Difficult implementation and integration. Premium usage.' \
+      'astra|GPT-6 Astra|gpt-6-astra|Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.' \
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.' \
       'luna|GPT-5.6 Luna|gpt-5.6-luna|Discovery, triage, and bounded work. Economical usage.' \
       'sol-fast|GPT-5.6 Sol Fast|gpt-5.6-sol-fast|Priority processing on eligible plans only.' \
@@ -1340,7 +1346,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
 
   print_section 2 'WORKER POOL' 'Choose which exact-model Agents the orchestrator may use. More is not always better.'
   print_question 'Model catalog' 'Access depends on the connected plans and is checked again when a session starts.'
-  for route in sonnet opus fable haiku luna terra sol; do
+  for route in sonnet opus fable haiku luna terra sol astra; do
     set_model_info "$route"
     if (( ${#MODEL_TITLE} + ${#MODEL_ID} + 6 <= ui_width )); then
       printf '  %s  (%s)\n' "$MODEL_TITLE" "$MODEL_ID"
@@ -1377,7 +1383,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
         ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
         if [[ "$ANSWER" == 'yes' ]]; then csv_add "$anthropic_models" "$route"; anthropic_models="$CSV_RESULT"; fi
       done
-      for route in luna terra sol; do
+      for route in luna terra sol astra; do
         set_model_info "$route"
         current_answer='no'; csv_contains "$default_openai_models" "$route" && current_answer='yes'
         ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
@@ -1448,7 +1454,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       ;;
     custom)
       worker_effort='inherit'
-      for route in sonnet opus fable haiku luna terra sol; do
+      for route in sonnet opus fable haiku luna terra sol astra; do
         if csv_contains "$anthropic_models,$openai_models" "$route"; then
           set_model_info "$route"
           pin_for_route "$existing_worker_pins" "$route"
@@ -1625,7 +1631,7 @@ if [[ -z "$install_agent" ]]; then install_agent='no'; fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "$hybrid_model" in
     opus|sonnet|fable|haiku) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
-    sol|terra|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
+    astra|sol|terra|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
     grok|composer) csv_add "$grok_models" "$hybrid_model"; grok_models="$CSV_RESULT" ;;
   esac
 fi
@@ -1679,13 +1685,13 @@ validate_failover_policy "$failover_policy"
 validate_claude_plan "$claude_plan"
 validate_openai_capacity "$openai_capacity"
 validate_csv_subset 'Anthropic model' "$anthropic_models" 'opus,sonnet,fable,haiku'
-validate_csv_subset 'OpenAI model' "$openai_models" 'sol,terra,luna'
+validate_csv_subset 'OpenAI model' "$openai_models" 'astra,sol,terra,luna'
 validate_csv_subset 'Grok model' "$grok_models" 'grok,composer'
 if [[ -n "$anthropic_extra_models" ]]; then
   validate_csv_subset 'Anthropic extra model' "$anthropic_extra_models" 'opus,sonnet,fable,haiku'
 fi
 if [[ -n "$openai_extra_models" ]]; then
-  validate_csv_subset 'OpenAI extra model' "$openai_extra_models" 'sol,terra,luna'
+  validate_csv_subset 'OpenAI extra model' "$openai_extra_models" 'astra,sol,terra,luna'
 fi
 wire_model_from_alias "$utility_model"
 utility_wire_model="$WIRE_MODEL"
