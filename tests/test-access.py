@@ -93,9 +93,21 @@ class AccessUsageTests(unittest.TestCase):
                     platform,
                     expected,
                 )
-                self.assertEqual(result["protocol_version"], 5)
+                self.assertEqual(result["protocol_version"], 6)
                 self.assertEqual(result["components_checked"], len(expected))
                 self.assertGreater(result["components_checked"], 15)
+
+    def test_managed_bundle_includes_console_components(self) -> None:
+        bundle = json.loads(
+            (ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8")
+        )
+        expected = {
+            "bin/airlock_console.py",
+            "bin/airlock_console_tools.py",
+            "plugins/airlock/mcp-server/airlock_console_mcp.py",
+        }
+        self.assertTrue(expected.issubset(bundle["components"]))
+        self.assertTrue(expected.issubset(bundle["platforms"]["common"]))
 
     def test_managed_bundle_includes_openrouter_presets_helper(self) -> None:
         bundle = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
@@ -105,6 +117,17 @@ class AccessUsageTests(unittest.TestCase):
             (ROOT / "bin" / "airlock_openrouter_presets.py").is_file(),
             "OpenRouter presets helper must exist as a managed repository file",
         )
+
+    def test_managed_bundle_includes_openmodel_helpers(self) -> None:
+        bundle = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
+        for helper in (
+            "bin/airlock_openmodel.py",
+            "bin/airlock_openmodel_adapter.py",
+        ):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, bundle["components"])
+                self.assertIn(helper, bundle["platforms"]["common"])
+                self.assertTrue((ROOT / helper).is_file())
 
     def test_managed_bundle_rejects_stale_marker_and_changed_component(self) -> None:
         original = json.loads((ROOT / "config" / "managed-bundle.json").read_text(encoding="utf-8"))
@@ -714,6 +737,51 @@ for line in sys.stdin:
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
             self.assertNotIn("claude-fable-5-1[1m]", hybrid["model_ids"])
 
+    def test_permission_model_fields_include_claude_wire_aliases_and_match_snapshot(self) -> None:
+        policy = ACCESS.default_policy()
+        policy["providers"]["anthropic"]["models"]["opus"]["access"] = "extra"
+        policy["providers"]["anthropic"]["models"]["fable"]["access"] = "included"
+        policy["providers"]["openai"]["models"]["sol"]["access"] = "included"
+        policy["policies"]["extra_usage"] = "ask"
+
+        route_policy = ACCESS.session_route_policy(policy, "hybrid-openai-root")
+        model_field = ACCESS.session_route_field(
+            policy, "hybrid-openai-root", "model-ids"
+        )
+        permission_models = set(model_field.split(","))
+        snapshot = ACCESS.build_session_snapshot(
+            policy, "hybrid-openai-root", "gpt-5.6-sol"
+        )
+        self.assertEqual(permission_models, set(route_policy["routes"]))
+        self.assertEqual(permission_models, set(snapshot.routes))
+        self.assertTrue({"claude-opus-5[1m]", "claude-opus-5"} <= permission_models)
+        self.assertEqual(snapshot.route_categories["gpt-5.6-sol"], "included")
+        self.assertEqual(snapshot.route_categories["claude-opus-5"], "extra")
+        self.assertEqual(
+            snapshot.route_categories["claude-fable-5-1"], "metered"
+        )
+        self.assertEqual(snapshot.effort_ceilings["gpt-5.6-sol"], "max")
+        self.assertEqual(snapshot.effort_ceilings["claude-opus-5"], "max")
+        self.assertEqual(
+            snapshot.effort_ceilings["claude-fable-5-1[1m]"], "max"
+        )
+
+        extra_field = ACCESS.session_route_field(
+            policy, "hybrid-openai-root", "extra-model-ids"
+        )
+        self.assertEqual(
+            set(extra_field.split(",")),
+            {"claude-opus-5[1m]", "claude-opus-5"},
+        )
+
+        policy["policies"]["extra_usage"] = "never"
+        never_models = set(ACCESS.session_route_field(
+            policy, "hybrid-openai-root", "model-ids"
+        ).split(","))
+        self.assertTrue(
+            {"claude-opus-5[1m]", "claude-opus-5"}.isdisjoint(never_models)
+        )
+
     def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
         policy = ACCESS.default_policy()
         policy["policies"]["routing"] = "quality"
@@ -913,7 +981,9 @@ for line in sys.stdin:
                     rendered = ACCESS.render_profile(policy, profile, catalogs)
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
                     # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
-                    expected = 10 if profile == "hybrid-grok-root" else 8
+                    # Astra is off by default too, but the loop above marks every
+                    # OpenAI route unknown, so it counts here as the ninth agent.
+                    expected = 11 if profile == "hybrid-grok-root" else 9
                     self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
@@ -965,16 +1035,113 @@ for line in sys.stdin:
         with self.assertRaises(ACCESS.AccessError):
             ACCESS.managed_session_settings_json(json.dumps({"airlock-opus": {}}), "maybe")
 
-    def test_managed_session_settings_web_tools_matrix(self) -> None:
+    def test_console_tools_server_entry_requires_regular_non_symlink_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            script = Path(temp) / "airlock_web_tools.py"
+            root = Path(temp)
+            script = root / "airlock_console_mcp.py"
+            contract = root / "airlock_console_tools.py"
             script.write_text("# server\n", encoding="utf-8")
+            contract.write_text("# contract\n", encoding="utf-8")
+            directory = root / "directory"
+            directory.mkdir()
+
+            self.assertEqual(
+                ACCESS.console_tools_server_entry(str(script), str(contract)),
+                {
+                    "command": sys.executable,
+                    "args": [
+                        str(script.resolve()),
+                        "--contract",
+                        str(contract.resolve()),
+                    ],
+                },
+            )
+
+            unavailable = (
+                ("missing wrapper argument", None, str(contract)),
+                ("missing contract argument", str(script), None),
+                ("absent wrapper", str(root / "missing-wrapper.py"), str(contract)),
+                ("absent contract", str(script), str(root / "missing-contract.py")),
+                ("wrapper is a directory", str(directory), str(contract)),
+                ("contract is a directory", str(script), str(directory)),
+            )
+            for label, wrapper, helper in unavailable:
+                with self.subTest(case=label):
+                    self.assertIsNone(
+                        ACCESS.console_tools_server_entry(wrapper, helper)
+                    )
+
+            for label, symlink_path in (
+                ("symlink wrapper", script),
+                ("symlink contract", contract),
+            ):
+                with self.subTest(case=label), patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=lambda candidate, target=symlink_path: candidate == target,
+                ):
+                    self.assertIsNone(
+                        ACCESS.console_tools_server_entry(
+                            str(script), str(contract)
+                        )
+                    )
+
+    def test_managed_mcp_environment_switches_require_exact_off(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            web_script = root / "airlock_web_tools.py"
+            console_script = root / "airlock_console_mcp.py"
+            console_contract = root / "airlock_console_tools.py"
+            for path in (web_script, console_script, console_contract):
+                path.write_text("# helper\n", encoding="utf-8")
+
+            entries = (
+                (
+                    "AIRLOCK_WEB_TOOLS",
+                    lambda: ACCESS.web_tools_server_entry(str(web_script)),
+                ),
+                (
+                    "AIRLOCK_CONSOLE_TOOLS",
+                    lambda: ACCESS.console_tools_server_entry(
+                        str(console_script), str(console_contract)
+                    ),
+                ),
+            )
+            for variable, build_entry in entries:
+                with self.subTest(variable=variable, value="off"), patch.dict(
+                    os.environ, {variable: "off"}
+                ):
+                    self.assertIsNone(build_entry())
+                for value in ("OFF", " off", "off ", " Off "):
+                    with self.subTest(variable=variable, value=value), patch.dict(
+                        os.environ, {variable: value}
+                    ):
+                        self.assertIsNotNone(build_entry())
+
+    def test_managed_session_settings_managed_mcp_tools_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            web_script = root / "airlock_web_tools.py"
+            console_script = root / "airlock_console_mcp.py"
+            console_contract = root / "airlock_console_tools.py"
+            for path in (web_script, console_script, console_contract):
+                path.write_text("# helper\n", encoding="utf-8")
             agents = json.dumps({"airlock-luna": {}})
+            tool_paths = {
+                "web_tools_script": str(web_script),
+                "console_tools_script": str(console_script),
+                "console_tools_contract": str(console_contract),
+            }
 
             pure = json.loads(ACCESS.managed_session_settings_json(
-                agents, web_tools_script=str(script), profile="grok-pure",
+                agents, profile="grok-pure", **tool_paths,
             ))
             self.assertEqual(set(pure), {"autoMode", "permissions", "mcpServers"})
+            self.assertEqual(
+                set(pure["mcpServers"]),
+                {"airlock-web-tools", "airlock-console-tools"},
+            )
             self.assertEqual(
                 pure["permissions"],
                 {
@@ -986,14 +1153,31 @@ for line in sys.stdin:
                 },
             )
             self.assertEqual(
-                pure["mcpServers"]["airlock-web-tools"]["command"],
-                sys.executable,
+                pure["mcpServers"]["airlock-web-tools"],
+                {
+                    "command": sys.executable,
+                    "args": [str(web_script.resolve())],
+                },
+            )
+            self.assertEqual(
+                pure["mcpServers"]["airlock-console-tools"],
+                {
+                    "command": sys.executable,
+                    "args": [
+                        str(console_script.resolve()),
+                        "--contract",
+                        str(console_contract.resolve()),
+                    ],
+                },
             )
 
             hybrid = json.loads(ACCESS.managed_session_settings_json(
-                agents, web_tools_script=str(script), profile="hybrid-grok-root",
+                agents, profile="hybrid-grok-root", **tool_paths,
             ))
-            self.assertEqual(set(hybrid), {"autoMode", "permissions", "mcpServers"})
+            self.assertEqual(
+                set(hybrid["mcpServers"]),
+                {"airlock-web-tools", "airlock-console-tools"},
+            )
             self.assertEqual(hybrid["permissions"], {
                 "allow": [
                     "mcp__airlock-web-tools__web_search",
@@ -1003,78 +1187,180 @@ for line in sys.stdin:
             })
 
             anthropic = json.loads(ACCESS.managed_session_settings_json(
-                agents, web_tools_script=str(script), profile="hybrid-anthropic-root",
+                agents, profile="hybrid-anthropic-root", **tool_paths,
             ))
-            self.assertEqual(set(anthropic), {"autoMode"})
+            self.assertEqual(set(anthropic), {"autoMode", "mcpServers"})
             self.assertNotIn("permissions", anthropic)
-            self.assertNotIn("mcpServers", anthropic)
+            self.assertEqual(
+                set(anthropic["mcpServers"]), {"airlock-console-tools"}
+            )
+            self.assertEqual(
+                anthropic["mcpServers"]["airlock-console-tools"],
+                pure["mcpServers"]["airlock-console-tools"],
+            )
+
+            with patch.dict(os.environ, {"AIRLOCK_CONSOLE_TOOLS": "off"}):
+                console_disabled = json.loads(ACCESS.managed_session_settings_json(
+                    agents, profile="grok-pure", **tool_paths,
+                ))
+            self.assertEqual(
+                set(console_disabled["mcpServers"]), {"airlock-web-tools"}
+            )
+            self.assertEqual(console_disabled["permissions"], pure["permissions"])
 
             with patch.dict(os.environ, {"AIRLOCK_WEB_TOOLS": "off"}):
+                web_disabled = json.loads(ACCESS.managed_session_settings_json(
+                    agents, profile="grok-pure", **tool_paths,
+                ))
+            self.assertEqual(set(web_disabled), {"autoMode", "mcpServers"})
+            self.assertEqual(
+                set(web_disabled["mcpServers"]), {"airlock-console-tools"}
+            )
+            self.assertNotIn("permissions", web_disabled)
+
+            with patch.dict(os.environ, {
+                "AIRLOCK_WEB_TOOLS": "off",
+                "AIRLOCK_CONSOLE_TOOLS": "off",
+            }):
                 disabled = json.loads(ACCESS.managed_session_settings_json(
-                    agents, web_tools_script=str(script), profile="grok-pure",
+                    agents, profile="grok-pure", **tool_paths,
                 ))
             self.assertEqual(set(disabled), {"autoMode"})
 
             with self.assertRaises(ACCESS.AccessError):
                 ACCESS.managed_session_settings_json(
-                    agents, web_tools_script=str(script), profile="not-a-profile",
+                    agents, profile="not-a-profile", **tool_paths,
                 )
 
-    def test_web_tools_mcp_config_file_matrix(self) -> None:
+    def test_managed_mcp_config_file_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            script = Path(temp) / "airlock_web_tools.py"
-            script.write_text("# server\n", encoding="utf-8")
-            runtime = Path(temp) / "runtime"
-            environment = {
-                "AIRLOCK_SESSION_RUNTIME_DIR": str(runtime),
+            root = Path(temp)
+            web_script = root / "airlock_web_tools.py"
+            console_script = root / "airlock_console_mcp.py"
+            console_contract = root / "airlock_console_tools.py"
+            for path in (web_script, console_script, console_contract):
+                path.write_text("# helper\n", encoding="utf-8")
+            runtime = root / "runtime"
+            environment = {"AIRLOCK_SESSION_RUNTIME_DIR": str(runtime)}
+            tool_paths = {
+                "console_tools_script": str(console_script),
+                "console_tools_contract": str(console_contract),
             }
+
+            def read_and_delete(output: str) -> dict[str, object]:
+                self.assertNotIn("\n", output)
+                path_text, digest, size_text = output.split("\t")
+                self.assertEqual(len(digest), 64)
+                self.assertGreater(int(size_text), 0)
+                artifact = Path(path_text)
+                payload = json.loads(artifact.read_text(encoding="utf-8"))
+                with patch.dict(os.environ, environment):
+                    ACCESS.delete_session_artifact(
+                        artifact, digest, int(size_text)
+                    )
+                self.assertFalse(artifact.exists())
+                return payload
 
             with patch.dict(os.environ, environment):
                 output = ACCESS.write_web_tools_mcp_config(
-                    str(script), profile="openrouter-pure"
+                    str(web_script), profile="openrouter-pure", **tool_paths,
                 )
-            self.assertNotIn("\n", output)
-            path_text, digest, size_text = output.split("\t")
-            self.assertEqual(len(digest), 64)
-            self.assertGreater(int(size_text), 0)
-            payload = json.loads(
-                Path(path_text).read_text(encoding="utf-8")
+            payload = read_and_delete(output)
+            self.assertEqual(
+                set(payload["mcpServers"]),
+                {"airlock-web-tools", "airlock-console-tools"},
             )
-            entry = payload["mcpServers"]["airlock-web-tools"]
-            self.assertEqual(entry["command"], sys.executable)
-            self.assertEqual(entry["args"], [str(script.resolve())])
-            with patch.dict(os.environ, environment):
-                ACCESS.delete_session_artifact(
-                    Path(path_text), digest, int(size_text)
-                )
-            self.assertFalse(Path(path_text).exists())
+            self.assertEqual(
+                payload["mcpServers"]["airlock-web-tools"],
+                {
+                    "command": sys.executable,
+                    "args": [str(web_script.resolve())],
+                },
+            )
+            self.assertEqual(
+                payload["mcpServers"]["airlock-console-tools"],
+                {
+                    "command": sys.executable,
+                    "args": [
+                        str(console_script.resolve()),
+                        "--contract",
+                        str(console_contract.resolve()),
+                    ],
+                },
+            )
 
             with patch.dict(os.environ, environment):
-                empty = ACCESS.write_web_tools_mcp_config(
-                    str(script), profile="hybrid-anthropic-root"
+                anthropic_output = ACCESS.write_web_tools_mcp_config(
+                    str(web_script),
+                    profile="hybrid-anthropic-root",
+                    **tool_paths,
                 )
-            self.assertEqual(empty, "")
+            anthropic = read_and_delete(anthropic_output)
+            self.assertEqual(
+                set(anthropic["mcpServers"]), {"airlock-console-tools"}
+            )
+
+            with patch.dict(os.environ, {
+                **environment,
+                "AIRLOCK_CONSOLE_TOOLS": "off",
+            }):
+                console_disabled_output = ACCESS.write_web_tools_mcp_config(
+                    str(web_script), profile="grok-pure", **tool_paths,
+                )
+            console_disabled = read_and_delete(console_disabled_output)
+            self.assertEqual(
+                set(console_disabled["mcpServers"]), {"airlock-web-tools"}
+            )
 
             with patch.dict(os.environ, {
                 **environment,
                 "AIRLOCK_WEB_TOOLS": "off",
             }):
+                web_disabled_output = ACCESS.write_web_tools_mcp_config(
+                    str(web_script), profile="grok-pure", **tool_paths,
+                )
+            web_disabled = read_and_delete(web_disabled_output)
+            self.assertEqual(
+                set(web_disabled["mcpServers"]), {"airlock-console-tools"}
+            )
+
+            with patch.dict(os.environ, {
+                **environment,
+                "AIRLOCK_WEB_TOOLS": "off",
+                "AIRLOCK_CONSOLE_TOOLS": "off",
+            }):
                 disabled = ACCESS.write_web_tools_mcp_config(
-                    str(script), profile="grok-pure"
+                    str(web_script), profile="grok-pure", **tool_paths,
                 )
             self.assertEqual(disabled, "")
 
-            missing = str(Path(temp) / "absent-server.py")
+            missing_web = str(root / "absent-web-server.py")
             with patch.dict(os.environ, environment):
-                absent = ACCESS.write_web_tools_mcp_config(
-                    missing, profile="grok-pure"
+                missing_web_output = ACCESS.write_web_tools_mcp_config(
+                    missing_web, profile="grok-pure", **tool_paths,
                 )
-            self.assertEqual(absent, "")
+            missing_web_payload = read_and_delete(missing_web_output)
+            self.assertEqual(
+                set(missing_web_payload["mcpServers"]),
+                {"airlock-console-tools"},
+            )
+
+            with patch.dict(os.environ, environment):
+                missing_console_output = ACCESS.write_web_tools_mcp_config(
+                    str(web_script),
+                    profile="grok-pure",
+                    console_tools_script=str(root / "absent-console-server.py"),
+                    console_tools_contract=str(console_contract),
+                )
+            missing_console = read_and_delete(missing_console_output)
+            self.assertEqual(
+                set(missing_console["mcpServers"]), {"airlock-web-tools"}
+            )
 
             with patch.dict(os.environ, environment):
                 with self.assertRaises(ACCESS.AccessError):
                     ACCESS.write_web_tools_mcp_config(
-                        str(script), profile="not-a-profile"
+                        str(web_script), profile="not-a-profile", **tool_paths,
                     )
 
 
@@ -2234,6 +2520,26 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             "grok-composer-2.5-fast",
         ])
 
+    def test_declared_peers_outside_the_session_leave_no_chain(self) -> None:
+        # An OpenAI-only session routes none of luna's declared peers. The
+        # source must simply have no chain; an empty list would fail the
+        # session policy snapshot and refuse the launch.
+        declared = {
+            "gpt-5.6-luna": ("claude-sonnet-5", "grok-composer-2.5-fast"),
+        }
+        workers = [
+            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
+        ]
+        routes = {"gpt-5.6-luna": "openai", "gpt-5.6-sol": "openai"}
+        chains = ACCESS.session_failover_chains(
+            self.policy(), workers, routes, declared=declared
+        )
+        self.assertNotIn("gpt-5.6-luna", chains)
+        self.assertNotIn([], list(chains.values()))
+        # The other source keeps its derived chain untouched.
+        self.assertNotIn("gpt-5.6-luna", chains.get("gpt-5.6-sol", []))
+
     def test_extra_gated_peers_still_require_the_allow_policy(self) -> None:
         workers = self.workers() + [
             self.worker(
@@ -2274,9 +2580,10 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             declared=declared,
         )
         # vendor/model-test is unrouted here so its declaration is inert;
-        # sol's composer peer is not a session worker and is filtered.
+        # sol's composer peer is not a session worker and is filtered, which
+        # leaves sol with no chain at all rather than an empty list.
         self.assertNotIn("vendor/model-test", chains)
-        self.assertEqual(chains["gpt-5.6-sol"], [])
+        self.assertNotIn("gpt-5.6-sol", chains)
 
     def test_self_and_duplicate_peers_are_filtered_at_runtime(self) -> None:
         declared = {
@@ -2400,6 +2707,42 @@ class FailoverFileTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ACCESS.AccessError, "repeats"):
             self.load()
+
+    def test_duplicate_wire_alias_sources_fail_in_both_orderings(self) -> None:
+        # Bare and [1m] forms are the same routed model. Declaring both as
+        # sources would let the later overwrite the earlier while the digest
+        # still counted both keys, so validation rejects the conflict.
+        for chains in (
+            {
+                "claude-opus-5": ["gpt-5.6-sol"],
+                "claude-opus-5[1m]": ["gpt-5.6-luna"],
+            },
+            {
+                "claude-opus-5[1m]": ["gpt-5.6-luna"],
+                "claude-opus-5": ["gpt-5.6-sol"],
+            },
+        ):
+            self.path.write_text(
+                json.dumps({"schema_version": 1, "chains": chains}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ACCESS.AccessError, r"duplicates an earlier source.*claude-opus-5"
+            ):
+                self.load()
+
+    def test_single_alias_form_source_still_loads(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {"claude-opus-5[1m]": ["gpt-5.6-sol"]},
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.load(),
+            {"claude-opus-5[1m]": ("gpt-5.6-sol",)},
+        )
 
     def test_garbage_json_fails_closed(self) -> None:
         self.path.write_text("{not json", encoding="utf-8")
@@ -2722,6 +3065,282 @@ class RouterStatusLinesTests(unittest.TestCase):
         with self.assertRaises(ACCESS.AccessError):
             ACCESS.router_status_lines({"profile": "", "root_model": "gpt-5.6-sol",
                                         "root_provider": "openai", "events": []})
+
+
+
+class FailoverPersistenceTests(unittest.TestCase):
+    """Shared failover.json persistence for CLI and future Console writes."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.path = self.root / "failover.json"
+        self.environment = patch.dict(
+            os.environ, {"AIRLOCK_FAILOVER_FILE": str(self.path)}, clear=False
+        )
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def sample_chains(self) -> dict[str, list[str]]:
+        return {
+            "gpt-5.6-sol": ["claude-opus-5", "gpt-5.6-luna"],
+            "claude-opus-5[1m]": ["gpt-5.6-sol"],
+        }
+
+    def test_digest_is_stable_across_key_order(self) -> None:
+        left = {
+            "gpt-5.6-sol": ["claude-opus-5"],
+            "claude-opus-5[1m]": ["gpt-5.6-luna"],
+        }
+        right = {
+            "claude-opus-5[1m]": ["gpt-5.6-luna"],
+            "gpt-5.6-sol": ["claude-opus-5"],
+        }
+        self.assertEqual(
+            ACCESS.failover_chains_digest(left),
+            ACCESS.failover_chains_digest(right),
+        )
+        self.assertEqual(len(ACCESS.failover_chains_digest(left)), 64)
+        self.assertRegex(ACCESS.failover_chains_digest(left), r"^[0-9a-f]{64}$")
+
+    def test_digest_changes_when_peer_order_changes(self) -> None:
+        forward = {"gpt-5.6-sol": ["claude-opus-5", "gpt-5.6-luna"]}
+        reverse = {"gpt-5.6-sol": ["gpt-5.6-luna", "claude-opus-5"]}
+        self.assertNotEqual(
+            ACCESS.failover_chains_digest(forward),
+            ACCESS.failover_chains_digest(reverse),
+        )
+
+    def test_reader_returns_chains_and_digest(self) -> None:
+        empty = ACCESS.read_failover_chains_state(self.path)
+        self.assertEqual(empty.chains, {})
+        self.assertEqual(empty.digest, ACCESS.failover_chains_digest({}))
+        ACCESS.write_failover_chains(self.sample_chains())
+        state = ACCESS.read_failover_chains_state(self.path)
+        self.assertEqual(
+            state.chains,
+            {key: tuple(peers) for key, peers in self.sample_chains().items()},
+        )
+        self.assertEqual(
+            state.digest, ACCESS.failover_chains_digest(self.sample_chains())
+        )
+
+    def test_same_value_write_is_idempotent(self) -> None:
+        first = ACCESS.compare_and_swap_failover_chains(self.sample_chains())
+        self.assertTrue(first.changed)
+        before = self.path.read_bytes()
+        before_stat = self.path.stat()
+        second = ACCESS.compare_and_swap_failover_chains(
+            self.sample_chains(), expected_digest=first.current_digest
+        )
+        self.assertFalse(second.changed)
+        self.assertEqual(second.previous_digest, first.current_digest)
+        self.assertEqual(second.current_digest, first.current_digest)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.path.stat().st_mtime_ns, before_stat.st_mtime_ns)
+
+    def test_atomic_write_produces_complete_pretty_json(self) -> None:
+        ACCESS.write_failover_chains(self.sample_chains())
+        raw = self.path.read_text(encoding="utf-8")
+        self.assertTrue(raw.endswith("\n"))
+        payload = json.loads(raw)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["chains"], self.sample_chains())
+        # Pretty form sorts keys; peer arrays keep declared order.
+        self.assertLess(raw.index("claude-opus-5[1m]"), raw.index("gpt-5.6-sol"))
+        self.assertLess(raw.index('"claude-opus-5"'), raw.index('"gpt-5.6-luna"'))
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes are not enforced on Windows")
+    def test_written_file_and_lock_use_mode_0600(self) -> None:
+        ACCESS.write_failover_chains(self.sample_chains())
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        lock_path = self.path.parent / ".failover.lock"
+        self.assertTrue(lock_path.is_file())
+        self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
+
+    def test_empty_map_removes_the_file_and_is_idempotent(self) -> None:
+        ACCESS.write_failover_chains(self.sample_chains())
+        self.assertTrue(self.path.exists())
+        removed = ACCESS.compare_and_swap_failover_chains(
+            {},
+            expected_digest=ACCESS.failover_chains_digest(self.sample_chains()),
+        )
+        self.assertTrue(removed.changed)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(removed.current_digest, ACCESS.failover_chains_digest({}))
+        again = ACCESS.compare_and_swap_failover_chains({})
+        self.assertFalse(again.changed)
+        self.assertFalse(self.path.exists())
+
+    def test_empty_logical_file_is_removed_with_changed_false(self) -> None:
+        # A stale empty object already digests as {}, so the idempotent
+        # short-circuit used to return before the removal branch and leave
+        # the file behind. CAS now deletes it and still reports unchanged.
+        self.path.write_text(
+            json.dumps({"schema_version": 1, "chains": {}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(self.path.exists())
+        empty_digest = ACCESS.failover_chains_digest({})
+        result = ACCESS.compare_and_swap_failover_chains(
+            {},
+            expected_digest=empty_digest,
+        )
+        self.assertFalse(result.changed)
+        self.assertEqual(result.current_digest, empty_digest)
+        self.assertFalse(self.path.exists())
+
+    def test_symlink_target_is_refused(self) -> None:
+        real = self.root / "real.json"
+        real.write_text("{}", encoding="utf-8")
+        try:
+            self.path.symlink_to(real)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        with self.assertRaisesRegex(ACCESS.AccessError, "symlinked failover.json"):
+            ACCESS.write_failover_chains(self.sample_chains())
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(real.read_text(encoding="utf-8"), "{}")
+
+    def test_compare_and_swap_succeeds_with_matching_digest(self) -> None:
+        empty = ACCESS.read_failover_chains_state()
+        result = ACCESS.compare_and_swap_failover_chains(
+            self.sample_chains(), expected_digest=empty.digest
+        )
+        self.assertTrue(result.changed)
+        self.assertEqual(result.previous_digest, empty.digest)
+        self.assertEqual(
+            result.current_digest,
+            ACCESS.failover_chains_digest(self.sample_chains()),
+        )
+        self.assertEqual(
+            ACCESS.load_failover_chains(self.path),
+            {key: tuple(peers) for key, peers in self.sample_chains().items()},
+        )
+
+    def test_compare_and_swap_conflict_does_not_touch_bytes(self) -> None:
+        ACCESS.write_failover_chains(self.sample_chains())
+        before = self.path.read_bytes()
+        with self.assertRaises(ACCESS.FailoverConflictError) as raised:
+            ACCESS.compare_and_swap_failover_chains(
+                {"gpt-5.6-sol": ["gpt-5.6-luna"]},
+                expected_digest="0" * 64,
+            )
+        self.assertIsInstance(raised.exception, ACCESS.AccessError)
+        self.assertIsInstance(raised.exception, ACCESS.FailoverConflictError)
+        self.assertIn(
+            "failover.json changed during this operation",
+            str(raised.exception),
+        )
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_concurrent_writers_serialize_under_the_lock(self) -> None:
+        start = threading.Barrier(2)
+        results: list[ACCESS.FailoverWriteResult] = []
+        errors: list[BaseException] = []
+
+        def writer(peers: list[str]) -> None:
+            try:
+                start.wait(timeout=5)
+                results.append(
+                    ACCESS.compare_and_swap_failover_chains({"gpt-5.6-sol": peers})
+                )
+            except BaseException as exc:  # noqa: BLE001 - collect for the main thread
+                errors.append(exc)
+
+        first = threading.Thread(target=writer, args=(["claude-opus-5"],))
+        second = threading.Thread(target=writer, args=(["gpt-5.6-luna"],))
+        first.start()
+        second.start()
+        first.join(timeout=10)
+        second.join(timeout=10)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(1 for item in results if item.changed), 2)
+        final = ACCESS.load_failover_chains(self.path)
+        self.assertIn(
+            final,
+            (
+                {"gpt-5.6-sol": ("claude-opus-5",)},
+                {"gpt-5.6-sol": ("gpt-5.6-luna",)},
+            ),
+        )
+        lock_path = self.path.parent / ".failover.lock"
+        self.assertTrue(lock_path.is_file())
+
+    def test_lock_timeout_is_patchable_and_raises_access_error(self) -> None:
+        ready = threading.Event()
+        release = threading.Event()
+        errors: list[BaseException] = []
+
+        def holder() -> None:
+            try:
+                with ACCESS._failover_chains_lock(self.path):
+                    ready.set()
+                    release.wait(timeout=5)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        thread = threading.Thread(target=holder)
+        thread.start()
+        self.assertTrue(ready.wait(timeout=5))
+        with patch.object(ACCESS, "FAILOVER_LOCK_TIMEOUT_SECONDS", 0):
+            with patch.object(ACCESS, "FAILOVER_LOCK_RETRY_SECONDS", 0):
+                with self.assertRaisesRegex(
+                    ACCESS.AccessError, "failover update is in progress"
+                ):
+                    ACCESS.compare_and_swap_failover_chains(self.sample_chains())
+        release.set()
+        thread.join(timeout=5)
+        self.assertEqual(errors, [])
+        self.assertFalse(self.path.exists())
+
+    def test_temp_file_is_cleaned_when_replace_fails(self) -> None:
+        ACCESS.write_failover_chains(self.sample_chains())
+        before = self.path.read_bytes()
+        with patch.object(ACCESS.os, "replace", side_effect=OSError("blocked")):
+            with self.assertRaisesRegex(
+                ACCESS.AccessError, "could not be written securely"
+            ):
+                ACCESS.compare_and_swap_failover_chains(
+                    {"gpt-5.6-sol": ["gpt-5.6-luna"]}
+                )
+        self.assertEqual(self.path.read_bytes(), before)
+        leftovers = list(self.root.glob(".failover.*.tmp"))
+        self.assertEqual(leftovers, [])
+
+    def test_write_failure_before_replace_cleans_temp(self) -> None:
+        original = ACCESS.os.fsync
+        calls = {"count": 0}
+
+        def selective(fd: int) -> None:
+            calls["count"] += 1
+            # Windows seeds the lock file with a nul byte and fsyncs it first.
+            if os.name == "nt" and calls["count"] == 1:
+                return original(fd)
+            raise OSError("sync failed")
+
+        with patch.object(ACCESS.os, "fsync", side_effect=selective):
+            with self.assertRaisesRegex(
+                ACCESS.AccessError, "could not be written securely"
+            ):
+                ACCESS.compare_and_swap_failover_chains(self.sample_chains())
+        self.assertFalse(self.path.exists())
+        leftovers = list(self.root.glob(".failover.*.tmp"))
+        self.assertEqual(leftovers, [])
+
+    def test_run_handoff_still_writes_through_the_shared_path(self) -> None:
+        profile = "hybrid-anthropic-root"
+        lines = ACCESS.run_handoff("set", ["sol", "opus"], profile)
+        self.assertIn("sol now hands off to opus.", lines[0])
+        written = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(written["schema_version"], 1)
+        self.assertEqual(written["chains"], {"gpt-5.6-sol": ["claude-opus-5"]})
+        self.assertTrue((self.path.parent / ".failover.lock").is_file())
+        ACCESS.run_handoff("reset", [], profile)
+        self.assertFalse(self.path.exists())
+
 
 
 if __name__ == "__main__":

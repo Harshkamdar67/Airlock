@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Airlock Console">
+  <title>Airlock Console</title>
+  <circle cx="16" cy="16" r="11.5" fill="none" stroke="currentColor" stroke-width="3"/>
+  <path d="M10 16h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+  <style>
+    :root { color: #17181A; }
+    @media (prefers-color-scheme: dark) { :root { color: #E8EAE9; } }
+  </style>
+</svg>

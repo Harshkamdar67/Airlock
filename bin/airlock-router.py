@@ -10,6 +10,7 @@ import ctypes
 from datetime import datetime, timezone
 import gzip
 import hashlib
+import hmac
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -20,23 +21,32 @@ import re
 import secrets
 import socketserver
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from types import MappingProxyType
 from typing import Any, NamedTuple
+import unicodedata
 from urllib.parse import urlsplit
 import zlib
 
-MANAGED_BUNDLE_VERSION = "2026.08.26.1"
-MANAGED_PROTOCOL_VERSION = 5
+MANAGED_BUNDLE_VERSION = "2026.09.06.1"
+MANAGED_PROTOCOL_VERSION = 6
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
+MAX_CONTROL_REQUEST_BYTES = 4 * 1024
+MAX_CONTROL_JSON_DEPTH = 4
+CONTROL_ENDPOINTS = frozenset({"/control/pin", "/control/unpin"})
 CONNECT_TIMEOUT_SECONDS = 10
 RESPONSE_HEADER_TIMEOUT_SECONDS = 10 * 60
 STREAM_TIMEOUT_SECONDS = 60 * 60
 READY_TIMEOUT_SECONDS = 30
 MAX_DIAGNOSTIC_EVENTS = 256
+MAX_WORKDIR_CHARS = 32_768
+ROUTE_CATEGORIES = frozenset({"included", "extra", "metered", "unknown"})
+ROUTE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 # A restart reclaims the port the dead router held. The kernel can still be
 # releasing it for a moment after the owner goes away, so a fixed-port bind
 # is retried briefly before it is called a failure.
@@ -50,6 +60,29 @@ MAX_OPENROUTER_IDENTITY_PREFIX_BYTES = 256 * 1024
 MAX_UPSTREAM_REASON_CHARS = 200
 MAX_UPSTREAM_DETAIL_CHARS = 320
 MAX_OPENROUTER_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
+MAX_OPENMODEL_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
+MAX_OPENMODEL_ERROR_RESPONSE_BYTES = 64 * 1024
+MAX_OPENMODEL_ENDPOINTS = 16
+MAX_OPENMODEL_ROUTES = 32
+# At most this many handler threads may wait behind an endpoint's active
+# generation slots. Further requests fail locally instead of creating an
+# unbounded ThreadingHTTPServer queue under saturation.
+MAX_OPENMODEL_WAITERS_PER_ENDPOINT = 4
+OPENMODEL_ERROR_TIMEOUT_SECONDS = 2
+OPENMODEL_SLOT_TIMEOUT_SECONDS = RESPONSE_HEADER_TIMEOUT_SECONDS
+OPENMODEL_DOWNSTREAM_WRITE_TIMEOUT_SECONDS = 30
+MAX_OPENMODEL_IDENTITY_CHARS = 1024
+MAX_OPENMODEL_IDENTITY_BYTES = 4096
+OPENMODEL_CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
+# The signed snapshot schema already accepts only this exact endpoint form. The
+# router validates it again as it materializes transport state so a direct
+# RouterConfig construction cannot create a wider network boundary.
+OPENMODEL_BASE_URL_PATTERN = re.compile(
+    r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/v1", re.ASCII
+)
+OPENMODEL_NAME_PATTERN = re.compile(
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*", re.ASCII
+)
 # 402 joins the rate-limit statuses because it means the same thing to a
 # router: this model cannot serve the request now, so try the next peer.
 # xAI answers 402 when a Grok subscription's usage balance is spent, and
@@ -155,6 +188,15 @@ class InvalidRequestError(RouterError):
     pass
 
 
+class ControlError(RouterError):
+    """A fixed, non-secret response for a rejected control request."""
+
+    def __init__(self, status: int, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.kind = kind
+
+
 class UpstreamError(RouterError):
     """An upstream failure.
 
@@ -169,6 +211,10 @@ class UpstreamError(RouterError):
     def __init__(self, message: str, *, retryable: bool = True) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+class OpenModelClientWriteError(RouterError):
+    """A local client stopped accepting translated response bytes."""
 
 
 class RateLimitedError(RouterError):
@@ -257,6 +303,14 @@ def disclose_handoff(
     # An unexpected shape is left exactly as it is: a malformed system field
     # is the upstream's business, and rewriting it could invalidate the call.
     return system
+
+
+def utc_timestamp() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def retry_after_seconds(value: float | None) -> int | None:
@@ -378,6 +432,47 @@ class RateLimitCooldowns:
                 self._witnessed.pop(p, None)
             return sorted(self._provider_until)
 
+    def diagnostic_entries(
+        self, routes: dict[str, str]
+    ) -> list[dict[str, object]]:
+        """Return one bounded, metadata-only row for each live deadline."""
+        now = time.monotonic()
+        with self._lock:
+            expired_models = [m for m, d in self._until.items() if d <= now]
+            for model in expired_models:
+                del self._until[model]
+            expired_providers = [
+                provider
+                for provider, deadline in self._provider_until.items()
+                if deadline <= now
+            ]
+            for provider in expired_providers:
+                del self._provider_until[provider]
+                self._witnessed.pop(provider, None)
+            entries: list[dict[str, object]] = [
+                {
+                    "scope": "model",
+                    "model": model,
+                    "provider": routes[model],
+                    "remaining_seconds": max(
+                        1, int(self._until[model] - now + 0.5)
+                    ),
+                }
+                for model in sorted(self._until)
+                if model in routes
+            ]
+            entries.extend(
+                {
+                    "scope": "provider",
+                    "provider": provider,
+                    "remaining_seconds": max(
+                        1, int(self._provider_until[provider] - now + 0.5)
+                    ),
+                }
+                for provider in sorted(self._provider_until)
+            )
+        return entries
+
 
 def load_policy_schema():
     path = Path(__file__).with_name("airlock_policy.py")
@@ -395,6 +490,37 @@ def load_policy_schema():
     except Exception as exc:
         raise RouterError("managed router policy helper is unavailable") from exc
     return module
+
+
+_OPENMODEL_ADAPTER: Any = None
+_OPENMODEL_ADAPTER_LOCK = threading.Lock()
+
+
+def load_openmodel_adapter():
+    """Load the managed pure protocol adapter without expanding its authority."""
+
+    global _OPENMODEL_ADAPTER
+    with _OPENMODEL_ADAPTER_LOCK:
+        if _OPENMODEL_ADAPTER is not None:
+            return _OPENMODEL_ADAPTER
+        path = Path(__file__).with_name("airlock_openmodel_adapter.py")
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise RouterError("managed open-model adapter is unavailable")
+            spec = importlib.util.spec_from_file_location(
+                "airlock_router_openmodel_adapter", path
+            )
+            if spec is None or spec.loader is None:
+                raise RouterError("managed open-model adapter is unavailable")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+        except RouterError:
+            raise
+        except Exception as exc:
+            raise RouterError("managed open-model adapter is unavailable") from exc
+        _OPENMODEL_ADAPTER = module
+        return module
 
 
 def load_router_snapshot(path: str, digest: str):
@@ -593,6 +719,151 @@ class OpenRouterRoute(NamedTuple):
     effort_ceiling: str = "high"
 
 
+class OpenModelEndpoint(NamedTuple):
+    """One immutable loopback transport endpoint from the signed snapshot."""
+
+    base_url: str
+    trust: str
+    protocol: str
+    auth: str
+    max_concurrency: int
+
+    @property
+    def port(self) -> int:
+        match = OPENMODEL_BASE_URL_PATTERN.fullmatch(self.base_url)
+        if match is None:  # Construction is validated by RouterConfig.
+            raise RouterError("open-model endpoint configuration is invalid")
+        return int(match.group(1))
+
+
+class OpenModelRoute(NamedTuple):
+    """Immutable protocol capabilities and private binding for one wire model."""
+
+    endpoint: str
+    upstream_model: str
+    accepted_response_models: tuple[str, ...]
+    context_window: int
+    max_output_tokens: int
+    streaming: bool
+    tools: str
+    tool_choice: tuple[str, ...]
+
+
+def _valid_openmodel_identity(value: object) -> bool:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_OPENMODEL_IDENTITY_CHARS
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        return False
+    try:
+        return len(value.encode("utf-8", errors="strict")) <= MAX_OPENMODEL_IDENTITY_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
+def _validate_openmodel_endpoint(value: object) -> OpenModelEndpoint:
+    if type(value) is not OpenModelEndpoint:
+        raise RouterError("open-model endpoint configuration is invalid")
+    match = (
+        OPENMODEL_BASE_URL_PATTERN.fullmatch(value.base_url)
+        if type(value.base_url) is str
+        else None
+    )
+    if (
+        match is None
+        or int(match.group(1)) > 65535
+        or value.trust != "loopback"
+        or value.protocol != "openai-chat-completions-v1"
+        or value.auth != "none"
+        or type(value.max_concurrency) is not int
+        or not 1 <= value.max_concurrency <= 64
+    ):
+        raise RouterError("open-model endpoint configuration is invalid")
+    return OpenModelEndpoint(
+        base_url=value.base_url,
+        trust=value.trust,
+        protocol=value.protocol,
+        auth=value.auth,
+        max_concurrency=value.max_concurrency,
+    )
+
+
+def _validate_openmodel_route(
+    model: object,
+    value: object,
+    endpoint_ids: set[str],
+    adapter: Any,
+) -> tuple[OpenModelRoute, Any]:
+    if (
+        type(model) is not str
+        or not model.startswith("openmodel/")
+        or len(model) > len("openmodel/") + 40
+        or OPENMODEL_NAME_PATTERN.fullmatch(model.removeprefix("openmodel/")) is None
+        or type(value) is not OpenModelRoute
+        or type(value.endpoint) is not str
+        or value.endpoint not in endpoint_ids
+        or not _valid_openmodel_identity(value.upstream_model)
+    ):
+        raise RouterError("open-model route configuration is invalid")
+    if (
+        type(value.accepted_response_models) not in {tuple, list}
+        or not 1 <= len(value.accepted_response_models) <= 16
+        or type(value.tool_choice) not in {tuple, list}
+        or len(value.tool_choice) > 4
+    ):
+        # Check concrete bounded containers before copying them. In particular,
+        # never tuple() a caller-supplied generator during startup validation.
+        raise RouterError("open-model route configuration is invalid")
+    accepted = tuple(value.accepted_response_models)
+    choices = tuple(value.tool_choice)
+    if (
+        any(not _valid_openmodel_identity(identity) for identity in accepted)
+        or type(value.context_window) is not int
+        or not 1000 <= value.context_window <= 10_000_000
+        or type(value.max_output_tokens) is not int
+        or not 1 <= value.max_output_tokens <= value.context_window
+        or type(value.streaming) is not bool
+        or type(value.tools) is not str
+        or value.tools not in {"none", "single", "parallel"}
+        or any(type(choice) is not str for choice in choices)
+        or any(choice not in {"auto", "named", "none", "required"} for choice in choices)
+        or (value.tools == "none" and bool(choices))
+        or (value.tools != "none" and "auto" not in choices)
+    ):
+        raise RouterError("open-model route configuration is invalid")
+    if (
+        accepted != tuple(sorted(accepted))
+        or len(accepted) != len(set(accepted))
+        or choices != tuple(sorted(choices))
+        or len(choices) != len(set(choices))
+    ):
+        raise RouterError("open-model route configuration is invalid")
+    normalized = OpenModelRoute(
+        endpoint=value.endpoint,
+        upstream_model=value.upstream_model,
+        accepted_response_models=accepted,
+        context_window=value.context_window,
+        max_output_tokens=value.max_output_tokens,
+        streaming=value.streaming,
+        tools=value.tools,
+        tool_choice=choices,
+    )
+    try:
+        capabilities = adapter.OpenModelCapabilities(
+            context_window=normalized.context_window,
+            max_output_tokens=normalized.max_output_tokens,
+            supports_streaming=normalized.streaming,
+            tool_support=normalized.tools,
+            declared_tool_choice_modes=normalized.tool_choice,
+        )
+    except Exception as exc:
+        raise RouterError("open-model route configuration is invalid") from exc
+    return normalized, capabilities
+
+
 class RouterConfig:
     def __init__(
         self,
@@ -604,10 +875,14 @@ class RouterConfig:
         openrouter: dict[str, OpenRouterRoute] | None = None,
         openrouter_key: bytes | None = None,
         openrouter_url: str = OPENROUTER_URL,
+        openmodel_endpoints: dict[str, OpenModelEndpoint] | None = None,
+        openmodel: dict[str, OpenModelRoute] | None = None,
         failover: dict[str, tuple[str, ...]] | None = None,
         profile: str = "hybrid",
         root_model: str | None = None,
         context_windows: dict[str, int] | None = None,
+        route_categories: dict[str, str] | None = None,
+        effort_ceilings: dict[str, str] | None = None,
         compactors: dict[str, str] | None = None,
         overflow_shrink: str = "auto",
         anthropic_rate_limit: str = "native",
@@ -616,7 +891,9 @@ class RouterConfig:
         if not routes or any(
             not isinstance(model, str)
             or not model
-            or provider not in {"openai", "anthropic", "grok", "openrouter"}
+            or provider not in {
+                "openai", "anthropic", "grok", "openrouter", "openmodel"
+            }
             for model, provider in routes.items()
         ):
             raise RouterError("router model routes are invalid")
@@ -637,11 +914,15 @@ class RouterConfig:
             peer_list = tuple(peers)
             if (
                 source not in routes
+                or routes[source] == "openmodel"
                 or not peer_list
                 or len(peer_list) > MAX_FAILOVER_PEERS_PER_MODEL
                 or len(set(peer_list)) != len(peer_list)
                 or any(
-                    peer == source or peer not in routes for peer in peer_list
+                    peer == source
+                    or peer not in routes
+                    or routes.get(peer) == "openmodel"
+                    for peer in peer_list
                 )
             ):
                 raise RouterError("failover chains are invalid")
@@ -660,6 +941,69 @@ class RouterConfig:
             raise RouterError("OpenRouter route metadata is invalid")
         if openrouter_routes and openrouter_key is None:
             raise RouterError("OpenRouter credential is missing")
+
+        openmodel_route_ids = {
+            model for model, provider in routes.items() if provider == "openmodel"
+        }
+        if openmodel_endpoints is None:
+            raw_openmodel_endpoints: dict[str, OpenModelEndpoint] = {}
+        elif (
+            type(openmodel_endpoints) is not dict
+            or len(openmodel_endpoints) > MAX_OPENMODEL_ENDPOINTS
+        ):
+            raise RouterError("open-model configuration is invalid")
+        else:
+            raw_openmodel_endpoints = dict(openmodel_endpoints)
+        if openmodel is None:
+            raw_openmodel_routes: dict[str, OpenModelRoute] = {}
+        elif type(openmodel) is not dict or len(openmodel) > MAX_OPENMODEL_ROUTES:
+            raise RouterError("open-model configuration is invalid")
+        else:
+            raw_openmodel_routes = dict(openmodel)
+        if set(raw_openmodel_routes) != openmodel_route_ids:
+            raise RouterError("open-model routes and metadata do not agree")
+        adapter = load_openmodel_adapter() if openmodel_route_ids else None
+        normalized_endpoints: dict[str, OpenModelEndpoint] = {}
+        endpoint_urls: set[str] = set()
+        for endpoint_id, endpoint in raw_openmodel_endpoints.items():
+            if (
+                type(endpoint_id) is not str
+                or not 1 <= len(endpoint_id) <= 40
+                or OPENMODEL_NAME_PATTERN.fullmatch(endpoint_id) is None
+            ):
+                raise RouterError("open-model endpoint configuration is invalid")
+            normalized = _validate_openmodel_endpoint(endpoint)
+            if normalized.base_url in endpoint_urls:
+                raise RouterError("open-model endpoint configuration is invalid")
+            endpoint_urls.add(normalized.base_url)
+            normalized_endpoints[endpoint_id] = normalized
+        normalized_openmodel: dict[str, OpenModelRoute] = {}
+        openmodel_capabilities: dict[str, Any] = {}
+        request_bindings: set[tuple[str, str]] = set()
+        response_bindings: set[tuple[str, str]] = set()
+        referenced_endpoints: set[str] = set()
+        for openmodel_id, route in raw_openmodel_routes.items():
+            normalized, capabilities = _validate_openmodel_route(
+                openmodel_id, route, set(normalized_endpoints), adapter
+            )
+            request_binding = (normalized.endpoint, normalized.upstream_model)
+            accepted_bindings = {
+                (normalized.endpoint, identity)
+                for identity in normalized.accepted_response_models
+            }
+            if (
+                request_binding in request_bindings
+                or accepted_bindings & response_bindings
+            ):
+                raise RouterError("open-model route configuration is invalid")
+            request_bindings.add(request_binding)
+            response_bindings.update(accepted_bindings)
+            referenced_endpoints.add(normalized.endpoint)
+            normalized_openmodel[openmodel_id] = normalized
+            openmodel_capabilities[openmodel_id] = capabilities
+        if set(normalized_endpoints) != referenced_endpoints:
+            raise RouterError("open-model endpoint configuration is invalid")
+
         self.routes = dict(routes)
         self.profile = profile
         self.root_model = root_model
@@ -667,6 +1011,10 @@ class RouterConfig:
         self.failover = failover_map
         self.openrouter_routes = metadata
         self.openrouter_key = bytes(openrouter_key) if openrouter_key is not None else None
+        self.openmodel_endpoints = MappingProxyType(normalized_endpoints)
+        self.openmodel_routes = MappingProxyType(normalized_openmodel)
+        self.openmodel_capabilities = MappingProxyType(openmodel_capabilities)
+        self.openmodel_adapter = adapter
         # GPT (Codex) and Grok subscription models share the loopback proxy;
         # OpenRouter-only snapshots deliberately have no subscription upstream.
         subscription_routes = {
@@ -705,7 +1053,28 @@ class RouterConfig:
                 raise RouterError("compactor assignments are invalid")
         if overflow_shrink not in {"auto", "truncate", "summarize", "off"}:
             raise RouterError("overflow shrink mode is invalid")
+        if route_categories is not None and type(route_categories) is not dict:
+            raise RouterError("route categories are invalid")
+        raw_categories = dict(route_categories or {})
+        if any(
+            model not in routes or category not in ROUTE_CATEGORIES
+            for model, category in raw_categories.items()
+        ):
+            raise RouterError("route categories are invalid")
+        if effort_ceilings is not None and type(effort_ceilings) is not dict:
+            raise RouterError("effort ceilings are invalid")
+        raw_effort_ceilings = dict(effort_ceilings or {})
+        if any(
+            model not in routes or ceiling not in ROUTE_EFFORT_LEVELS
+            for model, ceiling in raw_effort_ceilings.items()
+        ):
+            raise RouterError("effort ceilings are invalid")
         self.context_windows = windows
+        self.route_categories = {
+            model: raw_categories.get(model, "unknown")
+            for model in routes
+        }
+        self.effort_ceilings = raw_effort_ceilings
         self.compactors = compactors_map
         self.overflow_shrink = overflow_shrink
         # Claude Code handles Anthropic's own 429 natively: it recognizes a
@@ -729,6 +1098,16 @@ class RouterConfig:
         # those requests were refused and compaction died with nothing to show
         # for it. This is the model such a request is served by instead: the
         # same seat Claude Code was already told to use.
+        # Local open-model routes are intentionally request-only. They must not
+        # become Claude Code's implicit background/compaction substitute, which
+        # would silently send unrelated work to an unsigned local service.
+        if background_model is not None and type(background_model) is not str:
+            raise RouterError("router background model is invalid")
+        if (
+            background_model in self.routes
+            and self.routes[background_model] == "openmodel"
+        ):
+            raise RouterError("open-model routes cannot be background substitutes")
         self.background_model = (
             background_model
             if background_model in self.routes
@@ -740,10 +1119,37 @@ class RouterServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, address: tuple[str, int], config: RouterConfig) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        config: RouterConfig,
+        *,
+        owner_pid: int | None = None,
+        workdir: str | None = None,
+    ) -> None:
         super().__init__(address, RouterHandler)
         self.config = config
+        self.started_at = utc_timestamp()
+        self.owner_pid = os.getppid() if owner_pid is None else owner_pid
+        self.workdir = workdir
+        self.last_request_at: str | None = None
+        self.routing_lock = threading.Lock()
+        self.pinned_model: str | None = None
+        self.context_observation: dict[str, object] | None = None
+        self.openmodel_endpoint_slots = MappingProxyType({
+            endpoint_id: threading.BoundedSemaphore(endpoint.max_concurrency)
+            for endpoint_id, endpoint in config.openmodel_endpoints.items()
+        })
+        self.openmodel_endpoint_waiters = MappingProxyType({
+            endpoint_id: threading.BoundedSemaphore(
+                MAX_OPENMODEL_WAITERS_PER_ENDPOINT
+            )
+            for endpoint_id in config.openmodel_endpoints
+        })
         self.instance_id = secrets.token_hex(8)
+        # This capability is written only to the private registry. It must not
+        # enter diagnostics, the ready marker, request forwarding, or errors.
+        self.control_token = secrets.token_urlsafe(32)
         self.rate_limits = RateLimitCooldowns()
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
@@ -756,11 +1162,115 @@ class RouterServer(ThreadingHTTPServer):
         self.shrink_cache: "OrderedDict[bytes, str]" = OrderedDict()
         self.diagnostics_lock = threading.Lock()
         self.record_diagnostic({
-            "kind": "session_model_pinned",
-            "profile": config.profile,
+            "kind": "session_root_selected",
             "model": config.root_model,
             "provider": config.root_provider,
         })
+
+    def snapshot_pinned_model(self) -> str | None:
+        """Return the pin one request must use for its complete resolution."""
+        with self.routing_lock:
+            return self.pinned_model
+
+    def pin_route(self, model: str) -> dict[str, object]:
+        """Pin future requests after one short, current-state validation."""
+        with self.routing_lock:
+            provider = self.config.routes.get(model)
+            if provider is None:
+                raise ControlError(
+                    400,
+                    "model_not_enabled",
+                    "Model is not enabled for this session",
+                )
+            window = self.config.context_windows.get(model)
+            with self.diagnostics_lock:
+                context = (
+                    None
+                    if self.context_observation is None
+                    else dict(self.context_observation)
+                )
+            observed = context.get("input_tokens") if context is not None else None
+            known_fit = type(observed) is int and type(window) is int
+            previous = self.pinned_model
+            if previous == model:
+                # A response may be lost after the transition. Retrying the
+                # same target must confirm convergence even if the route began
+                # cooling or the conversation grew in the meantime.
+                context_check = (
+                    "too_large"
+                    if known_fit and observed > window
+                    else "fits" if known_fit else "unknown"
+                )
+                return {
+                    "ok": True,
+                    "action": "pin",
+                    "instance_id": self.instance_id,
+                    "changed": False,
+                    "previous_pinned_model": previous,
+                    "pinned_model": model,
+                    "route": {
+                        "model": model,
+                        "provider": provider,
+                        "context_window": window,
+                        "context_check": context_check,
+                    },
+                }
+            if self.rate_limits.active(model, provider):
+                raise ControlError(
+                    409,
+                    "route_cooling",
+                    "The selected route is cooling",
+                )
+            if known_fit and observed > window:
+                raise ControlError(
+                    409,
+                    "context_too_large",
+                    "The conversation does not fit the selected route",
+                )
+            context_check = "fits" if known_fit else "unknown"
+            self.pinned_model = model
+            self.record_diagnostic({
+                "kind": "session_model_pinned",
+                "model": model,
+                "provider": provider,
+            })
+            return {
+                "ok": True,
+                "action": "pin",
+                "instance_id": self.instance_id,
+                "changed": True,
+                "previous_pinned_model": previous,
+                "pinned_model": model,
+                "route": {
+                    "model": model,
+                    "provider": provider,
+                    "context_window": window,
+                    "context_check": context_check,
+                },
+            }
+
+    def unpin_route(self) -> dict[str, object]:
+        """Restore ordinary per-request routing without consulting cooldowns."""
+        with self.routing_lock:
+            previous = self.pinned_model
+            changed = previous is not None
+            self.pinned_model = None
+            if changed:
+                assert previous is not None
+                self.record_diagnostic({
+                    "kind": "session_model_unpinned",
+                    "model": previous,
+                    "provider": self.config.routes[previous],
+                })
+            return {
+                "ok": True,
+                "action": "unpin",
+                "instance_id": self.instance_id,
+                "changed": changed,
+                "previous_pinned_model": previous,
+                "pinned_model": None,
+                "route": None,
+            }
 
     def server_bind(self) -> None:
         # http.server's own server_bind resolves the bound address with
@@ -775,13 +1285,30 @@ class RouterServer(ThreadingHTTPServer):
         self.server_name = host
         self.server_port = port
 
-    def record_diagnostic(self, event: dict[str, object]) -> None:
-        stored = dict(event)
-        stored["timestamp"] = (
-            datetime.now(timezone.utc)
-            .isoformat(timespec="seconds")
-            .replace("+00:00", "Z")
-        )
+    def _diagnostic_value(self, value: object) -> object:
+        """Remove an accidentally echoed capability from bounded events."""
+        if isinstance(value, str):
+            return value.replace(self.control_token, "[redacted]")
+        if isinstance(value, dict):
+            return {
+                self._diagnostic_value(key): self._diagnostic_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._diagnostic_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._diagnostic_value(item) for item in value)
+        return value
+
+    def record_diagnostic(
+        self,
+        event: dict[str, object],
+        *,
+        observe_context: bool = True,
+    ) -> None:
+        stored = self._diagnostic_value(event)
+        assert isinstance(stored, dict)
+        stored["timestamp"] = utc_timestamp()
         with self.diagnostics_lock:
             self.diagnostics.append(stored)
             provider = stored.get("provider")
@@ -798,6 +1325,40 @@ class RouterServer(ThreadingHTTPServer):
                 or not isinstance(outcome, str)
             ):
                 return
+            self.last_request_at = str(stored["timestamp"])
+            if outcome == "completed" and observe_context:
+                usage = stored.get("usage")
+                input_tokens = 0
+                observed_input = False
+                if isinstance(usage, dict):
+                    fields = ["input_tokens"]
+                    # The open-model adapter maps OpenAI prompt_tokens to
+                    # input_tokens whole. Its cached-token count is a subset,
+                    # unlike native Anthropic usage where cache reads and
+                    # creations sit outside input_tokens and must be added.
+                    if provider != "openmodel":
+                        fields.extend((
+                            "cache_read_input_tokens",
+                            "cache_creation_input_tokens",
+                        ))
+                    for field in fields:
+                        value = usage.get(field)
+                        if (
+                            isinstance(value, int)
+                            and not isinstance(value, bool)
+                            and value >= 0
+                        ):
+                            observed_input = True
+                            input_tokens += value
+                self.context_observation = (
+                    {
+                        "model": model,
+                        "input_tokens": input_tokens,
+                        "observed_at": str(stored["timestamp"]),
+                    }
+                    if observed_input
+                    else None
+                )
             key = (provider, model)
             summary = self.usage_summary.setdefault(key, {
                 "provider": provider,
@@ -828,22 +1389,60 @@ class RouterServer(ThreadingHTTPServer):
                 }
 
     def diagnostic_report(self) -> dict[str, object]:
-        with self.diagnostics_lock:
-            return {
-                "instance_id": self.instance_id,
-                "profile": self.config.profile,
-                "root_model": self.config.root_model,
-                "root_provider": self.config.root_provider,
-                "rate_limit_cooldowns": self.rate_limits.active_models(),
-                "rate_limit_provider_cooldowns": (
-                    self.rate_limits.active_providers()
-                ),
-                "events": [dict(event) for event in self.diagnostics],
-                "summary": [
+        # Controls use this same routing-then-diagnostics order. Taking both
+        # briefly keeps a pin and its transition event in one coherent view.
+        with self.routing_lock:
+            pinned_model = self.pinned_model
+            with self.diagnostics_lock:
+                last_request_at = self.last_request_at
+                context = (
+                    None
+                    if self.context_observation is None
+                    else dict(self.context_observation)
+                )
+                events = [dict(event) for event in self.diagnostics]
+                summary = [
                     dict(self.usage_summary[key])
                     for key in sorted(self.usage_summary)
-                ],
-            }
+                ]
+        return {
+            "instance_id": self.instance_id,
+            "profile": self.config.profile,
+            "root_model": self.config.root_model,
+            "root_provider": self.config.root_provider,
+            "started_at": self.started_at,
+            "owner_pid": self.owner_pid,
+            "workdir": self.workdir,
+            "last_request_at": last_request_at,
+            "pinned_model": pinned_model,
+            "routes": [
+                {
+                    "model": model,
+                    "provider": self.config.routes[model],
+                    "category": self.config.route_categories[model],
+                    "context_window": self.config.context_windows.get(model),
+                    "effort_ceiling": self.config.effort_ceilings.get(model),
+                    "metered": self.config.route_categories[model] in {
+                        "extra", "metered"
+                    },
+                }
+                for model in sorted(self.config.routes)
+            ],
+            "cooldowns": self.rate_limits.diagnostic_entries(
+                self.config.routes
+            ),
+            "chains": {
+                model: list(self.config.failover[model])
+                for model in sorted(self.config.failover)
+            },
+            "context": context,
+            "rate_limit_cooldowns": self.rate_limits.active_models(),
+            "rate_limit_provider_cooldowns": (
+                self.rate_limits.active_providers()
+            ),
+            "events": events,
+            "summary": summary,
+        }
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -858,16 +1457,94 @@ class RouterHandler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
+    @staticmethod
+    def _is_control_path(path: str) -> bool:
+        return path == "/control" or path.startswith("/control/")
+
+    def _single_header(self, name: str) -> str | None:
+        values = self.headers.get_all(name) or []
+        return values[0] if len(values) == 1 else None
+
+    def _control_authorized(self) -> bool:
+        token = self._single_header("X-Airlock-Control-Token")
+        origins = self.headers.get_all("Origin") or []
+        if token is None or len(origins) > 1:
+            return False
+        if origins and not control_origin_allowed(origins[0]):
+            return False
+        try:
+            supplied = token.encode("utf-8")
+        except UnicodeError:
+            return False
+        return hmac.compare_digest(
+            supplied, self.router.control_token.encode("ascii")
+        )
+
+    def handle_control(self, path: str) -> None:
+        if not self._control_authorized():
+            self.send_control_error(
+                403, "forbidden", "Control request is forbidden"
+            )
+            return
+        content_type = self._single_header("Content-Type")
+        if content_type is None or not control_json_content_type_allowed(
+            content_type
+        ):
+            self.send_control_error(
+                400, "invalid_request", "Control request is invalid"
+            )
+            return
+        try:
+            body = self.read_control_body()
+            payload = control_request_payload(body)
+            if path == "/control/pin":
+                if set(payload) != {"model"} or type(payload["model"]) is not str:
+                    raise ControlError(
+                        400, "invalid_request", "Control request is invalid"
+                    )
+                result = self.router.pin_route(payload["model"])
+            else:
+                if payload:
+                    raise ControlError(
+                        400, "invalid_request", "Control request is invalid"
+                    )
+                result = self.router.unpin_route()
+        except ControlError as exc:
+            self.send_control_error(exc.status, exc.kind, str(exc))
+            return
+        self.send_control_json(200, result)
+
     def do_HEAD(self) -> None:
-        if urlsplit(self.path).path != "/":
+        path = urlsplit(self.path).path
+        if self._is_control_path(path):
+            self.send_control_error(404, "not_found", "Route not found")
+            return
+        if path != "/":
             self.send_error_response(404, "not_found", "Route not found")
             return
         self.send_response(200)
         self.send_header("content-length", "0")
         self.end_headers()
 
+    def _unsupported_method(self) -> None:
+        path = urlsplit(self.path).path
+        if self._is_control_path(path):
+            self.send_control_error(404, "not_found", "Route not found")
+            return
+        self.send_error(501, "Unsupported method")
+
+    do_CONNECT = _unsupported_method
+    do_DELETE = _unsupported_method
+    do_OPTIONS = _unsupported_method
+    do_PATCH = _unsupported_method
+    do_PUT = _unsupported_method
+    do_TRACE = _unsupported_method
+
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if self._is_control_path(path):
+            self.send_control_error(404, "not_found", "Route not found")
+            return
         if path == "/healthz":
             self.send_json(200, {
                 "ok": True,
@@ -888,7 +1565,14 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.send_error_response(404, "not_found", "Route not found")
 
     def do_POST(self) -> None:
-        path = urlsplit(self.path).path
+        target = urlsplit(self.path)
+        path = target.path
+        if self._is_control_path(path):
+            if path not in CONTROL_ENDPOINTS or target.query or target.fragment:
+                self.send_control_error(404, "not_found", "Route not found")
+            else:
+                self.handle_control(path)
+            return
         if path not in ALLOWED_POST_PATHS:
             self.send_error_response(404, "not_found", "Route not found")
             return
@@ -903,35 +1587,37 @@ class RouterHandler(BaseHTTPRequestHandler):
         # a request rejected during validation never reaches the attempt loop,
         # and no stream has been committed in that case.
         shrunk_committed = False
+        self._context_observation_eligible = False
         try:
             body = self.read_body()
+            body, model, provider = self.resolve_request_route(body)
             original_body = body
             body_size = len(body)
-            model = request_model(body)
-            provider = self.router.config.routes.get(model)
-            if provider is None:
-                substitute = self.background_substitute(model)
-                if substitute is None:
-                    # Recorded before the refusal so an unroutable model is
-                    # diagnosable. Without this the request left no trace at
-                    # all and the only symptom was a bare 400 at the client.
-                    self.router.record_diagnostic({
-                        "kind": "model_not_enabled",
-                        "model": model,
-                    })
+            if provider == "openmodel":
+                if path != "/v1/messages":
                     raise InvalidRequestError(
-                        "Model is not enabled for this session"
+                        "Open-model routes support only the Messages operation"
                     )
-                self.router.record_diagnostic({
-                    "kind": "background_model_substituted",
-                    "requested": model,
-                    "model": substitute,
-                })
-                body = self.retarget_request_body(body, substitute)
-                original_body = body
-                body_size = len(body)
-                model = substitute
-                provider = self.router.config.routes[model]
+                translated_body, streaming, response_constraints = (
+                    self.prepare_openmodel_request(body, model)
+                )
+                status, response_bytes, outcome, usage = self.forward_openmodel(
+                    model,
+                    translated_body,
+                    streaming=streaming,
+                    response_constraints=response_constraints,
+                )
+                self.record_request(
+                    provider,
+                    model,
+                    status,
+                    body_size,
+                    response_bytes,
+                    started,
+                    outcome,
+                    usage,
+                )
+                return
             if provider == "openrouter" and path != "/v1/messages":
                 raise InvalidRequestError(
                     "OpenRouter supports only the Messages operation in this release"
@@ -1165,6 +1851,9 @@ class RouterHandler(BaseHTTPRequestHandler):
                 extra=(
                     {"failover_from": failover_from} if failover_from else None
                 ),
+                observe_context=(
+                    self._context_observation_eligible and not shrunk_attempted
+                ),
             )
             if (
                 failover_from is not None
@@ -1290,6 +1979,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         outcome: str,
         usage: dict[str, int] | None = None,
         extra: dict[str, object] | None = None,
+        observe_context: bool | None = None,
     ) -> None:
         event: dict[str, object] = {
             "provider": provider,
@@ -1304,7 +1994,11 @@ class RouterHandler(BaseHTTPRequestHandler):
             event["usage"] = dict(usage)
         if extra:
             event.update(extra)
-        self.router.record_diagnostic(event)
+        if observe_context is None:
+            observe_context = self._context_observation_eligible
+        self.router.record_diagnostic(
+            event, observe_context=observe_context
+        )
 
     def record_openrouter_effort_clamp(
         self, model: str, clamp: OpenRouterEffortClamp
@@ -1364,6 +2058,8 @@ class RouterHandler(BaseHTTPRequestHandler):
         for peer in self.router.config.failover.get(source, ()):
             if peer not in self.router.config.routes:
                 continue
+            if self.router.config.routes[peer] == "openmodel":
+                continue
             if (
                 self.router.config.routes[peer] == "openrouter"
                 and urlsplit(self.path).path != "/v1/messages"
@@ -1399,6 +2095,81 @@ class RouterHandler(BaseHTTPRequestHandler):
             "peer_window": self.router.config.context_windows.get(peer),
         })
 
+    def rewrite_request_body(
+        self, body: bytes, target_model: str, source_model: str | None = None
+    ) -> bytes:
+        """Change only the model identity before transport preparation."""
+        payload = request_payload(body)
+        payload.pop("provider", None)
+        payload["model"] = target_model
+        if source_model is not None and source_model != target_model:
+            payload["system"] = disclose_handoff(
+                payload.get("system"), source_model, target_model
+            )
+        try:
+            return json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(
+                "Request body could not be re-targeted"
+            ) from exc
+
+    def resolve_request_route(
+        self, body: bytes
+    ) -> tuple[bytes, str, str]:
+        """Resolve one request and snapshot its effective pin exactly once."""
+        requested_model = request_model(body)
+        resolved_model = requested_model
+        provider = self.router.config.routes.get(resolved_model)
+        used_background_substitution = False
+        if provider is None:
+            substitute = self.background_substitute(requested_model)
+            if substitute is None:
+                # Unknown requests stay invalid even while a pin exists. A pin
+                # is an override for enabled request paths, not an allowlist
+                # bypass for arbitrary model IDs.
+                self.router.record_diagnostic({
+                    "kind": "model_not_enabled",
+                    "model": requested_model,
+                })
+                raise InvalidRequestError(
+                    "Model is not enabled for this session"
+                )
+            self.router.record_diagnostic({
+                "kind": "background_model_substituted",
+                "requested": requested_model,
+                "model": substitute,
+            })
+            resolved_model = substitute
+            provider = self.router.config.routes[resolved_model]
+            used_background_substitution = True
+            body = self.rewrite_request_body(body, resolved_model)
+
+        pinned_model = self.router.snapshot_pinned_model()
+        effective_model = pinned_model or resolved_model
+        session_foreground_model = pinned_model or self.router.config.root_model
+        configured_background = self.router.config.background_model
+        directly_requested_background = (
+            configured_background is not None
+            and requested_model == configured_background
+            and requested_model != self.router.config.root_model
+        )
+        self._context_observation_eligible = (
+            not used_background_substitution
+            and not directly_requested_background
+            and effective_model == session_foreground_model
+        )
+        if effective_model != resolved_model:
+            body = self.rewrite_request_body(
+                body, effective_model, resolved_model
+            )
+        return body, effective_model, self.router.config.routes[effective_model]
+
     def retarget_request_body(
         self, body: bytes, target_model: str, source_model: str | None = None
     ) -> bytes:
@@ -1413,25 +2184,9 @@ class RouterHandler(BaseHTTPRequestHandler):
         prompt still describes the model that was asked for, so without this
         it answers as that model and states its identity wrongly when asked.
         """
-        payload = request_payload(body)
-        payload.pop("provider", None)
-        payload["model"] = target_model
-        if source_model is not None and source_model != target_model:
-            payload["system"] = disclose_handoff(
-                payload.get("system"), source_model, target_model
-            )
-        try:
-            cleaned = json.dumps(
-                payload,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-                allow_nan=False,
-            ).encode("ascii")
-        except (TypeError, ValueError) as exc:
-            raise InvalidRequestError(
-                "Request body could not be re-targeted"
-            ) from exc
+        cleaned = self.rewrite_request_body(
+            body, target_model, source_model
+        )
         if self.router.config.routes[target_model] == "openrouter":
             prepared, stripped_tools, effort_clamp = prepare_openrouter_request(
                 cleaned,
@@ -1460,7 +2215,11 @@ class RouterHandler(BaseHTTPRequestHandler):
     def background_substitute(self, model: str) -> str | None:
         """The seated background model to serve an unrouted Haiku request."""
         target = self.router.config.background_model
-        if target is None or target == model:
+        if (
+            target is None
+            or target == model
+            or self.router.config.routes.get(target) == "openmodel"
+        ):
             return None
         if self.BACKGROUND_SUBSTITUTABLE.fullmatch(model) is None:
             return None
@@ -1750,7 +2509,8 @@ class RouterHandler(BaseHTTPRequestHandler):
                 b"data: " + payload + b"\n\n"
             )
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+        except (TimeoutError, BrokenPipeError, ConnectionAbortedError,
+                ConnectionResetError):
             self.close_connection = True
 
     def _call_compactor(
@@ -2125,6 +2885,41 @@ class RouterHandler(BaseHTTPRequestHandler):
         )
 
 
+    def read_control_body(self) -> bytes:
+        if self.headers.get("transfer-encoding"):
+            raise ControlError(
+                400, "invalid_request", "Control request is invalid"
+            )
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) != 1 or re.fullmatch(r"[0-9]+", lengths[0]) is None:
+            raise ControlError(
+                400, "invalid_request", "Control request is invalid"
+            )
+        normalized_length = lengths[0].lstrip("0") or "0"
+        maximum = str(MAX_CONTROL_REQUEST_BYTES)
+        if (
+            len(normalized_length) > len(maximum)
+            or (
+                len(normalized_length) == len(maximum)
+                and normalized_length > maximum
+            )
+        ):
+            raise ControlError(
+                413, "request_too_large", "Control request body is too large"
+            )
+        length = int(normalized_length)
+        if length <= 0:
+            raise ControlError(
+                400, "invalid_request", "Control request is invalid"
+            )
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ControlError(
+                400, "invalid_request", "Control request is invalid"
+            )
+        self._control_body_consumed = True
+        return body
+
     def read_body(self) -> bytes:
         if self.headers.get("transfer-encoding"):
             raise InvalidRequestError("Chunked request bodies are not supported")
@@ -2141,6 +2936,384 @@ class RouterHandler(BaseHTTPRequestHandler):
         if len(body) != length:
             raise InvalidRequestError("Request body ended early")
         return body
+
+    def prepare_openmodel_request(
+        self, body: bytes, model: str
+    ) -> tuple[bytes, bool, Any]:
+        """Translate one Anthropic request before opening a loopback socket."""
+
+        route = self.router.config.openmodel_routes[model]
+        capabilities = self.router.config.openmodel_capabilities[model]
+        adapter = self.router.config.openmodel_adapter
+        if adapter is None:
+            raise InvalidRequestError("Open-model routing is unavailable")
+        payload = request_payload(body)
+        try:
+            translated = adapter.translate_request(
+                payload,
+                upstream_model=route.upstream_model,
+                capabilities=capabilities,
+            )
+            response_constraints = adapter.derive_response_constraints(translated)
+            encoded = json.dumps(
+                translated,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        except adapter.AdapterError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(
+                "Open-model request translation failed"
+            ) from exc
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise InvalidRequestError("Translated request body is too large")
+        return encoded, translated.get("stream") is True, response_constraints
+
+    def _start_openmodel_stream(self) -> None:
+        # The endpoint slot remains held while bytes are delivered. Bound writes
+        # before committing the 200 so a client that stops reading cannot pin a
+        # local generation slot indefinitely.
+        self.connection.settimeout(OPENMODEL_DOWNSTREAM_WRITE_TIMEOUT_SECONDS)
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def _write_openmodel_stream_frame(self, frame: bytes) -> None:
+        try:
+            self.wfile.write(frame)
+            self.wfile.flush()
+        except OSError as exc:
+            raise OpenModelClientWriteError from exc
+
+    def _write_openmodel_response(self, body: bytes) -> None:
+        # Non-stream responses keep the endpoint slot until the full body is
+        # delivered too. Apply the same bound before headers so a client that
+        # stops reading cannot pin the local server through a JSON response.
+        self.connection.settimeout(OPENMODEL_DOWNSTREAM_WRITE_TIMEOUT_SECONDS)
+        self.close_connection = True
+        try:
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+        except OSError as exc:
+            raise OpenModelClientWriteError from exc
+
+    def _emit_openmodel_protocol_error(self) -> None:
+        self._emit_stream_error(
+            502,
+            "api_error",
+            "The selected open-model upstream returned an invalid response",
+        )
+        self.close_connection = True
+
+    def forward_openmodel(
+        self,
+        model: str,
+        body: bytes,
+        *,
+        streaming: bool,
+        response_constraints: Any,
+    ) -> tuple[int, int, str, dict[str, int] | None]:
+        """Call one signed loopback Chat Completions endpoint and translate it."""
+
+        route = self.router.config.openmodel_routes[model]
+        endpoint = self.router.config.openmodel_endpoints[route.endpoint]
+        capabilities = self.router.config.openmodel_capabilities[model]
+        adapter = self.router.config.openmodel_adapter
+        if adapter is None:
+            raise UpstreamError("Open-model routing is unavailable", retryable=False)
+        semaphore = self.router.openmodel_endpoint_slots[route.endpoint]
+        waiter_semaphore = self.router.openmodel_endpoint_waiters[route.endpoint]
+        connection: http.client.HTTPConnection | None = None
+        response: http.client.HTTPResponse | None = None
+        headers_sent = False
+        downstream_bytes = 0
+        upstream_bytes = 0
+        observer = UsageObserver()
+        acquired = False
+        waiting = False
+        try:
+            if semaphore.acquire(blocking=False):
+                acquired = True
+            else:
+                if not waiter_semaphore.acquire(blocking=False):
+                    self.record_sanitized_error("openmodel", model, 503)
+                    self.safe_error_response(
+                        503,
+                        "overloaded_error",
+                        "The selected open-model route is at local capacity",
+                    )
+                    return 503, 0, "endpoint_capacity_rejected", None
+                waiting = True
+                if not semaphore.acquire(timeout=OPENMODEL_SLOT_TIMEOUT_SECONDS):
+                    self.record_sanitized_error("openmodel", model, 503)
+                    self.safe_error_response(
+                        503,
+                        "overloaded_error",
+                        "The selected open-model route is at local capacity",
+                    )
+                    return 503, 0, "endpoint_capacity_timeout", None
+                acquired = True
+                waiter_semaphore.release()
+                waiting = False
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", endpoint.port, timeout=CONNECT_TIMEOUT_SECONDS
+            )
+            connection.connect()
+            if connection.sock is not None:
+                connection.sock.settimeout(RESPONSE_HEADER_TIMEOUT_SECONDS)
+            connection.request(
+                "POST",
+                OPENMODEL_CHAT_COMPLETIONS_PATH,
+                body=body,
+                headers=openmodel_headers(len(body)),
+            )
+            response = connection.getresponse()
+            status = response.status
+            if 300 <= status < 400:
+                consume_openmodel_error(connection, response)
+                self.record_sanitized_error("openmodel", model, 400)
+                self.safe_error_response(
+                    400,
+                    "invalid_request_error",
+                    "Open-model upstream redirects are not allowed",
+                )
+                return 400, 0, "upstream_rejected", None
+            if not 200 <= status < 300:
+                consume_openmodel_error(connection, response)
+                local_status = status if 400 <= status <= 599 else 502
+                kind = (
+                    "rate_limit_error"
+                    if status in RATE_LIMIT_STATUS_CODES
+                    else "api_error"
+                )
+                self.record_sanitized_error("openmodel", model, local_status)
+                self.safe_error_response(
+                    local_status,
+                    kind,
+                    "The selected open-model upstream rejected the request",
+                )
+                return local_status, 0, "upstream_error", None
+
+            set_stream_timeout(connection, response)
+            encoding = (response.getheader("content-encoding") or "").strip().lower()
+            if encoding not in {"", "identity"}:
+                raise UpstreamError(
+                    "Open-model upstream response encoding is unsupported",
+                    retryable=False,
+                )
+            expected_length = openmodel_content_length(response)
+            if (
+                expected_length is not None
+                and expected_length > MAX_OPENMODEL_JSON_RESPONSE_BYTES
+            ):
+                raise UpstreamError(
+                    "Open-model upstream response is too large", retryable=False
+                )
+            content_type = (response.getheader("content-type") or "").lower()
+
+            if streaming:
+                if content_type.split(";", 1)[0].strip() != "text/event-stream":
+                    raise UpstreamError(
+                        "Open-model upstream response type is unsupported",
+                        retryable=False,
+                    )
+                translator = adapter.OpenModelSSETranslator(
+                    wire_model=model,
+                    accepted_response_models=route.accepted_response_models,
+                    capabilities=capabilities,
+                    response_constraints=response_constraints,
+                )
+                observer.configure("text/event-stream", "identity")
+                while True:
+                    chunk = response.read1(16 * 1024)
+                    if not chunk:
+                        break
+                    upstream_bytes += len(chunk)
+                    if upstream_bytes > MAX_OPENMODEL_JSON_RESPONSE_BYTES:
+                        if headers_sent:
+                            self._emit_openmodel_protocol_error()
+                            return 200, downstream_bytes, "upstream_error", observer.snapshot()
+                        raise UpstreamError(
+                            "Open-model upstream response is too large",
+                            retryable=False,
+                        )
+                    try:
+                        frames = translator.feed(chunk)
+                    except adapter.AdapterError as exc:
+                        if headers_sent:
+                            self._emit_openmodel_protocol_error()
+                            return 200, downstream_bytes, "upstream_error", observer.snapshot()
+                        raise UpstreamError(
+                            "Open-model upstream response is invalid",
+                            retryable=False,
+                        ) from exc
+                    if not frames:
+                        continue
+                    if not translator.identity_validated:
+                        raise UpstreamError(
+                            "Open-model upstream response is invalid",
+                            retryable=False,
+                        )
+                    if not headers_sent:
+                        self._start_openmodel_stream()
+                        headers_sent = True
+                    for frame in frames:
+                        downstream_bytes += len(frame)
+                        self._write_openmodel_stream_frame(frame)
+                        if translator.upstream_usage_received:
+                            observer.observe(frame)
+                if expected_length is not None and upstream_bytes != expected_length:
+                    if headers_sent:
+                        self._emit_openmodel_protocol_error()
+                        return 200, downstream_bytes, "upstream_interrupted", observer.snapshot()
+                    raise UpstreamError(
+                        "Open-model upstream response ended early",
+                        retryable=False,
+                    )
+                try:
+                    frames = translator.finish()
+                except adapter.AdapterError as exc:
+                    if headers_sent:
+                        self._emit_openmodel_protocol_error()
+                        return 200, downstream_bytes, "upstream_error", observer.snapshot()
+                    raise UpstreamError(
+                        "Open-model upstream response is invalid",
+                        retryable=False,
+                    ) from exc
+                if frames:
+                    if not translator.identity_validated:
+                        raise UpstreamError(
+                            "Open-model upstream response is invalid",
+                            retryable=False,
+                        )
+                    if not headers_sent:
+                        self._start_openmodel_stream()
+                        headers_sent = True
+                    for frame in frames:
+                        downstream_bytes += len(frame)
+                        self._write_openmodel_stream_frame(frame)
+                        if translator.upstream_usage_received:
+                            observer.observe(frame)
+                if not headers_sent:
+                    raise UpstreamError(
+                        "Open-model upstream response is invalid",
+                        retryable=False,
+                    )
+                if translator.upstream_usage_received:
+                    observer.finish()
+                return 200, downstream_bytes, "completed", observer.snapshot()
+
+            if content_type.split(";", 1)[0].strip() != "application/json":
+                raise UpstreamError(
+                    "Open-model upstream response type is unsupported",
+                    retryable=False,
+                )
+            raw = bytearray()
+            while True:
+                chunk = response.read1(16 * 1024)
+                if not chunk:
+                    break
+                upstream_bytes += len(chunk)
+                if upstream_bytes > MAX_OPENMODEL_JSON_RESPONSE_BYTES:
+                    raise UpstreamError(
+                        "Open-model upstream response is too large",
+                        retryable=False,
+                    )
+                raw.extend(chunk)
+            if expected_length is not None and upstream_bytes != expected_length:
+                raise UpstreamError(
+                    "Open-model upstream response ended early", retryable=False
+                )
+            try:
+                completion = strict_json_loads(bytes(raw))
+                translated_response = adapter.translate_nonstream_response(
+                    completion,
+                    wire_model=model,
+                    accepted_response_models=route.accepted_response_models,
+                    capabilities=capabilities,
+                    response_constraints=response_constraints,
+                )
+                downstream = json.dumps(
+                    translated_response,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                ).encode("ascii")
+            except (InvalidRequestError, adapter.AdapterError) as exc:
+                raise UpstreamError(
+                    "Open-model upstream response is invalid", retryable=False
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise UpstreamError(
+                    "Open-model upstream response is invalid", retryable=False
+                ) from exc
+            downstream_bytes = len(downstream)
+            self._write_openmodel_response(downstream)
+            headers_sent = True
+            usage = translated_response.get("usage")
+            return (
+                200,
+                downstream_bytes,
+                "completed",
+                dict(usage) if isinstance(usage, dict) else None,
+            )
+        except OpenModelClientWriteError:
+            self.close_connection = True
+            return 200, downstream_bytes, "connection_interrupted", observer.snapshot()
+        except UpstreamError:
+            raise
+        except TimeoutError:
+            if not headers_sent:
+                raise UpstreamError("Open-model upstream connection timed out")
+            self.close_connection = True
+            return 200, downstream_bytes, "upstream_timeout", observer.snapshot()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            if not headers_sent:
+                raise UpstreamError("Open-model upstream connection failed")
+            self.close_connection = True
+            return 200, downstream_bytes, "connection_interrupted", observer.snapshot()
+        except http.client.HTTPException:
+            if not headers_sent:
+                raise UpstreamError("Open-model upstream connection failed")
+            self._emit_openmodel_protocol_error()
+            return 200, downstream_bytes, "upstream_interrupted", observer.snapshot()
+        except (ConnectionError, OSError):
+            if not headers_sent:
+                raise UpstreamError("Open-model upstream connection failed")
+            self.close_connection = True
+            return 200, downstream_bytes, "upstream_interrupted", observer.snapshot()
+        finally:
+            try:
+                if response is not None:
+                    try:
+                        response.close()
+                    except OSError:
+                        pass
+            finally:
+                try:
+                    if connection is not None:
+                        try:
+                            connection.close()
+                        except OSError:
+                            pass
+                finally:
+                    try:
+                        if waiting:
+                            waiter_semaphore.release()
+                    finally:
+                        if acquired:
+                            semaphore.release()
 
     def forward(
         self,
@@ -2476,6 +3649,74 @@ class RouterHandler(BaseHTTPRequestHandler):
                 response.close()
             connection.close()
 
+    def _discard_control_input_best_effort(self) -> None:
+        """Drain a small sent body so Windows can deliver the JSON response.
+
+        Closing a TCP socket with unread request bytes can reset it on Windows,
+        discarding a safe 4xx response the caller must be able to inspect. A
+        short timeout keeps malformed or incomplete clients from occupying a
+        handler thread while ordinary local requests drain immediately.
+        """
+        if getattr(self, "_control_body_consumed", False):
+            return
+        lengths = self.headers.get_all("Content-Length") or []
+        target: int | None = None
+        for value in lengths:
+            if re.fullmatch(r"[0-9]+", value) is None:
+                continue
+            normalized = value.lstrip("0") or "0"
+            maximum = str(MAX_CONTROL_REQUEST_BYTES + 1)
+            if (
+                len(normalized) > len(maximum)
+                or (len(normalized) == len(maximum) and normalized > maximum)
+            ):
+                target = MAX_CONTROL_REQUEST_BYTES + 1
+            else:
+                target = int(normalized)
+            break
+        previous_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(0.05)
+            if target is None:
+                read_available = getattr(self.rfile, "read1", None)
+                if read_available is not None:
+                    read_available(MAX_CONTROL_REQUEST_BYTES + 1)
+            elif target:
+                self.rfile.read(target)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._control_body_consumed = True
+            try:
+                self.connection.settimeout(previous_timeout)
+            except OSError:
+                pass
+
+    def send_control_json(self, status: int, payload: object) -> None:
+        self._discard_control_input_best_effort()
+        body = json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("cache-control", "no-store")
+        self.send_header("x-content-type-options", "nosniff")
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def send_control_error(self, status: int, kind: str, message: str) -> None:
+        self.send_control_json(status, {
+            "type": "error",
+            "error": {"type": kind, "message": message},
+        })
+
     def send_json(
         self, status: int, payload: object, retry_after: int | None = None
     ) -> None:
@@ -2532,6 +3773,75 @@ def parse_upstream(
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     prefix = parsed.path.rstrip("/")
     return parsed.scheme, parsed.hostname, port, prefix
+
+
+def control_json_content_type_allowed(value: str) -> bool:
+    """Accept valid JSON media type parameters without malformed tails."""
+    token = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+    quoted = r'"(?:[\t\x20-\x21\x23-\x7e]|\\[\t\x20-\x7e])*"'
+    pattern = re.compile(
+        rf"application/json(?:[ \t]*;[ \t]*{token}[ \t]*="
+        rf"[ \t]*(?:{token}|{quoted}))*[ \t]*",
+        re.ASCII | re.IGNORECASE,
+    )
+    return pattern.fullmatch(value) is not None
+
+
+def control_origin_allowed(value: str) -> bool:
+    """Accept only the exact serialization of a loopback HTTP origin."""
+    if not value or value != value.strip():
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        return False
+    host = "[::1]" if parsed.hostname == "::1" else parsed.hostname
+    expected = f"http://{host}"
+    if port is not None:
+        expected += f":{port}"
+    return value == expected
+
+
+def _control_json_within_depth(value: object, depth: int = 0) -> bool:
+    if depth > MAX_CONTROL_JSON_DEPTH:
+        return False
+    if isinstance(value, dict):
+        return all(
+            _control_json_within_depth(item, depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return all(
+            _control_json_within_depth(item, depth + 1)
+            for item in value
+        )
+    return True
+
+
+def control_request_payload(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = strict_json_loads(raw)
+    except (InvalidRequestError, RecursionError) as exc:
+        raise ControlError(
+            400, "invalid_request", "Control request is invalid"
+        ) from exc
+    if type(payload) is not dict or not _control_json_within_depth(payload):
+        raise ControlError(
+            400, "invalid_request", "Control request is invalid"
+        )
+    return payload
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -3135,6 +4445,82 @@ def openrouter_sse_model(prefix: bytes, model: str | None = None) -> str | None:
     return None
 
 
+def openmodel_headers(content_length: int) -> dict[str, str]:
+    """The complete fixed header set for an unauthenticated loopback model."""
+
+    return {
+        "accept": "application/json, text/event-stream",
+        "accept-encoding": "identity",
+        "connection": "close",
+        "content-length": str(content_length),
+        "content-type": "application/json",
+    }
+
+
+def openmodel_content_length(response: http.client.HTTPResponse) -> int | None:
+    value = response.getheader("content-length")
+    transfer_encoding = response.getheader("transfer-encoding")
+    if value is not None and transfer_encoding is not None:
+        raise UpstreamError(
+            "Open-model upstream response framing is invalid", retryable=False
+        )
+    if (
+        transfer_encoding is not None
+        and transfer_encoding.strip().lower() != "chunked"
+    ):
+        raise UpstreamError(
+            "Open-model upstream response framing is invalid", retryable=False
+        )
+    if value is None:
+        return None
+    text = value.strip()
+    if (
+        not text
+        or len(text) > 20
+        or not text.isascii()
+        or not text.isdecimal()
+    ):
+        raise UpstreamError(
+            "Open-model upstream response length is invalid", retryable=False
+        )
+    length = int(text)
+    if length < 0:
+        raise UpstreamError(
+            "Open-model upstream response length is invalid", retryable=False
+        )
+    return length
+
+
+def consume_openmodel_error(
+    connection: http.client.HTTPConnection,
+    response: http.client.HTTPResponse,
+) -> None:
+    """Consume one byte- and wall-clock-bounded prefix without inspecting it."""
+
+    response_socket = connection.sock
+    if response_socket is None and response.fp is not None:
+        raw = getattr(response.fp, "raw", None)
+        response_socket = getattr(raw, "_sock", None)
+    if response_socket is None:
+        return
+    remaining = MAX_OPENMODEL_ERROR_RESPONSE_BYTES
+    deadline = time.monotonic() + OPENMODEL_ERROR_TIMEOUT_SECONDS
+    try:
+        while remaining > 0:
+            time_left = deadline - time.monotonic()
+            if time_left <= 0:
+                return
+            response_socket.settimeout(time_left)
+            chunk = response.read1(min(16 * 1024, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+    except (TimeoutError, OSError, http.client.HTTPException):
+        # The response body is untrusted and never needed. A stalled or malformed
+        # body must not delay the sanitized local error beyond its small budget.
+        return
+
+
 def openrouter_headers(key: bytes, content_length: int) -> dict[str, str]:
     try:
         credential = key.decode("ascii")
@@ -3158,7 +4544,9 @@ def forwarded_headers(
     result: dict[str, str] = {}
     for name, value in incoming:
         lowered = name.lower()
-        if lowered in HOP_BY_HOP_HEADERS or lowered in {"host", "content-length"}:
+        if lowered in HOP_BY_HOP_HEADERS or lowered in {
+            "host", "content-length", "x-airlock-control-token"
+        }:
             continue
         # A compressed body cannot survive a short read. The router relays
         # upstream headers verbatim, so a stream that ends early still
@@ -3281,6 +4669,182 @@ def safe_runtime_root() -> Path:
     return state / "airlock" / "router-startups"
 
 
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(marker and attributes & marker)
+
+
+def _protect_windows_private_path(path: Path) -> None:
+    """Apply the managed current-user-only Windows DACL without a shell."""
+    if os.name != "nt":
+        return
+    try:
+        load_policy_schema().protect_private_path(path)
+    except Exception as exc:
+        raise RouterError("router session registry permissions are unsafe") from exc
+
+
+def prepare_private_runtime_directory(path: Path, label: str) -> Path:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RouterError(f"{label} state is unsafe")
+    if os.name == "nt":
+        _protect_windows_private_path(path)
+    else:
+        get_effective_uid = getattr(os, "geteuid", None)
+        if get_effective_uid is not None and metadata.st_uid != get_effective_uid():
+            raise RouterError(f"{label} state is unsafe")
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            path.chmod(0o700)
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or (os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o700)
+    ):
+        raise RouterError(f"{label} state is unsafe")
+    return path
+
+
+def session_registry_root() -> Path:
+    return safe_runtime_root().parent / "sessions"
+
+
+def _require_safe_registry_target(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    get_effective_uid = getattr(os, "geteuid", None)
+    wrong_posix_owner = (
+        os.name != "nt"
+        and get_effective_uid is not None
+        and metadata.st_uid != get_effective_uid()
+    )
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or not stat.S_ISREG(metadata.st_mode)
+        or wrong_posix_owner
+    ):
+        raise RouterError("router session registry target is unsafe")
+
+
+def _protect_registry_file(path: Path) -> None:
+    _require_safe_registry_target(path)
+    if os.name == "nt":
+        _protect_windows_private_path(path)
+    else:
+        os.chmod(path, 0o600, follow_symlinks=False)
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or not stat.S_ISREG(metadata.st_mode)
+        or (os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o600)
+    ):
+        raise RouterError("router session registry target is unsafe")
+
+
+def _fsync_directory_best_effort(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def write_session_registry(server: RouterServer) -> Path:
+    root = prepare_private_runtime_directory(
+        session_registry_root(), "router session registry"
+    )
+    path = root / f"{server.instance_id}.json"
+    _require_safe_registry_target(path)
+    payload = json.dumps({
+        "schema_version": 2,
+        "instance_id": server.instance_id,
+        "url": f"http://127.0.0.1:{server.server_address[1]}",
+        "owner_pid": server.owner_pid,
+        "router_pid": os.getpid(),
+        "started_at": server.started_at,
+        "profile": server.config.profile,
+        "root_model": server.config.root_model,
+        "root_provider": server.config.root_provider,
+        "workdir": server.workdir,
+        "control_token": server.control_token,
+    }, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    staging = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(staging, flags, 0o600)
+    try:
+        # On Windows a creation mode does not constrain the inherited DACL.
+        # Protect the empty staging file before any capability bytes exist.
+        _protect_registry_file(staging)
+    except BaseException:
+        os.close(descriptor)
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise
+    published = False
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Replacement is intentional only for a regular stale entry owned by
+        # this instance ID. Reparse points and non-regular targets are refused.
+        _require_safe_registry_target(path)
+        os.replace(staging, path)
+        published = True
+        _protect_registry_file(path)
+        _fsync_directory_best_effort(root)
+    except BaseException:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        if published:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+    return path
+
+
+def remove_session_registry(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def read_ready_payload(path: Path) -> dict[str, object] | None:
     """The startup marker, or None while it is not readable yet.
 
@@ -3350,6 +4914,29 @@ def router_config_from_snapshot(
         )
         for model, metadata in snapshot.openrouter.items()
     }
+    openmodel_endpoints = {
+        endpoint_id: OpenModelEndpoint(
+            base_url=metadata.base_url,
+            trust=metadata.trust,
+            protocol=metadata.protocol,
+            auth=metadata.auth,
+            max_concurrency=metadata.max_concurrency,
+        )
+        for endpoint_id, metadata in snapshot.openmodel.endpoints.items()
+    }
+    openmodel = {
+        model: OpenModelRoute(
+            endpoint=metadata.endpoint,
+            upstream_model=metadata.upstream_model,
+            accepted_response_models=tuple(metadata.accepted_response_models),
+            context_window=metadata.context_window,
+            max_output_tokens=metadata.max_output_tokens,
+            streaming=metadata.streaming,
+            tools=metadata.tools,
+            tool_choice=tuple(metadata.tool_choice),
+        )
+        for model, metadata in snapshot.openmodel.models.items()
+    }
     key = load_openrouter_key() if openrouter else None
     return RouterConfig(
         dict(snapshot.routes),
@@ -3358,10 +4945,14 @@ def router_config_from_snapshot(
         production=True,
         openrouter=openrouter,
         openrouter_key=key,
+        openmodel_endpoints=openmodel_endpoints,
+        openmodel=openmodel,
         failover={
             model: tuple(peers) for model, peers in snapshot.failover.items()
         },
         context_windows=dict(snapshot.context_windows),
+        route_categories=dict(snapshot.route_categories),
+        effort_ceilings=dict(snapshot.effort_ceilings),
         compactors=dict(snapshot.compactors),
         overflow_shrink=snapshot.overflow_shrink,
         profile=snapshot.profile,
@@ -3426,12 +5017,10 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
         raise RouterError("subscription proxy upstream is required")
     if snapshot.openrouter:
         load_openrouter_key()
-    root = safe_runtime_root()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if root.is_symlink() or not root.is_dir():
-        raise RouterError("router startup state is unsafe")
-    if os.name != "nt" and root.stat().st_mode & 0o077:
-        root.chmod(0o700)
+    workdir = validated_workdir(getattr(args, "workdir", None))
+    root = prepare_private_runtime_directory(
+        safe_runtime_root(), "router startup"
+    )
     ready = root / f"ready-{secrets.token_hex(16)}.json"
     command = [
         router_child_python(),
@@ -3450,6 +5039,8 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
         "--port",
         str(validated_port(args.port)),
     ]
+    if workdir is not None:
+        command.extend(("--workdir", workdir))
     if args.openai_url:
         command.extend(("--openai-url", args.openai_url))
     # The daemon runs with a scrubbed environment, so the launcher resolves
@@ -3471,7 +5062,12 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
         or os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
         or ""
     ).strip()
-    if background and len(background) <= 128 and background.isprintable():
+    if (
+        background
+        and len(background) <= 128
+        and background.isprintable()
+        and not background.startswith("openmodel/")
+    ):
         command.extend(("--background-model", background))
     kwargs: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
@@ -3540,6 +5136,19 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
                 process.wait(timeout=3)
 
 
+def validated_workdir(value: object) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_WORKDIR_CHARS
+        or any(character in value for character in ("\x00", "\r", "\n"))
+    ):
+        raise RouterError("router workdir is invalid")
+    return value
+
+
 def validated_port(value: object) -> int:
     """A loopback port the router may bind, or 0 for any free port."""
     if not isinstance(value, int) or isinstance(value, bool):
@@ -3551,7 +5160,13 @@ def validated_port(value: object) -> int:
     return value
 
 
-def bind_router(port: int, config: "RouterConfig") -> "RouterServer":
+def bind_router(
+    port: int,
+    config: "RouterConfig",
+    *,
+    owner_pid: int | None = None,
+    workdir: str | None = None,
+) -> "RouterServer":
     """Bind the router, waiting out a port a dead owner has not yet released.
 
     A restart must reclaim the exact port the session was told to use, and
@@ -3560,11 +5175,21 @@ def bind_router(port: int, config: "RouterConfig") -> "RouterServer":
     succeeds at once or is a real failure.
     """
     if port == 0:
-        return RouterServer(("127.0.0.1", 0), config)
+        return RouterServer(
+            ("127.0.0.1", 0),
+            config,
+            owner_pid=owner_pid,
+            workdir=workdir,
+        )
     deadline = time.monotonic() + REBIND_TIMEOUT_SECONDS
     while True:
         try:
-            return RouterServer(("127.0.0.1", port), config)
+            return RouterServer(
+                ("127.0.0.1", port),
+                config,
+                owner_pid=owner_pid,
+                workdir=workdir,
+            )
         except OSError:
             if time.monotonic() >= deadline:
                 raise RouterError("router port could not be reclaimed") from None
@@ -3636,7 +5261,12 @@ def serve_router(args: argparse.Namespace) -> int:
     ready = Path(args.ready_file)
     if ready.parent.resolve() != safe_runtime_root().resolve() or ready.exists():
         raise RouterError("router ready path is unsafe")
-    server = bind_router(validated_port(args.port), config)
+    server = bind_router(
+        validated_port(args.port),
+        config,
+        owner_pid=args.parent_pid,
+        workdir=validated_workdir(args.workdir),
+    )
     monitor = threading.Thread(
         target=monitor_parent,
         args=(server, args.parent_pid),
@@ -3648,12 +5278,75 @@ def serve_router(args: argparse.Namespace) -> int:
         # say why the record starts here rather than letting cooldowns and
         # totals appear to reset for no reason.
         server.record_diagnostic({"kind": "router_restarted"})
-    write_ready(ready, server)
+    registry: Path | None = None
     try:
+        registry = write_session_registry(server)
+        append_launch_record(server, "start")
+        write_ready(ready, server)
         server.serve_forever(poll_interval=0.25)
     finally:
-        server.server_close()
+        try:
+            if registry is not None:
+                remove_session_registry(registry)
+                append_launch_record(server, "stop")
+        finally:
+            server.server_close()
     return 0
+
+
+LAUNCH_LOG_FILENAME = "launches.jsonl"
+LAUNCH_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+
+def launch_log_path() -> Path:
+    return session_registry_root().parent / LAUNCH_LOG_FILENAME
+
+
+def append_launch_record(server: RouterServer, event: str) -> None:
+    """Append one line saying this router started or stopped for a directory.
+
+    The console overlays these on a session so a person can see when the
+    session ran through Airlock and when it ran as plain Claude Code. The
+    transcript itself carries no such trace. The log is private to the user,
+    holds no prompts or credentials, and is rotated once when it grows past
+    a few megabytes. A failure here must never affect the router.
+    """
+    try:
+        path = launch_log_path()
+        prepare_private_runtime_directory(path.parent, "router launch log")
+        record = json.dumps({
+            "schema_version": 1,
+            "event": event,
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "instance_id": server.instance_id,
+            "owner_pid": server.owner_pid,
+            "workdir": server.workdir,
+            "profile": server.config.profile,
+            "root_model": server.config.root_model,
+            "root_provider": server.config.root_provider,
+        }, separators=(",", ":"), ensure_ascii=True)
+        try:
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                return
+            if path.exists() and path.stat().st_size > LAUNCH_LOG_MAX_BYTES:
+                rotated = path.with_suffix(".1.jsonl")
+                if rotated.exists():
+                    rotated.unlink()
+                path.replace(rotated)
+        except OSError:
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, (record + "\n").encode("ascii"))
+        finally:
+            os.close(fd)
+    except Exception:
+        return
 
 
 def parser() -> argparse.ArgumentParser:
@@ -3672,6 +5365,7 @@ def parser() -> argparse.ArgumentParser:
             default="native",
         )
         sub.add_argument("--background-model", default=None)
+        sub.add_argument("--workdir", default=None)
         # A restart has to land on the port the session was already told to
         # use, because Claude Code reads ANTHROPIC_BASE_URL once at startup.
         # Zero keeps the original behaviour of taking whatever port is free.

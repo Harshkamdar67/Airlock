@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "instance_id": "r-unknown-keys",
+  "url": "http://127.0.0.1:39124",
+  "owner_pid": 41221,
+  "router_pid": 41389,
+  "started_at": "2026-09-05T06:41:03Z",
+  "profile": "hybrid-anthropic-root",
+  "root_model": "claude-fable-5-1[1m]",
+  "root_provider": "anthropic",
+  "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\claudex",
+  "prompt": "do not render this",
+  "oauth_token": "do-not-copy",
+  "account_id": "acct_secret"
+}

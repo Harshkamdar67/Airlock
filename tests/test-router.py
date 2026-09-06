@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,8 +37,12 @@ def write_test_snapshot(
     routes: dict[str, str] | None = None,
     profile: str = "openai-pure",
     openrouter: dict[str, dict[str, str]] | None = None,
+    openmodel: dict[str, object] | None = None,
     agents: dict[str, dict[str, object]] | None = None,
     failover: dict[str, list[str]] | None = None,
+    context_windows: dict[str, int] | None = None,
+    route_categories: dict[str, str] | None = None,
+    effort_ceilings: dict[str, str] | None = None,
 ) -> tuple[Path, str]:
     routes = routes or {"gpt-test": "openai"}
     root_model, root_provider = next(iter(routes.items()))
@@ -55,7 +61,11 @@ def write_test_snapshot(
             }
         },
         "openrouter": openrouter or {},
+        "openmodel": openmodel or {"endpoints": {}, "models": {}},
         "failover": failover or {},
+        "context_windows": context_windows or {},
+        "route_categories": route_categories or {},
+        "effort_ceilings": effort_ceilings or {},
     })
     path = Path(directory) / "session.json"
     path.write_bytes(snapshot.canonical_bytes())
@@ -99,6 +109,8 @@ class RecordingServer(ThreadingHTTPServer):
         self.overflow_max_bytes: dict[str, int] = {}
         self.compactor_models: set[str] = set()
         self.compactor_text = "Goal: continue the work."
+        self.usage_input_tokens = 11
+        self.usage_output_tokens = 22
 
 
 class RecordingHandler(BaseHTTPRequestHandler):
@@ -455,6 +467,354 @@ class RecordingHandler(BaseHTTPRequestHandler):
             self.wfile.write(response)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
+
+
+class OpenModelRecordingServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), OpenModelRecordingHandler)
+        self.requests: list[dict[str, object]] = []
+        self.mode = "text_json"
+        self.delay = 0.2
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+        self.finish_sent = threading.Event()
+        self.usage_release = threading.Event()
+
+
+class OpenModelRecordingHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    @property
+    def recorder(self) -> OpenModelRecordingServer:
+        return self.server  # type: ignore[return-value]
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def _send_json(self, status: int, payload: object) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+    @staticmethod
+    def _completion(model: str, *, tool: bool = False) -> dict[str, object]:
+        message: dict[str, object] = {
+            "role": "assistant",
+            "content": None if tool else "translated hello",
+            "reasoning_content": "private reasoning discarded",
+        }
+        finish_reason = "stop"
+        if tool:
+            finish_reason = "tool_calls"
+            message["tool_calls"] = [{
+                "id": "private_call_id",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": '{"query":"synthetic"}',
+                },
+            }]
+        return {
+            "id": "private_completion_id",
+            "object": "chat.completion",
+            "created": 123,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }],
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "total_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 2},
+            },
+        }
+
+    @staticmethod
+    def _chunk(
+        model: str | None,
+        *,
+        content: str | None = None,
+        finish_reason: str | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> bytes:
+        payload: dict[str, object] = {
+            "id": "private_stream_id",
+            "object": "chat.completion.chunk",
+            "created": 123,
+            "choices": [],
+        }
+        if model is not None:
+            payload["model"] = model
+        if usage is None:
+            delta: dict[str, object] = {}
+            if content is not None:
+                delta["content"] = content
+            payload["choices"] = [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }]
+        else:
+            payload["usage"] = usage
+        return b"data: " + json.dumps(
+            payload, separators=(",", ":")
+        ).encode("utf-8") + b"\n\n"
+
+    @staticmethod
+    def _tool_frames(model: str) -> bytes:
+        chunks = [
+            {
+                "id": "private_stream_id",
+                "object": "chat.completion.chunk",
+                "created": 123,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "private_stream_call_id",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"query":"',
+                            },
+                        }],
+                    },
+                    "finish_reason": None,
+                }],
+            },
+            {
+                "id": "private_stream_id",
+                "object": "chat.completion.chunk",
+                "created": 123,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "function": {"arguments": 'synthetic"}'},
+                    }]},
+                    "finish_reason": None,
+                }],
+            },
+            {
+                "id": "private_stream_id",
+                "object": "chat.completion.chunk",
+                "created": 123,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "tool_calls",
+                }],
+            },
+            {
+                "id": "private_stream_id",
+                "object": "chat.completion.chunk",
+                "created": 123,
+                "model": model,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 9,
+                    "completion_tokens": 4,
+                    "total_tokens": 13,
+                },
+            },
+        ]
+        return b"".join(
+            b"data: " + json.dumps(chunk, separators=(",", ":")).encode("utf-8")
+            + b"\n\n"
+            for chunk in chunks
+        ) + b"data: [DONE]\n\n"
+
+    def do_POST(self) -> None:
+        raw_length = self.headers.get("content-length")
+        length = int(raw_length) if raw_length else 0
+        body = self.rfile.read(length)
+        try:
+            payload = json.loads(body)
+            requested_model = payload.get("model")
+        except ValueError:
+            payload = {}
+            requested_model = None
+        with self.recorder.lock:
+            self.recorder.requests.append({
+                "path": self.path,
+                "headers": {
+                    name.lower(): value for name, value in self.headers.items()
+                },
+                "body": body,
+            })
+            self.recorder.active += 1
+            self.recorder.max_active = max(
+                self.recorder.max_active, self.recorder.active
+            )
+            mode = self.recorder.mode
+        try:
+            if self.path != router.OPENMODEL_CHAT_COMPLETIONS_PATH:
+                self._send_json(404, {"private": "wrong path"})
+                return
+            if mode == "disconnect_before_headers":
+                self.close_connection = True
+                return
+            if mode == "redirect":
+                self.send_response(307)
+                self.send_header("location", "http://private.invalid/secret")
+                self.send_header("content-length", "0")
+                self.send_header("connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                return
+            if mode == "rejected":
+                self._send_json(503, {
+                    "error": {"message": "PRIVATE_OPENMODEL_ERROR"},
+                    "model": requested_model,
+                })
+                return
+            if mode == "rejected_stall":
+                self.send_response(503)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", "128")
+                self.send_header("connection", "close")
+                self.end_headers()
+                self.wfile.flush()
+                time.sleep(self.recorder.delay)
+                self.close_connection = True
+                return
+            if mode == "malformed_json":
+                response = b'{"private_model":'
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(response)))
+                self.send_header("connection", "close")
+                self.end_headers()
+                self.wfile.write(response)
+                self.close_connection = True
+                return
+            if mode == "delayed_json":
+                time.sleep(self.recorder.delay)
+            if mode in {"text_json", "delayed_json", "json_flood"}:
+                completion = self._completion(str(requested_model))
+                if mode == "json_flood":
+                    completion["choices"][0]["message"]["content"] = (
+                        "x" * (64 * 1024)
+                    )
+                self._send_json(200, completion)
+                return
+            if mode == "tool_json":
+                self._send_json(
+                    200, self._completion(str(requested_model), tool=True)
+                )
+                return
+            if mode == "parallel_tool_json":
+                completion = self._completion(str(requested_model), tool=True)
+                completion["choices"][0]["message"]["tool_calls"].append({
+                    "id": "private_second_call_id",
+                    "type": "function",
+                    "function": {
+                        "name": "second_lookup",
+                        "arguments": '{"query":"second"}',
+                    },
+                })
+                self._send_json(200, completion)
+                return
+
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("connection", "close")
+            self.end_headers()
+            if mode == "stream_flood":
+                try:
+                    for index in range(1024):
+                        self.wfile.write(self._chunk(
+                            str(requested_model) if index == 0 else None,
+                            content="x" * (16 * 1024),
+                        ))
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionAbortedError,
+                        ConnectionResetError, OSError):
+                    pass
+                self.close_connection = True
+                return
+            if mode == "stream_tool":
+                self.wfile.write(self._tool_frames(str(requested_model)))
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if mode == "stream_mismatch_before":
+                frames = [self._chunk("private mismatched model", content="hidden")]
+            elif mode == "stream_mismatch_same_chunk":
+                frames = [
+                    self._chunk(str(requested_model), content="visible"),
+                    self._chunk("private mismatched model", content="hidden"),
+                ]
+            else:
+                frames = [self._chunk(str(requested_model), content="visible")]
+            if mode == "stream_mismatch_same_chunk":
+                self.wfile.write(b"".join(frames))
+                self.wfile.flush()
+            else:
+                for frame in frames:
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+            if mode == "stream_mismatch_after":
+                time.sleep(self.recorder.delay)
+                self.wfile.write(
+                    self._chunk("private mismatched model", content="hidden")
+                )
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if mode == "stream_mismatch_same_chunk":
+                self.close_connection = True
+                return
+            if mode == "stream_upstream_disconnect":
+                self.close_connection = True
+                return
+            if mode == "stream_disconnect":
+                time.sleep(self.recorder.delay)
+            finish = self._chunk(None, finish_reason="stop")
+            self.wfile.write(finish)
+            self.wfile.flush()
+            self.recorder.finish_sent.set()
+            if mode == "stream_no_usage":
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if mode == "stream_wait_usage":
+                self.recorder.usage_release.wait(timeout=5)
+            usage = self._chunk(None, usage={
+                "prompt_tokens": 11,
+                "completion_tokens": 5,
+                "total_tokens": 16,
+            })
+            try:
+                self.wfile.write(usage + b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                pass
+            self.close_connection = True
+        finally:
+            with self.recorder.lock:
+                self.recorder.active -= 1
 
 
 class RouterProtocolTests(unittest.TestCase):
@@ -1449,20 +1809,191 @@ class RouterProtocolTests(unittest.TestCase):
         observer.finish()
         self.assertEqual(observer.snapshot(), {"output_tokens": 5})
 
-    def test_session_start_pins_root_model_without_counting_a_request(self) -> None:
+    def test_session_start_selects_root_without_counting_a_request(self) -> None:
         diagnostics_status, diagnostics = self.get_json("/diagnostics")
         self.assertEqual(diagnostics_status, 200)
         self.assertEqual(diagnostics["profile"], "hybrid")
         self.assertEqual(diagnostics["root_model"], "gpt-test")
         self.assertEqual(diagnostics["root_provider"], "openai")
+        self.assertIsNone(diagnostics["workdir"])
+        self.assertIsNone(diagnostics["last_request_at"])
+        self.assertIsNone(diagnostics["context"])
         self.assertEqual(diagnostics["summary"], [])
         self.assertEqual(len(diagnostics["events"]), 1)
-        pinned = diagnostics["events"][0]
-        self.assertEqual(pinned["kind"], "session_model_pinned")
-        self.assertEqual(pinned["profile"], "hybrid")
-        self.assertEqual(pinned["model"], "gpt-test")
-        self.assertEqual(pinned["provider"], "openai")
-        self.assertRegex(pinned["timestamp"], DIAGNOSTIC_TIMESTAMP_PATTERN)
+        selected = diagnostics["events"][0]
+        self.assertEqual(set(selected), {
+            "timestamp", "kind", "model", "provider",
+        })
+        self.assertEqual(selected["kind"], "session_root_selected")
+        self.assertEqual(selected["model"], "gpt-test")
+        self.assertEqual(selected["provider"], "openai")
+        self.assertRegex(selected["timestamp"], DIAGNOSTIC_TIMESTAMP_PATTERN)
+
+    def test_console_diagnostics_use_only_frozen_snapshot_metadata(self) -> None:
+        routes = {
+            "gpt-included": "openai",
+            "gpt-metered": "openai",
+            "grok-extra-a": "grok",
+            "grok-extra-b": "grok",
+            "claude-unknown": "anthropic",
+        }
+        snapshot = POLICY.validate_session_snapshot({
+            "schema_version": 1,
+            "protocol_version": router.MANAGED_PROTOCOL_VERSION,
+            "profile": "hybrid-openai-root",
+            "root_model": "gpt-included",
+            "root_provider": "openai",
+            "routes": routes,
+            "agents": {
+                f"airlock-test-{index}": {
+                    "model": model,
+                    "provider": provider,
+                    "extra_usage": model.startswith("grok-extra"),
+                }
+                for index, (model, provider) in enumerate(routes.items())
+            },
+            "openrouter": {},
+            "openmodel": {"endpoints": {}, "models": {}},
+            "failover": {
+                "gpt-included": ["gpt-metered", "claude-unknown"],
+            },
+            "context_windows": {
+                "gpt-included": 400000,
+                "gpt-metered": 1000000,
+                "grok-extra-a": 500000,
+            },
+            "route_categories": {
+                "gpt-included": "included",
+                "gpt-metered": "metered",
+                "grok-extra-a": "extra",
+                "grok-extra-b": "extra",
+                "claude-unknown": "unknown",
+            },
+            "effort_ceilings": {
+                "gpt-included": "xhigh",
+                "gpt-metered": "max",
+                "grok-extra-a": "high",
+                "grok-extra-b": "high",
+            },
+        })
+        config = router.router_config_from_snapshot(
+            snapshot,
+            "http://127.0.0.1:49152",
+            "https://api.anthropic.com",
+        )
+        standalone = router.RouterServer(
+            ("127.0.0.1", 0),
+            config,
+            owner_pid=41220,
+            workdir="C:/example/project",
+        )
+        try:
+            with mock.patch.object(router.time, "monotonic", return_value=100.0):
+                standalone.rate_limits.mark("gpt-included", 1710, "openai")
+                standalone.rate_limits.mark("grok-extra-a", 240, "grok")
+                standalone.rate_limits.mark("grok-extra-b", 240, "grok")
+                report = standalone.diagnostic_report()
+            self.assertEqual(set(report), {
+                "instance_id", "profile", "root_model", "root_provider",
+                "rate_limit_cooldowns", "rate_limit_provider_cooldowns",
+                "events", "summary", "started_at", "owner_pid", "workdir",
+                "last_request_at", "pinned_model", "routes", "cooldowns",
+                "chains", "context",
+            })
+            self.assertRegex(report["started_at"], DIAGNOSTIC_TIMESTAMP_PATTERN)
+            self.assertEqual(report["owner_pid"], 41220)
+            self.assertEqual(report["workdir"], "C:/example/project")
+            self.assertIsNone(report["last_request_at"])
+            self.assertIsNone(report["pinned_model"])
+            self.assertIsNone(report["context"])
+            self.assertEqual(report["chains"], {
+                "gpt-included": ["gpt-metered", "claude-unknown"],
+            })
+            self.assertTrue(all(set(entry) == {
+                "model", "provider", "category", "context_window",
+                "effort_ceiling", "metered",
+            } for entry in report["routes"]))
+            route_rows = {entry["model"]: entry for entry in report["routes"]}
+            self.assertEqual(route_rows["gpt-included"], {
+                "model": "gpt-included",
+                "provider": "openai",
+                "category": "included",
+                "context_window": 400000,
+                "effort_ceiling": "xhigh",
+                "metered": False,
+            })
+            self.assertEqual(route_rows["gpt-metered"]["category"], "metered")
+            self.assertTrue(route_rows["gpt-metered"]["metered"])
+            self.assertEqual(route_rows["grok-extra-a"]["category"], "extra")
+            self.assertTrue(route_rows["grok-extra-a"]["metered"])
+            self.assertIsNone(route_rows["claude-unknown"]["context_window"])
+            self.assertIsNone(route_rows["claude-unknown"]["effort_ceiling"])
+            model_cooldown = next(
+                entry for entry in report["cooldowns"]
+                if entry.get("model") == "gpt-included"
+            )
+            self.assertEqual(model_cooldown, {
+                "scope": "model",
+                "model": "gpt-included",
+                "provider": "openai",
+                "remaining_seconds": 1710,
+            })
+            provider_cooldown = next(
+                entry for entry in report["cooldowns"]
+                if entry["scope"] == "provider"
+            )
+            self.assertEqual(provider_cooldown, {
+                "scope": "provider",
+                "provider": "grok",
+                "remaining_seconds": 240,
+            })
+            self.assertTrue(all(
+                set(entry) == (
+                    {"scope", "model", "provider", "remaining_seconds"}
+                    if entry["scope"] == "model"
+                    else {"scope", "provider", "remaining_seconds"}
+                )
+                for entry in report["cooldowns"]
+            ))
+
+            with mock.patch.object(
+                router,
+                "utc_timestamp",
+                side_effect=["2026-09-05T09:02:11Z", "2026-09-05T09:02:12Z"],
+            ):
+                standalone.record_diagnostic({
+                    "provider": "openai",
+                    "model": "gpt-included",
+                    "status": 200,
+                    "outcome": "completed",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 20,
+                        "cache_creation_input_tokens": 3,
+                        "output_tokens": 7,
+                    },
+                })
+                standalone.record_diagnostic({
+                    "provider": "grok",
+                    "model": "grok-extra-a",
+                    "status": 502,
+                    "outcome": "upstream_error",
+                })
+            observed = standalone.diagnostic_report()
+            self.assertEqual(observed["last_request_at"], "2026-09-05T09:02:12Z")
+            self.assertEqual(observed["context"], {
+                "model": "gpt-included",
+                "input_tokens": 123,
+                "observed_at": "2026-09-05T09:02:11Z",
+            })
+            self.assertEqual(set(observed["context"]), {
+                "model", "input_tokens", "observed_at",
+            })
+            serialized = json.dumps(observed)
+            self.assertNotIn("49152", serialized)
+            self.assertNotIn("api.anthropic.com", serialized)
+        finally:
+            standalone.server_close()
 
     def test_diagnostics_contain_only_sanitized_request_metadata(self) -> None:
         status, _response, _elapsed = self.request("claude-test")
@@ -1522,15 +2053,53 @@ class RouterProtocolTests(unittest.TestCase):
         )
         connection.close()
 
-    def test_cli_router_stops_after_owning_process_exits(self) -> None:
+    def test_cli_openmodel_only_router_starts_without_subscription_upstream(self) -> None:
+        wire_model = "openmodel/local-startup"
+        private_model = "Private Local Startup Model"
+        openmodel = {
+            "endpoints": {
+                "local-startup": {
+                    "base_url": "http://127.0.0.1:49153/v1",
+                    "trust": "loopback",
+                    "protocol": "openai-chat-completions-v1",
+                    "auth": "none",
+                    "max_concurrency": 1,
+                },
+            },
+            "models": {
+                wire_model: {
+                    "endpoint": "local-startup",
+                    "upstream_model": private_model,
+                    "accepted_response_models": [private_model],
+                    "context_window": 8192,
+                    "max_output_tokens": 2048,
+                    "streaming": False,
+                    "tools": "none",
+                    "tool_choice": [],
+                },
+            },
+        }
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["LOCALAPPDATA"] = directory
-            # The owner must outlive the router's own startup budget, and the
-            # wait below must exceed it too, so a slow runner reports a real
-            # failure instead of a test-imposed timeout. The owner is always
-            # terminated in the finally block, so the long sleep costs nothing.
-            snapshot, digest = write_test_snapshot(directory)
+            # A pure local launcher may itself be running inside another local
+            # Airlock session. Its inherited family seat must not become this
+            # router's implicit background substitute.
+            environment["ANTHROPIC_SMALL_FAST_MODEL"] = wire_model
+            snapshot, digest = write_test_snapshot(
+                directory,
+                routes={wire_model: "openmodel"},
+                profile="openmodel-pure",
+                openmodel=openmodel,
+                agents={
+                    "airlock-om-local-startup": {
+                        "model": wire_model,
+                        "provider": "openmodel",
+                        "extra_usage": False,
+                    },
+                },
+                context_windows={wire_model: 8192},
+            )
             owner = subprocess.Popen([
                 sys.executable,
                 "-c",
@@ -1548,8 +2117,6 @@ class RouterProtocolTests(unittest.TestCase):
                         str(snapshot),
                         "--snapshot-sha256",
                         digest,
-                        "--openai-url",
-                        "http://127.0.0.1:49152",
                     ],
                     env=environment,
                     text=True,
@@ -1574,7 +2141,9 @@ class RouterProtocolTests(unittest.TestCase):
             while time.monotonic() < deadline:
                 connection = None
                 try:
-                    connection = http.client.HTTPConnection(host, int(port), timeout=0.2)
+                    connection = http.client.HTTPConnection(
+                        host, int(port), timeout=0.2
+                    )
                     connection.request("GET", "/healthz")
                     response = connection.getresponse()
                     response.read()
@@ -1585,7 +2154,119 @@ class RouterProtocolTests(unittest.TestCase):
                         connection.close()
                 time.sleep(0.1)
             else:
-                self.fail("router remained available after its owning process exited")
+                self.fail("local-only router remained available after its owner exited")
+
+    def test_cli_router_registry_is_removed_after_owner_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["LOCALAPPDATA"] = directory
+            environment["XDG_STATE_HOME"] = directory
+            snapshot, digest = write_test_snapshot(directory)
+            workdir = Path(directory) / "project with spaces"
+            workdir.mkdir()
+            owner = subprocess.Popen([
+                sys.executable,
+                "-c",
+                "import time; time.sleep(120)",
+            ])
+            registry: Path | None = None
+            host = "127.0.0.1"
+            port = "0"
+            try:
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROUTER),
+                        "start",
+                        "--parent-pid",
+                        str(owner.pid),
+                        "--snapshot",
+                        str(snapshot),
+                        "--snapshot-sha256",
+                        digest,
+                        "--openai-url",
+                        "http://127.0.0.1:49152",
+                        "--workdir",
+                        str(workdir),
+                        "--print-pid",
+                    ],
+                    env=environment,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                reported = completed.stdout.strip().splitlines()
+                self.assertEqual(len(reported), 2)
+                url = reported[0]
+                router_pid = int(reported[1])
+                host, port = url.removeprefix("http://").rsplit(":", 1)
+                connection = http.client.HTTPConnection(host, int(port), timeout=3)
+                connection.request("GET", "/diagnostics")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                diagnostics = json.loads(response.read())
+                connection.close()
+                registry_root = (
+                    Path(directory) / "Airlock" / "sessions"
+                    if os.name == "nt"
+                    else Path(directory) / "airlock" / "sessions"
+                )
+                registry = registry_root / f"{diagnostics['instance_id']}.json"
+                self.assertTrue(registry.is_file())
+                registry_payload = json.loads(
+                    registry.read_text(encoding="ascii")
+                )
+                control_token = registry_payload.pop("control_token")
+                self.assertRegex(control_token, r"^[A-Za-z0-9_-]{43}$")
+                self.assertNotIn(control_token, json.dumps(diagnostics))
+                self.assertEqual(registry_payload, {
+                    "schema_version": 2,
+                    "instance_id": diagnostics["instance_id"],
+                    "url": url,
+                    "owner_pid": owner.pid,
+                    "router_pid": router_pid,
+                    "started_at": diagnostics["started_at"],
+                    "profile": "openai-pure",
+                    "root_model": "gpt-test",
+                    "root_provider": "openai",
+                    "workdir": str(workdir),
+                })
+                self.assertEqual(diagnostics["owner_pid"], owner.pid)
+                self.assertEqual(diagnostics["workdir"], str(workdir))
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE(registry.stat().st_mode), 0o600)
+                    self.assertEqual(
+                        stat.S_IMODE(registry_root.stat().st_mode), 0o700
+                    )
+            finally:
+                owner.terminate()
+                owner.wait(timeout=5)
+            deadline = time.monotonic() + 7
+            router_stopped = False
+            while time.monotonic() < deadline:
+                connection = None
+                try:
+                    connection = http.client.HTTPConnection(
+                        host, int(port), timeout=0.2
+                    )
+                    connection.request("GET", "/healthz")
+                    response = connection.getresponse()
+                    response.read()
+                except OSError:
+                    router_stopped = True
+                finally:
+                    if connection is not None:
+                        connection.close()
+                if router_stopped and registry is not None and not registry.exists():
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail(
+                    "router or registry remained after its owning process exited"
+                )
 
     def test_router_start_rejects_a_missing_owner_without_spawning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1860,6 +2541,10 @@ class RouterProtocolTests(unittest.TestCase):
 
                 self.assertEqual(observed, [False])
                 payload = json.loads(ready.read_text(encoding="ascii"))
+                self.assertEqual(set(payload), {
+                    "pid", "url", "instance_id", "bundle_version",
+                })
+                self.assertNotIn(server.control_token, json.dumps(payload))
                 self.assertEqual(payload["pid"], os.getpid())
                 self.assertEqual(
                     payload["bundle_version"], router.MANAGED_BUNDLE_VERSION
@@ -1899,6 +2584,1828 @@ class RouterProtocolTests(unittest.TestCase):
             server.server_close()
 
 
+class OpenModelTransportTests(unittest.TestCase):
+    WIRE_A = "openmodel/local-alpha"
+    WIRE_B = "openmodel/local-beta"
+    PRIVATE_A = "Local Private Model α"
+    PRIVATE_B = "Local Private Model β"
+
+    def setUp(self) -> None:
+        self.upstream = OpenModelRecordingServer()
+        self.upstream_thread = threading.Thread(
+            target=self.upstream.serve_forever, daemon=True
+        )
+        self.upstream_thread.start()
+        self.gateway = router.RouterServer(
+            ("127.0.0.1", 0), self.config(max_concurrency=1)
+        )
+        self.gateway_thread = threading.Thread(
+            target=self.gateway.serve_forever, daemon=True
+        )
+        self.gateway_thread.start()
+
+    def tearDown(self) -> None:
+        self.gateway.shutdown()
+        self.gateway.server_close()
+        self.upstream.shutdown()
+        self.upstream.server_close()
+
+    def route(
+        self,
+        private_model: str,
+        *,
+        streaming: bool = True,
+        tools: str = "parallel",
+    ) -> "router.OpenModelRoute":
+        choices = () if tools == "none" else ("auto", "named", "none", "required")
+        return router.OpenModelRoute(
+            endpoint="local-endpoint",
+            upstream_model=private_model,
+            accepted_response_models=(private_model,),
+            context_window=8192,
+            max_output_tokens=64,
+            streaming=streaming,
+            tools=tools,
+            tool_choice=choices,
+        )
+
+    def endpoint(self, max_concurrency: int = 1) -> "router.OpenModelEndpoint":
+        return router.OpenModelEndpoint(
+            base_url=f"http://127.0.0.1:{self.upstream.server_address[1]}/v1",
+            trust="loopback",
+            protocol="openai-chat-completions-v1",
+            auth="none",
+            max_concurrency=max_concurrency,
+        )
+
+    def config(
+        self,
+        *,
+        max_concurrency: int,
+        streaming: bool = True,
+        wire_b_streaming: bool | None = None,
+    ) -> "router.RouterConfig":
+        if wire_b_streaming is None:
+            wire_b_streaming = streaming
+        return router.RouterConfig(
+            {self.WIRE_A: "openmodel", self.WIRE_B: "openmodel"},
+            None,
+            f"http://127.0.0.1:{self.upstream.server_address[1]}",
+            production=False,
+            openmodel_endpoints={
+                "local-endpoint": router.OpenModelEndpoint(
+                    base_url=(
+                        f"http://127.0.0.1:{self.upstream.server_address[1]}/v1"
+                    ),
+                    trust="loopback",
+                    protocol="openai-chat-completions-v1",
+                    auth="none",
+                    max_concurrency=max_concurrency,
+                ),
+            },
+            openmodel={
+                self.WIRE_A: self.route(self.PRIVATE_A, streaming=streaming),
+                self.WIRE_B: self.route(
+                    self.PRIVATE_B, streaming=wire_b_streaming
+                ),
+            },
+        )
+
+    def restart_gateway(self, config: "router.RouterConfig") -> None:
+        self.gateway.shutdown()
+        self.gateway.server_close()
+        self.gateway = router.RouterServer(("127.0.0.1", 0), config)
+        self.gateway_thread = threading.Thread(
+            target=self.gateway.serve_forever, daemon=True
+        )
+        self.gateway_thread.start()
+
+    def request(
+        self,
+        model: str = WIRE_A,
+        *,
+        path: str = "/v1/messages?beta=synthetic",
+        payload: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 5,
+    ) -> tuple[int, bytes, dict[str, str]]:
+        if payload is None:
+            payload = {
+                "model": model,
+                "max_tokens": 256,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        sent_headers = {
+            "content-type": "application/json",
+            "authorization": "Bearer PRIVATE_CLIENT_AUTHORIZATION",
+            "x-api-key": "PRIVATE_CLIENT_API_KEY",
+            "cookie": "PRIVATE_CLIENT_COOKIE=1",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "PRIVATE_CLIENT_BETA",
+            "x-claude-code-session-id": "PRIVATE_CLIENT_SESSION",
+            "x-untrusted-header": "PRIVATE_ARBITRARY_HEADER",
+        }
+        if headers:
+            sent_headers.update(headers)
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=timeout
+        )
+        connection.request("POST", path, body=body, headers=sent_headers)
+        response = connection.getresponse()
+        status = response.status
+        response_headers = {
+            name.lower(): value for name, value in response.getheaders()
+        }
+        raw = response.read()
+        response.close()
+        connection.close()
+        return status, raw, response_headers
+
+    def wait_for_upstream_idle(self) -> None:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with self.upstream.lock:
+                if self.upstream.active == 0:
+                    return
+            time.sleep(0.02)
+        self.fail("open-model upstream did not become idle")
+
+    def test_pin_selects_openmodel_identity_and_route_capabilities(self) -> None:
+        result = self.gateway.pin_route(self.WIRE_B)
+        self.assertTrue(result["changed"])
+        status, raw, _headers = self.request(model=self.WIRE_A)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["model"], self.WIRE_B)
+        self.assertEqual(
+            json.loads(self.upstream.requests[-1]["body"])["model"],
+            self.PRIVATE_B,
+        )
+
+        self.restart_gateway(self.config(
+            max_concurrency=1, wire_b_streaming=False
+        ))
+        self.gateway.pin_route(self.WIRE_B)
+        status, _raw, _headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_text_translation_and_fixed_header_boundary(self) -> None:
+        payload = {
+            "model": self.WIRE_A,
+            "max_tokens": 999,
+            "system": "base system",
+            "messages": [
+                {"role": "system", "content": "lifted notice"},
+                {"role": "user", "content": "hello"},
+            ],
+            "temperature": 0.5,
+        }
+        with mock.patch.dict(os.environ, {
+            "HTTP_PROXY": "http://127.0.0.1:1",
+            "HTTPS_PROXY": "http://127.0.0.1:1",
+            "ALL_PROXY": "http://127.0.0.1:1",
+        }):
+            status, raw, headers = self.request(payload=payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/json")
+        response = json.loads(raw)
+        self.assertEqual(response["model"], self.WIRE_A)
+        self.assertEqual(
+            response["content"], [{"type": "text", "text": "translated hello"}]
+        )
+        self.assertEqual(
+            response["usage"],
+            {
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "cache_read_input_tokens": 2,
+            },
+        )
+        self.assertRegex(response["id"], r"^msg_[0-9a-f]{24}$")
+        deadline = time.monotonic() + 2
+        while True:
+            diagnostics = self.gateway.diagnostic_report()
+            completed = next((
+                event for event in reversed(diagnostics["events"])
+                if event.get("provider") == "openmodel"
+                and event.get("model") == self.WIRE_A
+                and event.get("outcome") == "completed"
+            ), None)
+            if completed is not None:
+                break
+            if time.monotonic() >= deadline:
+                self.fail("completed open-model diagnostic was not recorded")
+            time.sleep(0.01)
+        self.assertEqual(completed["provider"], "openmodel")
+        self.assertEqual(diagnostics["context"], {
+            "model": self.WIRE_A,
+            # prompt_tokens already includes its cached-token subset, so the
+            # router must count the seven input tokens once rather than nine.
+            "input_tokens": 7,
+            "observed_at": completed["timestamp"],
+        })
+        serialized = raw.decode("utf-8")
+        self.assertNotIn(self.PRIVATE_A, serialized)
+        self.assertNotIn("private_completion_id", serialized)
+        self.assertNotIn("private reasoning", serialized)
+
+        self.assertEqual(len(self.upstream.requests), 1)
+        recorded = self.upstream.requests[0]
+        self.assertEqual(
+            recorded["path"], router.OPENMODEL_CHAT_COMPLETIONS_PATH
+        )
+        translated = json.loads(recorded["body"])
+        self.assertEqual(translated["model"], self.PRIVATE_A)
+        self.assertEqual(translated["max_tokens"], 64)
+        self.assertEqual(
+            translated["messages"],
+            [
+                {"role": "system", "content": "base system"},
+                {"role": "system", "content": "lifted notice"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        upstream_headers = recorded["headers"]
+        self.assertEqual(
+            set(upstream_headers),
+            {
+                "accept",
+                "accept-encoding",
+                "connection",
+                "content-length",
+                "content-type",
+                "host",
+            },
+        )
+        self.assertEqual(
+            upstream_headers["accept"], "application/json, text/event-stream"
+        )
+        self.assertEqual(upstream_headers["accept-encoding"], "identity")
+        self.assertNotIn("authorization", upstream_headers)
+        recorded_repr = repr(recorded)
+        for private in (
+            "PRIVATE_CLIENT_AUTHORIZATION",
+            "PRIVATE_CLIENT_API_KEY",
+            "PRIVATE_CLIENT_COOKIE",
+            "PRIVATE_CLIENT_BETA",
+            "PRIVATE_CLIENT_SESSION",
+            "PRIVATE_ARBITRARY_HEADER",
+        ):
+            self.assertNotIn(private, recorded_repr)
+
+    def test_function_tool_request_and_response_translation(self) -> None:
+        self.upstream.mode = "tool_json"
+        payload = {
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "look it up"}],
+            "tools": [{
+                "name": "lookup",
+                "description": "synthetic lookup",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            }],
+            "tool_choice": {"type": "any"},
+        }
+        status, raw, _headers = self.request(payload=payload)
+        self.assertEqual(status, 200)
+        translated_request = json.loads(self.upstream.requests[0]["body"])
+        self.assertEqual(translated_request["tool_choice"], "required")
+        self.assertEqual(
+            translated_request["tools"][0]["function"]["name"], "lookup"
+        )
+        response = json.loads(raw)
+        self.assertEqual(response["stop_reason"], "tool_use")
+        block = response["content"][0]
+        self.assertEqual(block["type"], "tool_use")
+        self.assertEqual(block["name"], "lookup")
+        self.assertEqual(block["input"], {"query": "synthetic"})
+        self.assertRegex(block["id"], r"^toolu_[0-9a-f]{24}$")
+        self.assertNotIn("private_call_id", raw.decode("utf-8"))
+
+    def test_response_tools_are_limited_by_each_translated_request(self) -> None:
+        lookup = {
+            "name": "lookup",
+            "input_schema": {"type": "object"},
+        }
+        other = {
+            "name": "other",
+            "input_schema": {"type": "object"},
+        }
+        second = {
+            "name": "second_lookup",
+            "input_schema": {"type": "object"},
+        }
+        base = {
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        cases = (
+            ("tool_json", {}),
+            ("tool_json", {"tools": [lookup], "tool_choice": {"type": "none"}}),
+            ("tool_json", {"tools": [other]}),
+            (
+                "text_json",
+                {"tools": [lookup], "tool_choice": {"type": "any"}},
+            ),
+            (
+                "tool_json",
+                {
+                    "tools": [lookup, other],
+                    "tool_choice": {"type": "tool", "name": "other"},
+                },
+            ),
+            (
+                "parallel_tool_json",
+                {
+                    "tools": [lookup, second],
+                    "tool_choice": {
+                        "type": "auto",
+                        "disable_parallel_tool_use": True,
+                    },
+                },
+            ),
+        )
+        for mode, extra in cases:
+            with self.subTest(mode=mode, extra=extra):
+                self.upstream.mode = mode
+                status, raw, headers = self.request(payload={**base, **extra})
+                self.assertEqual(status, 400)
+                self.assertEqual(headers["content-type"], "application/json")
+                self.assertNotIn(self.PRIVATE_A.encode("utf-8"), raw)
+                self.assertNotIn(b"private_call_id", raw)
+        self.assertEqual(len(self.upstream.requests), len(cases))
+
+    def test_streaming_function_tool_translation(self) -> None:
+        self.upstream.mode = "stream_tool"
+        payload = {
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "look it up"}],
+            "stream": True,
+            "tools": [{
+                "name": "lookup",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            }],
+            "tool_choice": {"type": "auto"},
+        }
+        status, raw, headers = self.request(payload=payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        upstream_request = json.loads(self.upstream.requests[0]["body"])
+        self.assertTrue(upstream_request["stream"])
+        self.assertTrue(upstream_request["stream_options"]["include_usage"])
+        events = [
+            json.loads(line.removeprefix(b"data: "))
+            for line in raw.splitlines()
+            if line.startswith(b"data: ") and line != b"data: [DONE]"
+        ]
+        start = next(
+            event for event in events
+            if event.get("type") == "content_block_start"
+        )
+        block = start["content_block"]
+        self.assertEqual(block["type"], "tool_use")
+        self.assertEqual(block["name"], "lookup")
+        self.assertRegex(block["id"], r"^toolu_[0-9a-f]{24}$")
+        arguments = "".join(
+            event["delta"]["partial_json"]
+            for event in events
+            if event.get("type") == "content_block_delta"
+            and event.get("delta", {}).get("type") == "input_json_delta"
+        )
+        self.assertEqual(json.loads(arguments), {"query": "synthetic"})
+        message_delta = next(
+            event for event in events if event.get("type") == "message_delta"
+        )
+        self.assertEqual(message_delta["delta"]["stop_reason"], "tool_use")
+        self.assertEqual(
+            message_delta["usage"],
+            {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "cache_read_input_tokens": 0,
+            },
+        )
+        text = raw.decode("utf-8")
+        self.assertNotIn("private_stream_id", text)
+        self.assertNotIn("private_stream_call_id", text)
+        self.assertNotIn(self.PRIVATE_A, text)
+
+    def test_redirect_and_non_success_bodies_are_sanitized(self) -> None:
+        self.upstream.mode = "redirect"
+        status, raw, headers = self.request()
+        self.assertEqual(status, 400)
+        self.assertNotIn("location", headers)
+        self.assertNotIn("private.invalid", raw.decode("utf-8"))
+        self.assertEqual(len(self.upstream.requests), 1)
+
+        self.upstream.mode = "rejected"
+        status, raw, headers = self.request()
+        self.assertEqual(status, 503)
+        self.assertNotIn("location", headers)
+        text = raw.decode("utf-8")
+        self.assertIn("upstream rejected the request", text)
+        self.assertNotIn("PRIVATE_OPENMODEL_ERROR", text)
+        self.assertNotIn(self.PRIVATE_A, text)
+        self.assertEqual(len(self.upstream.requests), 2)
+        diagnostics = json.dumps(self.gateway.diagnostic_report())
+        self.assertNotIn("PRIVATE_OPENMODEL_ERROR", diagnostics)
+        self.assertNotIn(self.PRIVATE_A, diagnostics)
+        self.assertNotIn("local-endpoint", diagnostics)
+        self.assertNotIn(
+            f"127.0.0.1:{self.upstream.server_address[1]}", diagnostics
+        )
+        self.assertNotIn("private_completion_id", diagnostics)
+
+    def test_non_success_body_consumption_has_a_time_bound(self) -> None:
+        self.upstream.mode = "rejected_stall"
+        self.upstream.delay = 0.75
+        started = time.monotonic()
+        with mock.patch.object(router, "OPENMODEL_ERROR_TIMEOUT_SECONDS", 0.05):
+            status, raw, _headers = self.request(timeout=2)
+        elapsed = time.monotonic() - started
+        self.assertEqual(status, 503)
+        self.assertLess(elapsed, 0.5)
+        self.assertNotIn(self.PRIVATE_A, raw.decode("utf-8"))
+
+    def test_stream_identity_mismatch_before_commit_is_a_json_error(self) -> None:
+        self.upstream.mode = "stream_mismatch_before"
+        status, raw, headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(json.loads(raw)["error"]["type"], "invalid_request_error")
+        self.assertNotIn("private mismatched model", raw.decode("utf-8"))
+        self.assertNotIn(self.PRIVATE_A, raw.decode("utf-8"))
+
+    def test_stream_valid_then_mismatch_in_one_read_does_not_commit(self) -> None:
+        self.upstream.mode = "stream_mismatch_same_chunk"
+        status, raw, headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertNotIn(b"event: message_start", raw)
+        self.assertNotIn(b"visible", raw)
+        self.assertNotIn(b"private mismatched model", raw)
+
+    def test_stream_identity_mismatch_after_commit_is_an_in_stream_error(self) -> None:
+        self.upstream.mode = "stream_mismatch_after"
+        self.upstream.delay = 0.1
+        status, raw, headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIn(b"event: message_start", raw)
+        self.assertIn(b'"text":"visible"', raw)
+        self.assertIn(b"event: error", raw)
+        self.assertNotIn(b"event: message_stop", raw)
+        text = raw.decode("utf-8")
+        self.assertNotIn("private mismatched model", text)
+        self.assertNotIn(self.PRIVATE_A, text)
+
+    def test_one_endpoint_semaphore_is_shared_by_two_route_aliases(self) -> None:
+        self.upstream.mode = "delayed_json"
+        self.upstream.delay = 0.15
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(self.request, model)
+                for model in (self.WIRE_A, self.WIRE_B)
+            ]
+            results = [future.result(timeout=3) for future in futures]
+        self.assertTrue(all(status == 200 for status, _raw, _headers in results))
+        self.assertEqual(len(self.upstream.requests), 2)
+        self.assertEqual(self.upstream.max_active, 1)
+        self.assertEqual(len(self.gateway.openmodel_endpoint_slots), 1)
+
+    def test_endpoint_admission_rejects_excess_waiters_immediately(self) -> None:
+        self.upstream.mode = "delayed_json"
+        self.upstream.delay = 1.0
+        waiter_semaphore = self.gateway.openmodel_endpoint_waiters["local-endpoint"]
+        with ThreadPoolExecutor(
+            max_workers=1 + router.MAX_OPENMODEL_WAITERS_PER_ENDPOINT
+        ) as executor:
+            active = executor.submit(self.request, model=self.WIRE_A, timeout=4)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with self.upstream.lock:
+                    if self.upstream.active == 1:
+                        break
+                time.sleep(0.01)
+            else:
+                self.fail("active open-model request did not reach upstream")
+            waiters = [
+                executor.submit(self.request, model=self.WIRE_B, timeout=4)
+                for _ in range(router.MAX_OPENMODEL_WAITERS_PER_ENDPOINT)
+            ]
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                if not waiter_semaphore.acquire(blocking=False):
+                    break
+                waiter_semaphore.release()
+                time.sleep(0.01)
+            else:
+                self.fail("open-model waiter capacity did not saturate")
+
+            started = time.monotonic()
+            status, raw, _headers = self.request(model=self.WIRE_A, timeout=2)
+            elapsed = time.monotonic() - started
+            self.assertEqual(status, 503)
+            self.assertLess(elapsed, 0.5)
+            self.assertIn(b"local capacity", raw)
+            self.assertNotIn(self.PRIVATE_A.encode("utf-8"), raw)
+            self.upstream.delay = 0.05
+            results = [active.result()] + [future.result() for future in waiters]
+        self.assertTrue(all(status == 200 for status, _raw, _headers in results))
+        self.assertEqual(len(self.upstream.requests), 5)
+        self.assertEqual(self.upstream.max_active, 1)
+
+    def test_stalled_nonstream_client_cannot_pin_endpoint_slot(self) -> None:
+        self.upstream.mode = "json_flood"
+        payload = json.dumps({
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=3
+        )
+        response: http.client.HTTPResponse | None = None
+        original_writer = router.RouterHandler._write_openmodel_response
+
+        def write_with_timeout(
+            handler: "router.RouterHandler", body: bytes
+        ) -> None:
+            real_writer = handler.wfile
+
+            class TimedOutBodyWriter:
+                def write(self, data: bytes) -> int:
+                    if len(data) > 1024:
+                        raise TimeoutError("synthetic stalled client")
+                    return real_writer.write(data)
+
+                def flush(self) -> None:
+                    real_writer.flush()
+
+            handler.wfile = TimedOutBodyWriter()
+            try:
+                original_writer(handler, body)
+            finally:
+                handler.wfile = real_writer
+
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.settimeout(3)
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            client_socket.connect(("127.0.0.1", self.gateway.server_address[1]))
+            connection.sock = client_socket
+            with (
+                mock.patch.object(
+                    router.RouterHandler,
+                    "_write_openmodel_response",
+                    write_with_timeout,
+                ),
+                mock.patch.object(
+                    router, "OPENMODEL_DOWNSTREAM_WRITE_TIMEOUT_SECONDS", 0.05
+                ),
+            ):
+                connection.request(
+                    "POST", "/v1/messages", body=payload,
+                    headers={"content-type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    outcomes = {
+                        event.get("outcome")
+                        for event in self.gateway.diagnostic_report()["events"]
+                    }
+                    if "connection_interrupted" in outcomes:
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail(
+                        "stalled non-stream client did not release its endpoint slot"
+                    )
+                self.wait_for_upstream_idle()
+                self.upstream.mode = "text_json"
+                status, _raw, _headers = self.request(
+                    model=self.WIRE_B, timeout=2
+                )
+                self.assertEqual(status, 200)
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
+
+    def test_stalled_sse_client_cannot_pin_endpoint_slot(self) -> None:
+        self.upstream.mode = "stream_flood"
+        payload = json.dumps({
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=3
+        )
+        response: http.client.HTTPResponse | None = None
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.settimeout(3)
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            client_socket.connect(("127.0.0.1", self.gateway.server_address[1]))
+            connection.sock = client_socket
+            with mock.patch.object(
+                router, "OPENMODEL_DOWNSTREAM_WRITE_TIMEOUT_SECONDS", 0.05
+            ):
+                connection.request(
+                    "POST", "/v1/messages", body=payload,
+                    headers={"content-type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    outcomes = {
+                        event.get("outcome")
+                        for event in self.gateway.diagnostic_report()["events"]
+                    }
+                    if "connection_interrupted" in outcomes:
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("stalled SSE client did not release its endpoint slot")
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
+        self.wait_for_upstream_idle()
+        self.upstream.mode = "text_json"
+        status, _raw, _headers = self.request(model=self.WIRE_B, timeout=2)
+        self.assertEqual(status, 200)
+
+    def test_endpoint_queue_wait_is_bounded_without_releasing_another_owner(self) -> None:
+        semaphore = self.gateway.openmodel_endpoint_slots["local-endpoint"]
+        waiter_semaphore = self.gateway.openmodel_endpoint_waiters["local-endpoint"]
+        self.assertTrue(semaphore.acquire(timeout=0))
+        try:
+            started = time.monotonic()
+            with mock.patch.object(router, "OPENMODEL_SLOT_TIMEOUT_SECONDS", 0.05):
+                status, _raw, _headers = self.request(timeout=2)
+            self.assertEqual(status, 503)
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertEqual(self.upstream.requests, [])
+            deadline = time.monotonic() + 1
+            while True:
+                waiter_permits = 0
+                for _ in range(router.MAX_OPENMODEL_WAITERS_PER_ENDPOINT):
+                    if not waiter_semaphore.acquire(blocking=False):
+                        break
+                    waiter_permits += 1
+                for _ in range(waiter_permits):
+                    waiter_semaphore.release()
+                if waiter_permits == router.MAX_OPENMODEL_WAITERS_PER_ENDPOINT:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail("timed-out open-model waiter permit was not released")
+                time.sleep(0.01)
+            acquired_permits = 0
+            try:
+                for _ in range(router.MAX_OPENMODEL_WAITERS_PER_ENDPOINT):
+                    self.assertTrue(waiter_semaphore.acquire(blocking=False))
+                    acquired_permits += 1
+                self.assertFalse(waiter_semaphore.acquire(blocking=False))
+            finally:
+                for _ in range(acquired_permits):
+                    waiter_semaphore.release()
+        finally:
+            semaphore.release()
+        status, _raw, _headers = self.request(timeout=2)
+        self.assertEqual(status, 200)
+
+    def test_semaphore_is_released_after_protocol_error_and_client_disconnect(self) -> None:
+        self.upstream.mode = "malformed_json"
+        status, _raw, _headers = self.request()
+        self.assertEqual(status, 400)
+        self.wait_for_upstream_idle()
+        self.upstream.mode = "text_json"
+        status, _raw, _headers = self.request(model=self.WIRE_B, timeout=2)
+        self.assertEqual(status, 200)
+
+        self.upstream.mode = "disconnect_before_headers"
+        status, _raw, _headers = self.request(timeout=2)
+        self.assertEqual(status, 502)
+        self.wait_for_upstream_idle()
+
+        self.upstream.mode = "stream_upstream_disconnect"
+        status, raw, _headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }, timeout=2)
+        self.assertEqual(status, 200)
+        self.assertIn(b"event: message_start", raw)
+        self.assertIn(b"event: error", raw)
+        self.assertNotIn(b"event: message_stop", raw)
+        self.wait_for_upstream_idle()
+
+        self.upstream.mode = "stream_disconnect"
+        self.upstream.delay = 0.1
+        payload = json.dumps({
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=2
+        )
+        connection.request(
+            "POST", "/v1/messages", body=payload,
+            headers={"content-type": "application/json"},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertIn(b"message_start", response.read1(4096))
+        client_socket = connection.sock
+        if client_socket is None and response.fp is not None:
+            client_socket = getattr(getattr(response.fp, "raw", None), "_sock", None)
+        self.assertIsNotNone(client_socket)
+        client_socket.shutdown(socket.SHUT_RDWR)
+        response.close()
+        connection.close()
+        self.wait_for_upstream_idle()
+        self.upstream.mode = "text_json"
+        status, _raw, _headers = self.request(model=self.WIRE_B, timeout=2)
+        self.assertEqual(status, 200)
+        outcomes = {
+            event.get("outcome")
+            for event in self.gateway.diagnostic_report()["events"]
+        }
+        self.assertIn("connection_interrupted", outcomes)
+
+    def test_stream_diagnostics_distinguish_omitted_and_real_usage(self) -> None:
+        stream_payload = {
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }
+        self.upstream.mode = "stream_no_usage"
+        status, raw, _headers = self.request(payload=stream_payload)
+        self.assertEqual(status, 200)
+        # Anthropic framing keeps explicit zero fields for client compatibility.
+        self.assertIn(b'"input_tokens":0', raw)
+        self.assertIn(b'"output_tokens":0', raw)
+        request_events = [
+            event for event in self.gateway.diagnostic_report()["events"]
+            if event.get("provider") == "openmodel"
+            and event.get("outcome") == "completed"
+        ]
+        self.assertEqual(len(request_events), 1)
+        self.assertNotIn("usage", request_events[0])
+        summary = self.gateway.diagnostic_report()["summary"]
+        self.assertEqual(summary[0]["usage_events"], 0)
+
+        self.upstream.mode = "stream_with_usage"
+        status, raw, _headers = self.request(payload=stream_payload)
+        self.assertEqual(status, 200)
+        self.assertIn(b'"input_tokens":11', raw)
+        self.assertIn(b'"output_tokens":5', raw)
+        request_events = [
+            event for event in self.gateway.diagnostic_report()["events"]
+            if event.get("provider") == "openmodel"
+            and event.get("outcome") == "completed"
+        ]
+        self.assertEqual(
+            request_events[-1]["usage"],
+            {
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 0,
+            },
+        )
+        summary = self.gateway.diagnostic_report()["summary"]
+        self.assertEqual(summary[0]["usage_events"], 1)
+        self.assertEqual(summary[0]["input_tokens"], 11)
+        self.assertEqual(summary[0]["output_tokens"], 5)
+
+    def test_stream_finish_waits_for_terminal_usage(self) -> None:
+        self.upstream.mode = "stream_wait_usage"
+        payload = json.dumps({
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=3
+        )
+        connection.request(
+            "POST", "/v1/messages", body=payload,
+            headers={"content-type": "application/json"},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.upstream.finish_sent.wait(timeout=1))
+        prefix = b""
+        for _ in range(5):
+            prefix += response.read1(4096)
+            if b'"text":"visible"' in prefix:
+                break
+        self.assertIn(b'"text":"visible"', prefix)
+        self.assertNotIn(b"event: message_delta", prefix)
+        self.assertNotIn(b"event: message_stop", prefix)
+        self.upstream.usage_release.set()
+        raw = prefix + response.read()
+        response.close()
+        connection.close()
+        self.assertLess(
+            raw.index(b"event: content_block_stop"),
+            raw.index(b"event: message_delta"),
+        )
+        self.assertLess(
+            raw.index(b"event: message_delta"),
+            raw.index(b"event: message_stop"),
+        )
+        self.assertIn(b'"input_tokens":11', raw)
+        self.assertIn(b'"output_tokens":5', raw)
+
+    def test_unsupported_operations_and_streaming_fail_before_upstream(self) -> None:
+        for path, expected in (
+            ("/v1/messages/count_tokens", 400),
+            ("/v1/images/generations", 400),
+            ("/v1/unknown", 404),
+        ):
+            with self.subTest(path=path):
+                status, _raw, _headers = self.request(path=path)
+                self.assertEqual(status, expected)
+        self.assertEqual(self.upstream.requests, [])
+
+        status, _raw, _headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [
+                {"role": "user", "content": "start"},
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_pending",
+                        "name": "lookup",
+                        "input": {},
+                    }],
+                },
+                {"role": "user", "content": "intervening text"},
+            ],
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(self.upstream.requests, [])
+
+        status, _raw, _headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [
+                {"role": "user", "content": "start"},
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_pending",
+                        "name": "lookup",
+                        "input": {},
+                    }],
+                },
+                {"role": "system", "content": "late notice"},
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_pending",
+                        "content": "result",
+                    }],
+                },
+            ],
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(self.upstream.requests, [])
+
+        self.restart_gateway(self.config(max_concurrency=1, streaming=False))
+        status, _raw, _headers = self.request(payload={
+            "model": self.WIRE_A,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_openmodel_route_cannot_be_a_background_substitute(self) -> None:
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {self.WIRE_A: "openmodel"},
+                None,
+                "https://api.anthropic.com",
+                production=False,
+                openmodel_endpoints={"local-endpoint": self.endpoint()},
+                openmodel={self.WIRE_A: self.route(self.PRIVATE_A)},
+                background_model=self.WIRE_A,
+            )
+
+        # Keep a request-time guard as defense in depth if a caller mutates a
+        # constructed config or restores older state that escaped validation.
+        self.gateway.config.background_model = self.WIRE_A
+        status, _raw, _headers = self.request(model="claude-haiku-4-5-test")
+        self.assertEqual(status, 400)
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_startup_rejects_endpoint_metadata_that_widens_loopback(self) -> None:
+        valid = router.OpenModelEndpoint(
+            base_url=f"http://127.0.0.1:{self.upstream.server_address[1]}/v1",
+            trust="loopback",
+            protocol="openai-chat-completions-v1",
+            auth="none",
+            max_concurrency=1,
+        )
+        invalid_endpoints = (
+            valid._replace(base_url="http://localhost:8000/v1"),
+            valid._replace(base_url="http://127.0.0.1:8000/v1/extra"),
+            valid._replace(base_url="http://127.0.0.1:65536/v1"),
+            valid._replace(trust="network"),
+            valid._replace(protocol="other"),
+            valid._replace(auth="bearer"),
+            valid._replace(max_concurrency=True),
+        )
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint), self.assertRaises(
+                router.RouterError
+            ):
+                router.RouterConfig(
+                    {self.WIRE_A: "openmodel"},
+                    None,
+                    "https://api.anthropic.com",
+                    production=False,
+                    openmodel_endpoints={"local-endpoint": endpoint},
+                    openmodel={self.WIRE_A: self.route(self.PRIVATE_A)},
+                )
+
+    def test_startup_rejects_unbounded_or_oversized_openmodel_collections(self) -> None:
+        def exploding_generator():
+            raise AssertionError("generator must not be consumed")
+            yield None
+
+        common = {
+            "openai_url": None,
+            "anthropic_url": "https://api.anthropic.com",
+            "production": False,
+        }
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {self.WIRE_A: "openmodel"},
+                openmodel_endpoints=exploding_generator(),
+                openmodel={self.WIRE_A: self.route(self.PRIVATE_A)},
+                **common,
+            )
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {self.WIRE_A: "openmodel"},
+                openmodel_endpoints={"local-endpoint": self.endpoint()},
+                openmodel=exploding_generator(),
+                **common,
+            )
+        for route in (
+            self.route(self.PRIVATE_A)._replace(
+                accepted_response_models=exploding_generator()
+            ),
+            self.route(self.PRIVATE_A)._replace(
+                tool_choice=exploding_generator()
+            ),
+            self.route(self.PRIVATE_A)._replace(
+                accepted_response_models=[f"model-{index}" for index in range(17)]
+            ),
+            self.route(self.PRIVATE_A)._replace(
+                tool_choice=["auto", "named", "none", "required", "auto"]
+            ),
+        ):
+            with self.subTest(route=route), self.assertRaises(router.RouterError):
+                router.RouterConfig(
+                    {self.WIRE_A: "openmodel"},
+                    openmodel_endpoints={"local-endpoint": self.endpoint()},
+                    openmodel={self.WIRE_A: route},
+                    **common,
+                )
+
+        too_many_endpoints = {
+            f"endpoint-{index}": self.endpoint() for index in range(17)
+        }
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {self.WIRE_A: "openmodel"},
+                openmodel_endpoints=too_many_endpoints,
+                openmodel={self.WIRE_A: self.route(self.PRIVATE_A)},
+                **common,
+            )
+        routes = {
+            f"openmodel/model-{index}": "openmodel" for index in range(33)
+        }
+        models = {
+            model: self.route(f"private-{index}")
+            for index, model in enumerate(routes)
+        }
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                routes,
+                openmodel_endpoints={"local-endpoint": self.endpoint()},
+                openmodel=models,
+                **common,
+            )
+
+    def test_openmodel_routes_cannot_enter_failover_or_compaction(self) -> None:
+        endpoint = {
+            "local-endpoint": router.OpenModelEndpoint(
+                base_url=(
+                    f"http://127.0.0.1:{self.upstream.server_address[1]}/v1"
+                ),
+                trust="loopback",
+                protocol="openai-chat-completions-v1",
+                auth="none",
+                max_concurrency=1,
+            ),
+        }
+        openmodel = {self.WIRE_A: self.route(self.PRIVATE_A)}
+        for failover in (
+            {self.WIRE_A: ("claude-test",)},
+            {"claude-test": (self.WIRE_A,)},
+        ):
+            with self.subTest(failover=failover), self.assertRaises(
+                router.RouterError
+            ):
+                router.RouterConfig(
+                    {
+                        self.WIRE_A: "openmodel",
+                        "claude-test": "anthropic",
+                    },
+                    None,
+                    "https://api.anthropic.com",
+                    production=False,
+                    openmodel_endpoints=endpoint,
+                    openmodel=openmodel,
+                    failover=failover,
+                )
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {self.WIRE_A: "openmodel"},
+                None,
+                "https://api.anthropic.com",
+                production=False,
+                openmodel_endpoints=endpoint,
+                openmodel=openmodel,
+                compactors={"openmodel": self.WIRE_A},
+            )
+
+    def test_signed_snapshot_materializes_immutable_endpoint_and_route_state(self) -> None:
+        routes = {self.WIRE_A: "openmodel", self.WIRE_B: "openmodel"}
+        openmodel = {
+            "endpoints": {
+                "local-endpoint": {
+                    "base_url": (
+                        f"http://127.0.0.1:{self.upstream.server_address[1]}/v1"
+                    ),
+                    "trust": "loopback",
+                    "protocol": "openai-chat-completions-v1",
+                    "auth": "none",
+                    "max_concurrency": 1,
+                },
+            },
+            "models": {
+                self.WIRE_A: {
+                    "endpoint": "local-endpoint",
+                    "upstream_model": self.PRIVATE_A,
+                    "accepted_response_models": [self.PRIVATE_A],
+                    "context_window": 8192,
+                    "max_output_tokens": 64,
+                    "streaming": True,
+                    "tools": "parallel",
+                    "tool_choice": ["auto", "named", "none", "required"],
+                },
+                self.WIRE_B: {
+                    "endpoint": "local-endpoint",
+                    "upstream_model": self.PRIVATE_B,
+                    "accepted_response_models": [self.PRIVATE_B],
+                    "context_window": 8192,
+                    "max_output_tokens": 64,
+                    "streaming": True,
+                    "tools": "parallel",
+                    "tool_choice": ["auto", "named", "none", "required"],
+                },
+            },
+        }
+        agents = {
+            "airlock-om-local-alpha": {
+                "model": self.WIRE_A,
+                "provider": "openmodel",
+                "extra_usage": False,
+            },
+            "airlock-om-local-beta": {
+                "model": self.WIRE_B,
+                "provider": "openmodel",
+                "extra_usage": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path, digest = write_test_snapshot(
+                directory,
+                routes=routes,
+                profile="openmodel-pure",
+                openmodel=openmodel,
+                agents=agents,
+                context_windows={self.WIRE_A: 8192, self.WIRE_B: 8192},
+            )
+            snapshot = router.load_router_snapshot(str(path), digest)
+            config = router.router_config_from_snapshot(
+                snapshot, None, "https://api.anthropic.com"
+            )
+        self.assertEqual(config.routes, routes)
+        self.assertEqual(config.root_provider, "openmodel")
+        self.assertEqual(config.openmodel_routes[self.WIRE_A].upstream_model, self.PRIVATE_A)
+        with self.assertRaises(TypeError):
+            config.openmodel_routes[self.WIRE_A] = self.route(self.PRIVATE_A)
+        with self.assertRaises(AttributeError):
+            config.openmodel_endpoints["local-endpoint"].base_url = "invalid"
+        standalone = router.RouterServer(("127.0.0.1", 0), config)
+        try:
+            self.assertEqual(len(standalone.openmodel_endpoint_slots), 1)
+            self.assertIs(
+                standalone.openmodel_endpoint_slots["local-endpoint"],
+                standalone.openmodel_endpoint_slots[
+                    config.openmodel_routes[self.WIRE_B].endpoint
+                ],
+            )
+        finally:
+            standalone.server_close()
+
+
+class RouterControlTests(unittest.TestCase):
+    """Authenticated, bounded pin controls and their routing semantics."""
+
+    def setUp(self) -> None:
+        self.openai = RecordingServer()
+        self.anthropic = RecordingServer()
+        for server in (self.openai, self.anthropic):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.config = router.RouterConfig(
+            {
+                "gpt-root": "openai",
+                "gpt-background": "openai",
+                "gpt-request-peer": "openai",
+                "gpt-pin-peer": "openai",
+                "claude-pin": "anthropic",
+                "claude-small": "anthropic",
+                "claude-unknown-window": "anthropic",
+            },
+            f"http://127.0.0.1:{self.openai.server_address[1]}",
+            f"http://127.0.0.1:{self.anthropic.server_address[1]}",
+            production=False,
+            failover={
+                "gpt-root": ("gpt-request-peer",),
+                "claude-pin": ("gpt-pin-peer",),
+                "claude-small": ("gpt-pin-peer",),
+            },
+            context_windows={
+                "gpt-root": 2000,
+                "gpt-background": 1000,
+                "gpt-request-peer": 2000,
+                "gpt-pin-peer": 2000,
+                "claude-pin": 1000,
+                "claude-small": 1000,
+            },
+            background_model="gpt-background",
+            anthropic_rate_limit="handoff",
+        )
+        self.gateway = router.RouterServer(("127.0.0.1", 0), self.config)
+        threading.Thread(target=self.gateway.serve_forever, daemon=True).start()
+
+    def tearDown(self) -> None:
+        self.gateway.shutdown()
+        self.gateway.server_close()
+        for server in (self.openai, self.anthropic):
+            server.shutdown()
+            server.server_close()
+
+    def control(
+        self,
+        path: str,
+        body: bytes = b"{}",
+        *,
+        token: str | None = "correct",
+        origin: str | None = None,
+        content_type: str | None = "application/json",
+        method: str = "POST",
+        include_length: bool = True,
+        declared_length: str | None = None,
+        extra_headers: tuple[tuple[str, str], ...] = (),
+    ) -> tuple[int, object | None, dict[str, str], bytes]:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=5
+        )
+        connection.putrequest(method, path)
+        if content_type is not None:
+            connection.putheader("Content-Type", content_type)
+        if token is not None:
+            actual = self.gateway.control_token if token == "correct" else token
+            connection.putheader("X-Airlock-Control-Token", actual)
+        if origin is not None:
+            connection.putheader("Origin", origin)
+        if include_length:
+            connection.putheader(
+                "Content-Length",
+                str(len(body)) if declared_length is None else declared_length,
+            )
+        for name, value in extra_headers:
+            connection.putheader(name, value)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        status = response.status
+        headers = {name.lower(): value for name, value in response.getheaders()}
+        raw = response.read()
+        response.close()
+        connection.close()
+        payload = json.loads(raw) if raw else None
+        return status, payload, headers, raw
+
+    def model_request(
+        self, model: str, *, include_control_header: bool = False
+    ) -> tuple[int, object]:
+        body = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+        }, separators=(",", ":")).encode("utf-8")
+        headers = {"content-type": "application/json"}
+        if include_control_header:
+            headers["x-airlock-control-token"] = self.gateway.control_token
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=5
+        )
+        connection.request("POST", "/v1/messages", body=body, headers=headers)
+        response = connection.getresponse()
+        status = response.status
+        payload = json.loads(response.read())
+        response.close()
+        connection.close()
+        return status, payload
+
+    def pin(self, model: str) -> tuple[int, object, dict[str, str], bytes]:
+        return self.control(
+            "/control/pin",
+            json.dumps({"model": model}, separators=(",", ":")).encode("ascii"),
+        )
+
+    def assert_control_headers(self, headers: dict[str, str]) -> None:
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+        self.assertNotIn("access-control-allow-origin", headers)
+
+    def test_control_auth_is_constant_time_and_uses_one_safe_forbidden(self) -> None:
+        forbidden: list[bytes] = []
+        cases = (
+            {"token": None},
+            {"token": "wrong"},
+            {"origin": "https://127.0.0.1:4783"},
+            {"origin": "http://user@127.0.0.1:4783"},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                status, payload, headers, raw = self.control(
+                    "/control/unpin", **kwargs
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(payload, {
+                    "type": "error",
+                    "error": {
+                        "type": "forbidden",
+                        "message": "Control request is forbidden",
+                    },
+                })
+                self.assert_control_headers(headers)
+                self.assertNotIn(self.gateway.control_token.encode("ascii"), raw)
+                forbidden.append(raw)
+        self.assertTrue(all(body == forbidden[0] for body in forbidden))
+
+        real_compare = router.hmac.compare_digest
+        with mock.patch.object(
+            router.hmac, "compare_digest", wraps=real_compare
+        ) as compared:
+            status, _payload, _headers, _raw = self.control(
+                "/control/unpin", token="wrong"
+            )
+        self.assertEqual(status, 403)
+        compared.assert_called_once()
+        self.assertTrue(all(isinstance(arg, bytes) for arg in compared.call_args.args))
+
+        status, payload, headers, _raw = self.control("/control/unpin")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["action"], "unpin")
+        self.assert_control_headers(headers)
+
+    def test_control_origin_accepts_only_exact_loopback_http_origins(self) -> None:
+        accepted = (
+            "http://127.0.0.1", "http://127.0.0.1:4783",
+            "http://localhost", "http://localhost:4783",
+            "http://[::1]", "http://[::1]:4783",
+        )
+        for origin in accepted:
+            with self.subTest(origin=origin):
+                status, _payload, headers, _raw = self.control(
+                    "/control/unpin", origin=origin
+                )
+                self.assertEqual(status, 200)
+                self.assert_control_headers(headers)
+        rejected = (
+            "", "null", "https://localhost:4783",
+            "http://127.0.0.2:4783", "http://localhost.evil:4783",
+            "http://user@localhost:4783", "http://localhost:4783/",
+            "http://localhost:4783/path", "http://localhost:4783?query=1",
+            "http://localhost:4783#fragment", "http://[::1%25eth0]:4783",
+            "http://localhost:99999",
+        )
+        self.assertFalse(router.control_origin_allowed(" http://localhost:4783"))
+        for origin in rejected:
+            with self.subTest(origin=origin):
+                status, payload, _headers, _raw = self.control(
+                    "/control/unpin", origin=origin
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(payload["error"]["type"], "forbidden")
+
+    def test_control_rejects_content_body_and_schema_variants(self) -> None:
+        for content_type in (
+            None,
+            "text/plain",
+            "application/problem+json",
+            "application/json;",
+            "application/json; charset",
+        ):
+            with self.subTest(content_type=content_type):
+                status, payload, _headers, _raw = self.control(
+                    "/control/unpin", content_type=content_type
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["error"]["type"], "invalid_request")
+        self.assertEqual(self.control(
+            "/control/unpin",
+            content_type='application/json; charset=utf-8; profile="x;y"',
+        )[0], 200)
+
+        invalid = (
+            ("malformed", b"{"),
+            ("invalid_utf8", b'{"model":"\xff"}'),
+            ("duplicate", b'{"model":"gpt-root","model":"gpt-root"}'),
+            ("non_object", b"[]"),
+            ("non_finite", b'{"model":NaN}'),
+            ("deep", b'{"model":[[[[["gpt-root"]]]]]}'),
+            ("unknown_key", b'{"extra":true}'),
+            ("missing_model", b"{}"),
+            ("wrong_model_type", b'{"model":7}'),
+        )
+        for name, body in invalid:
+            with self.subTest(name=name):
+                status, payload, _headers, _raw = self.control(
+                    "/control/pin", body
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["error"]["type"], "invalid_request")
+        for body in (b'{"model":"gpt-root"}', b""):
+            status, payload, _headers, _raw = self.control(
+                "/control/unpin", body
+            )
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"]["type"], "invalid_request")
+        status, payload, _headers, _raw = self.control(
+            "/control/unpin", b"{}", include_length=False
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request")
+        oversized = b"{" + b" " * router.MAX_CONTROL_REQUEST_BYTES
+        status, payload, headers, _raw = self.control(
+            "/control/unpin", oversized
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"]["type"], "request_too_large")
+        self.assert_control_headers(headers)
+        status, payload, _headers, _raw = self.control(
+            "/control/unpin", declared_length="9" * 5000
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"]["type"], "request_too_large")
+        status, payload, _headers, _raw = self.control(
+            "/control/unpin", declared_length="+2"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request")
+        status, payload, _headers, _raw = self.control(
+            "/control/unpin", extra_headers=(("Content-Length", "2"),)
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request")
+        status, payload, _headers, _raw = self.control(
+            "/control/unpin", extra_headers=(("Transfer-Encoding", "chunked"),)
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request")
+
+    def test_control_rejects_duplicate_security_headers(self) -> None:
+        cases = (
+            (
+                (("X-Airlock-Control-Token", self.gateway.control_token),),
+                None, "forbidden", 403,
+            ),
+            (
+                (("Origin", "http://localhost:4783"),),
+                "http://localhost:4783", "forbidden", 403,
+            ),
+            (
+                (("Content-Type", "application/json"),),
+                None, "invalid_request", 400,
+            ),
+        )
+        for extra, origin, kind, expected_status in cases:
+            with self.subTest(kind=kind, extra=extra):
+                status, payload, _headers, _raw = self.control(
+                    "/control/unpin", origin=origin, extra_headers=extra
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(payload["error"]["type"], kind)
+
+    def test_only_exact_post_control_endpoints_exist(self) -> None:
+        cases = (
+            ("POST", "/control"), ("POST", "/control/unknown"),
+            ("POST", "/control/pin?model=gpt-root"),
+            ("GET", "/control/pin"), ("HEAD", "/control/pin"),
+            ("PUT", "/control/pin"), ("PATCH", "/control/pin"),
+            ("DELETE", "/control/unpin"), ("OPTIONS", "/control/unpin"),
+            ("TRACE", "/control/unpin"), ("CONNECT", "/control/unpin"),
+        )
+        for method, path in cases:
+            with self.subTest(method=method, path=path):
+                status, payload, headers, raw = self.control(
+                    path, method=method, token=None
+                )
+                self.assertEqual(status, 404)
+                if method == "HEAD":
+                    self.assertIsNone(payload)
+                    self.assertEqual(raw, b"")
+                else:
+                    self.assertEqual(payload["error"]["type"], "not_found")
+                self.assert_control_headers(headers)
+
+    def test_pin_success_idempotence_and_unpin_events(self) -> None:
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = {
+                "model": "gpt-root", "input_tokens": 900,
+                "observed_at": "2026-09-05T09:00:00Z",
+            }
+        initial_events = len(self.gateway.diagnostic_report()["events"])
+        status, payload, headers, raw = self.pin("claude-pin")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {
+            "ok": True, "action": "pin",
+            "instance_id": self.gateway.instance_id, "changed": True,
+            "previous_pinned_model": None, "pinned_model": "claude-pin",
+            "route": {
+                "model": "claude-pin", "provider": "anthropic",
+                "context_window": 1000, "context_check": "fits",
+            },
+        })
+        self.assert_control_headers(headers)
+        self.assertNotIn(self.gateway.control_token.encode("ascii"), raw)
+        events = self.gateway.diagnostic_report()["events"]
+        self.assertEqual(len(events), initial_events + 1)
+        self.assertEqual(set(events[-1]), {
+            "timestamp", "kind", "model", "provider",
+        })
+        self.assertEqual(events[-1]["kind"], "session_model_pinned")
+
+        status, repeated, _headers, _raw = self.pin("claude-pin")
+        self.assertEqual(status, 200)
+        self.assertFalse(repeated["changed"])
+        self.assertEqual(repeated["previous_pinned_model"], "claude-pin")
+        self.assertEqual(
+            len(self.gateway.diagnostic_report()["events"]), initial_events + 1
+        )
+
+        self.assertTrue(self.pin("gpt-background")[1]["changed"])
+        before_unpin = len(self.gateway.diagnostic_report()["events"])
+        status, unpinned, _headers, _raw = self.control("/control/unpin")
+        self.assertEqual(status, 200)
+        self.assertEqual(unpinned, {
+            "ok": True, "action": "unpin",
+            "instance_id": self.gateway.instance_id, "changed": True,
+            "previous_pinned_model": "gpt-background",
+            "pinned_model": None, "route": None,
+        })
+        events = self.gateway.diagnostic_report()["events"]
+        self.assertEqual(len(events), before_unpin + 1)
+        self.assertEqual(set(events[-1]), {
+            "timestamp", "kind", "model", "provider",
+        })
+        self.assertEqual(events[-1]["kind"], "session_model_unpinned")
+        self.assertEqual(events[-1]["model"], "gpt-background")
+        self.assertEqual(events[-1]["provider"], "openai")
+        status, repeated_unpin, _headers, _raw = self.control("/control/unpin")
+        self.assertEqual(status, 200)
+        self.assertEqual(repeated_unpin, {
+            "ok": True, "action": "unpin",
+            "instance_id": self.gateway.instance_id, "changed": False,
+            "previous_pinned_model": None,
+            "pinned_model": None, "route": None,
+        })
+        self.assertEqual(
+            len(self.gateway.diagnostic_report()["events"]), before_unpin + 1
+        )
+
+    def test_pin_rejects_unknown_cooling_and_oversized_context(self) -> None:
+        unknown = "friendly-alias-not-a-route"
+        for candidate in (unknown, "claude-haiku-4-5-20251001"):
+            status, payload, _headers, raw = self.pin(candidate)
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"]["type"], "model_not_enabled")
+            self.assertNotIn(candidate.encode("ascii"), raw)
+
+        self.gateway.rate_limits.mark("claude-pin", 60, "anthropic")
+        status, payload, _headers, _raw = self.pin("claude-pin")
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["type"], "route_cooling")
+
+        self.gateway.rate_limits.mark("gpt-root", 60, "openai")
+        self.gateway.rate_limits.mark("gpt-request-peer", 60, "openai")
+        status, payload, _headers, _raw = self.pin("gpt-background")
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["type"], "route_cooling")
+
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = {
+                "model": "gpt-root", "input_tokens": 1001,
+                "observed_at": "2026-09-05T09:00:00Z",
+            }
+        status, payload, _headers, _raw = self.pin("claude-small")
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["type"], "context_too_large")
+        self.assertIsNone(self.gateway.snapshot_pinned_model())
+
+    def test_same_pin_retry_ignores_new_cooldown_and_context_growth(self) -> None:
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        event_count = len(self.gateway.diagnostic_report()["events"])
+        self.gateway.rate_limits.mark("claude-pin", 60, "anthropic")
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = {
+                "model": "claude-pin", "input_tokens": 1001,
+                "observed_at": "2026-09-05T09:00:00Z",
+            }
+        status, payload, _headers, _raw = self.pin("claude-pin")
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["changed"])
+        self.assertEqual(payload["pinned_model"], "claude-pin")
+        self.assertEqual(payload["route"]["context_check"], "too_large")
+        self.assertEqual(
+            len(self.gateway.diagnostic_report()["events"]), event_count
+        )
+
+    def test_pin_allows_unknown_context_or_window(self) -> None:
+        status, payload, _headers, _raw = self.pin("claude-pin")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["route"]["context_check"], "unknown")
+        self.control("/control/unpin")
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = {
+                "model": "gpt-root", "input_tokens": 900,
+                "observed_at": "2026-09-05T09:00:00Z",
+            }
+        status, payload, _headers, _raw = self.pin("claude-unknown-window")
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["route"]["context_window"])
+        self.assertEqual(payload["route"]["context_check"], "unknown")
+
+    def test_unpin_succeeds_while_root_provider_is_cooling(self) -> None:
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        self.gateway.rate_limits.mark("gpt-root", 60, "openai")
+        self.gateway.rate_limits.mark("gpt-request-peer", 60, "openai")
+        status, payload, _headers, _raw = self.control("/control/unpin")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["changed"])
+        self.assertIsNone(self.gateway.snapshot_pinned_model())
+
+    def test_pin_overrides_direct_and_background_but_not_unknown(self) -> None:
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        status, _payload = self.model_request(
+            "gpt-root", include_control_header=True
+        )
+        self.assertEqual(status, 200)
+        direct = self.anthropic.requests[-1]
+        self.assertEqual(json.loads(direct["body"])["model"], "claude-pin")
+        self.assertNotIn("x-airlock-control-token", direct["headers"])
+        self.assertNotIn(self.gateway.control_token.encode("ascii"), direct["body"])
+
+        status, _payload = self.model_request("claude-haiku-4-5-20251001")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(self.anthropic.requests[-1]["body"])["model"],
+            "claude-pin",
+        )
+        before = len(self.openai.requests) + len(self.anthropic.requests)
+        status, payload = self.model_request("unknown-model")
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request_error")
+        self.assertEqual(
+            len(self.openai.requests) + len(self.anthropic.requests), before
+        )
+        status, _payload = self.model_request(self.gateway.control_token)
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            len(self.openai.requests) + len(self.anthropic.requests), before
+        )
+        self.assertNotIn(
+            self.gateway.control_token,
+            json.dumps(self.gateway.diagnostic_report()),
+        )
+
+        self.assertEqual(self.control("/control/unpin")[0], 200)
+        status, _payload = self.model_request("claude-haiku-4-5-20251001")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(self.openai.requests[-1]["body"])["model"],
+            "gpt-background",
+        )
+
+    def test_only_foreground_requests_replace_context_observation(self) -> None:
+        def request_event_count() -> int:
+            return sum(
+                "outcome" in event
+                for event in self.gateway.diagnostic_report()["events"]
+            )
+
+        def wait_for_request_event(previous: int) -> None:
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if request_event_count() > previous:
+                    return
+                time.sleep(0.01)
+            self.fail("request diagnostic was not recorded")
+
+        original = {
+            "model": "gpt-root", "input_tokens": 900,
+            "observed_at": "2026-09-05T09:00:00Z",
+        }
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = dict(original)
+        self.openai.mode = "usage_json"
+        before = request_event_count()
+        status, _payload = self.model_request("gpt-background")
+        self.assertEqual(status, 200)
+        wait_for_request_event(before)
+        self.assertEqual(self.gateway.diagnostic_report()["context"], original)
+
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        self.anthropic.mode = "usage_json"
+        before = request_event_count()
+        status, _payload = self.model_request("gpt-root")
+        self.assertEqual(status, 200)
+        wait_for_request_event(before)
+        foreground = self.gateway.diagnostic_report()["context"]
+        self.assertEqual(foreground["model"], "claude-pin")
+        self.assertEqual(foreground["input_tokens"], 11)
+
+        with self.gateway.diagnostics_lock:
+            self.gateway.context_observation = dict(original)
+        before = request_event_count()
+        status, _payload = self.model_request("claude-haiku-4-5-20251001")
+        self.assertEqual(status, 200)
+        wait_for_request_event(before)
+        self.assertEqual(self.gateway.diagnostic_report()["context"], original)
+
+    def test_pinned_failover_uses_pin_chain_without_mutating_pin(self) -> None:
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        self.anthropic.rate_limited_models.add("claude-pin")
+        for iteration in range(2):
+            status, _payload = self.model_request("gpt-root")
+            self.assertEqual(
+                status, 200,
+                (iteration, self.gateway.diagnostic_report(),
+                 self.anthropic.requests, self.openai.requests),
+            )
+            self.assertEqual(
+                json.loads(self.openai.requests[-1]["body"])["model"],
+                "gpt-pin-peer",
+            )
+            self.assertEqual(self.gateway.snapshot_pinned_model(), "claude-pin")
+        attempted = [
+            json.loads(request["body"])["model"] for request in self.openai.requests
+        ]
+        self.assertNotIn("gpt-request-peer", attempted)
+        self.assertEqual(
+            json.loads(self.anthropic.requests[0]["body"])["model"],
+            "claude-pin",
+        )
+
+    def test_pinned_overflow_uses_pin_chain_without_mutating_pin(self) -> None:
+        self.assertEqual(self.pin("claude-small")[0], 200)
+        self.anthropic.overflow_models["claude-small"] = (
+            "anthropic", 1500, 1000
+        )
+        status, _payload = self.model_request("gpt-root")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(self.anthropic.requests[-1]["body"])["model"],
+            "claude-small",
+        )
+        self.assertEqual(
+            json.loads(self.openai.requests[-1]["body"])["model"],
+            "gpt-pin-peer",
+        )
+        self.assertEqual(self.gateway.snapshot_pinned_model(), "claude-small")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            kinds = {
+                event.get("kind")
+                for event in self.gateway.diagnostic_report()["events"]
+            }
+            if "failover_overflow_succeeded" in kinds:
+                break
+            time.sleep(0.01)
+        self.assertIn("failover_overflow_succeeded", kinds)
+
+    def test_request_snapshots_pin_without_locking_over_upstream(self) -> None:
+        self.assertEqual(self.pin("claude-pin")[0], 200)
+        self.anthropic.mode = "delay"
+        self.anthropic.delay = 1.2
+        result: list[tuple[int, object]] = []
+        request_thread = threading.Thread(
+            target=lambda: result.append(self.model_request("gpt-root")), daemon=True
+        )
+        request_thread.start()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with self.anthropic.lock:
+                if self.anthropic.active:
+                    break
+            time.sleep(0.01)
+        else:
+            self.fail("pinned request did not reach its upstream")
+
+        started = time.monotonic()
+        status, payload, _headers, _raw = self.pin("gpt-pin-peer")
+        elapsed = time.monotonic() - started
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pinned_model"], "gpt-pin-peer")
+        self.assertLess(elapsed, 0.8)
+        request_thread.join(timeout=3)
+        self.assertFalse(request_thread.is_alive())
+        self.assertEqual(result[0][0], 200)
+        self.assertEqual(
+            json.loads(self.anthropic.requests[-1]["body"])["model"],
+            "claude-pin",
+        )
+
+        status, _payload = self.model_request("gpt-root")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(self.openai.requests[-1]["body"])["model"],
+            "gpt-pin-peer",
+        )
+        self.assertNotIn(
+            self.gateway.control_token,
+            json.dumps(self.gateway.diagnostic_report()),
+        )
+
+
 class RouterRestartTests(unittest.TestCase):
     """Holding the session address when the router process dies.
 
@@ -1915,6 +4422,237 @@ class RouterRestartTests(unittest.TestCase):
             "https://api.anthropic.com",
             production=False,
         )
+
+    def test_launch_log_records_start_and_stop_beside_the_registry(self) -> None:
+        # The console overlays these records on a session so a person can see
+        # when it ran through Airlock; the transcript itself has no trace.
+        with tempfile.TemporaryDirectory() as directory:
+            registry_root = Path(directory) / "sessions"
+            registry_root.mkdir()
+            standalone = router.RouterServer(
+                ("127.0.0.1", 0),
+                self.config(),
+                owner_pid=41220,
+                workdir="C:/example/project",
+            )
+            try:
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=registry_root
+                ):
+                    router.append_launch_record(standalone, "start")
+                    router.append_launch_record(standalone, "stop")
+                    log = router.launch_log_path()
+            finally:
+                standalone.server_close()
+            self.assertEqual(log, Path(directory) / "launches.jsonl")
+            lines = log.read_text(encoding="ascii").splitlines()
+            self.assertEqual(len(lines), 2)
+            start, stop = (json.loads(line) for line in lines)
+            self.assertEqual(start["event"], "start")
+            self.assertEqual(stop["event"], "stop")
+            for record in (start, stop):
+                self.assertEqual(record["schema_version"], 1)
+                self.assertEqual(record["instance_id"], standalone.instance_id)
+                self.assertEqual(record["workdir"], "C:/example/project")
+                self.assertEqual(record["profile"], standalone.config.profile)
+                self.assertEqual(record["root_model"], standalone.config.root_model)
+                self.assertRegex(record["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+                self.assertNotIn("control_token", record)
+            if os.name != "nt":
+                self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
+
+    def test_registry_schema_permissions_and_same_instance_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry_root = Path(directory) / "sessions"
+            registry_root.mkdir()
+            standalone = router.RouterServer(
+                ("127.0.0.1", 0),
+                self.config(),
+                owner_pid=41220,
+                workdir="C:/example/project",
+            )
+            stale = registry_root / f"{standalone.instance_id}.json"
+            stale.write_text('{"stale":true}', encoding="utf-8")
+            try:
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=registry_root
+                ):
+                    registry = router.write_session_registry(standalone)
+                self.assertEqual(registry, stale)
+                registry_payload = json.loads(
+                    registry.read_text(encoding="ascii")
+                )
+                self.assertEqual(registry_payload, {
+                    "schema_version": 2,
+                    "instance_id": standalone.instance_id,
+                    "url": (
+                        f"http://127.0.0.1:{standalone.server_address[1]}"
+                    ),
+                    "owner_pid": 41220,
+                    "router_pid": os.getpid(),
+                    "started_at": standalone.started_at,
+                    "profile": "hybrid",
+                    "root_model": "claude-test",
+                    "root_provider": "anthropic",
+                    "workdir": "C:/example/project",
+                    "control_token": standalone.control_token,
+                })
+                self.assertRegex(
+                    standalone.control_token, r"^[A-Za-z0-9_-]{43}$"
+                )
+                self.assertNotIn(
+                    standalone.control_token,
+                    json.dumps(standalone.diagnostic_report()),
+                )
+                self.assertNotIn(standalone.control_token, repr(standalone))
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE(registry.stat().st_mode), 0o600)
+                    self.assertEqual(
+                        stat.S_IMODE(registry_root.stat().st_mode), 0o700
+                    )
+                self.assertEqual(list(registry_root.glob("*.tmp")), [])
+            finally:
+                router.remove_session_registry(stale)
+                standalone.server_close()
+
+    def test_router_control_tokens_are_distinct_256_bit_capabilities(self) -> None:
+        real_token_urlsafe = router.secrets.token_urlsafe
+        with mock.patch.object(
+            router.secrets, "token_urlsafe", wraps=real_token_urlsafe
+        ) as generated:
+            first = router.RouterServer(("127.0.0.1", 0), self.config())
+            second = router.RouterServer(("127.0.0.1", 0), self.config())
+        try:
+            self.assertNotEqual(first.control_token, second.control_token)
+            for token in (first.control_token, second.control_token):
+                self.assertRegex(token, r"^[A-Za-z0-9_-]{43}$")
+            self.assertEqual(
+                [call.args for call in generated.call_args_list], [(32,), (32,)]
+            )
+        finally:
+            first.server_close()
+            second.server_close()
+
+    def test_registry_refuses_nonregular_symlink_and_reparse_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sessions"
+            root.mkdir()
+            standalone = router.RouterServer(("127.0.0.1", 0), self.config())
+            path = root / f"{standalone.instance_id}.json"
+            try:
+                path.mkdir()
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=root
+                ), self.assertRaisesRegex(router.RouterError, "target is unsafe"):
+                    router.write_session_registry(standalone)
+                path.rmdir()
+
+                link_target = root / "unrelated.json"
+                link_target.write_text("unchanged", encoding="ascii")
+                try:
+                    path.symlink_to(link_target)
+                except OSError:
+                    pass
+                else:
+                    with mock.patch.object(
+                        router, "session_registry_root", return_value=root
+                    ), self.assertRaisesRegex(
+                        router.RouterError, "target is unsafe"
+                    ):
+                        router.write_session_registry(standalone)
+                    self.assertEqual(
+                        link_target.read_text(encoding="ascii"), "unchanged"
+                    )
+                    path.unlink()
+
+                marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                if marker:
+                    metadata = mock.Mock(st_file_attributes=marker)
+                    self.assertTrue(router._is_reparse_point(metadata))
+            finally:
+                if path.exists() and path.is_dir():
+                    path.rmdir()
+                elif path.is_symlink() or path.exists():
+                    path.unlink()
+                standalone.server_close()
+
+    def test_registry_uses_nofollow_and_removes_failed_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sessions"
+            standalone = router.RouterServer(("127.0.0.1", 0), self.config())
+            path = root / f"{standalone.instance_id}.json"
+            real_open = router.os.open
+            opened: list[tuple[object, ...]] = []
+
+            def recording_open(*args, **kwargs):
+                opened.append(args)
+                return real_open(*args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=root
+                ), mock.patch.object(router.os, "open", side_effect=recording_open):
+                    registry = router.write_session_registry(standalone)
+                if hasattr(os, "O_NOFOLLOW"):
+                    staging_flags = next(
+                        args[1] for args in opened
+                        if str(args[0]).endswith(".tmp")
+                    )
+                    self.assertTrue(staging_flags & os.O_NOFOLLOW)
+                router.remove_session_registry(registry)
+
+                real_protect = router._protect_registry_file
+                calls = 0
+
+                def fail_after_replace(candidate: Path) -> None:
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        raise router.RouterError("fixed protection failure")
+                    real_protect(candidate)
+
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=root
+                ), mock.patch.object(
+                    router, "_protect_registry_file", side_effect=fail_after_replace
+                ), self.assertRaisesRegex(
+                    router.RouterError, "fixed protection failure"
+                ) as raised:
+                    router.write_session_registry(standalone)
+                self.assertFalse(path.exists())
+                self.assertNotIn(standalone.control_token, str(raised.exception))
+                self.assertEqual(list(root.glob("*.tmp")), [])
+            finally:
+                router.remove_session_registry(path)
+                standalone.server_close()
+
+    def test_registry_permissions_are_private_on_this_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sessions"
+            standalone = router.RouterServer(("127.0.0.1", 0), self.config())
+            try:
+                with mock.patch.object(
+                    router, "session_registry_root", return_value=root
+                ):
+                    registry = router.write_session_registry(standalone)
+                if os.name == "nt":
+                    policy = router.load_policy_schema()
+                    policy._validate_windows_path_security(
+                        root, require_private_read=True
+                    )
+                    policy._validate_windows_path_security(
+                        registry, require_private_read=True
+                    )
+                else:
+                    self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+                    self.assertEqual(
+                        stat.S_IMODE(registry.stat().st_mode), 0o600
+                    )
+            finally:
+                router.remove_session_registry(
+                    root / f"{standalone.instance_id}.json"
+                )
+                standalone.server_close()
 
     def test_a_port_is_validated_before_it_is_bound(self) -> None:
         self.assertEqual(router.validated_port(0), 0)
@@ -1950,6 +4688,8 @@ class RouterRestartTests(unittest.TestCase):
         finally:
             child.kill()
             child.wait()
+            if child.stdout is not None:
+                child.stdout.close()
         self.assertFalse(router.process_alive(child.pid))
 
     def test_the_requested_port_and_seat_reach_the_serve_child(self) -> None:
@@ -1991,6 +4731,7 @@ class RouterRestartTests(unittest.TestCase):
                     "--snapshot-sha256", digest,
                     "--port", "39123",
                     "--background-model", "claude-test",
+                    "--workdir", "C:/project with spaces",
                 ])
                 self.assertEqual(router.start_router(args), 0)
             command = popen.call_args.args[0]
@@ -1998,12 +4739,17 @@ class RouterRestartTests(unittest.TestCase):
             self.assertEqual(
                 command[command.index("--background-model") + 1], "claude-test"
             )
+            self.assertEqual(
+                command[command.index("--workdir") + 1],
+                "C:/project with spaces",
+            )
 
     def test_the_watch_replaces_a_router_that_is_gone(self) -> None:
         restarts: list[int] = []
 
         def restart(args: object) -> tuple[str, int]:
             restarts.append(getattr(args, "port"))
+            self.assertEqual(getattr(args, "workdir"), "C:/original project")
             return "http://127.0.0.1:39123", 5252
 
         args = router.parser().parse_args([
@@ -2013,6 +4759,7 @@ class RouterRestartTests(unittest.TestCase):
             "--snapshot", "unused",
             "--snapshot-sha256", "0" * 64,
             "--port", "39123",
+            "--workdir", "C:/original project",
         ])
 
         def alive(pid: int) -> bool:
@@ -3576,6 +6323,46 @@ class FailoverPlumbingTests(unittest.TestCase):
         ):
             self.assertFalse(cooldowns.active("m-a"))
             self.assertEqual(cooldowns.active_models(), [])
+
+
+class SnapshotRouteMetadataValidationTests(unittest.TestCase):
+    """Route metadata can cover every canonical and deterministic wire ID."""
+
+    def test_route_metadata_allows_more_than_the_agent_limit_for_aliases(self) -> None:
+        routes: dict[str, str] = {}
+        agents: dict[str, dict[str, object]] = {}
+        for index in range(33):
+            canonical = f"claude-test-{index:02d}[1m]"
+            wire = canonical.removesuffix("[1m]")
+            routes[canonical] = "anthropic"
+            routes[wire] = "anthropic"
+            agents[f"airlock-test-{index:02d}"] = {
+                "model": canonical,
+                "provider": "anthropic",
+                "extra_usage": False,
+            }
+        categories = {model: "included" for model in routes}
+        ceilings = {model: "max" for model in routes}
+        windows = {model: 1_000_000 for model in routes}
+        snapshot = POLICY.validate_session_snapshot({
+            "schema_version": 1,
+            "protocol_version": router.MANAGED_PROTOCOL_VERSION,
+            "profile": "hybrid-anthropic-root",
+            "root_model": "claude-test-00[1m]",
+            "root_provider": "anthropic",
+            "routes": routes,
+            "agents": agents,
+            "openrouter": {},
+            "openmodel": {"endpoints": {}, "models": {}},
+            "failover": {},
+            "context_windows": windows,
+            "route_categories": categories,
+            "effort_ceilings": ceilings,
+        })
+        self.assertEqual(len(snapshot.routes), 66)
+        self.assertEqual(dict(snapshot.context_windows), windows)
+        self.assertEqual(dict(snapshot.route_categories), categories)
+        self.assertEqual(dict(snapshot.effort_ceilings), ceilings)
 
 
 class SnapshotFailoverValidationTests(unittest.TestCase):

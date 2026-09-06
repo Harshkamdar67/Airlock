@@ -244,6 +244,9 @@ if command -v airlock >/dev/null 2>&1; then
       fi
     done
     policy_path="${AIRLOCK_POLICY_HELPER:-$(dirname "$launcher_path")/airlock_policy.py}"
+    openmodel_path="${AIRLOCK_OPENMODEL_HELPER:-$(dirname "$launcher_path")/airlock_openmodel.py}"
+    openmodel_adapter_path="${AIRLOCK_OPENMODEL_ADAPTER_HELPER:-$(dirname "$launcher_path")/airlock_openmodel_adapter.py}"
+    openmodel_registry_path="${AIRLOCK_OPENMODEL_REGISTRY_FILE:-$config_dir/openmodel-registry.json}"
     openrouter_auth_path="${AIRLOCK_OPENROUTER_AUTH_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_auth.py}"
     openrouter_presets_path="${AIRLOCK_OPENROUTER_PRESETS_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_presets.py}"
     openrouter_models_path="${AIRLOCK_OPENROUTER_MODELS_HELPER:-$(dirname "$launcher_path")/airlock_openrouter_models.py}"
@@ -317,6 +320,65 @@ if command -v airlock >/dev/null 2>&1; then
       [[ "$openrouter_backend_status" -eq 0 || "$openrouter_backend_state" == 'unavailable' ]] || \
         fail 'OpenRouter credential backend status could not be determined'
     fi
+
+    openmodel_helpers_safe=1
+    for helper_path in "$policy_path" "$openmodel_path" "$openmodel_adapter_path"; do
+      if [[ ! -f "$helper_path" || -L "$helper_path" ]]; then
+        fail "Open-model helper is missing or unsafe: $helper_path"
+        openmodel_helpers_safe=0
+      fi
+    done
+    if [[ -z "$python_bin" ]]; then
+      fail 'Python 3 is required for open-model checks'
+      openmodel_helpers_safe=0
+    fi
+
+    openmodel_registry_state='unknown'
+    openmodel_endpoint_count=0
+    openmodel_active_endpoint_count=0
+    openmodel_route_count=0
+    openmodel_active_route_count=0
+    if [[ "$openmodel_helpers_safe" -eq 1 ]]; then
+      openmodel_registry_output="$(
+        "$python_bin" "$openmodel_path" \
+          --registry "$openmodel_registry_path" _doctor-status 2>&1
+      )"
+      openmodel_registry_status=$?
+      while IFS= read -r openmodel_line; do
+        openmodel_line="${openmodel_line%$'\r'}"
+        case "$openmodel_line" in
+          STATE=*) openmodel_registry_state="${openmodel_line#STATE=}" ;;
+          ENDPOINT_COUNT=*) openmodel_endpoint_count="${openmodel_line#ENDPOINT_COUNT=}" ;;
+          ACTIVE_ENDPOINT_COUNT=*) openmodel_active_endpoint_count="${openmodel_line#ACTIVE_ENDPOINT_COUNT=}" ;;
+          ROUTE_COUNT=*) openmodel_route_count="${openmodel_line#ROUTE_COUNT=}" ;;
+          ACTIVE_ROUTE_COUNT=*) openmodel_active_route_count="${openmodel_line#ACTIVE_ROUTE_COUNT=}" ;;
+          ENDPOINT=*)
+            openmodel_endpoint_line="${openmodel_line#ENDPOINT=}"
+            IFS=$'\t' read -r openmodel_endpoint openmodel_endpoint_state openmodel_concurrency <<<"$openmodel_endpoint_line"
+            info "Open-model endpoint: $openmodel_endpoint ($openmodel_endpoint_state, $openmodel_concurrency)"
+            ;;
+          ROUTE=*)
+            openmodel_route_line="${openmodel_line#ROUTE=}"
+            IFS=$'\t' read -r openmodel_route openmodel_endpoint openmodel_route_state <<<"$openmodel_route_line"
+            info "Open-model route: airlock-om-$openmodel_route ($openmodel_endpoint, $openmodel_route_state)"
+            ;;
+          DETAIL=*) info "Open-model registry detail: ${openmodel_line#DETAIL=}" ;;
+        esac
+      done <<<"$openmodel_registry_output"
+      case "$openmodel_registry_state" in
+        absent) info "Open-model registry is not configured: $openmodel_registry_path" ;;
+        valid)
+          pass "Open-model registry is valid ($openmodel_active_endpoint_count/$openmodel_endpoint_count endpoint(s) active, $openmodel_active_route_count/$openmodel_route_count route(s) active): $openmodel_registry_path"
+          ;;
+        invalid) fail "Open-model registry is invalid: $openmodel_registry_path" ;;
+        *)
+          fail "Open-model registry status could not be determined: $openmodel_registry_path"
+          [[ "$openmodel_registry_status" -eq 0 ]] || info 'The open-model registry helper returned an error.'
+          ;;
+      esac
+      info 'Doctor did not contact a local inference server; run airlock open-model check ROUTE explicitly.'
+    fi
+
     if grep -qF "'usage'" "$launcher_path" 2>/dev/null; then
       while IFS= read -r usage_line; do
         info "$usage_line"
@@ -345,6 +407,49 @@ if command -v brew >/dev/null 2>&1; then
 fi
 
 plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_dir/plugins/airlock}"
+console_bin_dir="${AIRLOCK_INSTALL_DIR:-$HOME/.local/bin}"
+if [[ -n "${launcher_path:-}" ]]; then
+  console_bin_dir="$(dirname "$launcher_path")"
+fi
+console_helper="${AIRLOCK_CONSOLE_HELPER:-$console_bin_dir/airlock_console.py}"
+console_tools_helper="$console_bin_dir/airlock_console_tools.py"
+console_mcp_helper="$plugin_dir/mcp-server/airlock_console_mcp.py"
+console_site="$console_bin_dir/../share/airlock/console"
+for console_check in \
+  "Console helper|$console_helper" \
+  "Console tools helper|$console_tools_helper" \
+  "Console MCP wrapper|$console_mcp_helper"; do
+  console_label="${console_check%%|*}"
+  console_path="${console_check#*|}"
+  if [[ -f "$console_path" && ! -L "$console_path" ]]; then
+    pass "Airlock $console_label: $console_path"
+  else
+    info "Airlock $console_label is not installed or is unsafe: $console_path"
+  fi
+done
+if [[ -d "$console_site" && ! -L "$console_site" ]]; then
+  pass "Airlock Console site: $console_site"
+else
+  info "Airlock Console site is not installed or is unsafe: $console_site"
+fi
+console_health_url='http://127.0.0.1:4783'
+console_health_headers="$(mktemp "${TMPDIR:-/tmp}/airlock-console-health-headers.XXXXXX")"
+console_health_body="$(mktemp "${TMPDIR:-/tmp}/airlock-console-health-body.XXXXXX")"
+console_health_ok=0
+if curl --silent --fail --max-time 1 --max-filesize 4096 --noproxy '*' \
+  --dump-header "$console_health_headers" --output "$console_health_body" \
+  "$console_health_url/healthz" >/dev/null 2>&1 \
+  && grep -Eiq '^Server:[[:space:]]*AirlockConsole' "$console_health_headers" \
+  && grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$console_health_body"; then
+  console_health_ok=1
+fi
+rm -f -- "$console_health_headers" "$console_health_body"
+if [[ "$console_health_ok" -eq 1 ]]; then
+  pass "Airlock Console health: $console_health_url/healthz"
+else
+  info "Airlock Console is not running at 127.0.0.1:4783"
+fi
+
 if [[ -d "$plugin_dir" && ! -L "$plugin_dir" \
   && -f "$plugin_dir/.claude-plugin/plugin.json" \
   && -f "$plugin_dir/hooks/hooks.json" \

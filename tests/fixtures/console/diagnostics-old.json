@@ -1,0 +1,50 @@
+{
+  "instance_id": "r-oldshape",
+  "profile": "openai-pure",
+  "root_model": "gpt-5.6-sol",
+  "root_provider": "openai",
+  "rate_limit_cooldowns": ["gpt-5.6-sol"],
+  "rate_limit_provider_cooldowns": [],
+  "events": [
+    {
+      "timestamp": "2026-09-05T08:58:00Z",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "status": 200,
+      "outcome": "completed",
+      "duration_ms": 1200,
+      "request_bytes": 4096,
+      "response_bytes": 2048,
+      "usage": {
+        "input_tokens": 142900,
+        "output_tokens": 800,
+        "cache_read_input_tokens": 0,
+        "secret": "drop-me"
+      }
+    }
+  ],
+  "summary": [
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "requests": 9,
+      "completed": 8,
+      "errors": 1,
+      "usage_events": 8,
+      "input_tokens": 142900,
+      "output_tokens": 800,
+      "cache_read_input_tokens": 0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "requests": 41,
+      "completed": 41,
+      "errors": 0,
+      "usage_events": 41,
+      "input_tokens": 1000,
+      "output_tokens": 40,
+      "cache_read_input_tokens": 0
+    }
+  ]
+}

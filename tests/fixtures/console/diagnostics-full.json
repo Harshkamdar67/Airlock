@@ -1,0 +1,54 @@
+{
+  "instance_id": "r-8f2c1a",
+  "profile": "hybrid-anthropic-root",
+  "root_model": "claude-fable-5-1[1m]",
+  "root_provider": "anthropic",
+  "rate_limit_cooldowns": ["claude-fable-5-1[1m]", "claude-opus-5[1m]"],
+  "rate_limit_provider_cooldowns": ["anthropic"],
+  "started_at": "2026-09-05T06:41:03Z",
+  "owner_pid": 41220,
+  "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\claudex",
+  "last_request_at": "2026-09-05T08:58:40Z",
+  "pinned_model": null,
+  "routes": [
+    {"model": "claude-fable-5-1[1m]", "provider": "anthropic", "category": "metered", "context_window": 1000000, "effort_ceiling": "max", "metered": true},
+    {"model": "claude-opus-5[1m]", "provider": "anthropic", "category": "included", "context_window": 1000000, "effort_ceiling": "max", "metered": false},
+    {"model": "claude-sonnet-5[1m]", "provider": "anthropic", "category": "included", "context_window": 1000000, "effort_ceiling": "max", "metered": false},
+    {"model": "gpt-5.6-sol", "provider": "openai", "category": "included", "context_window": 400000, "effort_ceiling": "xhigh", "metered": false},
+    {"model": "gpt-5.6-terra", "provider": "openai", "category": "included", "context_window": 400000, "effort_ceiling": "xhigh", "metered": false},
+    {"model": "gpt-5.6-luna", "provider": "openai", "category": "included", "context_window": 400000, "effort_ceiling": "high", "metered": false},
+    {"model": "grok-4.6", "provider": "grok", "category": "included", "context_window": 2000000, "effort_ceiling": "high", "metered": false},
+    {"model": "stealth/ox-alpha", "provider": "openrouter", "category": "extra", "context_window": 1000000, "effort_ceiling": "high", "metered": true}
+  ],
+  "cooldowns": [
+    {"scope": "provider", "provider": "anthropic", "remaining_seconds": 2890},
+    {"scope": "model", "model": "claude-fable-5-1[1m]", "provider": "anthropic", "remaining_seconds": 2890},
+    {"scope": "model", "model": "claude-opus-5[1m]", "provider": "anthropic", "remaining_seconds": 2890}
+  ],
+  "chains": {
+    "claude-fable-5-1[1m]": ["claude-opus-5[1m]", "gpt-5.6-sol", "stealth/ox-alpha"],
+    "claude-opus-5[1m]": ["gpt-5.6-sol", "grok-4.6", "stealth/ox-alpha"],
+    "gpt-5.6-sol": ["gpt-5.6-terra", "claude-opus-5[1m]", "stealth/ox-alpha"],
+    "gpt-5.6-luna": ["grok-composer-2.5-fast", "claude-haiku-4-5-20251001"]
+  },
+  "context": {"model": "claude-fable-5-1[1m]", "input_tokens": 612340, "observed_at": "2026-09-05T09:02:11Z"},
+  "events": [
+    {"timestamp": "2026-09-05T08:41:12Z", "provider": "anthropic", "model": "claude-fable-5-1[1m]", "status": 200, "outcome": "completed", "duration_ms": 18422, "usage": {"input_tokens": 1200, "output_tokens": 2210, "cache_read_input_tokens": 598000}, "request_bytes": 99, "secret_body": "nope"},
+    {"timestamp": "2026-09-05T08:44:03Z", "provider": "openai", "model": "gpt-5.6-luna", "status": 200, "outcome": "completed", "duration_ms": 6210, "usage": {"input_tokens": 8100, "output_tokens": 640, "cache_read_input_tokens": 0}},
+    {"timestamp": "2026-09-05T08:51:30Z", "provider": "openai", "model": "gpt-5.6-sol", "status": 429, "outcome": "rate_limited", "duration_ms": 812},
+    {"timestamp": "2026-09-05T08:51:30Z", "kind": "rate_limit_failover_attempted", "model": "gpt-5.6-terra", "provider": "openai", "failover_from": "gpt-5.6-sol", "models_considered": 2, "from_model": "gpt-5.6-sol", "to_model": "gpt-5.6-terra", "hops": 1},
+    {"timestamp": "2026-09-05T08:51:44Z", "provider": "openai", "model": "gpt-5.6-terra", "status": 200, "outcome": "completed", "duration_ms": 14020, "failover_from": "gpt-5.6-sol", "usage": {"input_tokens": 80300, "output_tokens": 5100, "cache_read_input_tokens": 0}},
+    {"timestamp": "2026-09-05T08:57:58Z", "provider": "anthropic", "model": "claude-fable-5-1[1m]", "status": 429, "outcome": "rate_limited", "duration_ms": 640},
+    {"timestamp": "2026-09-05T08:57:58Z", "kind": "rate_limit_failover_attempted", "model": "claude-opus-5[1m]", "provider": "anthropic", "failover_from": "claude-fable-5-1[1m]", "models_considered": 3},
+    {"timestamp": "2026-09-05T08:57:59Z", "provider": "anthropic", "model": "claude-opus-5[1m]", "status": 429, "outcome": "rate_limited", "duration_ms": 590, "failover_from": "claude-fable-5-1[1m]"},
+    {"timestamp": "2026-09-05T08:57:59Z", "kind": "rate_limit_provider_cooldown", "provider": "anthropic", "remaining_seconds": 2920},
+    {"timestamp": "2026-09-05T08:57:59Z", "kind": "rate_limit_cooldown_skipped", "model": "claude-sonnet-5[1m]", "provider": "anthropic", "failover_from": "claude-fable-5-1[1m]"},
+    {"timestamp": "2026-09-05T08:58:00Z", "kind": "failover_overflow_skipped", "model": "gpt-5.6-sol", "provider": "openai", "failover_from": "claude-fable-5-1[1m]", "reason": "context_window"},
+    {"timestamp": "2026-09-05T08:58:40Z", "kind": "rate_limit_chain_exhausted", "model": "claude-fable-5-1[1m]", "provider": "anthropic", "models_considered": 4, "last_model": "claude-opus-5[1m]", "retry_after": 2890}
+  ],
+  "summary": [
+    {"provider": "anthropic", "model": "claude-fable-5-1[1m]", "requests": 212, "completed": 209, "errors": 3, "usage_events": 209, "input_tokens": 61234000, "output_tokens": 412300, "cache_read_input_tokens": 58900000},
+    {"provider": "openai", "model": "gpt-5.6-luna", "requests": 14, "completed": 14, "errors": 0, "usage_events": 14, "input_tokens": 91200, "output_tokens": 8100, "cache_read_input_tokens": 60200},
+    {"provider": "openai", "model": "gpt-5.6-sol", "requests": 3, "completed": 2, "errors": 1, "usage_events": 2, "input_tokens": 240100, "output_tokens": 19800, "cache_read_input_tokens": 120000}
+  ]
+}

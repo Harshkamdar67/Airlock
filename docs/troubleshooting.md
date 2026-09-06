@@ -361,7 +361,7 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09, and no shipped root declares a hard limit.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Two shipped roots declare a hard limit from provider documentation instead: `grok-4.6` declares 500,000 tokens and compacts at 400,000, and `gpt-6-astra` declares its 922,000-token input ceiling and compacts at 736,000. Neither number is verified by an Airlock proof.
 
 To take the control back for a session, start it with:
 
@@ -450,6 +450,17 @@ airlock mode
 ```
 
 Use several top-level native Agent calls when the work is truly independent. Do not build hidden descendant trees.
+
+## An Astra session says `Model not allowed: gpt-6-astra`
+
+GPT-6 Astra needs the carried `claude-code-proxy` build `0.1.35-airlock.3` or newer. Older builds do not list `gpt-6-astra`, so the proxy refuses the request with `Model not allowed` before anything reaches OpenAI. Check the installed build with:
+
+```bash
+claude-code-proxy --version
+claude-code-proxy models
+```
+
+If `gpt-6-astra` is missing, upgrade the proxy. On Windows, rerun the installer with `-UpgradeProxy`. Sol, Terra, and Luna are unaffected, so a session that does not name Astra keeps working on an older build.
 
 ## A Grok session says `Unknown model "grok-4.6"`
 

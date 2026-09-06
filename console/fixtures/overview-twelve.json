@@ -1,0 +1,438 @@
+{
+  "generated_at": "2026-09-05T09:02:12Z",
+  "console_version": "0.1.0",
+  "sessions": [
+    {
+      "id": "r-100000",
+      "state": "blocked",
+      "blocked_reason": "rate_limit",
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-fable-5-1[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-fable-5-1[1m]",
+      "workdir": "D:\\work\\claudex",
+      "project": "claudex",
+      "started_at": "2026-09-05T08:22:12Z",
+      "last_activity_at": "2026-09-05T08:59:55Z",
+      "context": {
+        "input_tokens": 80000,
+        "window": 1000000
+      },
+      "workers": [
+        {
+          "model": "gpt-5.6-luna",
+          "requests": 3
+        }
+      ],
+      "recent_handoffs": 0,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-101eef",
+      "state": "blocked",
+      "blocked_reason": "context_overflow",
+      "profile": "hybrid-anthropic-root",
+      "root_model": "gpt-5.6-sol",
+      "root_provider": "openai",
+      "active_model": "gpt-5.6-sol",
+      "workdir": "D:\\work\\airlock-relay",
+      "project": "airlock-relay",
+      "started_at": "2026-09-05T07:42:12Z",
+      "last_activity_at": "2026-09-05T08:57:38Z",
+      "context": {
+        "input_tokens": 72000,
+        "window": 400000
+      },
+      "workers": [],
+      "recent_handoffs": 1,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-103dde",
+      "state": "running",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-sonnet-5[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-sonnet-5[1m]",
+      "workdir": "D:\\work\\agentquant",
+      "project": "agentquant",
+      "started_at": "2026-09-05T07:02:12Z",
+      "last_activity_at": "2026-09-05T08:55:21Z",
+      "context": {
+        "input_tokens": 280000,
+        "window": 1000000
+      },
+      "workers": [],
+      "recent_handoffs": 2,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-105ccd",
+      "state": "running",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "grok-4.6",
+      "root_provider": "grok",
+      "active_model": "grok-4.6",
+      "workdir": "D:\\work\\ornith-serve",
+      "project": "ornith-serve",
+      "started_at": "2026-09-05T06:22:12Z",
+      "last_activity_at": "2026-09-05T08:53:04Z",
+      "context": {
+        "input_tokens": 760000,
+        "window": 2000000
+      },
+      "workers": [
+        {
+          "model": "gpt-5.6-luna",
+          "requests": 6
+        }
+      ],
+      "recent_handoffs": 3,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-107bbc",
+      "state": "running",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-fable-5-1[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-fable-5-1[1m]",
+      "workdir": "D:\\work\\pipeline-tools",
+      "project": "pipeline-tools",
+      "started_at": "2026-09-05T05:42:12Z",
+      "last_activity_at": "2026-09-05T08:50:47Z",
+      "context": {
+        "input_tokens": 480000,
+        "window": 1000000
+      },
+      "workers": [],
+      "recent_handoffs": 0,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-109aab",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "gpt-5.6-sol",
+      "root_provider": "openai",
+      "active_model": "gpt-5.6-sol",
+      "workdir": "D:\\work\\dotfiles",
+      "project": "dotfiles",
+      "started_at": "2026-09-05T05:02:12Z",
+      "last_activity_at": "2026-09-05T08:48:30Z",
+      "context": {
+        "input_tokens": 232000,
+        "window": 400000
+      },
+      "workers": [],
+      "recent_handoffs": 1,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-10b99a",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-sonnet-5[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-sonnet-5[1m]",
+      "workdir": "D:\\work\\notes",
+      "project": "notes",
+      "started_at": "2026-09-05T04:22:12Z",
+      "last_activity_at": "2026-09-05T08:46:13Z",
+      "context": {
+        "input_tokens": 680000,
+        "window": 1000000
+      },
+      "workers": [
+        {
+          "model": "gpt-5.6-luna",
+          "requests": 9
+        }
+      ],
+      "recent_handoffs": 2,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-10d889",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "grok-4.6",
+      "root_provider": "grok",
+      "active_model": "grok-4.6",
+      "workdir": "D:\\work\\scratch",
+      "project": "scratch",
+      "started_at": "2026-09-05T03:42:12Z",
+      "last_activity_at": "2026-09-05T08:43:56Z",
+      "context": {
+        "input_tokens": 1560000,
+        "window": 2000000
+      },
+      "workers": [],
+      "recent_handoffs": 3,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-10f778",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-fable-5-1[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-fable-5-1[1m]",
+      "workdir": "D:\\work\\website",
+      "project": "website",
+      "started_at": "2026-09-05T03:02:12Z",
+      "last_activity_at": "2026-09-05T08:41:39Z",
+      "context": {
+        "input_tokens": 880000,
+        "window": 1000000
+      },
+      "workers": [],
+      "recent_handoffs": 0,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-111667",
+      "state": "idle",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "gpt-5.6-sol",
+      "root_provider": "openai",
+      "active_model": "gpt-5.6-sol",
+      "workdir": "D:\\work\\fixtures-lab",
+      "project": "fixtures-lab",
+      "started_at": "2026-09-05T02:22:12Z",
+      "last_activity_at": "2026-09-05T08:39:22Z",
+      "context": {
+        "input_tokens": 32000,
+        "window": 400000
+      },
+      "workers": [
+        {
+          "model": "gpt-5.6-luna",
+          "requests": 12
+        }
+      ],
+      "recent_handoffs": 1,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-113556",
+      "state": "ended",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "claude-sonnet-5[1m]",
+      "root_provider": "anthropic",
+      "active_model": "claude-sonnet-5[1m]",
+      "workdir": "D:\\work\\old-experiment",
+      "project": "old-experiment",
+      "started_at": "2026-09-05T01:42:12Z",
+      "last_activity_at": "2026-09-05T08:37:05Z",
+      "context": {
+        "input_tokens": 180000,
+        "window": 1000000
+      },
+      "workers": [],
+      "recent_handoffs": 2,
+      "url": "http://127.0.0.1:40000"
+    },
+    {
+      "id": "r-115445",
+      "state": "ended",
+      "blocked_reason": null,
+      "profile": "hybrid-anthropic-root",
+      "root_model": "grok-4.6",
+      "root_provider": "grok",
+      "active_model": "grok-4.6",
+      "workdir": "D:\\work\\spike-router",
+      "project": "spike-router",
+      "started_at": "2026-09-05T01:02:12Z",
+      "last_activity_at": "2026-09-05T08:34:48Z",
+      "context": {
+        "input_tokens": 560000,
+        "window": 2000000
+      },
+      "workers": [],
+      "recent_handoffs": 3,
+      "url": "http://127.0.0.1:40000"
+    }
+  ],
+  "routes": [
+    {
+      "model": "claude-fable-5-1[1m]",
+      "short_name": "fable",
+      "provider": "anthropic",
+      "category": "metered",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "sessions_using": [
+        "r-8f2c1a"
+      ]
+    },
+    {
+      "model": "claude-opus-5[1m]",
+      "short_name": "opus",
+      "provider": "anthropic",
+      "category": "included",
+      "metered": false,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "sessions_using": []
+    },
+    {
+      "model": "claude-sonnet-5[1m]",
+      "short_name": "sonnet",
+      "provider": "anthropic",
+      "category": "included",
+      "metered": false,
+      "context_window": 1000000,
+      "effort_ceiling": "max",
+      "status": "cooling",
+      "cooldown_remaining_seconds": 2890,
+      "sessions_using": [
+        "r-2b77e0"
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "short_name": "sol",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "xhigh",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": [
+        "r-c91d44"
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "short_name": "terra",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "xhigh",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "short_name": "luna",
+      "provider": "openai",
+      "category": "included",
+      "metered": false,
+      "context_window": 400000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "grok-4.6",
+      "short_name": "grok",
+      "provider": "grok",
+      "category": "included",
+      "metered": false,
+      "context_window": 2000000,
+      "effort_ceiling": "high",
+      "status": "unavailable",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "grok-composer-2.5-fast",
+      "short_name": "composer",
+      "provider": "grok",
+      "category": "included",
+      "metered": false,
+      "context_window": 256000,
+      "effort_ceiling": "medium",
+      "status": "unavailable",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "stealth/ox-alpha",
+      "short_name": "ox-alpha",
+      "provider": "openrouter",
+      "category": "extra",
+      "metered": true,
+      "context_window": 1000000,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "short_name": "kimi-k3",
+      "provider": "openrouter",
+      "category": "extra",
+      "metered": true,
+      "context_window": 262144,
+      "effort_ceiling": "high",
+      "status": "ready",
+      "cooldown_remaining_seconds": null,
+      "sessions_using": []
+    }
+  ],
+  "headroom": [
+    {
+      "provider": "anthropic",
+      "window": "5h",
+      "used_percent": 100,
+      "resets_at": "2026-09-05T09:50:00Z",
+      "source": "status_line"
+    },
+    {
+      "provider": "openai",
+      "window": "5h",
+      "used_percent": 38,
+      "resets_at": "2026-09-05T12:15:00Z",
+      "source": "status_line"
+    },
+    {
+      "provider": "grok",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openrouter",
+      "window": "credits",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    }
+  ],
+  "attention": [
+    {
+      "kind": "session_blocked",
+      "session_id": "r-100000",
+      "since": "2026-09-05T08:58:40Z",
+      "summary": "Fable is rate limited and Anthropic is cooling"
+    },
+    {
+      "kind": "session_blocked",
+      "session_id": "r-101eef",
+      "since": "2026-09-05T08:44:10Z",
+      "summary": "The conversation no longer fits any enabled model"
+    }
+  ]
+}

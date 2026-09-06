@@ -1,0 +1,25 @@
+[
+  {
+    "id": "ccp_pending_devfixture",
+    "kind": "chain_change",
+    "chains": {
+      "claude-fable-5-1[1m]": [
+        "claude-opus-5[1m]",
+        "grok-4.6",
+        "stealth/ox-alpha"
+      ],
+      "gpt-5.6-sol": [
+        "gpt-5.6-terra"
+      ]
+    },
+    "base_digest": null,
+    "reason": "Prefer Grok before a metered OpenRouter route when Anthropic is cooling.",
+    "created_by": "agent",
+    "created_at": "2026-09-05T09:00:00Z",
+    "expires_at": "2026-09-05T09:15:00Z",
+    "revision": 1,
+    "status": "pending",
+    "application": null,
+    "last_error": null
+  }
+]

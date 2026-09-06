@@ -35,6 +35,33 @@ function Resolve-Python3 {
   return $null
 }
 
+function Test-AirlockConsoleEndpoint {
+  param([Parameter(Mandatory)][string]$Url)
+  $response = $null
+  $reader = $null
+  try {
+    $request = [Net.HttpWebRequest]::Create("$Url/healthz")
+    $request.Method = 'GET'
+    $request.Timeout = 500
+    $request.ReadWriteTimeout = 500
+    $request.Proxy = $null
+    $response = [Net.HttpWebResponse]$request.GetResponse()
+    if ([int]$response.StatusCode -ne 200) { return $false }
+    $server = [string]$response.Headers['Server']
+    if (-not $server.StartsWith('AirlockConsole')) { return $false }
+    $reader = New-Object IO.StreamReader($response.GetResponseStream())
+    $body = $reader.ReadToEnd()
+    if ($body.Length -gt 4096) { return $false }
+    $payload = $body | ConvertFrom-Json -ErrorAction Stop
+    return $payload.ok -eq $true
+  } catch {
+    return $false
+  } finally {
+    if ($reader) { $reader.Dispose() }
+    if ($response) { $response.Dispose() }
+  }
+}
+
 $Claude = Resolve-Application @('claude.exe', 'claude.cmd', 'claude')
 $Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
 $Bash = Resolve-Application @('bash.exe', 'bash')
@@ -218,6 +245,9 @@ if (Test-Path -LiteralPath $Updater -PathType Leaf) {
 }
 
 $PolicyHelper = if ($env:AIRLOCK_POLICY_HELPER) { $env:AIRLOCK_POLICY_HELPER } else { Join-Path $InstallDir 'airlock_policy.py' }
+$OpenModelHelper = if ($env:AIRLOCK_OPENMODEL_HELPER) { $env:AIRLOCK_OPENMODEL_HELPER } else { Join-Path $InstallDir 'airlock_openmodel.py' }
+$OpenModelAdapterHelper = if ($env:AIRLOCK_OPENMODEL_ADAPTER_HELPER) { $env:AIRLOCK_OPENMODEL_ADAPTER_HELPER } else { Join-Path $InstallDir 'airlock_openmodel_adapter.py' }
+$OpenModelRegistry = if ($env:AIRLOCK_OPENMODEL_REGISTRY_FILE) { $env:AIRLOCK_OPENMODEL_REGISTRY_FILE } else { Join-Path $ConfigDir 'openmodel-registry.json' }
 $OpenRouterAuthHelper = if ($env:AIRLOCK_OPENROUTER_AUTH_HELPER) { $env:AIRLOCK_OPENROUTER_AUTH_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_auth.py' }
 $OpenRouterPresetsHelper = if ($env:AIRLOCK_OPENROUTER_PRESETS_HELPER) { $env:AIRLOCK_OPENROUTER_PRESETS_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_presets.py' }
 $OpenRouterModelsHelper = if ($env:AIRLOCK_OPENROUTER_MODELS_HELPER) { $env:AIRLOCK_OPENROUTER_MODELS_HELPER } else { Join-Path $InstallDir 'airlock_openrouter_models.py' }
@@ -291,7 +321,109 @@ if ($OpenRouterHelpersSafe) {
   }
 }
 
+$OpenModelHelpersSafe = $true
+foreach ($helper in @($PolicyHelper, $OpenModelHelper, $OpenModelAdapterHelper)) {
+  if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+    Fail "Open-model helper is missing or unsafe: $helper"
+    $OpenModelHelpersSafe = $false
+    continue
+  }
+  $helperItem = Get-Item -LiteralPath $helper -Force
+  if ($helperItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    Fail "Open-model helper is missing or unsafe: $helper"
+    $OpenModelHelpersSafe = $false
+  }
+}
+if (-not $Python) {
+  Fail 'Python 3 is required for open-model checks'
+  $OpenModelHelpersSafe = $false
+}
+
+$OpenModelRegistryState = 'unknown'
+$OpenModelEndpointCount = 0
+$OpenModelActiveEndpointCount = 0
+$OpenModelRouteCount = 0
+$OpenModelActiveRouteCount = 0
+if ($OpenModelHelpersSafe) {
+  $openModelOutput = @(& $Python $OpenModelHelper --registry $OpenModelRegistry _doctor-status 2>&1)
+  $openModelExitCode = $LASTEXITCODE
+  foreach ($lineValue in $openModelOutput) {
+    $line = [string]$lineValue
+    if ($line -match '^STATE=(.*)$') { $OpenModelRegistryState = $Matches[1]; continue }
+    if ($line -match '^ENDPOINT_COUNT=([0-9]+)$') { $OpenModelEndpointCount = [int]$Matches[1]; continue }
+    if ($line -match '^ACTIVE_ENDPOINT_COUNT=([0-9]+)$') { $OpenModelActiveEndpointCount = [int]$Matches[1]; continue }
+    if ($line -match '^ROUTE_COUNT=([0-9]+)$') { $OpenModelRouteCount = [int]$Matches[1]; continue }
+    if ($line -match '^ACTIVE_ROUTE_COUNT=([0-9]+)$') { $OpenModelActiveRouteCount = [int]$Matches[1]; continue }
+    if ($line -match '^ENDPOINT=(.*)$') {
+      $parts = $Matches[1] -split "`t", 3
+      if ($parts.Count -eq 3) {
+        Info "Open-model endpoint: $($parts[0]) ($($parts[1]), $($parts[2]))"
+      }
+      continue
+    }
+    if ($line -match '^ROUTE=(.*)$') {
+      $parts = $Matches[1] -split "`t", 3
+      if ($parts.Count -eq 3) {
+        Info "Open-model route: airlock-om-$($parts[0]) ($($parts[1]), $($parts[2]))"
+      }
+      continue
+    }
+    if ($line -match '^DETAIL=(.*)$') { Info "Open-model registry detail: $($Matches[1])" }
+  }
+  switch ($OpenModelRegistryState) {
+    'absent' { Info "Open-model registry is not configured: $OpenModelRegistry" }
+    'valid' {
+      Pass "Open-model registry is valid ($OpenModelActiveEndpointCount/$OpenModelEndpointCount endpoint(s) active, $OpenModelActiveRouteCount/$OpenModelRouteCount route(s) active): $OpenModelRegistry"
+    }
+    'invalid' { Fail "Open-model registry is invalid: $OpenModelRegistry" }
+    default {
+      Fail "Open-model registry status could not be determined: $OpenModelRegistry"
+      if ($openModelExitCode -ne 0) { Info 'The open-model registry helper returned an error.' }
+    }
+  }
+  Info 'Doctor did not contact a local inference server; run airlock open-model check ROUTE explicitly.'
+}
+
 $PluginDir = if ($env:AIRLOCK_PLUGIN_DIR) { $env:AIRLOCK_PLUGIN_DIR } else { Join-Path $ConfigDir 'plugins\airlock' }
+$ConsoleBinDir = if ($Launcher) { Split-Path -Parent $Launcher } else { $InstallDir }
+$ConsoleHelper = if ($env:AIRLOCK_CONSOLE_HELPER) { $env:AIRLOCK_CONSOLE_HELPER } else { Join-Path $ConsoleBinDir 'airlock_console.py' }
+$ConsoleToolsHelper = Join-Path $ConsoleBinDir 'airlock_console_tools.py'
+$ConsoleMcpHelper = Join-Path $PluginDir 'mcp-server\airlock_console_mcp.py'
+$ConsoleSite = Join-Path $ConsoleBinDir 'share\airlock\console'
+foreach ($consoleCheck in @(
+  @('Console helper', $ConsoleHelper),
+  @('Console tools helper', $ConsoleToolsHelper),
+  @('Console MCP wrapper', $ConsoleMcpHelper)
+)) {
+  $consolePath = [string]$consoleCheck[1]
+  $consoleSafe = Test-Path -LiteralPath $consolePath -PathType Leaf
+  if ($consoleSafe) {
+    $consoleItem = Get-Item -LiteralPath $consolePath -Force
+    $consoleSafe = -not ($consoleItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+  }
+  if ($consoleSafe) {
+    Pass "Airlock $($consoleCheck[0]): $consolePath"
+  } else {
+    Info "Airlock $($consoleCheck[0]) is not installed or is unsafe: $consolePath"
+  }
+}
+$ConsoleSiteSafe = Test-Path -LiteralPath $ConsoleSite -PathType Container
+if ($ConsoleSiteSafe) {
+  $consoleSiteItem = Get-Item -LiteralPath $ConsoleSite -Force
+  $ConsoleSiteSafe = -not ($consoleSiteItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+if ($ConsoleSiteSafe) {
+  Pass "Airlock Console site: $ConsoleSite"
+} else {
+  Info "Airlock Console site is not installed or is unsafe: $ConsoleSite"
+}
+$ConsoleUrl = 'http://127.0.0.1:4783'
+if (Test-AirlockConsoleEndpoint -Url $ConsoleUrl) {
+  Pass "Airlock Console health: $ConsoleUrl/healthz"
+} else {
+  Info 'Airlock Console is not running at 127.0.0.1:4783'
+}
+
 $pluginFiles = @(
   '.claude-plugin\plugin.json', 'hooks\hooks.json',
   'skills\airlock-fast\SKILL.md',

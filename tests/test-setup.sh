@@ -229,6 +229,43 @@ grep -q '^AIRLOCK_OPENAI_MODELS=sol,luna$' "$custom_dir/config"
 grep -q '^AIRLOCK_MAX_CONCURRENT_SUBAGENTS=off$' "$custom_dir/config"
 grep -q '^AIRLOCK_SWARM_FAST=auto$' "$custom_dir/config"
 
+# GPT-6 Astra is opt-in and never part of the shipped default pool. A chosen
+# Astra hybrid root still has to stay routable, so setup adds it to the OpenAI
+# pool, and a custom pool may name it directly.
+astra_dir="$tmp_dir/astra-config"
+AIRLOCK_CONFIG_DIR="$astra_dir" "$repo_root/scripts/setup.sh" \
+  --default-profile hybrid \
+  --hybrid-model astra \
+  --openai-workers sol,luna \
+  --config-only --no-login --no-service --yes >"$tmp_dir/astra-summary.out"
+grep -q '^  Default command:    airlock -> GPT-6 Astra (gpt-6-astra)$' "$tmp_dir/astra-summary.out"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$astra_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=astra$' "$astra_dir/config"
+grep -q '^AIRLOCK_OPENAI_MODELS=sol,luna,astra$' "$astra_dir/config"
+
+astra_pool_dir="$tmp_dir/astra-pool"
+AIRLOCK_CONFIG_DIR="$astra_pool_dir" "$repo_root/scripts/setup.sh" \
+  --openai-workers sol,astra \
+  --worker-pins astra=xhigh \
+  --config-only --no-login --no-service --yes >/dev/null
+grep -q '^AIRLOCK_OPENAI_MODELS=sol,astra$' "$astra_pool_dir/config"
+grep -q '^AIRLOCK_EFFORT_ASTRA=xhigh$' "$astra_pool_dir/config"
+
+astra_root_dir="$tmp_dir/astra-root"
+AIRLOCK_CONFIG_DIR="$astra_root_dir" "$repo_root/scripts/setup.sh" \
+  --default-profile openai \
+  --main-model gpt-6-astra \
+  --config-only --no-login --no-service --yes >/dev/null
+grep -q '^AIRLOCK_DEFAULT_PROFILE=openai$' "$astra_root_dir/config"
+grep -q '^AIRLOCK_MODEL=astra$' "$astra_root_dir/config"
+grep -q '^AIRLOCK_OPENAI_MODELS=sol,terra,luna$' "$astra_root_dir/config"
+
+if AIRLOCK_CONFIG_DIR="$tmp_dir/astra-invalid" "$repo_root/scripts/setup.sh" \
+  --openai-workers sol,astra-fast --config-only --no-login --no-service --yes >/dev/null 2>&1; then
+  printf 'test: unknown OpenAI worker alias unexpectedly succeeded\n' >&2
+  exit 1
+fi
+
 detected_dir="$tmp_dir/detected-config"
 mkdir -p "$detected_dir"
 printf 'AIRLOCK_ANTHROPIC_PLAN=unknown\n' > "$detected_dir/config"

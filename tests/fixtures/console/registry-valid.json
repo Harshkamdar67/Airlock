@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "instance_id": "r-8f2c1a",
+  "url": "http://127.0.0.1:39123",
+  "owner_pid": 41220,
+  "router_pid": 41388,
+  "started_at": "2026-09-05T06:41:03Z",
+  "profile": "hybrid-anthropic-root",
+  "root_model": "claude-fable-5-1[1m]",
+  "root_provider": "anthropic",
+  "workdir": "C:\\Users\\Harsh kamdar\\Desktop\\Opensource\\claudex"
+}

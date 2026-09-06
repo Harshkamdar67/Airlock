@@ -24,10 +24,18 @@ import tempfile
 import time
 from types import MappingProxyType
 from typing import Any, Mapping
+import unicodedata
 
 MAX_POLICY_BYTES = 128 * 1024
 MAX_OPENROUTER_ENTRIES = 10
+MAX_OPENMODEL_ENDPOINTS = 16
+MAX_OPENMODEL_MODELS = 32
+MAX_OPENMODEL_IDENTITY_CHARS = 1024
+MAX_OPENMODEL_IDENTITY_BYTES = 4096
 MAX_SNAPSHOT_AGENTS = 64
+# Each canonical Agent model may also have one deterministic [1m] wire alias,
+# and the root may be separate from the Agent catalog.
+MAX_SNAPSHOT_ROUTE_ENTRIES = 2 * (MAX_SNAPSHOT_AGENTS + 1)
 MAX_SNAPSHOT_FAILOVER_ENTRIES = 64
 MAX_SNAPSHOT_FAILOVER_PEERS = 8
 MIN_CONTEXT_WINDOW_TOKENS = 1000
@@ -91,6 +99,29 @@ _ENTRY_FIELDS = frozenset({
     "checked_at",
     "enabled",
 })
+_OPENMODEL_REGISTRY_FIELDS = frozenset({"schema_version", "endpoints", "models"})
+_OPENMODEL_ENDPOINT_FIELDS = frozenset({
+    "id",
+    "base_url",
+    "trust",
+    "protocol",
+    "auth",
+    "max_concurrency",
+    "enabled",
+})
+_OPENMODEL_MODEL_FIELDS = frozenset({
+    "route",
+    "endpoint",
+    "upstream_model",
+    "accepted_response_models",
+    "context_window",
+    "max_output_tokens",
+    "streaming",
+    "tools",
+    "tool_choice",
+    "worker",
+    "enabled",
+})
 _SNAPSHOT_FIELDS = frozenset({
     "schema_version",
     "protocol_version",
@@ -100,12 +131,16 @@ _SNAPSHOT_FIELDS = frozenset({
     "routes",
     "agents",
     "openrouter",
+    "openmodel",
     "failover",
     "context_windows",
+    "route_categories",
+    "effort_ceilings",
     "compactors",
     "overflow_shrink",
 })
 _AGENT_FIELDS = frozenset({"model", "provider", "extra_usage"})
+_ROUTE_CATEGORIES = frozenset({"included", "extra", "metered", "unknown"})
 _OPENROUTER_SNAPSHOT_REQUIRED_FIELDS = frozenset({
     "endpoint_provider",
     "provider_name",
@@ -116,8 +151,31 @@ _OPENROUTER_SNAPSHOT_REQUIRED_FIELDS = frozenset({
 _OPENROUTER_SNAPSHOT_FIELDS = (
     _OPENROUTER_SNAPSHOT_REQUIRED_FIELDS | {"effort_ceiling"}
 )
+_OPENMODEL_SNAPSHOT_FIELDS = frozenset({"endpoints", "models"})
+_OPENMODEL_ENDPOINT_SNAPSHOT_FIELDS = frozenset({
+    "base_url",
+    "trust",
+    "protocol",
+    "auth",
+    "max_concurrency",
+})
+_OPENMODEL_MODEL_SNAPSHOT_FIELDS = frozenset({
+    "endpoint",
+    "upstream_model",
+    "accepted_response_models",
+    "context_window",
+    "max_output_tokens",
+    "streaming",
+    "tools",
+    "tool_choice",
+})
+_OPENMODEL_TRUST = "loopback"
+_OPENMODEL_PROTOCOL = "openai-chat-completions-v1"
+_OPENMODEL_AUTH = "none"
+_OPENMODEL_TOOL_SUPPORT = frozenset({"none", "single", "parallel"})
+_OPENMODEL_TOOL_CHOICES = frozenset({"auto", "named", "none", "required"})
 _EFFORT_CEILINGS = frozenset({"low", "medium", "high", "xhigh", "max"})
-_PROVIDERS = frozenset({"anthropic", "openai", "grok", "openrouter"})
+_PROVIDERS = frozenset({"anthropic", "openai", "grok", "openrouter", "openmodel"})
 
 
 class PolicyValidationError(ValueError):
@@ -199,6 +257,102 @@ class OpenRouterRegistry:
 
 
 @dataclass(frozen=True)
+class OpenModelEndpoint:
+    id: str
+    base_url: str
+    trust: str
+    protocol: str
+    auth: str
+    max_concurrency: int
+    enabled: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "base_url": self.base_url,
+            "trust": self.trust,
+            "protocol": self.protocol,
+            "auth": self.auth,
+            "max_concurrency": self.max_concurrency,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True)
+class OpenModelEntry:
+    route: str
+    endpoint: str
+    upstream_model: str
+    accepted_response_models: tuple[str, ...]
+    context_window: int
+    max_output_tokens: int
+    streaming: bool
+    tools: str
+    tool_choice: tuple[str, ...]
+    worker: bool
+    enabled: bool
+
+    @property
+    def wire_model(self) -> str:
+        return f"openmodel/{self.route}"
+
+    @property
+    def agent_name(self) -> str:
+        return f"airlock-om-{self.route}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "route": self.route,
+            "endpoint": self.endpoint,
+            "upstream_model": self.upstream_model,
+            "accepted_response_models": list(self.accepted_response_models),
+            "context_window": self.context_window,
+            "max_output_tokens": self.max_output_tokens,
+            "streaming": self.streaming,
+            "tools": self.tools,
+            "tool_choice": list(self.tool_choice),
+            "worker": self.worker,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True)
+class OpenModelRegistry:
+    schema_version: int
+    endpoints: tuple[OpenModelEndpoint, ...]
+    models: tuple[OpenModelEntry, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "endpoints": [endpoint.to_dict() for endpoint in self.endpoints],
+            "models": [entry.to_dict() for entry in self.models],
+        }
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
+    def endpoint(self, endpoint_id: str) -> OpenModelEndpoint | None:
+        return next(
+            (endpoint for endpoint in self.endpoints if endpoint.id == endpoint_id),
+            None,
+        )
+
+    def active_models(self) -> tuple[OpenModelEntry, ...]:
+        enabled_endpoints = {
+            endpoint.id for endpoint in self.endpoints if endpoint.enabled
+        }
+        return tuple(
+            entry
+            for entry in self.models
+            if entry.enabled and entry.endpoint in enabled_endpoints
+        )
+
+
+@dataclass(frozen=True)
 class SnapshotAgent:
     model: str
     provider: str
@@ -236,6 +390,66 @@ class SnapshotOpenRouterRoute:
 
 
 @dataclass(frozen=True)
+class SnapshotOpenModelEndpoint:
+    base_url: str
+    trust: str
+    protocol: str
+    auth: str
+    max_concurrency: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "base_url": self.base_url,
+            "trust": self.trust,
+            "protocol": self.protocol,
+            "auth": self.auth,
+            "max_concurrency": self.max_concurrency,
+        }
+
+
+@dataclass(frozen=True)
+class SnapshotOpenModelRoute:
+    endpoint: str
+    upstream_model: str
+    accepted_response_models: tuple[str, ...]
+    context_window: int
+    max_output_tokens: int
+    streaming: bool
+    tools: str
+    tool_choice: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "endpoint": self.endpoint,
+            "upstream_model": self.upstream_model,
+            "accepted_response_models": list(self.accepted_response_models),
+            "context_window": self.context_window,
+            "max_output_tokens": self.max_output_tokens,
+            "streaming": self.streaming,
+            "tools": self.tools,
+            "tool_choice": list(self.tool_choice),
+        }
+
+
+@dataclass(frozen=True)
+class SnapshotOpenModel:
+    endpoints: Mapping[str, SnapshotOpenModelEndpoint]
+    models: Mapping[str, SnapshotOpenModelRoute]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "endpoints": {
+                endpoint_id: endpoint.to_dict()
+                for endpoint_id, endpoint in self.endpoints.items()
+            },
+            "models": {
+                model: metadata.to_dict()
+                for model, metadata in self.models.items()
+            },
+        }
+
+
+@dataclass(frozen=True)
 class SessionSnapshot:
     schema_version: int
     protocol_version: int
@@ -245,6 +459,12 @@ class SessionSnapshot:
     routes: Mapping[str, str]
     agents: Mapping[str, SnapshotAgent]
     openrouter: Mapping[str, SnapshotOpenRouterRoute]
+    openmodel: SnapshotOpenModel = field(
+        default_factory=lambda: SnapshotOpenModel(
+            endpoints=MappingProxyType({}),
+            models=MappingProxyType({}),
+        )
+    )
     # Ordered same-category replacement models per routed model ID. Snapshots
     # written before rate-limit failover existed carry an empty map.
     failover: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -252,6 +472,11 @@ class SessionSnapshot:
     # written before overflow-aware handoff existed carry an empty map; a
     # model absent from this map is simply never pre-screened for size.
     context_windows: Mapping[str, int] = field(default_factory=dict)
+    # Console-facing route facts are frozen from the same validated worker
+    # metadata that built this session's handoff groups. Older snapshots omit
+    # them and the router reports an honest unknown instead.
+    route_categories: Mapping[str, str] = field(default_factory=dict)
+    effort_ceilings: Mapping[str, str] = field(default_factory=dict)
     # Per-provider compaction worker used when no failover peer can fit an
     # overflowing conversation. Snapshots written before overflow-aware
     # handoff existed carry an empty map, which disables compaction.
@@ -276,10 +501,13 @@ class SessionSnapshot:
                 model: metadata.to_dict()
                 for model, metadata in self.openrouter.items()
             },
+            "openmodel": self.openmodel.to_dict(),
             "failover": {
                 model: list(peers) for model, peers in self.failover.items()
             },
             "context_windows": dict(self.context_windows),
+            "route_categories": dict(self.route_categories),
+            "effort_ceilings": dict(self.effort_ceilings),
             "compactors": dict(self.compactors),
             "overflow_shrink": self.overflow_shrink,
         }
@@ -648,8 +876,303 @@ def validate_openrouter_registry(
     return result
 
 
-def _validate_posix_owner_and_mode(file_stat: os.stat_result) -> None:
-    """Enforce user ownership and non-writable sharing on POSIX."""
+def _validate_openmodel_name(value: Any, location: str) -> str:
+    name = _require_string(value, location)
+    if not (1 <= len(name) <= 40) or _ROUTE_RE.fullmatch(name) is None:
+        raise PolicyValidationError(
+            f"{location} must be a 1-40 character lower-case slug"
+        )
+    return name
+
+
+def validate_openmodel_base_url(value: Any, location: str = "base_url") -> str:
+    """Validate the one canonical endpoint form supported by the local MVP."""
+
+    base_url = _require_string(value, location)
+    match = re.fullmatch(
+        r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/v1",
+        base_url,
+        re.ASCII,
+    )
+    if match is None:
+        raise PolicyValidationError(
+            f"{location} must use canonical http://127.0.0.1:<port>/v1 form"
+        )
+    port_text = match.group(1)
+    port = int(port_text)
+    if port > 65535 or str(port) != port_text:
+        raise PolicyValidationError(f"{location} contains an invalid port")
+    return base_url
+
+
+def validate_openmodel_identity(value: Any, location: str = "model identity") -> str:
+    """Validate an opaque private upstream identity without exposing its value."""
+
+    identity = _require_string(value, location)
+    if (
+        not identity
+        or identity != identity.strip()
+        or len(identity) > MAX_OPENMODEL_IDENTITY_CHARS
+        or any(unicodedata.category(character).startswith("C") for character in identity)
+    ):
+        raise PolicyValidationError(
+            f"{location} must be a bounded printable model identity"
+        )
+    try:
+        encoded = identity.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise PolicyValidationError(
+            f"{location} must be valid Unicode text"
+        ) from exc
+    if len(encoded) > MAX_OPENMODEL_IDENTITY_BYTES:
+        raise PolicyValidationError(
+            f"{location} exceeds the private model identity size limit"
+        )
+    return identity
+
+
+def _validate_openmodel_identities(value: Any, location: str) -> tuple[str, ...]:
+    if type(value) is not list or not (1 <= len(value) <= 16):
+        raise PolicyValidationError(f"{location} must contain 1-16 model identities")
+    identities = tuple(
+        validate_openmodel_identity(item, f"{location}[{index}]")
+        for index, item in enumerate(value)
+    )
+    if list(identities) != sorted(identities):
+        raise PolicyValidationError(f"{location} must be sorted")
+    if len(identities) != len(set(identities)):
+        raise PolicyValidationError(f"{location} must not contain duplicates")
+    return identities
+
+
+def _validate_openmodel_tool_support(value: Any, location: str) -> str:
+    support = _require_string(value, location)
+    if support not in _OPENMODEL_TOOL_SUPPORT:
+        raise PolicyValidationError(
+            f"{location} must be none, single, or parallel"
+        )
+    return support
+
+
+def _validate_openmodel_tool_choices(
+    value: Any, location: str, *, tool_support: str
+) -> tuple[str, ...]:
+    if type(value) is not list or len(value) > len(_OPENMODEL_TOOL_CHOICES):
+        raise PolicyValidationError(f"{location} must be an array of declared modes")
+    choices: list[str] = []
+    for index, item in enumerate(value):
+        choice = _require_string(item, f"{location}[{index}]")
+        if choice not in _OPENMODEL_TOOL_CHOICES:
+            raise PolicyValidationError(
+                f"{location}[{index}] must be auto, named, none, or required"
+            )
+        choices.append(choice)
+    if choices != sorted(choices):
+        raise PolicyValidationError(f"{location} must be sorted")
+    if len(choices) != len(set(choices)):
+        raise PolicyValidationError(f"{location} must not contain duplicates")
+    if tool_support == "none" and choices:
+        raise PolicyValidationError(
+            f"{location} must be empty when tools is none"
+        )
+    if tool_support != "none" and "auto" not in choices:
+        raise PolicyValidationError(
+            f"{location} must declare auto when tools are enabled"
+        )
+    return tuple(choices)
+
+
+def validate_openmodel_registry(value: Any) -> OpenModelRegistry:
+    """Validate a decoded loopback open-model registry."""
+
+    registry = _require_exact_fields(
+        value, _OPENMODEL_REGISTRY_FIELDS, "open-model registry"
+    )
+    schema_version = _require_integer(
+        registry["schema_version"], "schema_version"
+    )
+    if schema_version != 1:
+        raise PolicyValidationError("schema_version must be 1")
+
+    raw_endpoints = registry["endpoints"]
+    if type(raw_endpoints) is not list:
+        raise PolicyValidationError("endpoints must be an array")
+    if len(raw_endpoints) > MAX_OPENMODEL_ENDPOINTS:
+        raise PolicyValidationError(
+            f"endpoints must contain at most {MAX_OPENMODEL_ENDPOINTS} entries"
+        )
+    endpoints: list[OpenModelEndpoint] = []
+    endpoint_ids: set[str] = set()
+    base_urls: set[str] = set()
+    for index, raw_endpoint in enumerate(raw_endpoints):
+        location = f"endpoints[{index}]"
+        endpoint = _require_exact_fields(
+            raw_endpoint, _OPENMODEL_ENDPOINT_FIELDS, location
+        )
+        endpoint_id = _validate_openmodel_name(
+            endpoint["id"], f"{location}.id"
+        )
+        base_url = validate_openmodel_base_url(
+            endpoint["base_url"], f"{location}.base_url"
+        )
+        trust = _require_string(endpoint["trust"], f"{location}.trust")
+        protocol = _require_string(endpoint["protocol"], f"{location}.protocol")
+        auth = _require_string(endpoint["auth"], f"{location}.auth")
+        if trust != _OPENMODEL_TRUST:
+            raise PolicyValidationError(f"{location}.trust must be loopback")
+        if protocol != _OPENMODEL_PROTOCOL:
+            raise PolicyValidationError(
+                f"{location}.protocol must be {_OPENMODEL_PROTOCOL}"
+            )
+        if auth != _OPENMODEL_AUTH:
+            raise PolicyValidationError(f"{location}.auth must be none")
+        max_concurrency = _require_integer(
+            endpoint["max_concurrency"],
+            f"{location}.max_concurrency",
+            minimum=1,
+        )
+        if max_concurrency > 64:
+            raise PolicyValidationError(
+                f"{location}.max_concurrency must be at most 64"
+            )
+        enabled = endpoint["enabled"]
+        if type(enabled) is not bool:
+            raise PolicyValidationError(f"{location}.enabled must be a boolean")
+        if endpoint_id in endpoint_ids:
+            raise PolicyValidationError(f"duplicate endpoint id: {endpoint_id!r}")
+        if base_url in base_urls:
+            raise PolicyValidationError("duplicate open-model endpoint URL")
+        endpoint_ids.add(endpoint_id)
+        base_urls.add(base_url)
+        endpoints.append(OpenModelEndpoint(
+            id=endpoint_id,
+            base_url=base_url,
+            trust=trust,
+            protocol=protocol,
+            auth=auth,
+            max_concurrency=max_concurrency,
+            enabled=enabled,
+        ))
+
+    raw_models = registry["models"]
+    if type(raw_models) is not list:
+        raise PolicyValidationError("models must be an array")
+    if len(raw_models) > MAX_OPENMODEL_MODELS:
+        raise PolicyValidationError(
+            f"models must contain at most {MAX_OPENMODEL_MODELS} entries"
+        )
+    models: list[OpenModelEntry] = []
+    routes: set[str] = set()
+    wire_models: set[str] = set()
+    agent_names: set[str] = set()
+    endpoint_requests: set[tuple[str, str]] = set()
+    endpoint_responses: set[tuple[str, str]] = set()
+    for index, raw_model in enumerate(raw_models):
+        location = f"models[{index}]"
+        model = _require_exact_fields(
+            raw_model, _OPENMODEL_MODEL_FIELDS, location
+        )
+        route = _validate_openmodel_name(model["route"], f"{location}.route")
+        endpoint_id = _validate_openmodel_name(
+            model["endpoint"], f"{location}.endpoint"
+        )
+        if endpoint_id not in endpoint_ids:
+            raise PolicyValidationError(
+                f"{location}.endpoint does not reference a declared endpoint"
+            )
+        upstream_model = validate_openmodel_identity(
+            model["upstream_model"], f"{location}.upstream_model"
+        )
+        accepted = _validate_openmodel_identities(
+            model["accepted_response_models"],
+            f"{location}.accepted_response_models",
+        )
+        context_window = _require_integer(
+            model["context_window"], f"{location}.context_window"
+        )
+        if not MIN_CONTEXT_WINDOW_TOKENS <= context_window <= MAX_CONTEXT_WINDOW_TOKENS:
+            raise PolicyValidationError(
+                f"{location}.context_window must be between "
+                f"{MIN_CONTEXT_WINDOW_TOKENS} and {MAX_CONTEXT_WINDOW_TOKENS}"
+            )
+        max_output_tokens = _require_integer(
+            model["max_output_tokens"],
+            f"{location}.max_output_tokens",
+            minimum=1,
+        )
+        if max_output_tokens > context_window:
+            raise PolicyValidationError(
+                f"{location}.max_output_tokens must not exceed context_window"
+            )
+        streaming = model["streaming"]
+        if type(streaming) is not bool:
+            raise PolicyValidationError(f"{location}.streaming must be a boolean")
+        tools = _validate_openmodel_tool_support(
+            model["tools"], f"{location}.tools"
+        )
+        tool_choice = _validate_openmodel_tool_choices(
+            model["tool_choice"], f"{location}.tool_choice", tool_support=tools
+        )
+        worker = model["worker"]
+        enabled = model["enabled"]
+        if type(worker) is not bool:
+            raise PolicyValidationError(f"{location}.worker must be a boolean")
+        if type(enabled) is not bool:
+            raise PolicyValidationError(f"{location}.enabled must be a boolean")
+
+        wire_model = f"openmodel/{route}"
+        agent_name = f"airlock-om-{route}"
+        request_binding = (endpoint_id, upstream_model)
+        response_bindings = {(endpoint_id, identity) for identity in accepted}
+        if route in routes:
+            raise PolicyValidationError(f"duplicate route: {route!r}")
+        if wire_model in wire_models:
+            raise PolicyValidationError(f"duplicate wire model: {wire_model!r}")
+        if agent_name in agent_names:
+            raise PolicyValidationError(f"duplicate Agent name: {agent_name!r}")
+        if request_binding in endpoint_requests:
+            raise PolicyValidationError(
+                "duplicate endpoint and upstream model binding"
+            )
+        if response_bindings & endpoint_responses:
+            raise PolicyValidationError(
+                "accepted response identity is ambiguous on its endpoint"
+            )
+        routes.add(route)
+        wire_models.add(wire_model)
+        agent_names.add(agent_name)
+        endpoint_requests.add(request_binding)
+        endpoint_responses.update(response_bindings)
+        models.append(OpenModelEntry(
+            route=route,
+            endpoint=endpoint_id,
+            upstream_model=upstream_model,
+            accepted_response_models=accepted,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            streaming=streaming,
+            tools=tools,
+            tool_choice=tool_choice,
+            worker=worker,
+            enabled=enabled,
+        ))
+
+    result = OpenModelRegistry(
+        schema_version=schema_version,
+        endpoints=tuple(endpoints),
+        models=tuple(models),
+    )
+    if len(result.canonical_bytes()) > MAX_POLICY_BYTES:
+        raise PolicyValidationError(
+            "canonical open-model registry exceeds the 128 KiB limit"
+        )
+    return result
+
+
+def _validate_posix_owner_and_mode(
+    file_stat: os.stat_result, *, require_private_read: bool = False
+) -> None:
+    """Enforce user ownership and the requested POSIX sharing boundary."""
 
     get_effective_uid = getattr(os, "geteuid", None)
     if get_effective_uid is None:
@@ -658,6 +1181,12 @@ def _validate_posix_owner_and_mode(file_stat: os.stat_result) -> None:
         raise PolicyFileError("registry must be owned by the effective user")
     if file_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise PolicyFileError("registry must not be writable by group or other")
+    if require_private_read and file_stat.st_mode & (
+        stat.S_IRWXG | stat.S_IRWXO
+    ):
+        raise PolicyFileError(
+            "private registry must not be accessible by group or other"
+        )
 
 
 def _windows_current_user_sid() -> str:
@@ -765,9 +1294,12 @@ def _windows_sid_text(sid_pointer: int) -> str:
 
 
 def _validate_windows_path_security(
-    path: Path, *, require_current_owner: bool = True
+    path: Path,
+    *,
+    require_current_owner: bool = True,
+    require_private_read: bool = False,
 ) -> None:
-    """Reject Windows paths writable by principals outside the owner boundary."""
+    """Reject Windows paths outside the requested owner access boundary."""
 
     if os.name != "nt":
         return
@@ -790,6 +1322,11 @@ def _validate_windows_path_security(
         | 0x00080000  # WRITE_OWNER
         | 0x10000000  # GENERIC_ALL
         | 0x40000000  # GENERIC_WRITE
+    )
+    read_data_mask = (
+        0x00000001  # FILE_READ_DATA
+        | 0x10000000  # GENERIC_ALL
+        | 0x80000000  # GENERIC_READ
     )
 
     class AclSizeInformation(ctypes.Structure):
@@ -856,7 +1393,7 @@ def _validate_windows_path_security(
         owner_sid = _windows_sid_text(owner.value)
         if require_current_owner and owner_sid != current_user:
             raise PolicyFileError("registry path must be owned by the current Windows user")
-        allowed_writers = {
+        allowed_principals = {
             current_user,
             "S-1-5-18",  # Local System
             "S-1-5-32-544",  # Built-in Administrators
@@ -881,11 +1418,27 @@ def _validate_windows_path_security(
                     raise PolicyFileError(
                         "registry ACL contains an unsupported write grant"
                     )
+                if (
+                    require_private_read
+                    and header.AceType in {4, 5, 9, 11}
+                    and mask & read_data_mask
+                ):
+                    raise PolicyFileError(
+                        "private registry ACL contains an unsupported read grant"
+                    )
                 continue
             sid = _windows_sid_text(ace_pointer.value + 8)
-            if mask & write_mask and sid not in allowed_writers:
+            if mask & write_mask and sid not in allowed_principals:
                 raise PolicyFileError(
                     "registry path is writable by another Windows principal"
+                )
+            if (
+                require_private_read
+                and mask & read_data_mask
+                and sid not in allowed_principals
+            ):
+                raise PolicyFileError(
+                    "private registry is readable by another Windows principal"
                 )
     finally:
         kernel32.LocalFree(descriptor)
@@ -959,7 +1512,9 @@ def protect_private_path(path: str | os.PathLike[str]) -> None:
     _protect_windows_path(Path(path))
 
 
-def _read_regular_file(path: str | os.PathLike[str]) -> bytes:
+def _read_regular_file(
+    path: str | os.PathLike[str], *, require_private_read: bool = False
+) -> bytes:
     policy_path = Path(path)
     try:
         before = os.lstat(policy_path)
@@ -971,12 +1526,16 @@ def _read_regular_file(path: str | os.PathLike[str]) -> bytes:
         raise PolicyFileError("registry must not be a symbolic link")
     if not stat.S_ISREG(before.st_mode):
         raise PolicyFileError("registry must be a regular file")
-    _validate_posix_owner_and_mode(before)
+    _validate_posix_owner_and_mode(
+        before, require_private_read=require_private_read
+    )
     if os.name == "nt":
         _validate_windows_path_security(
             policy_path.parent, require_current_owner=False
         )
-        _validate_windows_path_security(policy_path)
+        _validate_windows_path_security(
+            policy_path, require_private_read=require_private_read
+        )
     if before.st_size > MAX_POLICY_BYTES:
         raise PolicyFileError("registry exceeds the 128 KiB limit")
 
@@ -993,7 +1552,9 @@ def _read_regular_file(path: str | os.PathLike[str]) -> bytes:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise PolicyFileError("registry must remain a regular file")
-        _validate_posix_owner_and_mode(opened)
+        _validate_posix_owner_and_mode(
+            opened, require_private_read=require_private_read
+        )
         if opened.st_size > MAX_POLICY_BYTES:
             raise PolicyFileError("registry exceeds the 128 KiB limit")
         if before.st_ino and opened.st_ino and (
@@ -1032,10 +1593,22 @@ def load_openrouter_registry(
     )
 
 
+def load_openmodel_registry(
+    path: str | os.PathLike[str],
+) -> OpenModelRegistry:
+    """Load and strictly validate a private loopback open-model registry."""
+
+    return validate_openmodel_registry(
+        load_json_bytes(_read_regular_file(path, require_private_read=True))
+    )
+
+
 @contextmanager
-def _openrouter_registry_lock(target: Path):
+def _registry_lock(target: Path, *, registry_name: str):
     """Hold one private sidecar lock across a registry compare and replacement."""
 
+    if _ROUTE_RE.fullmatch(registry_name) is None:
+        raise PolicyValidationError("registry lock name is invalid")
     parent = target.parent
     descriptor = -1
     locked = False
@@ -1056,7 +1629,7 @@ def _openrouter_registry_lock(target: Path):
             else:
                 _protect_windows_path(parent)
 
-        lock_path = parent / ".openrouter-registry.lock"
+        lock_path = parent / f".{registry_name}-registry.lock"
         try:
             before = os.lstat(lock_path)
         except FileNotFoundError:
@@ -1145,27 +1718,38 @@ def _openrouter_registry_lock(target: Path):
                 pass
 
 
-def write_openrouter_registry(
-    path: str | os.PathLike[str],
-    value: OpenRouterRegistry | Mapping[str, Any],
-    *,
-    now: int | float | datetime | None = None,
-    require_fresh: bool = True,
-) -> OpenRouterRegistry:
-    """Validate and atomically replace a private user-owned registry file."""
+@contextmanager
+def _openrouter_registry_lock(target: Path):
+    """Compatibility wrapper for the OpenRouter registry lock."""
 
-    raw_value = (
-        value.to_dict() if isinstance(value, OpenRouterRegistry) else dict(value)
-    )
-    registry = validate_openrouter_registry(
-        raw_value, now=now, require_fresh=require_fresh
-    )
-    serialized = registry.canonical_bytes() + b"\n"
-    if len(serialized) > MAX_POLICY_BYTES:
+    with _registry_lock(target, registry_name="openrouter"):
+        yield
+
+
+@contextmanager
+def _openmodel_registry_lock(target: Path):
+    """Hold the private open-model registry lock."""
+
+    with _registry_lock(target, registry_name="openmodel"):
+        yield
+
+
+def _write_private_registry(
+    path: str | os.PathLike[str],
+    serialized: bytes,
+    *,
+    registry_name: str,
+) -> None:
+    """Atomically replace one validated private registry file."""
+
+    if _ROUTE_RE.fullmatch(registry_name) is None:
+        raise PolicyValidationError("registry temporary-file name is invalid")
+    if type(serialized) is not bytes or len(serialized) > MAX_POLICY_BYTES:
         raise PolicyValidationError("serialized registry exceeds the 128 KiB limit")
 
     target = Path(path).expanduser()
     parent = target.parent
+    require_private_read = registry_name == "openmodel"
     temporary: Path | None = None
     descriptor = -1
     before: os.stat_result | None = None
@@ -1195,11 +1779,15 @@ def write_openrouter_registry(
                 raise PolicyFileError("registry must not be a symbolic link")
             if not stat.S_ISREG(before.st_mode):
                 raise PolicyFileError("registry must be a regular file")
-            _validate_posix_owner_and_mode(before)
-            _validate_windows_path_security(target)
+            _validate_posix_owner_and_mode(
+                before, require_private_read=require_private_read
+            )
+            _validate_windows_path_security(
+                target, require_private_read=require_private_read
+            )
 
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".openrouter-registry.", suffix=".tmp", dir=parent
+            prefix=f".{registry_name}-registry.", suffix=".tmp", dir=parent
         )
         temporary = Path(temporary_name)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
@@ -1226,7 +1814,9 @@ def write_openrouter_registry(
 
         os.replace(temporary, target)
         temporary = None
-        _validate_windows_path_security(target)
+        _validate_windows_path_security(
+            target, require_private_read=require_private_read
+        )
         if os.name != "nt":
             directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             directory_descriptor = -1
@@ -1260,6 +1850,46 @@ def write_openrouter_registry(
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def write_openrouter_registry(
+    path: str | os.PathLike[str],
+    value: OpenRouterRegistry | Mapping[str, Any],
+    *,
+    now: int | float | datetime | None = None,
+    require_fresh: bool = True,
+) -> OpenRouterRegistry:
+    """Validate and atomically replace a private OpenRouter registry."""
+
+    raw_value = (
+        value.to_dict() if isinstance(value, OpenRouterRegistry) else dict(value)
+    )
+    registry = validate_openrouter_registry(
+        raw_value, now=now, require_fresh=require_fresh
+    )
+    _write_private_registry(
+        path,
+        registry.canonical_bytes() + b"\n",
+        registry_name="openrouter",
+    )
+    return registry
+
+
+def write_openmodel_registry(
+    path: str | os.PathLike[str],
+    value: OpenModelRegistry | Mapping[str, Any],
+) -> OpenModelRegistry:
+    """Validate and atomically replace a private open-model registry."""
+
+    raw_value = (
+        value.to_dict() if isinstance(value, OpenModelRegistry) else dict(value)
+    )
+    registry = validate_openmodel_registry(raw_value)
+    _write_private_registry(
+        path,
+        registry.canonical_bytes() + b"\n",
+        registry_name="openmodel",
+    )
     return registry
 
 
@@ -1301,6 +1931,32 @@ def compare_and_swap_openrouter_registry(
         )
 
 
+def compare_and_swap_openmodel_registry(
+    path: str | os.PathLike[str],
+    expected_digest: str | None,
+    value: OpenModelRegistry | Mapping[str, Any],
+) -> OpenModelRegistry:
+    """Replace the open-model registry only when its digest is unchanged."""
+
+    if expected_digest is not None and re.fullmatch(
+        r"[0-9a-f]{64}\Z", expected_digest, re.ASCII
+    ) is None:
+        raise PolicyValidationError("expected registry digest is invalid")
+    target = Path(path).expanduser()
+    with _openmodel_registry_lock(target):
+        try:
+            current = load_openmodel_registry(target)
+        except RegistryNotFoundError:
+            current_digest = None
+        else:
+            current_digest = current.digest()
+        if current_digest != expected_digest:
+            raise RegistryConflictError(
+                "Open-model registry changed during this operation; rerun the command"
+            )
+        return write_openmodel_registry(target, value)
+
+
 def _validate_exact_model(value: Any, location: str) -> str:
     model = _require_string(value, location)
     if not model.isascii() or _EXACT_MODEL_RE.fullmatch(model) is None:
@@ -1322,6 +1978,18 @@ def _validate_snapshot_provider(value: Any, location: str) -> str:
 def _validate_model_for_provider(value: Any, provider: str, location: str) -> str:
     if provider == "openrouter":
         return _validate_openrouter_model(value, location)
+    if provider == "openmodel":
+        model = _validate_exact_model(value, location)
+        if not model.startswith("openmodel/"):
+            raise PolicyValidationError(
+                f"{location} is not a canonical openmodel route ID"
+            )
+        route = model.removeprefix("openmodel/")
+        if _validate_openmodel_name(route, location) != route:
+            raise PolicyValidationError(
+                f"{location} is not a canonical openmodel route ID"
+            )
+        return model
     model = _validate_exact_model(value, location)
     prefix = {
         "anthropic": "claude-",
@@ -1344,8 +2012,11 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
     # they simply carry no failover chains. The same applies to the
     # overflow-handoff fields added later.
     for optional_field, default in (
+        ("openmodel", {"endpoints": {}, "models": {}}),
         ("failover", {}),
         ("context_windows", {}),
+        ("route_categories", {}),
+        ("effort_ceilings", {}),
         ("compactors", {}),
         ("overflow_shrink", "auto"),
     ):
@@ -1414,6 +2085,16 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             raise PolicyValidationError(
                 f"agents[{name!r}].extra_usage must be a boolean"
             )
+        if provider == "openmodel":
+            expected_name = f"airlock-om-{model.removeprefix('openmodel/')}"
+            if name != expected_name:
+                raise PolicyValidationError(
+                    f"agents[{name!r}] must use its generated open-model Agent name"
+                )
+            if extra_usage:
+                raise PolicyValidationError(
+                    f"agents[{name!r}].extra_usage must be false for local compute"
+                )
         if model not in routes:
             raise PolicyValidationError(
                 f"agents[{name!r}].model does not reference a route"
@@ -1491,6 +2172,180 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             f"OpenRouter routes and metadata must agree; missing {missing!r}"
         )
 
+    raw_openmodel = _require_exact_fields(
+        snapshot["openmodel"], _OPENMODEL_SNAPSHOT_FIELDS, "openmodel"
+    )
+    raw_openmodel_endpoints = raw_openmodel["endpoints"]
+    if type(raw_openmodel_endpoints) is not dict:
+        raise PolicyValidationError("openmodel.endpoints must be an object")
+    if len(raw_openmodel_endpoints) > MAX_OPENMODEL_ENDPOINTS:
+        raise PolicyValidationError(
+            f"openmodel.endpoints must contain at most {MAX_OPENMODEL_ENDPOINTS} entries"
+        )
+    openmodel_endpoints: dict[str, SnapshotOpenModelEndpoint] = {}
+    openmodel_urls: set[str] = set()
+    for raw_endpoint_id, raw_metadata in raw_openmodel_endpoints.items():
+        endpoint_id = _validate_openmodel_name(
+            raw_endpoint_id, "openmodel.endpoints key"
+        )
+        metadata = _require_exact_fields(
+            raw_metadata,
+            _OPENMODEL_ENDPOINT_SNAPSHOT_FIELDS,
+            f"openmodel.endpoints[{endpoint_id!r}]",
+        )
+        base_url = validate_openmodel_base_url(
+            metadata["base_url"],
+            f"openmodel.endpoints[{endpoint_id!r}].base_url",
+        )
+        trust = _require_string(
+            metadata["trust"], f"openmodel.endpoints[{endpoint_id!r}].trust"
+        )
+        protocol = _require_string(
+            metadata["protocol"],
+            f"openmodel.endpoints[{endpoint_id!r}].protocol",
+        )
+        auth = _require_string(
+            metadata["auth"], f"openmodel.endpoints[{endpoint_id!r}].auth"
+        )
+        if trust != _OPENMODEL_TRUST:
+            raise PolicyValidationError(
+                f"openmodel.endpoints[{endpoint_id!r}].trust must be loopback"
+            )
+        if protocol != _OPENMODEL_PROTOCOL:
+            raise PolicyValidationError(
+                f"openmodel.endpoints[{endpoint_id!r}].protocol must be "
+                f"{_OPENMODEL_PROTOCOL}"
+            )
+        if auth != _OPENMODEL_AUTH:
+            raise PolicyValidationError(
+                f"openmodel.endpoints[{endpoint_id!r}].auth must be none"
+            )
+        max_concurrency = _require_integer(
+            metadata["max_concurrency"],
+            f"openmodel.endpoints[{endpoint_id!r}].max_concurrency",
+            minimum=1,
+        )
+        if max_concurrency > 64:
+            raise PolicyValidationError(
+                f"openmodel.endpoints[{endpoint_id!r}].max_concurrency must be at most 64"
+            )
+        if base_url in openmodel_urls:
+            raise PolicyValidationError("duplicate open-model endpoint URL")
+        openmodel_urls.add(base_url)
+        openmodel_endpoints[endpoint_id] = SnapshotOpenModelEndpoint(
+            base_url=base_url,
+            trust=trust,
+            protocol=protocol,
+            auth=auth,
+            max_concurrency=max_concurrency,
+        )
+
+    raw_openmodel_models = raw_openmodel["models"]
+    if type(raw_openmodel_models) is not dict:
+        raise PolicyValidationError("openmodel.models must be an object")
+    if len(raw_openmodel_models) > MAX_OPENMODEL_MODELS:
+        raise PolicyValidationError(
+            f"openmodel.models must contain at most {MAX_OPENMODEL_MODELS} entries"
+        )
+    openmodel_models: dict[str, SnapshotOpenModelRoute] = {}
+    openmodel_request_bindings: set[tuple[str, str]] = set()
+    openmodel_response_bindings: set[tuple[str, str]] = set()
+    referenced_openmodel_endpoints: set[str] = set()
+    for raw_model, raw_metadata in raw_openmodel_models.items():
+        model = _validate_model_for_provider(
+            raw_model, "openmodel", "openmodel.models key"
+        )
+        metadata = _require_exact_fields(
+            raw_metadata,
+            _OPENMODEL_MODEL_SNAPSHOT_FIELDS,
+            f"openmodel.models[{model!r}]",
+        )
+        endpoint_id = _validate_openmodel_name(
+            metadata["endpoint"], f"openmodel.models[{model!r}].endpoint"
+        )
+        if endpoint_id not in openmodel_endpoints:
+            raise PolicyValidationError(
+                f"openmodel.models[{model!r}].endpoint is not declared"
+            )
+        upstream_model = validate_openmodel_identity(
+            metadata["upstream_model"],
+            f"openmodel.models[{model!r}].upstream_model",
+        )
+        accepted = _validate_openmodel_identities(
+            metadata["accepted_response_models"],
+            f"openmodel.models[{model!r}].accepted_response_models",
+        )
+        context_window = _require_integer(
+            metadata["context_window"],
+            f"openmodel.models[{model!r}].context_window",
+        )
+        if not MIN_CONTEXT_WINDOW_TOKENS <= context_window <= MAX_CONTEXT_WINDOW_TOKENS:
+            raise PolicyValidationError(
+                f"openmodel.models[{model!r}].context_window is outside the supported range"
+            )
+        max_output_tokens = _require_integer(
+            metadata["max_output_tokens"],
+            f"openmodel.models[{model!r}].max_output_tokens",
+            minimum=1,
+        )
+        if max_output_tokens > context_window:
+            raise PolicyValidationError(
+                f"openmodel.models[{model!r}].max_output_tokens exceeds its context window"
+            )
+        streaming = metadata["streaming"]
+        if type(streaming) is not bool:
+            raise PolicyValidationError(
+                f"openmodel.models[{model!r}].streaming must be a boolean"
+            )
+        tools = _validate_openmodel_tool_support(
+            metadata["tools"], f"openmodel.models[{model!r}].tools"
+        )
+        tool_choice = _validate_openmodel_tool_choices(
+            metadata["tool_choice"],
+            f"openmodel.models[{model!r}].tool_choice",
+            tool_support=tools,
+        )
+        if routes.get(model) != "openmodel":
+            raise PolicyValidationError(
+                f"openmodel.models[{model!r}] does not reference an openmodel route"
+            )
+        request_binding = (endpoint_id, upstream_model)
+        response_bindings = {(endpoint_id, identity) for identity in accepted}
+        if request_binding in openmodel_request_bindings:
+            raise PolicyValidationError(
+                "duplicate open-model endpoint and upstream model binding"
+            )
+        if response_bindings & openmodel_response_bindings:
+            raise PolicyValidationError(
+                "open-model response identity is ambiguous on its endpoint"
+            )
+        openmodel_request_bindings.add(request_binding)
+        openmodel_response_bindings.update(response_bindings)
+        referenced_openmodel_endpoints.add(endpoint_id)
+        openmodel_models[model] = SnapshotOpenModelRoute(
+            endpoint=endpoint_id,
+            upstream_model=upstream_model,
+            accepted_response_models=accepted,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            streaming=streaming,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
+    openmodel_routes = {
+        model for model, provider in routes.items() if provider == "openmodel"
+    }
+    if set(openmodel_models) != openmodel_routes:
+        missing = sorted(openmodel_routes - set(openmodel_models))
+        raise PolicyValidationError(
+            f"openmodel routes and metadata must agree; missing {missing!r}"
+        )
+    if set(openmodel_endpoints) != referenced_openmodel_endpoints:
+        raise PolicyValidationError(
+            "openmodel snapshot endpoints must be referenced exactly"
+        )
+
     raw_failover = snapshot["failover"]
     if type(raw_failover) is not dict:
         raise PolicyValidationError("failover must be an object")
@@ -1505,6 +2360,10 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         if raw_model not in routes:
             raise PolicyValidationError(
                 f"failover key {raw_model!r} does not reference a route"
+            )
+        if routes[raw_model] == "openmodel":
+            raise PolicyValidationError(
+                "openmodel routes must not appear in failover chains"
             )
         if type(raw_peers) is not list or not (
             1 <= len(raw_peers) <= MAX_SNAPSHOT_FAILOVER_PEERS
@@ -1530,15 +2389,19 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
                 raise PolicyValidationError(
                     f"failover[{raw_model!r}] references unknown route {raw_peer!r}"
                 )
+            if routes[raw_peer] == "openmodel":
+                raise PolicyValidationError(
+                    "openmodel routes must not appear in failover chains"
+                )
             peers.append(raw_peer)
         failover[raw_model] = tuple(peers)
 
     raw_windows = snapshot["context_windows"]
     if type(raw_windows) is not dict:
         raise PolicyValidationError("context_windows must be an object")
-    if len(raw_windows) > MAX_SNAPSHOT_FAILOVER_ENTRIES:
+    if len(raw_windows) > MAX_SNAPSHOT_ROUTE_ENTRIES:
         raise PolicyValidationError(
-            f"context_windows must contain at most {MAX_SNAPSHOT_FAILOVER_ENTRIES} entries"
+            f"context_windows must contain at most {MAX_SNAPSHOT_ROUTE_ENTRIES} entries"
         )
     context_windows: dict[str, int] = {}
     for raw_model, raw_window in raw_windows.items():
@@ -1556,6 +2419,50 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
             )
         context_windows[raw_model] = window
 
+    for model, metadata in openmodel_models.items():
+        if context_windows.get(model) != metadata.context_window:
+            raise PolicyValidationError(
+                f"context_windows[{model!r}] must match openmodel metadata"
+            )
+
+    raw_categories = snapshot["route_categories"]
+    if type(raw_categories) is not dict:
+        raise PolicyValidationError("route_categories must be an object")
+    if len(raw_categories) > MAX_SNAPSHOT_ROUTE_ENTRIES:
+        raise PolicyValidationError(
+            f"route_categories must contain at most {MAX_SNAPSHOT_ROUTE_ENTRIES} entries"
+        )
+    route_categories: dict[str, str] = {}
+    for raw_model, raw_category in raw_categories.items():
+        if type(raw_model) is not str or raw_model not in routes:
+            raise PolicyValidationError(
+                "route_categories keys must reference routed model IDs"
+            )
+        if type(raw_category) is not str or raw_category not in _ROUTE_CATEGORIES:
+            raise PolicyValidationError(
+                f"route_categories[{raw_model!r}] must be included, extra, metered, or unknown"
+            )
+        route_categories[raw_model] = raw_category
+
+    raw_effort_ceilings = snapshot["effort_ceilings"]
+    if type(raw_effort_ceilings) is not dict:
+        raise PolicyValidationError("effort_ceilings must be an object")
+    if len(raw_effort_ceilings) > MAX_SNAPSHOT_ROUTE_ENTRIES:
+        raise PolicyValidationError(
+            f"effort_ceilings must contain at most {MAX_SNAPSHOT_ROUTE_ENTRIES} entries"
+        )
+    effort_ceilings: dict[str, str] = {}
+    for raw_model, raw_ceiling in raw_effort_ceilings.items():
+        if type(raw_model) is not str or raw_model not in routes:
+            raise PolicyValidationError(
+                "effort_ceilings keys must reference routed model IDs"
+            )
+        if type(raw_ceiling) is not str or raw_ceiling not in _EFFORT_CEILINGS:
+            raise PolicyValidationError(
+                f"effort_ceilings[{raw_model!r}] must be low, medium, high, xhigh, or max"
+            )
+        effort_ceilings[raw_model] = raw_ceiling
+
     raw_compactors = snapshot["compactors"]
     if type(raw_compactors) is not dict:
         raise PolicyValidationError("compactors must be an object")
@@ -1564,7 +2471,7 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         if (
             type(raw_provider) is not str
             or raw_provider not in _PROVIDERS
-            or raw_provider == "openrouter"
+            or raw_provider in {"openrouter", "openmodel"}
         ):
             raise PolicyValidationError(
                 "compactors keys must be anthropic, openai, or grok providers"
@@ -1608,8 +2515,14 @@ def validate_session_snapshot(value: Any) -> SessionSnapshot:
         routes=MappingProxyType(dict(routes)),
         agents=MappingProxyType(dict(agents)),
         openrouter=MappingProxyType(dict(openrouter)),
+        openmodel=SnapshotOpenModel(
+            endpoints=MappingProxyType(dict(openmodel_endpoints)),
+            models=MappingProxyType(dict(openmodel_models)),
+        ),
         failover=MappingProxyType(failover),
         context_windows=MappingProxyType(context_windows),
+        route_categories=MappingProxyType(route_categories),
+        effort_ceilings=MappingProxyType(effort_ceilings),
         compactors=MappingProxyType(compactors),
         overflow_shrink=overflow_shrink,
     )

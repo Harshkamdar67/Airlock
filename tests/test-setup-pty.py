@@ -34,10 +34,10 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 # One Enter for each question in the plain recommended path: the fourteen base
 # questions below, plus one per model when the saved worker mix does not match
 # a named preset and the wizard opens "Choose models individually". The fixture
-# asks about seven models, so the plain and narrow runs answer twenty-one prompts.
+# asks about eight models, so the plain and narrow runs answer twenty-two prompts.
 # The keyboard run has its own explicit script and selects the balanced preset,
 # so it still answers only the base questions.
-ENTER_PRESSES = 21
+ENTER_PRESSES = 22
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -424,6 +424,10 @@ CHOICE_PRESENTATION = (
     "claude-haiku-4-5-20251001",
     "GPT-5.6 Sol",
     "gpt-5.6-sol",
+    "GPT-6 Astra",
+    "gpt-6-astra",
+    "Frontier reasoning with a 1,050,000 token window. Premium usage, and more "
+    "above 272,000 input tokens.",
     "GPT-5.6 Terra",
     "gpt-5.6-terra",
     "GPT-5.6 Luna",
@@ -694,7 +698,7 @@ try:
     plain_keyboard_script = (
         [KEY_ENTER]  # session profile: hybrid
         + [KEY_ENTER]  # Grok subscription: no
-        + [b"?\n", b"6\n"]  # orchestrator: show the list, then pick Opus
+        + [b"?\n", b"7\n"]  # orchestrator: show the list, then pick Opus
         + [KEY_DOWN, KEY_ENTER]  # worker pool: custom wraps to balanced
         + [KEY_DOWN, KEY_ENTER]  # session effort: 3) High -> 4) Extra high
         + [KEY_ENTER]  # worker effort: follow session

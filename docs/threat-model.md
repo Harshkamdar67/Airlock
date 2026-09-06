@@ -19,6 +19,7 @@ The private handoff marker is nonce-, PID-, cwd-, and session-bound. It carries 
 The main things to protect are:
 
 - provider login authorization
+- private open-model endpoint and upstream model identities
 - private repository files
 - raw env values
 - the user's current Git branch, index, and working files
@@ -36,6 +37,7 @@ Airlock trusts:
 - the operating system account and file permissions
 - tracked repository content chosen by the user
 - Anthropic and OpenAI endpoints selected by the local policy
+- an explicitly declared loopback inference server as a processor for the prompts sent to it
 
 Review `claude-code-proxy` separately. It owns the OpenAI OAuth flow and protocol conversion.
 
@@ -49,7 +51,8 @@ Review `claude-code-proxy` separately. It owns the OpenAI OAuth flow and protoco
 - provider error text as proof of billing or quota
 - a repository script simply because an Agent wants to run it
 - a changed worktree simply because an Agent says it is safe to delete
-- the real capability, context window, or cost of a user-declared OpenRouter model
+- the real capability, context window, cost, or behavior of a user-declared OpenRouter model
+- the real capability, context window, output limit, tool behavior, or quality of a user-declared open model
 
 ## Main boundaries
 
@@ -61,7 +64,7 @@ The proxy has no incoming client password. Do not expose it to a LAN, VPN, conta
 
 ### Session router
 
-A hybrid session, and an `airlock opr` session, each start one temporary router on `127.0.0.1`. The same router implementation and the same protections below apply to both; the [OpenRouter routes](#openrouter-routes) section covers what is specific to OpenRouter requests.
+A hybrid session, an `airlock opr` session, and every open-model session each start one temporary router on `127.0.0.1`. The same router implementation and the same protections below apply to all of them; the [OpenRouter routes](#openrouter-routes) and [open-model routes](#open-model-routes) sections cover their provider-specific behavior.
 
 The router maps exact enabled model IDs to one provider. It does not use model prefixes alone as permission and it does not silently fail over.
 
@@ -69,7 +72,7 @@ For Anthropic, it forwards Claude Code authorization and capability headers opaq
 
 For OpenAI, it strips authorization, API-key, cookie, proxy authorization, and Claude OAuth capability headers before calling the loopback proxy.
 
-The router preserves streamed bytes, rejects redirects, and exits when its owner exits. It does not log prompts, bodies, responses, or credentials. Its loopback diagnostics endpoint contains only a bounded in-memory list of sanitized route metadata, byte counts, and integer token counts.
+Existing subscription routes preserve streamed bytes. Open-model routes instead translate bounded Chat Completions events into Anthropic events. Every route rejects redirects, and the router exits when its owner exits. It does not log prompts, bodies, responses, private local identities, or credentials. Its loopback diagnostics endpoint contains only a bounded in-memory list of sanitized route metadata, byte counts, and integer token counts.
 
 A malicious local process running as the same user can still connect to a loopback service. The operating system account remains a trusted boundary.
 
@@ -94,6 +97,32 @@ A declared route becomes a named `airlock-or-ROUTE` Agent inside a normal hybrid
 `airlock opr ROUTE` is the one exception to "never a root": it starts an OpenRouter-only session whose exclusive root is exactly the declared route you name, or the one you pick from an offline interactive list of your declared routes. It fails closed on an unknown, disabled, or misspelled route rather than falling back to another one, and it needs no Claude, Codex, or Grok credential and starts no OpenAI subscription proxy. It also has no saved default: every launch names a route explicitly or asks, and running it does not change guided setup or any saved profile. Because that root route is the one you explicitly chose for the session, it is not itself gated by `AIRLOCK_EXTRA_USAGE_POLICY`, the same way an explicit hybrid root such as `airlock hybrid opus` is not treated as extra usage. Any other declared route that becomes visible in that same `opr` session, or any route inside a hybrid session, is a separate `airlock-or-ROUTE` Agent and follows the normal extra-usage policy: `airlock openrouter auth` and `airlock openrouter models` do not start a session or a root by themselves, and there is no OpenRouter OAuth. Airlock does not verify a model's real capability, context window, or cost, whether it runs as an `opr` root or as an extra-usage Agent.
 
 The OpenRouter key is stored only through the operating system's own credential protection (the macOS Keychain, Windows DPAPI scoped to the current Windows user, or the Linux Secret Service), with no plaintext file fallback. A compromised local account can still read it, the same boundary that already applies to Codex and Claude credentials.
+
+### Open-model routes
+
+Open-model support is optional and off by default. Each endpoint and route comes from a protected local `openmodel-registry.json` written by explicit management commands. Endpoint URLs must be canonical `http://127.0.0.1:PORT/v1` values. Airlock rejects names, alternate loopback addresses, IPv6, non-loopback addresses, other schemes or paths, encoded variants, user information, queries, and fragments.
+
+The private URL and upstream identity do not appear in management argv, the public `openmodel/ROUTE` model ID, or the `airlock-om-ROUTE` Agent name. Add commands read private values from bounded hidden prompts or bounded exact-schema JSON on stdin. The values stay in the protected registry and protected signed session snapshot. Registry updates use regular-file and link checks, current-user file protection, bounded duplicate-free JSON, a private lock, atomic replacement, and digest comparison. The router uses only its signed snapshot, so changing the registry cannot redirect a running session.
+
+The adapter builds a fresh allowlisted Chat Completions body. It strips incoming authorization, keys, cookies, proxy authorization, provider capability headers, and arbitrary headers. Direct `HTTPConnection` transport does not use inherited proxy configuration and follows no redirect. Before a successful response is committed, the server must report one exact configured private identity. The router never sends the request to a second model after a local failure.
+
+The declared context, output, streaming, tool-count, and tool-choice capabilities are not proof of server behavior. Airlock enforces the declaration and rejects unsupported client semantics or a response that exceeds its declared tool behavior. Histories that Chat Completions cannot represent faithfully, including failed, missing, duplicate, late, or interrupted tool results and assistant text after a tool call, are rejected before network access rather than reordered or weakened. Every pending tool call must receive one immediate result before user text or a later message. `airlock open-model check ROUTE` verifies only one bounded credential-free catalog identity. It does not prove generation or capabilities. Doctor remains offline.
+
+Every endpoint has one concurrency limit shared across its route aliases. The semaphore is held for the complete request or stream and released on success, errors, and disconnects. This protects a single-slot local server from Airlock concurrency, but another process running as the same user can still contact that server directly.
+
+A pure `airlock om ROUTE` session needs no provider login or subscription proxy. `airlock hybrid om:ROUTE` keeps ordinary non-local workers. Neither path puts a local route into saved `auto`, discovery, automatic swarms, handoff, provider fallback, capacity routing, or synthesized compactor routing. Airlock does not manage the inference process, model files, hardware, or server flags.
+
+### The console
+
+`airlock console` binds to `127.0.0.1` only and refuses to start on a port already held by something that is not an Airlock console. It aggregates state across sessions by reading registry files the routers already write and by polling each router's own `/diagnostics`; it never gains a capability a router did not already expose. One live console is allowed per runtime root. Its private, process-lifetime `console.lock` prevents another same-root console from serving, while different roots remain independent. A second start exits safely and, when the marker validates, the launcher opens the existing console. Operating-system lock release permits recovery after a hard crash; a stale non-secret marker may remain, and the next start that obtains the lock replaces it.
+
+Every registry file carries a private per-router control token, at least 256 random bits, stored only in that mode-0600 file. The token is the only thing that lets the console pin or unpin that one router's session; the router accepts nothing else through it, no chain edit, no process operation, no generic action. The console's separate address marker holds only a schema version, loopback URL, process ID, and random console identity. It never carries a router control token or CSRF token. A separate per-process CSRF token, injected only into the served root page, protects browser-originated mutations from cross-site requests. Neither token is ever returned by a JSON endpoint, logged, or rendered anywhere in the page, an event, a report, an MCP response, or WebMCP.
+
+Agent-facing channels, the `airlock-console-tools` MCP server, the console's own HTTP tool endpoints, and WebMCP inside the page, can read state and create proposals. None of them can approve, reject, execute, pin, unpin, resume, or otherwise reach a router-control operation. Approving a proposal, or pinning a session directly, is a person clicking a button in the browser with a valid CSRF token; the effect lands immediately on the live session's router without restarting anything.
+
+The console renders only an allowlisted set of fields from routers and registry files, treats both as untrusted input, validates their schema, and caps their size. It never renders prompt or response text, provider error bodies, tokens, or account identifiers, and it never restarts, signals, or otherwise writes to a router or a session outside of an approved proposal or a direct pin. Its static site is installed through a same-parent staging directory and one recoverable managed backup container. Unsafe, ambiguous, writable, reparse-point or symlinked, and malformed backups fail closed. POSIX ownership checks refuse a backup owned by another user. Windows relies on the user-owned install root and reparse refusal; it does not apply POSIX ownership checks. The managed bundle marker is written last.
+
+A malicious local process running as the same user can still reach the console's loopback API, read a registry file, or automate the browser exactly the way it could reach any other loopback service or local file today. The operating system account remains the trusted boundary; the console does not add one.
 
 ### Native Agent calls
 
@@ -163,6 +192,14 @@ The router never logs a real authorization header, so live verification must use
 
 The router and Agent guard both use active exact allowlists. An unknown, disabled, cross-profile, or ineligible model fails before provider routing.
 
+### A local registry tries to redirect traffic
+
+The registry validator accepts only literal canonical `127.0.0.1` endpoint URLs and protected regular files. The signed session snapshot freezes the endpoint for one router lifetime. DNS, redirects, links, changed files, private-network addresses, and public addresses cannot retarget an accepted route.
+
+### A local server violates its declaration
+
+The adapter checks the exact private response identity, declared streaming and tool behavior, response shape, JSON function arguments, finish reason, usage shape, and stream bounds. A failure before stream commitment returns a sanitized local error. A failure after commitment emits a sanitized in-stream error and stops. Neither case retries on another model or reflects the private identity, endpoint, response body, headers, or `reasoning_content`.
+
 ### A model asks for credentials
 
 The worktree snapshot filters known credentials and projects eligible env files. Direct tool hooks block normal raw reads and broad searches.
@@ -197,6 +234,10 @@ OpenRouter can change what an endpoint serves after you declared it. Airlock doe
 
 An expired or otherwise invalid registry entry does not quietly disable that one route. It makes the whole registry file invalid, which stops every Airlock session, including OpenAI-only and Grok-only ones, until the route is refreshed with `--apply` or removed. This is a deliberate fail-closed choice: a stale route is treated as untrusted input rather than left running on unverified metadata.
 
+### An agent tries to approve its own proposal
+
+The console's agent-facing surfaces, the MCP server, the HTTP tool endpoints, and WebMCP, only expose tools that read state or create a proposal. There is no approve, reject, pin, unpin, resume, or router-control tool defined on any of them, so an agent cannot complete the loop on its own even if it created the proposal. Only a person, acting in the browser with a valid same-origin request and CSRF token, can move a proposal to applied.
+
 ## Limits that remain
 
 - Anthropic does not officially support non-Claude models behind a Claude Code gateway.
@@ -204,8 +245,10 @@ An expired or otherwise invalid registry entry does not quietly disable that one
 - Remote Control is unavailable behind a non-Anthropic base URL.
 - A compromised local user account can read the same files as the user, including the operating system's own credential storage that holds a stored OpenRouter key.
 - A user-declared OpenRouter route is only checked against the public catalog for identity and tool support. Airlock does not evaluate its real capability, context window, or cost.
-- A compromised Claude Code, proxy, Git, Python, shell, or operating system is outside this protection.
+- A user-declared open model and its local server are trusted to process the prompts explicitly sent to them. The catalog check proves only an exact identity at one moment, not capability, quality, safety, uptime, context size, or correct inference.
+- A compromised Claude Code, proxy, local inference server, Git, Python, shell, or operating system is outside this protection.
 - A tracked secret may already exist in Git history and shared refs.
+- Approving a proposal in the console is not a security boundary against software already running with the person's local account privileges. It separates normal agent tool access from the approval path, nothing more.
 - Native Windows does not provide the same Bash sandbox as macOS, Linux, or WSL2.
 - Native Claude Code controls which tools are available to subagents.
 - Prompt rules and hooks reduce mistakes but cannot make model behavior mathematically certain.

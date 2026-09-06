@@ -23,7 +23,7 @@ Install Claude Code, Homebrew, Git, Python 3, and curl. Then run:
 
 The guided terminal setup supports Up and Down arrow selection with Enter. Number and name entry still work. It has six short sections:
 
-1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-5.6 Sol.
+1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-5.6 Sol. Choosing GPT-6 Astra as the hybrid root also adds it to the worker pool.
 2. **Worker pool:** choose the Balanced pool, the Economical pool, the Balanced pool plus Claude Fable 5, or individual exact-model workers.
 3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
 4. **Safety and budget:** choose extra-usage behavior, provider Fast startup, routing preference, and a parallel-worker ceiling.
@@ -153,11 +153,13 @@ airlock hybrid choose
 Direct choices:
 
 ```bash
+airlock astra
 airlock terra
 airlock fast -r
 airlock grok
 airlock grok composer
 airlock hybrid grok
+airlock hybrid astra
 airlock hybrid sol
 airlock hybrid terra
 airlock hybrid luna
@@ -167,7 +169,7 @@ airlock hybrid fable
 airlock hybrid haiku
 ```
 
-An OpenAI alias such as `airlock terra` always means an explicit OpenAI-only launch. `airlock fast -r` is a one-session `gpt-5.6-sol-fast` root through the Codex proxy. It does not change saved `AIRLOCK_OPENAI_FAST`, requires an eligible OpenAI plan and verified proxy support, and has no fallback. Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
+An OpenAI alias such as `airlock astra` or `airlock terra` always means an explicit OpenAI-only launch. `airlock astra` starts GPT-6 Astra alone; `airlock hybrid astra` starts it with Claude workers. There is no `astra-fast` alias. `airlock fast -r` is a one-session `gpt-5.6-sol-fast` root through the Codex proxy. It does not change saved `AIRLOCK_OPENAI_FAST`, requires an eligible OpenAI plan and verified proxy support, and has no fallback. Fable can use Anthropic extra usage. The saved extra-usage policy still applies.
 
 In a managed Airlock session, use `/airlock-fast` to arm a one-shot handoff, then exit cleanly. The owning launcher resumes the exact conversation once on fixed `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`. Hard kills, crashes, non-clean exits, hook failures, and expiry prevent relaunch by design. The installed managed plugin SessionEnd hook is required; it is part of the Airlock plugin, not a global hook.
 

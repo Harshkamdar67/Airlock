@@ -10,7 +10,8 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 # .claude holds local session notes rather than Airlock-owned documentation.
-LOCAL_DIRECTORIES = {".claude"}
+# node_modules and dist hold third-party packages and built output.
+LOCAL_DIRECTORIES = {".claude", "node_modules", "dist"}
 MARKDOWN_FILES = sorted(
     path for path in ROOT.rglob("*.md")
     if ".git" not in path.parts
@@ -53,6 +54,50 @@ class DocumentationTests(unittest.TestCase):
                 continue
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertNotIn(forbidden, path.read_text(encoding="utf-8"))
+
+    def test_openmodel_docs_distinguish_trigger_from_hard_ceiling(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        model_guide = (ROOT / "docs" / "models-and-usage.md").read_text(
+            encoding="utf-8"
+        )
+        architecture = (ROOT / "docs" / "how-it-works.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("declared context window remains its hard ceiling", readme)
+        self.assertIn(
+            "This ceiling is process-wide, so in `airlock hybrid om:ROUTE` it also caps every non-local worker",
+            readme,
+        )
+        self.assertIn(
+            "always exports it as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`", model_guide
+        )
+        self.assertIn(
+            "cannot raise the effective threshold above the route's declared hard ceiling",
+            model_guide,
+        )
+        self.assertIn(
+            "selecting a local root with `airlock hybrid om:ROUTE` also caps every non-local worker",
+            model_guide,
+        )
+        self.assertIn(
+            "This is a hard ceiling, not merely a default trigger", architecture
+        )
+        self.assertIn(
+            "cannot raise the effective threshold above the declared ceiling",
+            architecture,
+        )
+        self.assertIn(
+            "a hybrid local root's declared ceiling also caps every non-local worker",
+            architecture,
+        )
+
+    def test_openmodel_docs_state_private_input_bounds(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        commands = (ROOT / "docs" / "commands.md").read_text(encoding="utf-8")
+        self.assertIn("bounded hidden prompts", readme)
+        self.assertIn("uses a bounded hidden prompt", security)
+        self.assertIn("at most 1,024 Unicode characters and 4,096 UTF-8 bytes", commands)
 
     def test_readme_version_badge_matches_the_release_version(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()

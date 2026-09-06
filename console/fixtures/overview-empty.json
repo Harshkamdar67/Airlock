@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-09-05T09:02:12Z",
+  "console_version": "0.1.0",
+  "sessions": [],
+  "routes": [],
+  "headroom": [
+    {
+      "provider": "anthropic",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openai",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "grok",
+      "window": "5h",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    },
+    {
+      "provider": "openrouter",
+      "window": "credits",
+      "used_percent": null,
+      "resets_at": null,
+      "source": "unknown"
+    }
+  ],
+  "attention": []
+}

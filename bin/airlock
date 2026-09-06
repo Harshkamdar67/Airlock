@@ -63,11 +63,18 @@ openrouter_auth_helper="${AIRLOCK_OPENROUTER_AUTH_HELPER:-$(dirname "$access_hel
 openrouter_presets_helper="${AIRLOCK_OPENROUTER_PRESETS_HELPER:-$(dirname "$access_helper")/airlock_openrouter_presets.py}"
 openrouter_models_helper="${AIRLOCK_OPENROUTER_MODELS_HELPER:-$(dirname "$access_helper")/airlock_openrouter_models.py}"
 openrouter_registry_file="${AIRLOCK_OPENROUTER_REGISTRY_FILE:-$config_root/openrouter-registry.json}"
+openmodel_helper="${AIRLOCK_OPENMODEL_HELPER:-$(dirname "$access_helper")/airlock_openmodel.py}"
+openmodel_adapter_helper="${AIRLOCK_OPENMODEL_ADAPTER_HELPER:-$(dirname "$access_helper")/airlock_openmodel_adapter.py}"
+openmodel_registry_file="${AIRLOCK_OPENMODEL_REGISTRY_FILE:-$config_root/openmodel-registry.json}"
 router_helper="${AIRLOCK_ROUTER_HELPER:-$(dirname "$access_helper")/airlock-router.py}"
 update_helper="${AIRLOCK_UPDATE_HELPER:-$(dirname "$access_helper")/airlock-update.py}"
 managed_bin_dir="${AIRLOCK_MANAGED_BIN_DIR:-$(dirname "$access_helper")}"
+console_helper="${AIRLOCK_CONSOLE_HELPER:-$managed_bin_dir/airlock_console.py}"
+console_tools_helper="$managed_bin_dir/airlock_console_tools.py"
+console_history_helper="$managed_bin_dir/airlock_console_history.py"
 bundle_file="${AIRLOCK_MANAGED_BUNDLE_FILE:-$config_root/managed-bundle.json}"
 plugin_dir="${AIRLOCK_PLUGIN_DIR:-$config_root/plugins/airlock}"
+console_mcp_helper="$plugin_dir/mcp-server/airlock_console_mcp.py"
 update_notice_file="$config_root/update-notice.json"
 python_bin="${AIRLOCK_PYTHON:-}"
 python_is_usable() {
@@ -108,6 +115,7 @@ config_extra_usage=''
 config_anthropic_rate_limit=''
 config_gpt_effort_capabilities=''
 config_grok_model=''
+config_openai_models=''
 
 if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
@@ -117,6 +125,7 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_DEFAULT_PROFILE) config_default_profile="$config_value" ;;
       AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
       AIRLOCK_GROK_MODEL) config_grok_model="$config_value" ;;
+      AIRLOCK_OPENAI_MODELS) config_openai_models="$config_value" ;;
       AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
       AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
       AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
@@ -216,10 +225,12 @@ airlock_fast_handoff_hop=0
 print_models() {
   cat <<'EOF'
 Usage: airlock [claude arguments]
+       airlock console [--port N] [--no-open] [--scan] [--once]
        airlock openai [model] [claude arguments]
        airlock grok [model] [claude arguments]
        airlock hybrid [model|choose] [claude arguments]
        airlock opr [route] [claude arguments]
+       airlock om [route] [claude arguments]
        airlock [sol|terra|luna|...] [claude arguments]
 
 Profiles:
@@ -229,15 +240,19 @@ Profiles:
   airlock hybrid   Start the saved hybrid orchestrator
   airlock fast     Start one session with OpenAI Fast without saving the mode
   airlock opr      Start an OpenRouter-only session on an exact registry route
+  airlock om       Start a local open-model-only session on an exact registry route
+  airlock console  Start the local-only session console on 127.0.0.1
   claude           Start the native Anthropic CLI without Airlock
 
-OpenAI root aliases: sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+OpenAI root aliases: astra, sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 Grok root aliases: grok, composer
-Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer
+Hybrid root aliases: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku, grok, composer
   auto resolves to fable when Fable is neither extra nor unavailable, otherwise
   opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
-Other commands: fast, bg, mode, handoff, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, proxy auth, version, update
+Open-model roots: exact enabled route slugs from airlock open-model list, driven with
+  airlock om ROUTE or, inside a hybrid session, airlock hybrid om:ROUTE
+Other commands: console, fast, bg, mode, handoff, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, open-model, proxy auth, version, update
 
 OpenRouter credential commands:
   airlock openrouter auth set-key     Store a key using a hidden prompt
@@ -252,6 +267,16 @@ OpenRouter model registry commands:
   airlock openrouter models add ROUTE MODEL ENDPOINT [--yes]
   airlock openrouter models remove ROUTE [--yes]
   airlock openrouter models refresh [ROUTE] [--apply] [--yes]
+
+Open-model registry commands (loopback-only; private values use a hidden prompt
+by default or bounded JSON on stdin with --stdin, never argv):
+  airlock open-model endpoint list
+  airlock open-model endpoint add ID --max-concurrency N [--stdin] [--disabled]
+  airlock open-model endpoint remove ID [--yes]
+  airlock open-model list
+  airlock open-model add ROUTE ENDPOINT [--stdin] ...
+  airlock open-model remove ROUTE [--yes]
+  airlock open-model check ROUTE
 
 Proxy login commands:
   airlock proxy auth status          Check Codex OAuth in Airlock's selected proxy directory
@@ -300,6 +325,9 @@ Examples:
   airlock hybrid grok              # hybrid with Grok orchestrator
   airlock opr kimi-k3 -r           # resume with an exact OpenRouter root
   airlock opr                       # interactive OpenRouter route picker
+  airlock om my-local-route        # explicit local open-model root
+  airlock hybrid om:my-local-route # local open-model root driving a hybrid session
+  airlock console --no-open           # foreground console without opening a browser
   airlock access refresh
 
 Inside a session:
@@ -337,6 +365,184 @@ run_update() {
   "$python_bin" "$update_helper" "$@"
 }
 
+print_console_usage() {
+  cat <<'EOF'
+Usage: airlock console [--port N] [--no-open] [--scan] [--once]
+
+Options:
+  --port N    Listen on 127.0.0.1:N (default 4783)
+  --no-open   Do not open the platform browser
+  --scan      Include bounded process-table fallback discovery
+  --once      Print one JSON overview and exit without opening a browser
+  -h, --help  Show this help
+EOF
+}
+
+open_console_browser() {
+  local url="$1"
+  case "$(uname -s)" in
+    Darwin)
+      if command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+      else
+        printf 'airlock console: browser opener is unavailable: open\n' >&2
+      fi
+      ;;
+    *)
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+      else
+        printf 'airlock console: browser opener is unavailable: xdg-open\n' >&2
+      fi
+      ;;
+  esac
+}
+
+existing_console_url_from_error() {
+  local error="$1"
+  local prefix='airlock-console: console already running at '
+  local url port
+  [[ "$error" == "${prefix}"* ]] || return 1
+  url="${error#"$prefix"}"
+  [[ "$url" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})$ ]] || return 1
+  port="${BASH_REMATCH[1]}"
+  (( 10#$port <= 65535 )) || return 1
+  printf '%s\n' "$url"
+}
+
+run_console() {
+  local port='4783' no_open=0 scan=0 once=0 option
+  local managed_site checkout_site site_dir url stderr_file console_pid
+  local ready=0 child_status=1 console_error='' console_health='' iteration
+  local existing_url=''
+  local -a console_args=()
+  while (( $# )); do
+    option="$1"
+    case "$option" in
+      --port)
+        if (( $# < 2 )); then
+          printf 'airlock console: --port requires a value.\n' >&2
+          return 2
+        fi
+        port="$2"
+        shift 2
+        ;;
+      --port=*)
+        port="${option#--port=}"
+        shift
+        ;;
+      --no-open) no_open=1; shift ;;
+      --scan) scan=1; shift ;;
+      --once) once=1; shift ;;
+      -h|--help) print_console_usage; return 0 ;;
+      *)
+        printf 'airlock console: unknown option: %s\n' "$option" >&2
+        print_console_usage >&2
+        return 2
+        ;;
+    esac
+  done
+  if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$port > 65535 )); then
+    printf 'airlock console: --port must be an integer from 1 to 65535.\n' >&2
+    return 2
+  fi
+  validate_managed_bundle || return $?
+  if [[ ! -f "$console_helper" || -L "$console_helper" ]]; then
+    printf 'airlock: managed console helper is missing or unsafe: %s\n' "$console_helper" >&2
+    return 1
+  fi
+  if [[ -z "$python_bin" ]]; then
+    printf 'airlock: Python 3 is required for Airlock Console.\n' >&2
+    return 1
+  fi
+  managed_site="$managed_bin_dir/../share/airlock/console"
+  checkout_site="$(dirname "$0")/../console/dist"
+  if [[ -n "${AIRLOCK_CONSOLE_SITE:-}" ]]; then
+    site_dir="$AIRLOCK_CONSOLE_SITE"
+  elif [[ -d "$managed_site" || -e "$managed_site" ]]; then
+    site_dir="$managed_site"
+  elif [[ -d "$checkout_site" && ! -L "$checkout_site" ]]; then
+    site_dir="$checkout_site"
+  else
+    site_dir="$managed_site"
+  fi
+  if [[ -L "$site_dir" || ( -e "$site_dir" && ! -d "$site_dir" ) ]]; then
+    printf 'airlock: Airlock Console site is unsafe: %s\n' "$site_dir" >&2
+    return 1
+  fi
+  console_args=(
+    --port "$port"
+    --site "$site_dir"
+    --access-helper "$access_helper"
+    --tools-helper "$console_tools_helper"
+  )
+  (( scan == 0 )) || console_args+=(--scan)
+  (( once == 0 )) || console_args+=(--once)
+  if (( once )); then
+    "$python_bin" "$console_helper" "${console_args[@]}"
+    return $?
+  fi
+
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/airlock-console.XXXXXX")" || {
+    printf 'airlock console: could not create a private startup file.\n' >&2
+    return 1
+  }
+  chmod 600 "$stderr_file"
+  "$python_bin" "$console_helper" "${console_args[@]}" 2>"$stderr_file" &
+  console_pid=$!
+  trap 'kill -TERM "$console_pid" 2>/dev/null || true; wait "$console_pid" 2>/dev/null || true; rm -f "$stderr_file"; trap - INT TERM HUP; exit 130' INT
+  trap 'kill -TERM "$console_pid" 2>/dev/null || true; wait "$console_pid" 2>/dev/null || true; rm -f "$stderr_file"; trap - INT TERM HUP; exit 143' TERM
+  trap 'kill -TERM "$console_pid" 2>/dev/null || true; wait "$console_pid" 2>/dev/null || true; rm -f "$stderr_file"; trap - INT TERM HUP; exit 129' HUP
+  url="http://127.0.0.1:$port"
+  for iteration in {1..100}; do
+    if ! kill -0 "$console_pid" 2>/dev/null; then
+      break
+    fi
+    console_health="$({
+      curl --noproxy '*' --silent --fail --max-time 1 \
+        --dump-header - "$url/healthz" 2>/dev/null || true
+    } | tr -d '\r')"
+    if grep -q '^Server: AirlockConsole' <<<"$console_health" \
+      && grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' <<<"$console_health"; then
+      ready=1
+      break
+    fi
+    sleep 0.05
+  done
+  if (( ready )); then
+    printf 'Airlock Console: %s\n' "$url"
+    (( no_open )) || open_console_browser "$url"
+    if wait "$console_pid"; then child_status=0; else child_status=$?; fi
+    trap - INT TERM HUP
+    console_error="$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    if [[ "$child_status" -eq 2 ]] && existing_url="$(existing_console_url_from_error "$console_error")"; then
+      return 0
+    fi
+    if [[ -n "$console_error" ]]; then printf '%s\n' "$console_error" >&2; fi
+    return "$child_status"
+  fi
+
+  if kill -0 "$console_pid" 2>/dev/null; then
+    kill -TERM "$console_pid" 2>/dev/null || true
+  fi
+  if wait "$console_pid"; then child_status=0; else child_status=$?; fi
+  trap - INT TERM HUP
+  console_error="$(cat "$stderr_file")"
+  rm -f "$stderr_file"
+  if [[ "$child_status" -eq 2 ]] && existing_url="$(existing_console_url_from_error "$console_error")"; then
+    printf 'Airlock Console: %s\n' "$existing_url"
+    (( no_open )) || open_console_browser "$existing_url"
+    return 0
+  fi
+  if [[ -n "$console_error" ]]; then printf '%s\n' "$console_error" >&2; fi
+  if (( child_status == 0 )); then
+    printf 'airlock console: helper exited before its loopback health check passed.\n' >&2
+    return 1
+  fi
+  return "$child_status"
+}
+
 run_openrouter_auth() {
   if [[ ! -f "$openrouter_auth_helper" || -L "$openrouter_auth_helper" ]]; then
     printf 'airlock: managed OpenRouter credential helper is missing or unsafe: %s\n' \
@@ -364,6 +570,20 @@ run_openrouter_models() {
     --registry "$openrouter_registry_file" "$@"
 }
 
+run_openmodel_registry() {
+  if [[ ! -f "$openmodel_helper" || -L "$openmodel_helper" ]]; then
+    printf 'airlock: managed open-model registry helper is missing or unsafe: %s\n' \
+      "$openmodel_helper" >&2
+    return 1
+  fi
+  if [[ -z "$python_bin" ]]; then
+    printf 'airlock: Python 3 is required for open-model registry management.\n' >&2
+    return 1
+  fi
+  "$python_bin" "$openmodel_helper" \
+    --registry "$openmodel_registry_file" "$@"
+}
+
 validate_managed_bundle() {
   if [[ -z "$python_bin" ]]; then
     printf 'airlock: Python 3 is required to validate the managed installation.\n' >&2
@@ -373,10 +593,15 @@ validate_managed_bundle() {
     bundle-check --quiet --platform posix --bundle "$bundle_file"
     --component "bin/airlock=$0"
     --component "bin/airlock-access.py=$access_helper"
+    --component "bin/airlock_console.py=$console_helper"
+    --component "bin/airlock_console_tools.py=$console_tools_helper"
+    --component "bin/airlock_console_history.py=$console_history_helper"
     --component "bin/airlock_policy.py=$policy_helper"
     --component "bin/airlock_openrouter_auth.py=$openrouter_auth_helper"
     --component "bin/airlock_openrouter_presets.py=$openrouter_presets_helper"
     --component "bin/airlock_openrouter_models.py=$openrouter_models_helper"
+    --component "bin/airlock_openmodel.py=$openmodel_helper"
+    --component "bin/airlock_openmodel_adapter.py=$openmodel_adapter_helper"
     --component "bin/airlock-update.py=$update_helper"
     --component "bin/airlock-router.py=$router_helper"
     --component "bin/airlock-hybrid.py=$managed_bin_dir/airlock-hybrid.py"
@@ -390,6 +615,7 @@ validate_managed_bundle() {
     --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
     --component "plugins/airlock/skills/airlock-fast/SKILL.md=$plugin_dir/skills/airlock-fast/SKILL.md"
     --component "plugins/airlock/mcp-server/airlock_web_tools.py=$plugin_dir/mcp-server/airlock_web_tools.py"
+    --component "plugins/airlock/mcp-server/airlock_console_mcp.py=$console_mcp_helper"
     --component "plugins/airlock/scripts/fast-session-end.sh=$plugin_dir/scripts/fast-session-end.sh"
     --component "plugins/airlock/scripts/fast-session-end.py=$plugin_dir/scripts/fast-session-end.py"
     --component "plugins/airlock/scripts/router-session-end.sh=$plugin_dir/scripts/router-session-end.sh"
@@ -584,6 +810,7 @@ resolve_model() {
   local requested_model
   requested_model="$(normalize_openai_model_id "$1")"
   case "$requested_model" in
+    astra|gpt-6-astra) selected_model='gpt-6-astra'; model_name='GPT-6 Astra' ;;
     sol|gpt-5.6-sol) selected_model='gpt-5.6-sol'; model_name='GPT-5.6 Sol' ;;
     sol-fast|gpt-5.6-sol-fast) selected_model='gpt-5.6-sol-fast'; model_name='GPT-5.6 Sol Fast' ;;
     terra|gpt-5.6-terra) selected_model='gpt-5.6-terra'; model_name='GPT-5.6 Terra' ;;
@@ -627,8 +854,28 @@ model_provider() {
   esac
 }
 
+# Astra is off by default because it is the priciest OpenAI route. An explicit
+# Astra root cannot start without its route, so selecting it turns the route
+# on for this session, the way an explicit Grok root enables Grok. The rest of
+# the saved pool is kept as it is, and other roots leave the pool alone.
+enable_explicit_openai_root() {
+  local root_model="$1"
+  [[ "$root_model" == 'gpt-6-astra' ]] || return 0
+  local pool="${AIRLOCK_OPENAI_MODELS-$config_openai_models}"
+  case ",${pool}," in
+    *,astra,*) return 0 ;;
+  esac
+  if [[ -z "$pool" ]]; then
+    # No saved pool means the helper's defaults, which enable every OpenAI
+    # route except Astra; name them so nothing else changes.
+    pool='sol,terra,luna,luna-fast'
+  fi
+  export AIRLOCK_OPENAI_MODELS="astra,${pool}"
+}
+
 resolve_hybrid_alias() {
   case "$1" in
+    astra|gpt-6-astra) root_model='gpt-6-astra'; root_name='GPT-6 Astra'; root_provider='openai' ;;
     sol|gpt-5.6-sol) root_model='gpt-5.6-sol'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
     terra|gpt-5.6-terra) root_model='gpt-5.6-terra'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
     luna|gpt-5.6-luna) root_model='gpt-5.6-luna'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
@@ -885,7 +1132,12 @@ configure_proxy_model_picker() {
     export "${variable}_NAME=$model"
     export "${variable}_DESCRIPTION=Airlock exact route for Claude Code's $family_name slot"
     unset "${variable}_SUPPORTED_CAPABILITIES"
-    declare_gpt_effort_capabilities "$variable" "$model"
+    # Local routes accept no thinking/reasoning/effort field. A hybrid local
+    # root still keeps ordinary non-local family seats, so suppress the
+    # declaration only for slots that actually use openmodel.
+    if [[ "$model" != openmodel/* ]]; then
+      declare_gpt_effort_capabilities "$variable" "$model"
+    fi
   done
   if [[ "$profile" == 'grok-pure' || "$profile" == hybrid-* || -z "${ANTHROPIC_SMALL_FAST_MODEL:-}" ]]; then
     export ANTHROPIC_SMALL_FAST_MODEL="$haiku_model"
@@ -899,11 +1151,37 @@ configure_proxy_model_picker() {
 # Grok roots keep the conservative saved fallback unless the user overrides it.
 # grok-4.6 is documented at 500000; declaring that hard limit and compacting at
 # 80% leaves room for the summary request that compaction itself must send.
+# Roots whose documented window exceeds the conservative fallback. Claude Code
+# does not know these IDs, so the hard limit has to be declared, and
+# compacting at 80% leaves room for the summary request that compaction
+# itself must send. grok-4.6 is documented at 500000. gpt-6-astra is
+# documented at 1050000 total with 922000 of input, and the input ceiling is
+# the one a request must fit; Airlock has not proved that window live.
+declared_context_hard_limit() {
+  case "$1" in
+    grok-4.6) printf '500000' ;;
+    gpt-6-astra) printf '922000' ;;
+    *) return 1 ;;
+  esac
+}
+
+declared_context_compact_threshold() {
+  case "$1" in
+    grok-4.6) printf '400000' ;;
+    gpt-6-astra) printf '736000' ;;
+    *) return 1 ;;
+  esac
+}
+
 apply_context_window() {
   local root_provider="$1"
   local root_model="$2"
-  if [[ "$root_model" == 'grok-4.6' && "$root_provider" != 'anthropic' ]]; then
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS='500000'
+  local declared_limit=''
+  if [[ "$root_provider" != 'anthropic' ]]; then
+    declared_limit="$(declared_context_hard_limit "$root_model")" || declared_limit=''
+  fi
+  if [[ -n "$declared_limit" ]]; then
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$declared_limit"
   else
     unset CLAUDE_CODE_MAX_CONTEXT_TOKENS
   fi
@@ -923,11 +1201,46 @@ apply_context_window() {
     unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
     return 0
   fi
-  if [[ "$root_model" == 'grok-4.6' ]]; then
-    export CLAUDE_CODE_AUTO_COMPACT_WINDOW='400000'
+  local declared_threshold=''
+  declared_threshold="$(declared_context_compact_threshold "$root_model")" || declared_threshold=''
+  if [[ -n "$declared_threshold" ]]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$declared_threshold"
     return 0
   fi
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+}
+
+# A local route's registry declaration is always the model's hard context cap.
+# Claude Code accepts explicit auto-compaction windows only from 100000 to
+# 1000000. Outside that range, leave the override unset and let its unknown-model
+# enforcement use CLAUDE_CODE_MAX_CONTEXT_TOKENS directly. Intentional user
+# compaction overrides retain their existing precedence, but can never raise the
+# actual threshold above this model cap.
+apply_openmodel_context_window() {
+  local route_context_window="$1"
+  if [[ ! "$route_context_window" =~ ^[1-9][0-9]{2,7}$ ]] \
+      || (( route_context_window < 1000 || route_context_window > 10000000 )); then
+    printf 'airlock: local open-model route context is invalid.\n' >&2
+    return 1
+  fi
+  export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$route_context_window"
+  if [[ -n "$user_context_window" ]]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$user_context_window"
+    return 0
+  fi
+  if (( explicit_context_window )); then
+    if [[ "$default_context_window" == 'auto' ]]; then
+      unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    else
+      export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$default_context_window"
+    fi
+    return 0
+  fi
+  if (( route_context_window >= 100000 && route_context_window <= 1000000 )); then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$route_context_window"
+  else
+    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  fi
 }
 
 set_openai_environment() {
@@ -997,20 +1310,28 @@ native_owner_pid() {
   printf '%s\n' "$owner_pid"
 }
 
-# The router's process id, captured so the watch can tell a router that died
-# from one that is merely busy.
+# The router's process id and original launch directory are kept so the watch
+# can restart the same session identity without consulting the scrubbed daemon.
 router_child_pid=''
+router_workdir=''
 
 # Start the session router, setting router_url and router_child_pid. It sets
 # them rather than printing them because a command substitution would run it
 # in a subshell, where the process id it captured would be lost.
 start_session_router() {
   local owner_pid="$1" snapshot_path="$2" snapshot_digest="$3"
+  if [[ -z "$router_workdir" ]]; then
+    router_workdir="$(pwd -P)" || {
+      printf 'airlock: could not resolve the session working directory.\n' >&2
+      return 1
+    }
+  fi
   local -a start_args=(
     "$python_bin" "$router_helper" start
     --parent-pid "$owner_pid"
     --snapshot "$snapshot_path"
     --snapshot-sha256 "$snapshot_digest"
+    --workdir "$router_workdir"
     --print-pid
   )
   start_args+=(--anthropic-rate-limit "$anthropic_rate_limit_policy")
@@ -1033,11 +1354,13 @@ set_hybrid_environment() {
   local snapshot_path="$3"
   local snapshot_digest="$4"
   local root_profile="$5"
+  local openmodel_context_window="${6:-}"
   local router_url router_owner_pid root_provider
   case "$root_profile" in
     hybrid-anthropic-root) root_provider='anthropic' ;;
     hybrid-grok-root) root_provider='grok' ;;
     hybrid-openrouter-root) root_provider='openrouter' ;;
+    hybrid-openmodel-root) root_provider='openmodel' ;;
     *) root_provider='openai' ;;
   esac
   if [[ -n "${ANTHROPIC_API_KEY:-}" || ( -n "${ANTHROPIC_AUTH_TOKEN:-}" && "${ANTHROPIC_AUTH_TOKEN}" != 'unused' ) ]]; then
@@ -1053,9 +1376,9 @@ set_hybrid_environment() {
   # OpenRouter credentials are loaded by the loopback router from protected
   # storage and never belong in any Claude Code child process.
   unset OPENROUTER_API_KEY
-  if [[ "$root_profile" == 'hybrid-openrouter-root' ]]; then
-    # An OpenRouter hybrid root must not expose unrelated provider credentials
-    # to the Claude Code child process either.
+  if [[ "$root_profile" == 'hybrid-openrouter-root' || "$root_profile" == 'hybrid-openmodel-root' ]]; then
+    # An OpenRouter or local open-model hybrid root must not expose unrelated
+    # provider credentials to the Claude Code child process either.
     unset CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY CODEX_API_KEY
     unset XAI_API_KEY GROK_API_KEY
   fi
@@ -1075,13 +1398,26 @@ set_hybrid_environment() {
   if [[ "$root_profile" == 'hybrid-openrouter-root' ]]; then
     export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (OpenRouter hybrid root)"
     export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected OpenRouter hybrid root ($root_model)"
+  elif [[ "$root_profile" == 'hybrid-openmodel-root' ]]; then
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (local open-model hybrid root)"
+    export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected local open-model hybrid root"
   else
     export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (native hybrid route)"
     export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected Airlock hybrid root ($root_model)"
   fi
-  declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
-  apply_context_window "$root_provider" "$root_model"
-  export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
+  if [[ "$root_profile" != 'hybrid-openmodel-root' ]]; then
+    # A local open-model root never declares effort/thinking capabilities: the
+    # loopback adapter's translate_request() accepts no thinking/reasoning
+    # field, so advertising effort levels here would let Claude Code send a
+    # request the adapter must reject.
+    declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
+  fi
+  if [[ "$root_profile" == 'hybrid-openmodel-root' ]]; then
+    apply_openmodel_context_window "$openmodel_context_window" || return $?
+  else
+    apply_context_window "$root_provider" "$root_model"
+    export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
+  fi
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
   export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
 }
@@ -1123,6 +1459,55 @@ set_openrouter_environment() {
   export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Selected exact OpenRouter root ($root_model)"
   declare_gpt_effort_capabilities ANTHROPIC_CUSTOM_MODEL_OPTION "$root_model"
   export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT="${CLAUDE_CODE_ALWAYS_ENABLE_EFFORT:-1}"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
+  export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
+}
+
+# A pure local open-model root starts only Airlock's temporary loopback
+# router. It needs none of the Claude, Codex, Grok, or OpenRouter auth
+# services and no subscription proxy, and it clears every inherited provider
+# credential the same way the OpenRouter-pure root does.
+set_openmodel_environment() {
+  local root_model="$1"
+  local root_name="$2"
+  local snapshot_path="$3"
+  local snapshot_digest="$4"
+  local route_context_window="$5"
+  local router_url router_owner_pid
+  if [[ ! -f "$router_helper" || -L "$router_helper" ]]; then
+    printf 'airlock: managed router helper is missing or unsafe: %s\n' "$router_helper" >&2
+    return 1
+  fi
+  clear_proxy_environment
+  unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+  unset OPENAI_API_KEY CODEX_API_KEY XAI_API_KEY GROK_API_KEY OPENROUTER_API_KEY
+  router_owner_pid="$(native_owner_pid)" || {
+    printf 'airlock: could not determine the native launcher process ID.\n' >&2
+    return 1
+  }
+  start_session_router "$router_owner_pid" "$snapshot_path" \
+    "$snapshot_digest" || return $?
+  if [[ ! "$router_url" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ ]]; then
+    printf 'airlock: native open-model router returned an invalid loopback address.\n' >&2
+    return 1
+  fi
+  export ANTHROPIC_BASE_URL="$router_url"
+  export AIRLOCK_SESSION_ROUTER_URL="$router_url"
+  export ANTHROPIC_AUTH_TOKEN='unused'
+  export ANTHROPIC_MODEL="$root_model"
+  export ANTHROPIC_DEFAULT_FABLE_MODEL="$root_model"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$root_model"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$root_model"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$root_model"
+  export ANTHROPIC_SMALL_FAST_MODEL="$root_model"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION="$root_model"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$root_name (local open-model route)"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION='Selected exact local open-model root'
+  # No declare_gpt_effort_capabilities call here on purpose: the loopback
+  # adapter's translate_request() accepts no thinking/reasoning field, so
+  # advertising effort capabilities for this model would let Claude Code send
+  # a request shape the adapter must reject. The global override remains unset.
+  apply_openmodel_context_window "$route_context_window" || return $?
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'
   export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK='1'
 }
@@ -1191,6 +1576,7 @@ start_router_watch() {
     --router-pid "$router_child_pid"
     --snapshot "$snapshot_path"
     --snapshot-sha256 "$snapshot_digest"
+    --workdir "$router_workdir"
     --port "$port"
   )
   watch_args+=(--anthropic-rate-limit "$anthropic_rate_limit_policy")
@@ -1238,14 +1624,110 @@ run_claude_with_stable_owner() {
   return "$child_status"
 }
 
+staged_cleanup_snapshot_path=''
+staged_cleanup_snapshot_digest=''
+staged_cleanup_settings_path=''
+staged_cleanup_settings_digest=''
+staged_cleanup_settings_size=''
+staged_cleanup_prompt_path=''
+staged_cleanup_prompt_digest=''
+staged_cleanup_prompt_size=''
+staged_cleanup_mcp_path=''
+staged_cleanup_mcp_digest=''
+staged_cleanup_mcp_size=''
+staged_cleanup_transition_channel=''
+staged_cleanup_transition_nonce=''
+staged_cleanup_launcher_pid=''
+staged_cleanup_launch_cwd=''
+staged_cleanup_launch_started=0
+
+reset_staged_session_cleanup_state() {
+  staged_cleanup_snapshot_path=''
+  staged_cleanup_snapshot_digest=''
+  staged_cleanup_settings_path=''
+  staged_cleanup_settings_digest=''
+  staged_cleanup_settings_size=''
+  staged_cleanup_prompt_path=''
+  staged_cleanup_prompt_digest=''
+  staged_cleanup_prompt_size=''
+  staged_cleanup_mcp_path=''
+  staged_cleanup_mcp_digest=''
+  staged_cleanup_mcp_size=''
+  staged_cleanup_transition_channel=''
+  staged_cleanup_transition_nonce=''
+  staged_cleanup_launcher_pid=''
+  staged_cleanup_launch_cwd=''
+  staged_cleanup_launch_started=0
+}
+
+cleanup_staged_session_artifacts() {
+  local cleanup_target='' cleanup_path=''
+  local cleanup_rest='' cleanup_digest='' cleanup_size=''
+  for cleanup_target in \
+    "$staged_cleanup_settings_path"$'\t'"$staged_cleanup_settings_digest"$'\t'"$staged_cleanup_settings_size" \
+    "$staged_cleanup_prompt_path"$'\t'"$staged_cleanup_prompt_digest"$'\t'"$staged_cleanup_prompt_size" \
+    "$staged_cleanup_mcp_path"$'\t'"$staged_cleanup_mcp_digest"$'\t'"$staged_cleanup_mcp_size"; do
+    cleanup_path="${cleanup_target%%$'\t'*}"
+    cleanup_rest="${cleanup_target#*$'\t'}"
+    cleanup_digest="${cleanup_rest%%$'\t'*}"
+    cleanup_size="${cleanup_rest#*$'\t'}"
+    if [[ -n "$cleanup_path" ]] && ! run_access session-artifact-delete \
+        --artifact "$cleanup_path" --digest "$cleanup_digest" \
+        --size "$cleanup_size" >/dev/null 2>&1; then
+      printf 'airlock: warning: managed session file cleanup failed: %s\n' \
+        "$cleanup_path" >&2
+    fi
+  done
+  staged_cleanup_settings_path=''
+  staged_cleanup_settings_digest=''
+  staged_cleanup_settings_size=''
+  staged_cleanup_prompt_path=''
+  staged_cleanup_prompt_digest=''
+  staged_cleanup_prompt_size=''
+  staged_cleanup_mcp_path=''
+  staged_cleanup_mcp_digest=''
+  staged_cleanup_mcp_size=''
+  if [[ -n "$staged_cleanup_snapshot_path" ]]; then
+    if ! run_access session-snapshot-delete \
+        --snapshot "$staged_cleanup_snapshot_path" \
+        --snapshot-sha256 "$staged_cleanup_snapshot_digest" \
+        >/dev/null 2>&1; then
+      printf 'airlock: warning: session policy snapshot cleanup failed: %s\n' \
+        "$staged_cleanup_snapshot_path" >&2
+    fi
+    staged_cleanup_snapshot_path=''
+    staged_cleanup_snapshot_digest=''
+    unset AIRLOCK_SESSION_SNAPSHOT AIRLOCK_SESSION_SNAPSHOT_SHA256
+  fi
+  if (( staged_cleanup_launch_started == 0 )) \
+      && [[ -n "$staged_cleanup_transition_channel" ]]; then
+    if ! run_access fast-transition-cleanup \
+        --launcher-pid "$staged_cleanup_launcher_pid" \
+        --cwd "$staged_cleanup_launch_cwd" \
+        --channel "$staged_cleanup_transition_channel" \
+        --nonce "$staged_cleanup_transition_nonce" >/dev/null 2>&1; then
+      printf 'airlock: warning: Fast handoff cleanup failed: %s\n' \
+        "$staged_cleanup_transition_channel" >&2
+    fi
+    staged_cleanup_transition_channel=''
+    staged_cleanup_transition_nonce=''
+    staged_cleanup_launcher_pid=''
+    staged_cleanup_launch_cwd=''
+    unset AIRLOCK_FAST_TRANSITION_CHANNEL AIRLOCK_FAST_TRANSITION_NONCE
+  fi
+  return 0
+}
+
 launch_session() {
   local profile="$1"
   local session_model="$2"
   local session_name="$3"
   local openrouter_root_route="$4"
-  shift 4
+  local openmodel_root_route="$5"
+  shift 5
   local argument max_agents
   local -a openrouter_root_args=()
+  local -a openmodel_root_args=()
   if [[ "$profile" == 'openrouter-pure' || "$profile" == 'hybrid-openrouter-root' ]]; then
     if [[ -z "$openrouter_root_route" ]]; then
       printf 'airlock: %s requires an exact OpenRouter root route.\n' "$profile" >&2
@@ -1254,6 +1736,16 @@ launch_session() {
     openrouter_root_args=(--openrouter-root-route "$openrouter_root_route")
   elif [[ -n "$openrouter_root_route" ]]; then
     printf 'airlock: an OpenRouter root route is valid only for openrouter-pure or hybrid-openrouter-root.\n' >&2
+    exit 2
+  fi
+  if [[ "$profile" == 'openmodel-pure' || "$profile" == 'hybrid-openmodel-root' ]]; then
+    if [[ -z "$openmodel_root_route" ]]; then
+      printf 'airlock: %s requires an exact local open-model root route.\n' "$profile" >&2
+      exit 2
+    fi
+    openmodel_root_args=(--openmodel-root-route "$openmodel_root_route")
+  elif [[ -n "$openmodel_root_route" ]]; then
+    printf 'airlock: a local open-model root route is valid only for openmodel-pure or hybrid-openmodel-root.\n' >&2
     exit 2
   fi
   for argument in "$@"; do
@@ -1295,23 +1787,37 @@ launch_session() {
   export AIRLOCK_UPDATE_NOTICE_FILE="$update_notice_file"
   local agents_json guidance claude_bin managed_agent_output agent_name session_settings fast_mode agent_depth
   local route_agent_names allowed_model_ids extra_agent_names extra_model_ids picker_models discovery_model
-  local snapshot_output snapshot_path snapshot_digest snapshot_extra
-  local transition_output transition_channel transition_nonce transition_session_id
-  local transition_status launcher_pid launch_cwd handoff_effort
+  local snapshot_output='' snapshot_path='' snapshot_digest='' snapshot_extra=0
+  local transition_output='' transition_channel='' transition_nonce='' transition_session_id=''
+  local transition_status=0 launcher_pid='' launch_cwd='' handoff_effort
+  local artifact_output='' artifact_rest=''
+  local artifact_a_path='' artifact_a_digest='' artifact_a_size=''
+  local settings_path='' settings_digest='' settings_size=''
+  local prompt_path='' prompt_digest='' prompt_size=''
+  local mcp_file_output='' mcp_config_rest='' mcp_config_size_rest=''
+  local mcp_config_path='' mcp_config_digest='' mcp_config_size=''
+  local -a file_backed_args=() mcp_config_args=()
   local -a skill_guard=() allowed_tools=('Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)') enabled_agents=()
+  reset_staged_session_cleanup_state
   if [[ "${AIRLOCK_ALLOW_CLAUDE_API_SKILL:-0}" != '1' ]]; then
     skill_guard=(--disallowedTools 'Skill(claude-api)' 'Skill(claude-api *)')
   fi
   agents_json="$(run_access render-profile --profile "$profile" \
-    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} \
+    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} \
     --openai-direct-file "$openai_direct_agents_file" \
     --anthropic-direct-file "$anthropic_direct_agents_file" \
     --openai-wrappers-file "$openai_wrapper_agents_file" \
     --anthropic-wrappers-file "$anthropic_wrapper_agents_file" \
     --grok-direct-file "$grok_direct_agents_file" \
     --grok-wrappers-file "$grok_wrapper_agents_file")"
-  managed_agent_output="$(run_access managed-agent-names --agents-json "$agents_json")" || exit $?
-  if [[ -z "$managed_agent_output" ]]; then
+  # A worker:false pure local open-model root renders an empty Agent object by
+  # design; --profile lets the access helper permit that empty result only for
+  # openmodel-pure. Every other profile still requires at least one rendered
+  # Agent, preserving deny-by-default Task behavior: no enabled_agents means
+  # no Agent(name) permission is ever added, so only the built-in
+  # Explore/Plan/general-purpose Agents stay usable.
+  managed_agent_output="$(run_access managed-agent-names --agents-json "$agents_json" --profile "$profile")" || exit $?
+  if [[ -z "$managed_agent_output" && "$profile" != 'openmodel-pure' ]]; then
     printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
     exit 1
   fi
@@ -1321,21 +1827,21 @@ launch_session() {
     enabled_agents+=("$agent_name")
     allowed_tools+=("Agent($agent_name)")
   done <<<"$managed_agent_output"
-  if (( ${#enabled_agents[@]} == 0 )); then
+  if (( ${#enabled_agents[@]} == 0 )) && [[ "$profile" != 'openmodel-pure' ]]; then
     printf 'airlock: rendered worker profile did not produce an exact Agent permission set.\n' >&2
     exit 1
   fi
   AIRLOCK_ALLOWED_AGENT_NAMES="$(IFS=,; printf '%s' "${enabled_agents[*]}")"
-  route_agent_names="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field agent-names)" || exit $?
+  route_agent_names="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field agent-names)" || exit $?
   if [[ "$route_agent_names" != "$AIRLOCK_ALLOWED_AGENT_NAMES" ]]; then
     printf 'airlock: rendered native Agents do not match the session route policy.\n' >&2
     exit 1
   fi
-  allowed_model_ids="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field model-ids)" || exit $?
-  extra_agent_names="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field extra-agent-names)" || exit $?
-  extra_model_ids="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field extra-model-ids)" || exit $?
-  picker_models="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field picker-models)" || exit $?
-  discovery_model="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} --field discovery-model)" || exit $?
+  allowed_model_ids="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field model-ids)" || exit $?
+  extra_agent_names="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field extra-agent-names)" || exit $?
+  extra_model_ids="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field extra-model-ids)" || exit $?
+  picker_models="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field picker-models)" || exit $?
+  discovery_model="$(run_access session-routes --profile "$profile" ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"} --field discovery-model)" || exit $?
   if [[ -z "$allowed_model_ids" ]]; then
     printf 'airlock: native session model route policy is empty.\n' >&2
     exit 1
@@ -1350,7 +1856,7 @@ launch_session() {
   else
     unset AIRLOCK_DISCOVERY_MODEL
   fi
-  if [[ "$profile" == hybrid-* || "$profile" == 'openrouter-pure' ]]; then
+  if [[ "$profile" == hybrid-* || "$profile" == 'openrouter-pure' || "$profile" == 'openmodel-pure' ]]; then
     case ",$allowed_model_ids," in
       *",$session_model,"*) ;;
       *)
@@ -1368,10 +1874,12 @@ launch_session() {
   fi
   session_settings="$(run_access managed-session-settings --agents-json "$agents_json" --fast-mode "$fast_mode" \
     --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
+    --console-tools-script "$console_mcp_helper" \
+    --console-tools-contract "$console_tools_helper" \
     --profile "$profile")" || exit $?
   guidance="$(run_access profile-guidance --profile "$profile" \
     --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
-    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"})"
+    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"})"
   claude_bin="${AIRLOCK_REAL_CLAUDE:-}"
   [[ -n "$claude_bin" ]] || claude_bin="$(command -v claude || true)"
   if [[ -z "$claude_bin" ]]; then
@@ -1381,7 +1889,7 @@ launch_session() {
   compose_append_system_prompt "$guidance" "$@" || exit $?
   snapshot_output="$(run_access session-snapshot \
     --profile "$profile" --root-model "$session_model" \
-    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"})" || exit $?
+    ${openrouter_root_args[@]+"${openrouter_root_args[@]}"} ${openmodel_root_args[@]+"${openmodel_root_args[@]}"})" || exit $?
   if [[ "$snapshot_output" == *$'\n'* || "$snapshot_output" != *$'\t'* ]]; then
     printf 'airlock: session policy snapshot helper returned an invalid result.\n' >&2
     exit 1
@@ -1393,14 +1901,14 @@ launch_session() {
     printf 'airlock: session policy snapshot helper returned an invalid result.\n' >&2
     exit 1
   fi
+  staged_cleanup_snapshot_path="$snapshot_path"
+  staged_cleanup_snapshot_digest="$snapshot_digest"
+  trap 'cleanup_staged_session_artifacts' EXIT
   if [[ ! -f "$snapshot_path" || -L "$snapshot_path" ]]; then
     printf 'airlock: session policy snapshot is missing or unsafe.\n' >&2
     exit 1
   fi
   if [[ ! -f "$policy_helper" || -L "$policy_helper" ]]; then
-    run_access session-snapshot-delete \
-      --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-      >/dev/null 2>&1 || true
     printf 'airlock: managed policy helper is missing or unsafe: %s\n' "$policy_helper" >&2
     exit 1
   fi
@@ -1410,13 +1918,11 @@ launch_session() {
   export AIRLOCK_SESSION_SNAPSHOT_SHA256="$snapshot_digest"
   if [[ "$profile" == hybrid-* ]]; then
     if set_hybrid_environment \
-      "$session_model" "$session_name" "$snapshot_path" "$snapshot_digest" "$profile"; then
+      "$session_model" "$session_name" "$snapshot_path" "$snapshot_digest" "$profile" \
+      "${OM_ROOT_CONTEXT_WINDOW:-}"; then
       :
     else
       snapshot_extra=$?
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       exit "$snapshot_extra"
     fi
   elif [[ "$profile" == 'openrouter-pure' ]]; then
@@ -1425,16 +1931,19 @@ launch_session() {
       :
     else
       snapshot_extra=$?
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
+      exit "$snapshot_extra"
+    fi
+  elif [[ "$profile" == 'openmodel-pure' ]]; then
+    if set_openmodel_environment \
+      "$session_model" "$session_name" "$snapshot_path" "$snapshot_digest" \
+      "${OM_ROOT_CONTEXT_WINDOW:-}"; then
+      :
+    else
+      snapshot_extra=$?
       exit "$snapshot_extra"
     fi
   fi
   if ! configure_proxy_model_picker "$profile" "$picker_models"; then
-    run_access session-snapshot-delete \
-      --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-      >/dev/null 2>&1 || true
     printf 'airlock: %s model picker map is invalid.\n' "$profile" >&2
     exit 1
   fi
@@ -1445,18 +1954,13 @@ launch_session() {
   transition_nonce=''
   launcher_pid=''
   launch_cwd=''
-  if (( airlock_fast_handoff_hop == 0 )); then
+  if (( airlock_fast_handoff_hop == 0 )) \
+      && [[ "$profile" != 'openmodel-pure' && "$profile" != 'hybrid-openmodel-root' ]]; then
     launcher_pid="$(native_owner_pid)" || {
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: could not determine the native launcher process ID for Fast handoff.\n' >&2
       exit 1
     }
     launch_cwd="$(pwd -P)" || {
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: could not resolve the session working directory for Fast handoff.\n' >&2
       exit 1
     }
@@ -1465,27 +1969,22 @@ launch_session() {
       :
     else
       transition_status=$?
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       exit "$transition_status"
     fi
     if [[ "$transition_output" != *$'\t'* || "$transition_output" == *$'\n'* ]]; then
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: Fast handoff helper returned invalid channel metadata.\n' >&2
       exit 1
     fi
     transition_channel="${transition_output%%$'\t'*}"
     transition_nonce="${transition_output#*$'\t'}"
     if [[ -z "$transition_channel" || -z "$transition_nonce" || "$transition_nonce" == *$'\t'* ]]; then
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: Fast handoff helper returned invalid channel metadata.\n' >&2
       exit 1
     fi
+    staged_cleanup_transition_channel="$transition_channel"
+    staged_cleanup_transition_nonce="$transition_nonce"
+    staged_cleanup_launcher_pid="$launcher_pid"
+    staged_cleanup_launch_cwd="$launch_cwd"
     export AIRLOCK_FAST_TRANSITION_CHANNEL="$transition_channel"
     export AIRLOCK_FAST_TRANSITION_NONCE="$transition_nonce"
   else
@@ -1494,20 +1993,10 @@ launch_session() {
   # Windows rejects an exec once quoted argv plus environment cross its
   # command-line ceiling, and Claude Code does not start mcpServers entries
   # carried in --settings on every supported version. Settings, composed
-  # guidance, and the web tools server therefore reach Claude as real
-  # artifact files, staged last so no earlier failure path can leak them.
-  local -a file_backed_args=()
-  local -a mcp_config_args=()
-  local artifact_output='' artifact_rest=''
-  local settings_path='' settings_digest='' settings_size=''
-  local prompt_path='' prompt_digest='' prompt_size=''
-  local mcp_file_output='' mcp_config_rest=''
-  local mcp_config_path='' mcp_config_digest='' mcp_config_size=''
+  # guidance, and managed MCP servers therefore reach Claude as real
+  # artifact files.
   stage_managed_session_artifact() {
     if ! artifact_output="$(printf '%s' "$1" | run_access session-artifact-create --prefix "$2" --suffix "$3")"; then
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: %s could not be staged.\n' "$4" >&2
       return 1
     fi
@@ -1518,50 +2007,53 @@ launch_session() {
     if [[ -z "$artifact_a_path" || ${#artifact_a_digest} -ne 64 || \
           "$artifact_a_digest" =~ [^0-9a-f] || -z "$artifact_a_size" || \
           "$artifact_a_size" =~ [^0-9] ]]; then
-      run_access session-snapshot-delete \
-        --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-        >/dev/null 2>&1 || true
       printf 'airlock: %s staging returned an invalid result.\n' "$4" >&2
       return 1
     fi
   }
-  local artifact_a_path='' artifact_a_digest='' artifact_a_size=''
   stage_managed_session_artifact \
     "$session_settings" 'settings-' '.json' 'managed session settings' || exit 1
   settings_path="$artifact_a_path"
   settings_digest="$artifact_a_digest"
   settings_size="$artifact_a_size"
+  staged_cleanup_settings_path="$settings_path"
+  staged_cleanup_settings_digest="$settings_digest"
+  staged_cleanup_settings_size="$settings_size"
   file_backed_args+=(--settings "$settings_path")
   stage_managed_session_artifact \
     "$AIRLOCK_COMBINED_SYSTEM_PROMPT" 'guidance-' '.txt' 'routing guidance' || exit 1
   prompt_path="$artifact_a_path"
   prompt_digest="$artifact_a_digest"
   prompt_size="$artifact_a_size"
+  staged_cleanup_prompt_path="$prompt_path"
+  staged_cleanup_prompt_digest="$prompt_digest"
+  staged_cleanup_prompt_size="$prompt_size"
   file_backed_args+=(--append-system-prompt-file "$prompt_path")
   if mcp_file_output="$(run_access managed-web-tools-mcp-file \
       --web-tools-script "$plugin_dir/mcp-server/airlock_web_tools.py" \
+      --console-tools-script "$console_mcp_helper" \
+      --console-tools-contract "$console_tools_helper" \
       --profile "$profile")"; then
     if [[ -n "$mcp_file_output" ]]; then
       mcp_config_path="${mcp_file_output%%$'\t'*}"
       mcp_config_rest="${mcp_file_output#*$'\t'}"
       mcp_config_digest="${mcp_config_rest%%$'\t'*}"
-      mcp_config_size="${mcp_config_rest#*$'\t'}"
+      mcp_config_size_rest="${mcp_config_rest#*$'\t'}"
+      mcp_config_size="${mcp_config_size_rest%%$'\t'*}"
+      staged_cleanup_mcp_path="$mcp_config_path"
+      staged_cleanup_mcp_digest="$mcp_config_digest"
+      staged_cleanup_mcp_size="$mcp_config_size"
       if [[ -z "$mcp_config_path" || -z "$mcp_config_digest" || \
             ${#mcp_config_digest} -ne 64 || "$mcp_config_digest" =~ [^0-9a-f] || \
-            -z "$mcp_config_size" || "$mcp_config_size" =~ [^0-9] ]]; then
-        run_access session-snapshot-delete \
-          --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-          >/dev/null 2>&1 || true
-        printf 'airlock: web tools MCP config helper returned an invalid result.\n' >&2
+            -z "$mcp_config_size" || "$mcp_config_size" =~ [^0-9] || \
+            "$mcp_config_size_rest" == *$'\t'* ]]; then
+        printf 'airlock: managed MCP config helper returned an invalid result.\n' >&2
         exit 1
       fi
       mcp_config_args=(--mcp-config "$mcp_config_path")
     fi
   else
-    run_access session-snapshot-delete \
-      --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-      >/dev/null 2>&1 || true
-    printf 'airlock: web tools MCP config could not be created.\n' >&2
+    printf 'airlock: managed MCP config could not be created.\n' >&2
     exit 1
   fi
   # skill_guard is empty when the claude-api skill is allowed. Bash 3.2, which
@@ -1576,6 +2068,7 @@ launch_session() {
     ${skill_guard[@]+"${skill_guard[@]}"} "${AIRLOCK_COMPOSED_CLAUDE_ARGS[@]}"
   )
   start_router_watch "$snapshot_path" "$snapshot_digest"
+  staged_cleanup_launch_started=1
   if run_claude_with_stable_owner "${claude_command[@]}"; then
     snapshot_extra=0
   else
@@ -1584,37 +2077,8 @@ launch_session() {
   # The session is over, so stop watching before the snapshot is cleaned up
   # and a restart could race it.
   stop_router_watch
-  local cleanup_target='' cleanup_path=''
-  local cleanup_rest='' cleanup_digest='' cleanup_size=''
-  for cleanup_target in \
-    "$settings_path"$'\t'"$settings_digest"$'\t'"$settings_size" \
-    "$prompt_path"$'\t'"$prompt_digest"$'\t'"$prompt_size"; do
-    cleanup_path="${cleanup_target%%$'\t'*}"
-    cleanup_rest="${cleanup_target#*$'\t'}"
-    cleanup_digest="${cleanup_rest%%$'\t'*}"
-    cleanup_size="${cleanup_rest#*$'\t'}"
-    if [[ -n "$cleanup_path" ]] && ! run_access session-artifact-delete \
-        --artifact "$cleanup_path" --digest "$cleanup_digest" \
-        --size "$cleanup_size" >/dev/null 2>&1; then
-      printf 'airlock: warning: managed session file cleanup failed: %s\n' \
-        "$cleanup_path" >&2
-    fi
-  done
-  if [[ -n "$mcp_config_path" ]]; then
-    if ! run_access session-artifact-delete \
-        --artifact "$mcp_config_path" --digest "$mcp_config_digest" \
-        --size "$mcp_config_size" >/dev/null 2>&1; then
-      printf 'airlock: warning: web tools MCP config cleanup failed: %s\n' \
-        "$mcp_config_path" >&2
-    fi
-  fi
-  if ! run_access session-snapshot-delete \
-    --snapshot "$snapshot_path" --snapshot-sha256 "$snapshot_digest" \
-    >/dev/null; then
-    printf 'airlock: warning: session policy snapshot cleanup failed: %s\n' \
-      "$snapshot_path" >&2
-  fi
-  unset AIRLOCK_SESSION_SNAPSHOT AIRLOCK_SESSION_SNAPSHOT_SHA256
+  cleanup_staged_session_artifacts
+  trap - EXIT
   if [[ -z "$transition_channel" ]]; then
     return "$snapshot_extra"
   fi
@@ -1645,12 +2109,12 @@ launch_session() {
   validate_ephemeral_fast_root || return $?
   resolve_model 'sol-fast'
   set_openai_environment "$selected_model" "$model_name"
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
   handoff_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
   validate_effort "$handoff_effort"
   airlock_fast_handoff_hop=1
   printf 'airlock: resuming this conversation with OpenAI Fast.\n' >&2
-  launch_session openai-pure "$selected_model" "$model_name" '' \
+  launch_session openai-pure "$selected_model" "$model_name" '' '' \
     --model "$selected_model" --effort "$handoff_effort" \
     --resume "$transition_session_id"
   return $?
@@ -1672,18 +2136,25 @@ select_hybrid_root() {
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
     '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)' \
     '  9) Grok Composer 2.5 Fast (grok-composer-2.5-fast; requires Grok OAuth)' \
-    ' 10) An exact OpenRouter registry route'
-  read -r -p 'Selection [1-10]: ' selection
+    ' 10) GPT-6 Astra (gpt-6-astra; premium usage)' \
+    ' 11) An exact OpenRouter registry route' \
+    ' 12) An exact local open-model registry route'
+  read -r -p 'Selection [1-12]: ' selection
   case "$selection" in
     1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;;
     5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
-    8) root_alias='grok' ;; 9) root_alias='composer' ;;
-    10)
+    8) root_alias='grok' ;; 9) root_alias='composer' ;; 10) root_alias='astra' ;;
+    11)
       select_openrouter_root || exit $?
       resolve_openrouter_root "$OPR_SELECTED_ROUTE" || exit $?
       HYBRID_SELECTED_ROUTE="$OPR_SELECTED_ROUTE"
       ;;
-    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 10.\n' >&2; exit 2 ;;
+    12)
+      select_openmodel_root || exit $?
+      resolve_openmodel_root "$OM_SELECTED_ROUTE" || exit $?
+      HYBRID_SELECTED_OPENMODEL_ROUTE="$OM_SELECTED_ROUTE"
+      ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 11.\n' >&2; exit 2 ;;
   esac
 }
 
@@ -1764,6 +2235,91 @@ except Exception:
   OPR_SELECTED_ROUTE="${routes[$((selection - 1))]}"
 }
 
+# The open-model resolver never prints an endpoint URL or upstream model
+# identity: openmodel-resolve/openmodel-routes only ever expose the safe
+# route slug and its wire model form (openmodel/ROUTE).
+resolve_openmodel_root() {
+  local requested_route="$1"
+  local route_json parsed resolved_route resolved_model resolved_context_window
+  route_json="$(run_access openmodel-resolve "$requested_route")" || return $?
+  parsed="$("$python_bin" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    keys = ("route", "model")
+    if not isinstance(value, dict) or any(not isinstance(value.get(key), str) or not value[key] for key in keys):
+        raise ValueError
+    context_window = value.get("context_window")
+    if (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or not 1000 <= context_window <= 10_000_000
+    ):
+        raise ValueError
+    print("\t".join(value[key] for key in keys) + "\t" + str(context_window))
+except Exception:
+    raise SystemExit(1)
+' <<<"$route_json")" || {
+    printf 'airlock: local open-model route resolver returned an invalid result.\n' >&2
+    return 1
+  }
+  IFS=$'\t' read -r resolved_route resolved_model resolved_context_window <<<"$parsed"
+  if [[ "$resolved_route" != "$requested_route" || -z "$resolved_model" ||
+        ! "$resolved_context_window" =~ ^[1-9][0-9]{2,7}$ ]] \
+      || (( resolved_context_window < 1000 || resolved_context_window > 10000000 )); then
+    printf 'airlock: local open-model route resolver returned an invalid result.\n' >&2
+    return 1
+  fi
+  OM_SELECTED_ROUTE="$resolved_route"
+  OM_ROOT_MODEL="$resolved_model"
+  OM_ROOT_NAME="local open-model $resolved_route"
+  OM_ROOT_CONTEXT_WINDOW="$resolved_context_window"
+}
+
+select_openmodel_root() {
+  local routes_json parsed selection route
+  local -a routes=()
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    printf 'airlock: a local open-model route is required outside an interactive terminal; use airlock om ROUTE.\n' >&2
+    return 2
+  fi
+  routes_json="$(run_access openmodel-routes)" || return $?
+  parsed="$("$python_bin" -c '
+import json, sys
+try:
+    values = json.load(sys.stdin)
+    if not isinstance(values, list):
+        raise ValueError
+    for value in values:
+        if not isinstance(value, dict) or not isinstance(value.get("route"), str) or not value["route"]:
+            raise ValueError
+        print(value["route"])
+except Exception:
+    raise SystemExit(1)
+' <<<"$routes_json")" || {
+    printf 'airlock: local open-model route list returned an invalid result.\n' >&2
+    return 1
+  }
+  while IFS= read -r route; do
+    [[ -n "$route" ]] || continue
+    routes+=("$route")
+  done <<<"$parsed"
+  if (( ${#routes[@]} == 0 )); then
+    printf 'airlock: no enabled local open-model routes are available; add one with airlock open-model add.\n' >&2
+    return 2
+  fi
+  printf 'Choose the exact local open-model root route:\n'
+  for ((selection=0; selection<${#routes[@]}; selection++)); do
+    printf '  %d) %s\n' "$((selection + 1))" "${routes[$selection]}"
+  done
+  read -r -p "Selection [1-${#routes[@]}]: " selection
+  if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]] || (( selection > ${#routes[@]} )); then
+    printf 'airlock: invalid local open-model route selection.\n' >&2
+    return 2
+  fi
+  OM_SELECTED_ROUTE="${routes[$((selection - 1))]}"
+}
+
 validate_default_profile "$default_profile" || exit $?
 validate_provider_fast_policy OpenAI "$openai_fast_policy" || exit $?
 validate_provider_fast_policy Anthropic "$anthropic_fast_policy" || exit $?
@@ -1794,8 +2350,8 @@ if [[ "${1:-}" == 'orp' ]]; then
 fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    mode|usage|session-usage|status|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
-    --model|-m|--model=*) set -- hybrid "$@" ;;
+    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    --model|-m|--model=*|-m=*) set -- hybrid "$@" ;;
     *)
       if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_hybrid_alias "$1" >/dev/null 2>&1; then
         set -- hybrid "$@"
@@ -1806,8 +2362,8 @@ if [[ "$default_profile" == 'hybrid' ]]; then
   esac
 elif [[ "$default_profile" == 'grok' ]]; then
   case "${1:-}" in
-    mode|usage|session-usage|status|bundle|access|openrouter|opr|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
-    --model|-m|--model=*) set -- grok "$@" ;;
+    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    --model|-m|--model=*|-m=*) set -- grok "$@" ;;
     *)
       if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_grok_model "$1" >/dev/null 2>&1; then
         set -- grok "$@"
@@ -1816,6 +2372,12 @@ elif [[ "$default_profile" == 'grok' ]]; then
       fi
       ;;
   esac
+fi
+
+if [[ "${1:-}" == 'console' ]]; then
+  shift
+  run_console "$@"
+  exit $?
 fi
 
 if [[ "${1:-}" == 'mode' ]]; then
@@ -1927,7 +2489,9 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   fi
   root_alias=''
   hybrid_selected_route=''
+  hybrid_selected_openmodel_route=''
   HYBRID_SELECTED_ROUTE=''
+  HYBRID_SELECTED_OPENMODEL_ROUTE=''
   hybrid_candidate="$(normalize_openai_model_id "${1:-}")"
   if [[ "$hybrid_candidate" == 'auto' ]]; then
     # Reserved value: resolve under the local access policy, never an alias.
@@ -1943,6 +2507,18 @@ if [[ "${1:-}" == 'hybrid' ]]; then
       root_alias="$hybrid_candidate"
     fi
     shift
+  elif [[ "$hybrid_candidate" == om:* ]]; then
+    # om: is the sole hybrid local-open-model namespace, checked before the
+    # generic route-shaped probe below so it is never ambiguous with an
+    # OpenRouter registry lookup.
+    if resolve_openmodel_root "${hybrid_candidate#om:}"; then
+      hybrid_selected_openmodel_route="$OM_SELECTED_ROUTE"
+      shift
+    else
+      printf "airlock: '%s' is not an enabled local open-model route.\n" \
+        "${hybrid_candidate#om:}" >&2
+      exit 2
+    fi
   elif [[ -n "$hybrid_candidate" && "$hybrid_candidate" != -* ]] && \
        [[ "$hybrid_candidate" =~ ^[a-z0-9]+([._:-][a-z0-9]+)*$ ]]; then
     # A route-shaped first word tries the OpenRouter registry before anything
@@ -1961,21 +2537,45 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   fi
 
   explicit_model=''
+  model_selector_count=0
   hybrid_args=("$@")
   for ((index=0; index<${#hybrid_args[@]}; index++)); do
     argument="${hybrid_args[$index]}"
-    if [[ "$argument" == '--model' ]]; then
+    if [[ "$argument" == '--' ]]; then
+      break
+    fi
+    if [[ "$argument" == '--model' || "$argument" == '-m' ]]; then
       if (( index + 1 >= ${#hybrid_args[@]} )); then
-        printf 'airlock: --model requires a value.\n' >&2
+        printf 'airlock: %s requires a value.\n' "$argument" >&2
         exit 2
       fi
-      explicit_model="$(normalize_openai_model_id "${hybrid_args[$((index + 1))]}")"
+      model_value="$(normalize_openai_model_id "${hybrid_args[$((index + 1))]}")"
+      if [[ -z "$model_value" ]]; then
+        printf 'airlock: %s requires a value.\n' "$argument" >&2
+        exit 2
+      fi
+      ((model_selector_count += 1))
+      if (( model_selector_count > 1 )); then
+        printf 'airlock: --model or -m may be provided only once.\n' >&2
+        exit 2
+      fi
+      explicit_model="$model_value"
       hybrid_args[$((index + 1))]="$explicit_model"
-      break
-    elif [[ "$argument" == --model=* ]]; then
-      explicit_model="$(normalize_openai_model_id "${argument#--model=}")"
-      hybrid_args[$index]="--model=$explicit_model"
-      break
+      ((index += 1))
+    elif [[ "$argument" == --model=* || "$argument" == -m=* ]]; then
+      model_value="${argument#*=}"
+      model_value="$(normalize_openai_model_id "$model_value")"
+      if [[ -z "$model_value" ]]; then
+        printf 'airlock: %s requires a value.\n' "${argument%%=*}" >&2
+        exit 2
+      fi
+      ((model_selector_count += 1))
+      if (( model_selector_count > 1 )); then
+        printf 'airlock: --model or -m may be provided only once.\n' >&2
+        exit 2
+      fi
+      explicit_model="$model_value"
+      hybrid_args[$index]="${argument%%=*}=$explicit_model"
     fi
   done
 
@@ -1999,7 +2599,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
         # only when nothing else has chosen the root. With a root alias or
         # route already selected, leave the verdict to the provider and
         # OpenRouter mismatch checks below so their messages stay exact.
-        if [[ -z "$root_alias" && -z "$hybrid_selected_route" ]]; then
+        if [[ -z "$root_alias" && -z "$hybrid_selected_route" && -z "$hybrid_selected_openmodel_route" ]]; then
           if resolve_custom_model_declaration "$explicit_model" openrouter; then
             hybrid_selected_route="$CUSTOM_MODEL_OPENROUTER_ROUTE"
             OPR_SELECTED_ROUTE="$CUSTOM_MODEL_OPENROUTER_ROUTE"
@@ -2014,7 +2614,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     esac
   fi
 
-  if [[ -z "$hybrid_selected_route" && -z "$root_alias" && -z "$explicit_model" ]]; then
+  if [[ -z "$hybrid_selected_route" && -z "$hybrid_selected_openmodel_route" && -z "$root_alias" && -z "$explicit_model" ]]; then
     if [[ "$choose_root" -eq 1 ]]; then
       select_hybrid_root
       if [[ -n "$HYBRID_SELECTED_ROUTE" ]]; then
@@ -2022,6 +2622,11 @@ if [[ "${1:-}" == 'hybrid' ]]; then
         root_model="$OPR_ROOT_MODEL"
         root_name="$OPR_ROOT_NAME"
         root_provider='openrouter'
+      elif [[ -n "$HYBRID_SELECTED_OPENMODEL_ROUTE" ]]; then
+        hybrid_selected_openmodel_route="$HYBRID_SELECTED_OPENMODEL_ROUTE"
+        root_model="$OM_ROOT_MODEL"
+        root_name="$OM_ROOT_NAME"
+        root_provider='openmodel'
       fi
     else
       root_alias="$default_hybrid_model"
@@ -2034,7 +2639,21 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     [[ -n "$resolved_auto_alias" ]] || resolve_auto_hybrid_root || exit $?
     root_alias="$resolved_auto_alias"
   fi
-  if [[ -z "$hybrid_selected_route" ]]; then
+  if [[ -n "$hybrid_selected_openmodel_route" ]]; then
+    # A local open-model route is selected by exact registry slug. A
+    # forwarded --model may only restate the resolved root model; anything
+    # else would move root traffic off the selected route inside one argv.
+    root_model="$OM_ROOT_MODEL"
+    root_name="$OM_ROOT_NAME"
+    root_provider='openmodel'
+    if [[ -n "$explicit_model" && "$explicit_model" != "$root_model" ]]; then
+      printf 'airlock: forwarded --model disagrees with the selected local open-model root route (%s).\n' "$root_model" >&2
+      exit 2
+    fi
+    if [[ -z "$explicit_model" ]]; then
+      hybrid_args=(--model "$root_model" ${hybrid_args[@]+"${hybrid_args[@]}"})
+    fi
+  elif [[ -z "$hybrid_selected_route" ]]; then
     if [[ -z "$root_alias" && -z "$explicit_model" ]]; then
       # Unreachable in practice; guards the resolution below.
       root_alias="$default_hybrid_model"
@@ -2088,21 +2707,29 @@ if [[ "${1:-}" == 'hybrid' ]]; then
   for argument in ${hybrid_args[@]+"${hybrid_args[@]}"}; do
     [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
   done
-  if [[ "$has_effort" -eq 0 ]]; then
+  if [[ "$has_effort" -eq 0 && "$root_provider" != 'openmodel' ]]; then
+    # A local open-model root never declares effort capabilities (the
+    # loopback adapter accepts no thinking/reasoning field), so no default
+    # --effort is injected here; an explicit --effort still passes through.
     root_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
     validate_effort "$root_effort"
     hybrid_args=(--effort "$root_effort" ${hybrid_args[@]+"${hybrid_args[@]}"})
   fi
 
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
   if [[ "$root_provider" == 'openrouter' ]]; then
     export AIRLOCK_OPENROUTER_HYBRID='1'
     launch_session hybrid-openrouter-root "$root_model" "$root_name" \
-      "$hybrid_selected_route" ${hybrid_args[@]+"${hybrid_args[@]}"}
+      "$hybrid_selected_route" '' ${hybrid_args[@]+"${hybrid_args[@]}"}
+  elif [[ "$root_provider" == 'openmodel' ]]; then
+    export AIRLOCK_OPENMODEL_HYBRID='1'
+    launch_session hybrid-openmodel-root "$root_model" "$root_name" \
+      '' "$hybrid_selected_openmodel_route" ${hybrid_args[@]+"${hybrid_args[@]}"}
   elif [[ "$root_provider" == 'openai' ]]; then
     validate_fast_root_model "$root_model"
+    enable_explicit_openai_root "$root_model"
     export AIRLOCK_GPT_HYBRID='1'
-    launch_session hybrid-openai-root "$root_model" "$root_name" '' ${hybrid_args[@]+"${hybrid_args[@]}"}
+    launch_session hybrid-openai-root "$root_model" "$root_name" '' '' ${hybrid_args[@]+"${hybrid_args[@]}"}
   elif [[ "$root_provider" == 'grok' ]]; then
     # A Grok root cannot start without an enabled Grok route, so an explicit
     # Grok root turns the routes on. Every other hybrid root leaves Grok off
@@ -2112,10 +2739,10 @@ if [[ "${1:-}" == 'hybrid' ]]; then
       export AIRLOCK_GROK_MODELS='grok,composer'
     fi
     export AIRLOCK_GROK_HYBRID='1'
-    launch_session hybrid-grok-root "$root_model" "$root_name" '' ${hybrid_args[@]+"${hybrid_args[@]}"}
+    launch_session hybrid-grok-root "$root_model" "$root_name" '' '' ${hybrid_args[@]+"${hybrid_args[@]}"}
   else
     export AIRLOCK_HYBRID='1'
-    launch_session hybrid-anthropic-root "$root_model" "$root_name" '' ${hybrid_args[@]+"${hybrid_args[@]}"}
+    launch_session hybrid-anthropic-root "$root_model" "$root_name" '' '' ${hybrid_args[@]+"${hybrid_args[@]}"}
   fi
   exit $?
 fi
@@ -2147,16 +2774,59 @@ if [[ "${1:-}" == 'opr' ]]; then
   opr_args=("$@")
   for argument in ${opr_args[@]+"${opr_args[@]}"}; do
     case "$argument" in
-      --model|-m|--model=*)
+      --model|-m|--model=*|-m=*)
         printf 'airlock: OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded.\n' >&2
         exit 2
         ;;
     esac
   done
   opr_args=(--model "$OPR_ROOT_MODEL" ${opr_args[@]+"${opr_args[@]}"})
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
   launch_session openrouter-pure "$OPR_ROOT_MODEL" "$OPR_ROOT_NAME" \
-    "$OPR_SELECTED_ROUTE" ${opr_args[@]+"${opr_args[@]}"}
+    "$OPR_SELECTED_ROUTE" '' ${opr_args[@]+"${opr_args[@]}"}
+  exit $?
+fi
+
+if [[ "${1:-}" == 'om' ]]; then
+  shift
+  if (( $# > 0 )) && [[ "$1" == '--help' || "$1" == '-h' ]]; then
+    printf '%s\n' \
+      'Usage: airlock om [ROUTE] [Claude arguments...]' \
+      '' \
+      'Start a local open-model-only session on one exact enabled registry route.' \
+      'Omit ROUTE in an interactive terminal to choose from the offline registry.' \
+      'Use airlock open-model to manage the loopback registry.'
+    exit 0
+  fi
+  OM_SELECTED_ROUTE=''
+  OM_ROOT_MODEL=''
+  OM_ROOT_NAME=''
+  if (( $# > 0 )) && [[ "$1" != -* ]]; then
+    OM_SELECTED_ROUTE="$1"
+    shift
+  else
+    select_openmodel_root || exit $?
+  fi
+  resolve_openmodel_root "$OM_SELECTED_ROUTE" || exit $?
+  om_args=("$@")
+  for argument in ${om_args[@]+"${om_args[@]}"}; do
+    case "$argument" in
+      --model|-m|--model=*|-m=*)
+        printf 'airlock: local open-model roots are selected by exact registry route; --model and -m cannot be forwarded.\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+  om_args=(--model "$OM_ROOT_MODEL" ${om_args[@]+"${om_args[@]}"})
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
+  launch_session openmodel-pure "$OM_ROOT_MODEL" "$OM_ROOT_NAME" \
+    '' "$OM_SELECTED_ROUTE" ${om_args[@]+"${om_args[@]}"}
+  exit $?
+fi
+
+if [[ "${1:-}" == 'open-model' ]]; then
+  shift
+  run_openmodel_registry "$@"
   exit $?
 fi
 
@@ -2271,7 +2941,7 @@ if [[ "${1:-}" == 'grok' ]]; then
     export AIRLOCK_GROK_MODELS='grok,composer'
   fi
   set_openai_environment "$selected_model" "$model_name" 'Grok subscription'
-  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+  unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
   has_effort=0
   for argument in "$@"; do
     [[ "$argument" == '--effort' || "$argument" == --effort=* ]] && has_effort=1
@@ -2279,7 +2949,7 @@ if [[ "${1:-}" == 'grok' ]]; then
   session_args=(--model "$selected_model")
   [[ "$has_effort" -eq 1 ]] || session_args+=(--effort "$selected_effort")
   session_args+=("$@")
-  launch_session grok-pure "$selected_model" "$model_name" '' "${session_args[@]}"
+  launch_session grok-pure "$selected_model" "$model_name" '' '' "${session_args[@]}"
   exit $?
 fi
 
@@ -2336,7 +3006,7 @@ case "${1:-}" in
     shift
     for argument in "$@"; do
       case "$argument" in
-        --model|-m|--model=*)
+        --model|-m|--model=*|-m=*)
           printf 'airlock: Fast uses the fixed gpt-5.6-sol-fast root; %s cannot be forwarded.\n' "$argument" >&2
           exit 2
           ;;
@@ -2346,7 +3016,7 @@ case "${1:-}" in
     ephemeral_fast=1
     requested_model='sol-fast'
     ;;
-  sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
+  astra|sol|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
   *)
     if [[ $# -gt 0 && "$1" != -* ]] && resolve_model "$1" >/dev/null 2>&1; then
       requested_model="$1"
@@ -2360,7 +3030,7 @@ if [[ "$ephemeral_fast" -eq 0 ]]; then
   validate_fast_root_model "$selected_model"
 fi
 set_openai_environment "$selected_model" "$model_name"
-unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID
+unset AIRLOCK_HYBRID AIRLOCK_GPT_HYBRID AIRLOCK_GROK_HYBRID AIRLOCK_OPENROUTER_HYBRID AIRLOCK_OPENMODEL_HYBRID
 
 has_effort=0
 for argument in "$@"; do
@@ -2369,4 +3039,5 @@ done
 session_args=(--model "$selected_model")
 [[ "$has_effort" -eq 1 ]] || session_args+=(--effort "$selected_effort")
 session_args+=("$@")
-launch_session openai-pure "$selected_model" "$model_name" '' "${session_args[@]}"
+enable_explicit_openai_root "$selected_model"
+launch_session openai-pure "$selected_model" "$model_name" '' '' "${session_args[@]}"

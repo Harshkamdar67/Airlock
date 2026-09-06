@@ -1,15 +1,15 @@
 # Airlock
 
-**Don't pick a side.** Run OpenAI and Anthropic models together in one Claude Code session, with credentials that never cross.
+**Don't pick a side.** Run OpenAI and Anthropic models together in one Claude Code session, and add your own loopback open models, with credentials that never cross.
 
 [![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.8-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.9-orange.svg)](CHANGELOG.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
 An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
 
-Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy) and a small local router for mixed-provider sessions.
+Airlock keeps Claude Code's terminal, tools, permissions, hooks, Agent cards, background work, cancellation, worktrees, and usage display. It adds a local OpenAI path through [`claude-code-proxy`](https://github.com/raine/claude-code-proxy), a small local router for mixed-provider sessions, and an explicit loopback path to open models that you host yourself.
 
 ```bash
 airlock                 # Saved default, new setups recommend the auto hybrid root
@@ -18,6 +18,7 @@ airlock fast -r         # One-session gpt-5.6-sol-fast root, without saving Fast
 airlock hybrid opus     # Claude Opus drives, GPT workers available
 airlock hybrid sol      # GPT Sol drives, Claude workers available
 airlock hybrid ox-alpha # A declared OpenRouter route drives the mixed session
+airlock om local-coder    # A declared loopback open model drives a local-only session
 airlock grok            # Saved Grok-only root, needs a separate Grok login
 airlock status          # Current session root and recent router actions
 ```
@@ -54,11 +55,13 @@ Claude Code
           `-- exact claude-* ID   --> Anthropic
 ```
 
-The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with the reserved root `auto`, which resolves at launch to Fable when it is included on your plan, otherwise Opus, otherwise Sonnet, and never picks a model that needs confirmed extra usage. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command.
+The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with the reserved root `auto`, which resolves at launch to Fable when it is included on your plan, otherwise Opus, otherwise Sonnet, and never picks a model that needs confirmed extra usage. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command. Open models are never saved defaults or `auto` candidates. Start one explicitly with `airlock om ROUTE` or `airlock hybrid om:ROUTE`.
 
 Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`.
 
-The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic and exact enabled bare GPT model IDs to the local OpenAI proxy. Claude Code removes the `[1m]` context suffix before a request goes out for supported native Claude models, so the router registers that one deterministic wire form alongside each enabled Claude full ID that carries the suffix. Claude Code still owns every Agent call and tool event.
+The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic, exact enabled bare GPT model IDs to the local OpenAI proxy, and an explicitly selected `openmodel/ROUTE` only to its declared loopback endpoint. Claude Code removes the `[1m]` context suffix before a request goes out for supported native Claude models, so the router registers that one deterministic wire form alongside each enabled Claude full ID that carries the suffix. Claude Code still owns every Agent call and tool event.
+
+An open-model endpoint must use the exact form `http://127.0.0.1:PORT/v1`. Airlock builds a new allowlisted Chat Completions request and never sends provider credentials to that endpoint. Add commands read the private endpoint and upstream model identities through bounded hidden prompts or bounded JSON on stdin, never argv, and store them only in the protected local registry. A protected signed session snapshot freezes them for one router lifetime. Each route's declared context window remains its hard ceiling; a user compaction override can move the requested trigger but cannot raise that ceiling. This ceiling is process-wide, so in `airlock hybrid om:ROUTE` it also caps every non-local worker in that session. Airlock connects to an inference server you already started. It does not download a model, configure a GPU, choose server flags, start the server, or stop it.
 
 The router never sends Claude authorization headers to the OpenAI proxy. It forwards saved Claude login authorization opaquely only to Anthropic. It does not read credential files or log prompts, responses, or headers. Its local diagnostics endpoint keeps only a bounded in-memory list of model, provider, status, byte-count, duration, outcome, and token-count metadata.
 
@@ -123,7 +126,7 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
-Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, or `airlock hybrid choose`. [Common commands](#common-commands) lists the full set.
+Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, `airlock hybrid choose`, `airlock om ROUTE`, or `airlock hybrid om:ROUTE`. [Common commands](#common-commands) lists the full set.
 
 `airlock fast -r` starts one `gpt-5.6-sol-fast` session through the Codex proxy without changing saved `AIRLOCK_OPENAI_FAST`; eligible OpenAI plan and proxy checks apply, with no fallback.
 In a managed session, `/airlock-fast` arms a one-shot handoff. Exit cleanly and the owning launcher resumes the exact conversation once on fixed `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`; hard kill, crash, non-clean exit, hook failure, or expiry prevents relaunch. The private nonce-, PID-, cwd-, and session-bound marker carries no credentials, prompts, transcript data, arbitrary executable data, or model choice. The managed plugin SessionEnd hook is required and is not a global hook.
@@ -133,7 +136,7 @@ Inside the session, ask for work normally. The main model can use:
 - built-in Explore for read-only repository discovery
 - built-in Plan for read-only technical design
 - built-in general-purpose for multi-step work
-- exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`, plus `airlock-grok` and `airlock-composer` when Grok is enabled
+- exact named workers such as `airlock-luna`, `airlock-sol`, `airlock-opus`, and `airlock-sonnet`, plus `airlock-astra` when Astra is enabled, `airlock-grok` and `airlock-composer` when Grok is enabled, and a declared `airlock-om-ROUTE` worker when that open-model route enables worker use
 
 Plan and general-purpose inherit the orchestrator when the Agent call omits `model`. Routine Explore should use `model="haiku"`, which Airlock resolves to the exact economical discovery model named in the session guidance. If an unpinned Explore would spend a different premium root, the guard gives that schema-valid retry. Explore, Plan, and general-purpose accept Claude Code's `fable`, `opus`, `sonnet`, and `haiku` family aliases; Airlock validates each resolved target against the active profile. Use a named `airlock-*` worker when exact model identity matters.
 
@@ -143,7 +146,7 @@ Named `airlock-*` workers have a fixed exact model. Their effort follows the ses
 
 The main model starts with the smallest useful approach: work directly when the change is small or already understood, Explore for bounded read-only discovery, Plan once the relevant code is known, general-purpose for multi-step work that should stay with one model, and one exact named worker when another model fits better. Integration and final synthesis stay with a stronger model.
 
-Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer. Sol, Terra, Opus, Sonnet, Fable, and Haiku are never multiplied automatically. For UI and UX work, an exact user choice wins; otherwise visual direction prefers Opus and bounded component work fits Sonnet.
+Automatic armies use only the economical high-volume routes: Luna, eligible Luna Fast, and Grok Composer. Astra, Sol, Terra, Opus, Sonnet, Fable, Haiku, and user-declared open models are never multiplied automatically. Open models also never enter automatic root selection, discovery, handoff, provider fallback, capacity routing, or synthesized compactor routing. For UI and UX work, an exact user choice wins; otherwise visual direction prefers Opus and bounded component work fits Sonnet.
 
 [Read the detailed routing guide](docs/how-it-works.md).
 
@@ -156,14 +159,15 @@ airlock hybrid choose           # full interactive hybrid picker
 airlock openai                  # saved OpenAI-only orchestrator
 airlock grok                    # saved Grok-only orchestrator
 airlock opr                     # interactive OpenRouter-only root picker
+airlock om ROUTE                # exact declared open-model root
+airlock hybrid om:ROUTE         # exact open-model root with the hybrid worker pool
 airlock mode                    # show routing and worker limits
 airlock status                  # this session's root and recent router actions
 airlock usage                   # refresh stale OpenAI usage and show it
+airlock console                 # open the visual console for every session
 ```
 
-Every root alias, policy, settings file, and environment variable is listed in [Capabilities and commands](docs/commands.md).
-
-Every command and setting is listed in one place in [Capabilities and commands](docs/commands.md).
+Every command and setting is listed in one place in [Capabilities and commands](docs/commands.md). `airlock console` opens a local page showing every Airlock session, why one is blocked, and what still has room; read the [console guide](docs/console.md).
 
 ## Handoff when a model is unavailable
 
@@ -175,13 +179,14 @@ The default order keeps a handoff inside one usage category, so it can never spe
 
 ```mermaid
 flowchart LR
+  Astra <--> Sol & Opus & Grok & Fable
   Opus <--> Sol & Grok & Fable
   Sol <--> Grok & Fable
   Sonnet <--> Terra & Luna
   Luna <--> Composer & Haiku
 ```
 
-Routes you have not connected are dropped, so the shape follows your own providers. `airlock handoff` prints the current tree and marks which entries are yours; `set`, `off`, `clear`, and `reset` change it using short route names rather than exact model IDs.
+Routes you have not connected are dropped, so the shape follows your own providers. Astra appears only when it is enabled in `AIRLOCK_OPENAI_MODELS`. `airlock handoff` prints the current tree and marks which entries are yours; `set`, `off`, `clear`, and `reset` change it using short route names rather than exact model IDs.
 
 Anthropic rate limits default to Claude Code's native wait-and-resume handling. For uninterrupted cross-provider continuity, including automatic compaction after the Claude plan is exhausted, save `airlock mode anthropic-rate-limit handoff`; `airlock mode ... native` restores the default. `/model` cannot show a handed-off model because a handoff is per request, not per session. [Commands and settings](docs/commands.md#handoff).
 
@@ -211,9 +216,9 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
 - Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
 - Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative Anthropic, OpenAI, and Grok provider-reported totals without changing provider responses; OpenRouter is omitted because it belongs to a separate account. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped and other OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
-- File hooks and prompts do not replace an operating-system sandbox.
 - Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
 - OpenRouter routes are entirely user-declared. Airlock checks the exact model and endpoint against the public catalog when you add or refresh one, but it does not verify or rank a route's real capability, context window, or cost, and it does not offer `count_tokens` for those routes.
+- Open-model routes are entirely user-declared and unverified. The local MVP supports OpenAI Chat Completions text, streaming when declared, client function tools when declared, and successful tool-result continuation when every pending call receives an immediate result before user text or a later message. It does not support the Responses API, native Ollama API, images, documents, audio, embeddings, server-side tools, thinking blocks, or token counting. Endpoint concurrency is shared by every route alias on that endpoint.
 - Subscription access, provider terms, model availability, and usage limits can change.
 
 ## Documentation
@@ -222,8 +227,7 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - [Capabilities and commands](docs/commands.md)
 - [How it works](docs/how-it-works.md)
 - [Models, limits, and usage](docs/models-and-usage.md)
-- [Windows](docs/windows.md)
-- [Troubleshooting](docs/troubleshooting.md)
+- [Console](docs/console.md) | [Windows](docs/windows.md) | [Troubleshooting](docs/troubleshooting.md)
 - [Testing](docs/testing.md) | [Live tests that use plan quota](docs/live-tests.md) | [Threat model](docs/threat-model.md)
 - [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md) | [Support](SUPPORT.md) | [Release process](docs/releasing.md) | [Changelog](CHANGELOG.md)
 

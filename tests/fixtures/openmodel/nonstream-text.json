@@ -1,0 +1,25 @@
+{
+  "id": "synthetic-completion-1",
+  "object": "chat.completion",
+  "created": 1785700000,
+  "model": "local/open-model-synthetic",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Synthetic visible answer.",
+        "reasoning_content": "Synthetic hidden reasoning."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 21,
+    "completion_tokens": 7,
+    "total_tokens": 28,
+    "prompt_tokens_details": {
+      "cached_tokens": 5
+    }
+  }
+}

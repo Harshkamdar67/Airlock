@@ -7,7 +7,9 @@ foreach ($name in @(
   'AIRLOCK_ACCESS_HELPER', 'AIRLOCK_POLICY_HELPER', 'AIRLOCK_SESSION_ROUTER_URL',
   'AIRLOCK_UPDATE_NOTICE_FILE', 'AIRLOCK_SESSION_SNAPSHOT',
   'AIRLOCK_SESSION_SNAPSHOT_SHA256', 'AIRLOCK_AGENT_DEPTH',
-  'AIRLOCK_FAST_TRANSITION_CHANNEL', 'AIRLOCK_FAST_TRANSITION_NONCE'
+  'AIRLOCK_FAST_TRANSITION_CHANNEL', 'AIRLOCK_FAST_TRANSITION_NONCE',
+  'AIRLOCK_CONSOLE_HELPER', 'AIRLOCK_CONSOLE_SITE',
+  'AIRLOCK_CONSOLE_TOOLS', 'AIRLOCK_WEB_TOOLS'
 )) {
   Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }
@@ -75,6 +77,16 @@ foreach ($path in $PowerShellFiles) {
 # The launcher must offer effort levels for pinned GPT models and leave real
 # Claude model IDs to Claude Code's own detection.
 $LauncherText = [IO.File]::ReadAllText((Join-Path $Root 'bin\airlock.ps1'))
+$ConsoleGracefulWait = $LauncherText.IndexOf('$process.WaitForExit(2000)')
+$ConsoleForcedFallback = if ($ConsoleGracefulWait -ge 0) {
+  $LauncherText.IndexOf(
+    'Stop-Process -Id $process.Id -Force',
+    $ConsoleGracefulWait
+  )
+} else { -1 }
+if ($ConsoleGracefulWait -lt 0 -or $ConsoleForcedFallback -lt $ConsoleGracefulWait) {
+  throw 'bin\airlock.ps1 must wait for Console marker cleanup before forced termination.'
+}
 foreach ($variable in @(
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
@@ -116,6 +128,9 @@ public static class ClaudeLaunchStub {
     Console.WriteLine("DEFAULT_HAIKU=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_HAIKU_MODEL") ?? "unset"));
     Console.WriteLine("SMALL_FAST=" + (Environment.GetEnvironmentVariable("ANTHROPIC_SMALL_FAST_MODEL") ?? "unset"));
     Console.WriteLine("AUTO_MODE_MODEL=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_AUTO_MODE_MODEL") ?? "unset"));
+    Console.WriteLine("ALWAYS_EFFORT=" + (Environment.GetEnvironmentVariable("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT") ?? "unset"));
+    Console.WriteLine("CUSTOM_CAPS=" + (Environment.GetEnvironmentVariable("ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES") ?? "unset"));
+    Console.WriteLine("FABLE_CAPS=" + (Environment.GetEnvironmentVariable("ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES") ?? "unset"));
     Console.WriteLine("OPENROUTER_BRIDGE=" + (Environment.GetEnvironmentVariable("AIRLOCK_OPENROUTER_HYBRID") ?? "unset"));
     Console.WriteLine("OPENROUTER_KEY_SET=" + (
       String.IsNullOrEmpty(Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")) ? "no" : "yes"
@@ -145,6 +160,24 @@ public static class ClaudeLaunchStub {
         if (settings.Contains("\"fastMode\":true")) Console.WriteLine("FAST_MODE=on");
         else if (settings.Contains("\"fastMode\":false")) Console.WriteLine("FAST_MODE=off");
         else Console.WriteLine("FAST_MODE=inherit");
+        bool settingsConsole = settings.Contains("\"airlock-console-tools\"");
+        bool settingsWeb = settings.Contains("\"airlock-web-tools\"");
+        Console.WriteLine("SETTINGS_MCP_SERVERS=" + (
+          settingsConsole && settingsWeb ? "airlock-console-tools,airlock-web-tools" :
+          settingsConsole ? "airlock-console-tools" :
+          settingsWeb ? "airlock-web-tools" : ""
+        ));
+      }
+      if (args[index] == "--mcp-config" && index + 1 < args.Length) {
+        string mcpPath = args[index + 1];
+        string mcp = File.Exists(mcpPath) ? File.ReadAllText(mcpPath) : "";
+        bool mcpConsole = mcp.Contains("\"airlock-console-tools\"");
+        bool mcpWeb = mcp.Contains("\"airlock-web-tools\"");
+        Console.WriteLine("MCP_SERVERS=" + (
+          mcpConsole && mcpWeb ? "airlock-console-tools,airlock-web-tools" :
+          mcpConsole ? "airlock-console-tools" :
+          mcpWeb ? "airlock-web-tools" : "unreadable"
+        ));
       }
       if (args[index] == "--append-system-prompt-file" && index + 1 < args.Length) {
         string guidancePath = args[index + 1];
@@ -166,7 +199,8 @@ function Invoke-LauncherProcess(
   [string]$Launcher,
   [string[]]$LauncherArguments,
   [bool]$ExpectSuccess = $true,
-  [hashtable]$ExtraEnvironment = $null
+  [hashtable]$ExtraEnvironment = $null,
+  [AllowNull()][string]$StandardInput = $null
 ) {
   $quotedLauncher = '"' + $Launcher.Replace('"', '\"') + '"'
   $quotedArguments = @()
@@ -179,6 +213,9 @@ function Invoke-LauncherProcess(
   $processInfo.UseShellExecute = $false
   $processInfo.RedirectStandardOutput = $true
   $processInfo.RedirectStandardError = $true
+  if ($null -ne $StandardInput) {
+    $processInfo.RedirectStandardInput = $true
+  }
   [void]$processInfo.EnvironmentVariables.Remove('ANTHROPIC_API_KEY')
   [void]$processInfo.EnvironmentVariables.Remove('ANTHROPIC_AUTH_TOKEN')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_DEFAULT_PROFILE')
@@ -198,12 +235,20 @@ function Invoke-LauncherProcess(
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_POLICY_HELPER')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_SNAPSHOT')
   [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_SESSION_SNAPSHOT_SHA256')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_WEB_TOOLS')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONSOLE_TOOLS')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONSOLE_HELPER')
+  [void]$processInfo.EnvironmentVariables.Remove('AIRLOCK_CONSOLE_SITE')
   if ($ExtraEnvironment) {
     foreach ($name in $ExtraEnvironment.Keys) {
       $processInfo.EnvironmentVariables[$name] = [string]$ExtraEnvironment[$name]
     }
   }
   $process = [Diagnostics.Process]::Start($processInfo)
+  if ($null -ne $StandardInput) {
+    $process.StandardInput.Write($StandardInput)
+    $process.StandardInput.Close()
+  }
   $standardOutput = $process.StandardOutput.ReadToEnd()
   $standardError = $process.StandardError.ReadToEnd()
   $process.WaitForExit()
@@ -230,6 +275,38 @@ function Write-StubAt([string]$Directory, [string]$Name, [string]$Body = '@exit 
 
 function Write-Stub([string]$Name, [string]$Body = '@exit /b 0') {
   Write-StubAt $StubDir $Name $Body
+}
+
+function Get-FreeLoopbackPort {
+  $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
+  try {
+    $listener.Start()
+    return ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+  } finally {
+    $listener.Stop()
+  }
+}
+
+function New-ConsoleBackupFixture([string]$Parent, [string]$SourceSite) {
+  $container = Join-Path $Parent (
+    '.airlock-console-backup-' + [Guid]::NewGuid().ToString('N')
+  )
+  New-Item -ItemType Directory -Path $container | Out-Null
+  Copy-Item -LiteralPath $SourceSite -Destination (Join-Path $container 'site') -Recurse
+  return $container
+}
+
+function Assert-NoConsoleSwapArtifacts([string]$Parent, [string]$Context) {
+  $artifacts = @(
+    Get-ChildItem -LiteralPath $Parent -Force |
+      Where-Object {
+        $_.Name -like '.airlock-console-backup-*' -or
+        $_.Name -like '.airlock-console-staging-*'
+      }
+  )
+  if ($artifacts.Count -ne 0) {
+    throw "$Context left a Console swap artifact: $($artifacts[0].FullName)"
+  }
 }
 
 Write-Stub 'git.cmd'
@@ -292,7 +369,9 @@ try {
     'airlock', 'airlock.cmd', 'airlock.ps1', 'airlock-access.py',
     'airlock_policy.py', 'airlock_openrouter_auth.py',
     'airlock_openrouter_presets.py', 'airlock_openrouter_models.py',
-    'airlock-update.py', 'airlock-router.py', 'airlock-hybrid.py'
+    'airlock_openmodel.py', 'airlock_openmodel_adapter.py',
+    'airlock-update.py', 'airlock-router.py', 'airlock-hybrid.py',
+    'airlock_console.py', 'airlock_console_tools.py', 'airlock_console_history.py'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf)) {
       throw "Windows installer missed $relative"
@@ -317,6 +396,7 @@ try {
   }
   foreach ($relative in @(
     'skills\airlock-fast\SKILL.md',
+    'mcp-server\airlock_console_mcp.py',
     'scripts\fast-session-end.sh', 'scripts\fast-session-end.py',
     'scripts\router-session-end.sh', 'scripts\router-session-end.py',
     'scripts\file_safety.py', 'scripts\update-notice.sh', 'scripts\update-notice.py',
@@ -328,6 +408,398 @@ try {
   }
   if (-not (Test-Path -LiteralPath (Join-Path $AgentDir 'airlock-worker.md') -PathType Leaf)) {
     throw 'Windows installer missed the optional worker.'
+  }
+
+  $ConsoleSite = Join-Path $InstallDir 'share\airlock\console'
+  if (-not (Test-Path -LiteralPath $ConsoleSite -PathType Container)) {
+    throw 'Windows installer missed the Console site.'
+  }
+  $ConsoleSiteItem = Get-Item -LiteralPath $ConsoleSite -Force
+  if ($ConsoleSiteItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'Windows installer linked the Console site through a reparse point.'
+  }
+  $ConsoleMarker = Join-Path $ConsoleSite '.airlock-managed'
+  $ConsoleMarkerText = [IO.File]::ReadAllText($ConsoleMarker)
+  $ExpectedConsoleMarker = 'Managed by https://github.com/Harshkamdar67/Airlock (console site)' + "`n"
+  if ($ConsoleMarkerText -cne $ExpectedConsoleMarker) {
+    throw 'Windows installer did not mark the Console site as managed.'
+  }
+  $ConsoleSource = Join-Path $Root 'console\dist'
+  $SourceInventory = @{}
+  foreach ($item in Get-ChildItem -LiteralPath $ConsoleSource -Recurse -Force -File) {
+    $relative = $item.FullName.Substring($ConsoleSource.Length).TrimStart('\')
+    $SourceInventory[$relative] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+  }
+  $InstalledInventory = @{}
+  foreach ($item in Get-ChildItem -LiteralPath $ConsoleSite -Recurse -Force -File) {
+    $relative = $item.FullName.Substring($ConsoleSite.Length).TrimStart('\')
+    if ($relative -eq '.airlock-managed') { continue }
+    $InstalledInventory[$relative] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+  }
+  if ($SourceInventory.Count -ne $InstalledInventory.Count) {
+    throw 'Windows installer copied an incomplete Console site.'
+  }
+  foreach ($relative in $SourceInventory.Keys) {
+    if (-not $InstalledInventory.ContainsKey($relative) -or
+        $InstalledInventory[$relative] -ne $SourceInventory[$relative]) {
+      throw "Windows installer changed Console site asset $relative"
+    }
+  }
+  $ConsoleParent = Split-Path -Parent $ConsoleSite
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows first install'
+
+  # The update must move the old tree aside before activating the staged tree.
+  # Stub the second Move-Item only, then prove the rollback restored every old
+  # byte while leaving siblings alone and cleaning the unused staging tree.
+  $OldConsoleIndex = Join-Path $ConsoleSite 'index.html'
+  $OldConsoleAsset = Join-Path $ConsoleSite 'old-assets\kept.txt'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $OldConsoleAsset) -Force | Out-Null
+  [IO.File]::WriteAllText($OldConsoleIndex, 'old console bytes')
+  [IO.File]::WriteAllText($OldConsoleAsset, 'old asset bytes')
+  $OldConsoleIndexHash = (Get-FileHash -LiteralPath $OldConsoleIndex -Algorithm SHA256).Hash
+  $OldConsoleAssetHash = (Get-FileHash -LiteralPath $OldConsoleAsset -Algorithm SHA256).Hash
+  $OldConsoleMarkerHash = (Get-FileHash -LiteralPath $ConsoleMarker -Algorithm SHA256).Hash
+  $OldBundleHash = (Get-FileHash -LiteralPath (Join-Path $ConfigDir 'managed-bundle.json') -Algorithm SHA256).Hash
+  $ConsoleSibling = Join-Path $ConsoleParent 'unrelated.txt'
+  [IO.File]::WriteAllText($ConsoleSibling, 'unrelated bytes')
+  $global:AirlockInstallerMoveCount = 0
+  $ConsoleActivationBlocked = $false
+  $ConsoleActivationError = ''
+  function Move-Item {
+    [CmdletBinding()]
+    param(
+      [Parameter(Mandatory)][string]$LiteralPath,
+      [Parameter(Mandatory)][string]$Destination
+    )
+    $global:AirlockInstallerMoveCount += 1
+    if ($global:AirlockInstallerMoveCount -eq 2) {
+      throw 'forced Console activation failure'
+    }
+    Microsoft.PowerShell.Management\Move-Item `
+      -LiteralPath $LiteralPath `
+      -Destination $Destination
+  }
+  try {
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $ConsoleActivationError = $_.Exception.Message
+      $ConsoleActivationBlocked = $ConsoleActivationError -like '*restored previous Airlock Console site*'
+    }
+  } finally {
+    $ConsoleMoveCount = $global:AirlockInstallerMoveCount
+    Remove-Item -LiteralPath 'Function:\Move-Item' -Force
+    Remove-Variable -Name AirlockInstallerMoveCount -Scope Global -ErrorAction SilentlyContinue
+  }
+  if (-not $ConsoleActivationBlocked -or $ConsoleMoveCount -ne 3) {
+    throw "Windows installer did not roll back a failed Console activation: $ConsoleActivationError"
+  }
+  if ((Get-FileHash -LiteralPath $OldConsoleIndex -Algorithm SHA256).Hash -ne $OldConsoleIndexHash -or
+      (Get-FileHash -LiteralPath $OldConsoleAsset -Algorithm SHA256).Hash -ne $OldConsoleAssetHash -or
+      (Get-FileHash -LiteralPath $ConsoleMarker -Algorithm SHA256).Hash -ne $OldConsoleMarkerHash) {
+    throw 'Windows installer rollback did not preserve the old Console bytes and marker.'
+  }
+  if ((Get-FileHash -LiteralPath (Join-Path $ConfigDir 'managed-bundle.json') -Algorithm SHA256).Hash -ne $OldBundleHash) {
+    throw 'Windows installer wrote the bundle marker after a failed Console activation.'
+  }
+  if ([IO.File]::ReadAllText($ConsoleSibling) -cne 'unrelated bytes') {
+    throw 'Windows installer rollback changed an unrelated Console sibling.'
+  }
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows activation rollback'
+
+  # A normal update replaces the whole site, so stale assets disappear, and
+  # it removes the successful swap's backup only after validating the new site.
+  & (Join-Path $Root 'scripts\install.ps1') *> $null
+  if (Test-Path -LiteralPath $OldConsoleAsset) {
+    throw 'Windows installer merged the Console site instead of replacing it.'
+  }
+  if ((Get-FileHash -LiteralPath $OldConsoleIndex -Algorithm SHA256).Hash -ne
+      $SourceInventory['index.html']) {
+    throw 'Windows installer did not activate the new Console index.'
+  }
+  if ([IO.File]::ReadAllText($ConsoleSibling) -cne 'unrelated bytes') {
+    throw 'Windows Console update changed an unrelated sibling.'
+  }
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows successful update'
+
+  # If both activation and rollback moves fail, the old site must remain in a
+  # named safe backup. The next run recovers that exact site before updating.
+  [IO.File]::WriteAllText($OldConsoleIndex, 'recoverable old console bytes')
+  New-Item -ItemType Directory -Path (Split-Path -Parent $OldConsoleAsset) -Force | Out-Null
+  [IO.File]::WriteAllText($OldConsoleAsset, 'recoverable old asset bytes')
+  $RecoverableIndexHash = (Get-FileHash -LiteralPath $OldConsoleIndex -Algorithm SHA256).Hash
+  $RecoverableAssetHash = (Get-FileHash -LiteralPath $OldConsoleAsset -Algorithm SHA256).Hash
+  $RecoverableMarkerHash = (Get-FileHash -LiteralPath $ConsoleMarker -Algorithm SHA256).Hash
+  $global:AirlockInstallerMoveCount = 0
+  $RollbackFailureBlocked = $false
+  $RollbackFailureError = ''
+  function Move-Item {
+    [CmdletBinding()]
+    param(
+      [Parameter(Mandatory)][string]$LiteralPath,
+      [Parameter(Mandatory)][string]$Destination
+    )
+    $global:AirlockInstallerMoveCount += 1
+    if ($global:AirlockInstallerMoveCount -in @(2, 3)) {
+      throw 'forced Console move failure'
+    }
+    Microsoft.PowerShell.Management\Move-Item `
+      -LiteralPath $LiteralPath `
+      -Destination $Destination
+  }
+  try {
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $RollbackFailureError = $_.Exception.Message
+      $RollbackFailureBlocked = $RollbackFailureError -like '*rollback failed; previous site retained at*'
+    }
+  } finally {
+    Remove-Item -LiteralPath 'Function:\Move-Item' -Force
+    Remove-Variable -Name AirlockInstallerMoveCount -Scope Global -ErrorAction SilentlyContinue
+  }
+  $RetainedBackups = @(
+    Get-ChildItem -LiteralPath $ConsoleParent -Force |
+      Where-Object { $_.Name -like '.airlock-console-backup-*' }
+  )
+  if (-not $RollbackFailureBlocked -or $RetainedBackups.Count -ne 1 -or
+      $RollbackFailureError -notlike "*$($RetainedBackups[0].FullName)*" -or
+      (Test-Path -LiteralPath $ConsoleSite)) {
+    throw "Windows installer did not retain and name the failed rollback backup: $RollbackFailureError"
+  }
+  $RetainedSite = Join-Path $RetainedBackups[0].FullName 'site'
+  if ((Get-FileHash -LiteralPath (Join-Path $RetainedSite 'index.html') -Algorithm SHA256).Hash -ne $RecoverableIndexHash -or
+      (Get-FileHash -LiteralPath (Join-Path $RetainedSite 'old-assets\kept.txt') -Algorithm SHA256).Hash -ne $RecoverableAssetHash -or
+      (Get-FileHash -LiteralPath (Join-Path $RetainedSite '.airlock-managed') -Algorithm SHA256).Hash -ne $RecoverableMarkerHash) {
+    throw 'Windows installer changed the retained rollback backup.'
+  }
+  $RecoveryOutput = ((& (Join-Path $Root 'scripts\install.ps1') *>&1 | Out-String).Replace("`r", ''))
+  if ($RecoveryOutput -notmatch '(?m)^Recovered previous Airlock Console site: ' -or
+      -not (Test-Path -LiteralPath $ConsoleSite -PathType Container)) {
+    throw "Windows installer did not recover a target-absent Console backup: $RecoveryOutput"
+  }
+  if ([IO.File]::ReadAllText($ConsoleSibling) -cne 'unrelated bytes') {
+    throw 'Windows Console crash recovery changed an unrelated sibling.'
+  }
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows crash recovery'
+
+  # Both crash boundaries around the old-site move can leave the same safe
+  # target-plus-empty-container shape. A validated target lets the next run
+  # remove that container non-recursively instead of blocking permanently.
+  $EmptyCommittedBackup = Join-Path $ConsoleParent (
+    '.airlock-console-backup-' + [Guid]::NewGuid().ToString('N')
+  )
+  New-Item -ItemType Directory -Path $EmptyCommittedBackup | Out-Null
+  $EmptyCommittedOutput = ((& (Join-Path $Root 'scripts\install.ps1') *>&1 | Out-String).Replace("`r", ''))
+  if ((Test-Path -LiteralPath $EmptyCommittedBackup) -or
+      $EmptyCommittedOutput -notmatch '(?m)^Removed empty Airlock Console backup: ') {
+    throw "Windows installer did not clean an empty backup beside a managed target: $EmptyCommittedOutput"
+  }
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows empty-backup cleanup'
+
+  # A committed managed target makes one valid leftover backup stale. It is
+  # validated and removed before the ordinary update starts.
+  $StaleBackup = New-ConsoleBackupFixture $ConsoleParent $ConsoleSite
+  $StaleOutput = ((& (Join-Path $Root 'scripts\install.ps1') *>&1 | Out-String).Replace("`r", ''))
+  if ((Test-Path -LiteralPath $StaleBackup) -or
+      $StaleOutput -notmatch '(?m)^Removed stale Airlock Console backup: ') {
+    throw "Windows installer did not clean one valid stale Console backup: $StaleOutput"
+  }
+  Assert-NoConsoleSwapArtifacts $ConsoleParent 'Windows stale-backup cleanup'
+  $SavedInstallDir = $env:AIRLOCK_INSTALL_DIR
+  $SavedConfigDir = $env:AIRLOCK_CONFIG_DIR
+  $SavedAgentDir = $env:AIRLOCK_AGENT_DIR
+  try {
+    $UnmanagedCase = Join-Path $TempRoot 'unmanaged-console-site'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $UnmanagedCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $UnmanagedCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $UnmanagedCase 'agents'
+    $UnmanagedConsoleSite = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock\console'
+    New-Item -ItemType Directory -Path $UnmanagedConsoleSite -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $UnmanagedConsoleSite 'index.html'), 'person-owned site')
+    $UnmanagedSiteBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $UnmanagedSiteBlocked = $_.Exception.Message -like '*refusing to replace unmanaged Airlock Console site*'
+    }
+    if (-not $UnmanagedSiteBlocked) {
+      throw 'Windows installer replaced or accepted an unmanaged Console site.'
+    }
+    if ([IO.File]::ReadAllText((Join-Path $UnmanagedConsoleSite 'index.html')) -cne 'person-owned site') {
+      throw 'Windows installer changed an unmanaged Console site.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing an unmanaged Console site.'
+    }
+
+    $ReparseCase = Join-Path $TempRoot 'reparse-console-site'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $ReparseCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $ReparseCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $ReparseCase 'agents'
+    $ReparseParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    $ReparseOutside = Join-Path $ReparseCase 'outside'
+    New-Item -ItemType Directory -Path $ReparseParent -Force | Out-Null
+    New-Item -ItemType Directory -Path $ReparseOutside -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ReparseOutside 'index.html'), 'outside')
+    $ReparseConsoleSite = Join-Path $ReparseParent 'console'
+    New-Item -ItemType Junction -Path $ReparseConsoleSite -Target $ReparseOutside | Out-Null
+    $ReparseSiteBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $ReparseSiteBlocked = $_.Exception.Message -like '*refusing unsafe Airlock Console site directory*'
+    }
+    if (-not $ReparseSiteBlocked) {
+      throw 'Windows installer accepted a reparse-point Console site.'
+    }
+    if ([IO.File]::ReadAllText((Join-Path $ReparseOutside 'index.html')) -cne 'outside') {
+      throw 'Windows installer changed a reparse-point Console target.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing a reparse-point Console site.'
+    }
+
+    $EmptyBackupCase = Join-Path $TempRoot 'empty-console-backup'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $EmptyBackupCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $EmptyBackupCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $EmptyBackupCase 'agents'
+    $EmptyBackupParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    New-Item -ItemType Directory -Path $EmptyBackupParent -Force | Out-Null
+    $EmptyBackup = Join-Path $EmptyBackupParent (
+      '.airlock-console-backup-' + [Guid]::NewGuid().ToString('N')
+    )
+    New-Item -ItemType Directory -Path $EmptyBackup | Out-Null
+    $EmptyBackupBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $EmptyBackupBlocked = $_.Exception.Message -like '*refusing ambiguous empty Airlock Console backup while the target is absent*'
+    }
+    if (-not $EmptyBackupBlocked -or
+        -not (Test-Path -LiteralPath $EmptyBackup -PathType Container) -or
+        @(Get-ChildItem -LiteralPath $EmptyBackup -Force).Count -ne 0 -or
+        (Test-Path -LiteralPath (Join-Path $EmptyBackupParent 'console'))) {
+      throw 'Windows installer changed or accepted an ambiguous empty Console backup.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing an empty Console backup.'
+    }
+
+    $DebrisBackupCase = Join-Path $TempRoot 'debris-console-backup'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $DebrisBackupCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $DebrisBackupCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $DebrisBackupCase 'agents'
+    $DebrisBackupParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    New-Item -ItemType Directory -Path $DebrisBackupParent -Force | Out-Null
+    $DebrisBackup = Join-Path $DebrisBackupParent (
+      '.airlock-console-backup-' + [Guid]::NewGuid().ToString('N')
+    )
+    New-Item -ItemType Directory -Path $DebrisBackup | Out-Null
+    $DebrisFile = Join-Path $DebrisBackup 'owner-file.txt'
+    [IO.File]::WriteAllText($DebrisFile, 'keep debris bytes')
+    $DebrisBackupBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $DebrisBackupBlocked = $_.Exception.Message -like '*refusing unsafe Airlock Console backup*'
+    }
+    if (-not $DebrisBackupBlocked -or
+        -not (Test-Path -LiteralPath $DebrisBackup -PathType Container) -or
+        [IO.File]::ReadAllText($DebrisFile) -cne 'keep debris bytes' -or
+        (Test-Path -LiteralPath (Join-Path $DebrisBackupParent 'console'))) {
+      throw 'Windows installer changed or accepted a Console backup containing debris.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing Console backup debris.'
+    }
+    $MultipleCase = Join-Path $TempRoot 'multiple-console-backups'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $MultipleCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $MultipleCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $MultipleCase 'agents'
+    $MultipleParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    New-Item -ItemType Directory -Path $MultipleParent -Force | Out-Null
+    $MultipleBackupA = New-ConsoleBackupFixture $MultipleParent $ConsoleSite
+    $MultipleBackupB = New-ConsoleBackupFixture $MultipleParent $ConsoleSite
+    $MultipleHashA = (Get-FileHash -LiteralPath (Join-Path $MultipleBackupA 'site\index.html') -Algorithm SHA256).Hash
+    $MultipleHashB = (Get-FileHash -LiteralPath (Join-Path $MultipleBackupB 'site\index.html') -Algorithm SHA256).Hash
+    $MultipleBackupsBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $MultipleBackupsBlocked = $_.Exception.Message -like '*refusing multiple Airlock Console backups*'
+    }
+    if (-not $MultipleBackupsBlocked -or
+        -not (Test-Path -LiteralPath $MultipleBackupA -PathType Container) -or
+        -not (Test-Path -LiteralPath $MultipleBackupB -PathType Container) -or
+        (Get-FileHash -LiteralPath (Join-Path $MultipleBackupA 'site\index.html') -Algorithm SHA256).Hash -ne $MultipleHashA -or
+        (Get-FileHash -LiteralPath (Join-Path $MultipleBackupB 'site\index.html') -Algorithm SHA256).Hash -ne $MultipleHashB) {
+      throw 'Windows installer changed or accepted ambiguous Console backups.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing multiple Console backups.'
+    }
+
+    $UnmanagedBackupCase = Join-Path $TempRoot 'unmanaged-console-backup'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $UnmanagedBackupCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $UnmanagedBackupCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $UnmanagedBackupCase 'agents'
+    $UnmanagedBackupParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    New-Item -ItemType Directory -Path $UnmanagedBackupParent -Force | Out-Null
+    $UnmanagedBackup = New-ConsoleBackupFixture $UnmanagedBackupParent $ConsoleSite
+    $UnmanagedBackupMarker = Join-Path $UnmanagedBackup 'site\.airlock-managed'
+    [IO.File]::WriteAllText($UnmanagedBackupMarker, "not managed`n")
+    $UnmanagedBackupHash = (Get-FileHash -LiteralPath (Join-Path $UnmanagedBackup 'site\index.html') -Algorithm SHA256).Hash
+    $UnmanagedBackupBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $UnmanagedBackupBlocked = $_.Exception.Message -like '*refusing unmanaged Airlock Console backup*'
+    }
+    if (-not $UnmanagedBackupBlocked -or
+        -not (Test-Path -LiteralPath $UnmanagedBackup -PathType Container) -or
+        [IO.File]::ReadAllText($UnmanagedBackupMarker) -cne "not managed`n" -or
+        (Get-FileHash -LiteralPath (Join-Path $UnmanagedBackup 'site\index.html') -Algorithm SHA256).Hash -ne $UnmanagedBackupHash -or
+        (Test-Path -LiteralPath (Join-Path $UnmanagedBackupParent 'console'))) {
+      throw 'Windows installer changed or accepted an unmanaged Console backup.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing an unmanaged Console backup.'
+    }
+
+    $UnsafeBackupCase = Join-Path $TempRoot 'unsafe-console-backup'
+    $env:AIRLOCK_INSTALL_DIR = Join-Path $UnsafeBackupCase 'bin'
+    $env:AIRLOCK_CONFIG_DIR = Join-Path $UnsafeBackupCase 'config'
+    $env:AIRLOCK_AGENT_DIR = Join-Path $UnsafeBackupCase 'agents'
+    $UnsafeBackupParent = Join-Path $env:AIRLOCK_INSTALL_DIR 'share\airlock'
+    $UnsafeBackupOutside = Join-Path $UnsafeBackupCase 'outside'
+    New-Item -ItemType Directory -Path $UnsafeBackupParent -Force | Out-Null
+    New-Item -ItemType Directory -Path $UnsafeBackupOutside -Force | Out-Null
+    Copy-Item -LiteralPath $ConsoleSite -Destination (Join-Path $UnsafeBackupOutside 'site') -Recurse
+    $UnsafeBackupHash = (Get-FileHash -LiteralPath (Join-Path $UnsafeBackupOutside 'site\index.html') -Algorithm SHA256).Hash
+    $UnsafeBackup = Join-Path $UnsafeBackupParent (
+      '.airlock-console-backup-' + [Guid]::NewGuid().ToString('N')
+    )
+    New-Item -ItemType Junction -Path $UnsafeBackup -Target $UnsafeBackupOutside | Out-Null
+    $UnsafeBackupBlocked = $false
+    try {
+      & (Join-Path $Root 'scripts\install.ps1') *> $null
+    } catch {
+      $UnsafeBackupBlocked = $_.Exception.Message -like '*refusing unsafe Airlock Console backup*'
+    }
+    if (-not $UnsafeBackupBlocked -or
+        -not (Test-Path -LiteralPath $UnsafeBackup) -or
+        (Get-FileHash -LiteralPath (Join-Path $UnsafeBackupOutside 'site\index.html') -Algorithm SHA256).Hash -ne $UnsafeBackupHash -or
+        (Test-Path -LiteralPath (Join-Path $UnsafeBackupParent 'console'))) {
+      throw 'Windows installer changed or accepted a reparse-point Console backup.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:AIRLOCK_CONFIG_DIR 'managed-bundle.json')) {
+      throw 'Windows installer wrote the bundle before refusing an unsafe Console backup.'
+    }
+  } finally {
+    $env:AIRLOCK_INSTALL_DIR = $SavedInstallDir
+    $env:AIRLOCK_CONFIG_DIR = $SavedConfigDir
+    $env:AIRLOCK_AGENT_DIR = $SavedAgentDir
   }
 
   [IO.File]::WriteAllText((Join-Path $InstallDir 'airlock.cmd'), 'unmanaged file')
@@ -355,6 +827,340 @@ try {
   $env:AIRLOCK_SESSION_RUNTIME_DIR = Join-Path $TempRoot 'sessions'
   $env:AIRLOCK_REAL_CLAUDE = $ClaudeStub
   $env:AIRLOCK_SKIP_HEALTH_CHECK = '1'
+
+  $ConsoleHelp = Invoke-LauncherProcess $InstalledLauncher @('console', '--help')
+  if ($ConsoleHelp.Output -notmatch '(?m)^Usage: airlock console \[--port N\] \[--no-open\] \[--scan\] \[--once\]$') {
+    throw "Windows Console help omitted its supported options: $($ConsoleHelp.Output)"
+  }
+  foreach ($BadConsolePort in @('0', '01', '65536', 'nope')) {
+    $BadConsolePortResult = Invoke-LauncherProcess `
+      $InstalledLauncher @('console', '--port', $BadConsolePort) $false
+    if ($BadConsolePortResult.ExitCode -ne 2 -or
+        $BadConsolePortResult.Error -notmatch 'port must be an integer from 1 to 65535') {
+      throw "Windows Console accepted malformed port ${BadConsolePort}: $($BadConsolePortResult.Error)"
+    }
+  }
+  $BadConsoleOption = Invoke-LauncherProcess $InstalledLauncher @('console', '--unknown') $false
+  if ($BadConsoleOption.ExitCode -ne 2 -or
+      $BadConsoleOption.Error -notmatch 'unknown option: --unknown') {
+    throw 'Windows Console accepted an unknown option.'
+  }
+
+  $ConsoleStub = Join-Path $TempRoot 'airlock-console-stub.py'
+  $ConsoleStubSource = @'
+import http.server
+import json
+import os
+from pathlib import Path
+import sys
+
+record = os.environ.get("AIRLOCK_CONSOLE_STUB_RECORD")
+if record:
+    with open(record, "w", encoding="utf-8") as handle:
+        json.dump(sys.argv[1:], handle)
+mode = os.environ.get("AIRLOCK_CONSOLE_STUB_MODE", "serve")
+port = int(sys.argv[sys.argv.index("--port") + 1])
+if mode == "occupied":
+    print(f"airlock-console: console already running at http://127.0.0.1:{port}", file=sys.stderr)
+    raise SystemExit(2)
+if mode == "occupied-other":
+    print("airlock-console: console already running at http://127.0.0.1:4783", file=sys.stderr)
+    raise SystemExit(2)
+if mode == "starting":
+    print("airlock-console: another console is already starting", file=sys.stderr)
+    raise SystemExit(2)
+if mode == "near-occupied":
+    print(f"airlock-console: console already running at http://127.0.0.1:{port}.", file=sys.stderr)
+    raise SystemExit(2)
+if "--once" in sys.argv:
+    print('{"ok":true,"mode":"once"}')
+    raise SystemExit(0)
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "OtherServer" if mode == "bad-server" else "AirlockConsole"
+    sys_version = ""
+
+    def do_GET(self):
+        body = b'{"ok":true}' if mode != "bad-health" else b'{"ok":false}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server.timeout = 5
+marker_path = os.environ.get("AIRLOCK_CONSOLE_STUB_MARKER")
+pid_path = os.environ.get("AIRLOCK_CONSOLE_STUB_PID_RECORD")
+if mode == "lifecycle":
+    if not marker_path or not pid_path:
+        raise SystemExit("lifecycle paths are missing")
+    marker = Path(marker_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "schema_version": 1,
+        "url": f"http://127.0.0.1:{port}",
+        "pid": os.getpid(),
+        "console_id": "1" * 64,
+    }), encoding="utf-8")
+    Path(pid_path).write_text(str(os.getpid()), encoding="ascii")
+try:
+    server.handle_request()
+finally:
+    server.server_close()
+    if mode == "lifecycle" and marker_path:
+        Path(marker_path).unlink(missing_ok=True)
+if mode == "occupied-race":
+    print(f"airlock-console: console already running at http://127.0.0.1:{port}", file=sys.stderr)
+    raise SystemExit(2)
+'@
+  [IO.File]::WriteAllText($ConsoleStub, $ConsoleStubSource, (New-Object Text.UTF8Encoding($false)))
+  $ConsoleBundleWriter = Join-Path $TempRoot 'write-console-bundle.py'
+  $ConsoleBundleWriterSource = @'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+bundle = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+bundle["components"]["bin/airlock_console.py"] = hashlib.sha256(
+    Path(sys.argv[3]).read_bytes()
+).hexdigest()
+Path(sys.argv[2]).write_text(json.dumps(bundle), encoding="utf-8")
+'@
+  [IO.File]::WriteAllText(
+    $ConsoleBundleWriter,
+    $ConsoleBundleWriterSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $ConsoleBundle = Join-Path $TempRoot 'console-managed-bundle.json'
+  & $RealPython $ConsoleBundleWriter $env:AIRLOCK_MANAGED_BUNDLE_FILE $ConsoleBundle $ConsoleStub
+  if ($LASTEXITCODE -ne 0) { throw 'Windows test could not write a Console bundle fixture.' }
+  $ConsoleTestSite = Join-Path $TempRoot 'console-test-site'
+  New-Item -ItemType Directory -Path $ConsoleTestSite -Force | Out-Null
+  $ConsoleRecord = Join-Path $TempRoot 'console-args.json'
+  $ConsoleEnvironment = @{
+    AIRLOCK_CONSOLE_HELPER = $ConsoleStub
+    AIRLOCK_CONSOLE_SITE = $ConsoleTestSite
+    AIRLOCK_CONSOLE_STUB_RECORD = $ConsoleRecord
+    AIRLOCK_MANAGED_BUNDLE_FILE = $ConsoleBundle
+  }
+  $ConsoleOnce = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', '51234', '--scan', '--once') $true $ConsoleEnvironment
+  if ($ConsoleOnce.ExitCode -ne 0 -or
+      $ConsoleOnce.Output -ne "{`"ok`":true,`"mode`":`"once`"}`n" -or
+      $ConsoleOnce.Error) {
+    throw "Windows Console --once did not reach its helper (exit $($ConsoleOnce.ExitCode), stderr: $($ConsoleOnce.Error)): $($ConsoleOnce.Output)"
+  }
+  $ConsoleArguments = [string[]](Get-Content -LiteralPath $ConsoleRecord -Raw | ConvertFrom-Json)
+  $ExpectedConsoleArguments = @(
+    '--port', '51234', '--site', $ConsoleTestSite,
+    '--access-helper', (Join-Path $InstallDir 'airlock-access.py'),
+    '--tools-helper', (Join-Path $InstallDir 'airlock_console_tools.py'),
+    '--scan', '--once'
+  )
+  if (Compare-Object $ExpectedConsoleArguments $ConsoleArguments -SyncWindow 0) {
+    throw "Windows Console changed its helper arguments: $($ConsoleArguments -join ' ')"
+  }
+
+  $ConsolePort = Get-FreeLoopbackPort
+  $ConsoleServeEnvironment = $ConsoleEnvironment.Clone()
+  $ConsoleServeEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'serve'
+  $ConsoleServe = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', "--port=$ConsolePort", '--no-open') $true $ConsoleServeEnvironment
+  if ($ConsoleServe.Output -ne "Airlock Console: http://127.0.0.1:$ConsolePort`n") {
+    throw "Windows Console did not print its exact loopback URL: $($ConsoleServe.Output)"
+  }
+
+  # Windows PowerShell cannot generate a reliable Ctrl+C event in every CI
+  # host. Exercise the same normal child-cleanup path with a controlled helper
+  # and prove the parent neither force-stops it nor leaves its marker or port.
+  $ConsoleLifecycleRoot = Join-Path $TempRoot 'console-lifecycle'
+  $ConsoleLifecycleMarker = Join-Path $ConsoleLifecycleRoot 'console-address.json'
+  $ConsoleLifecyclePidRecord = Join-Path $ConsoleLifecycleRoot 'helper.pid'
+  $ConsoleLifecycleStopCapture = Join-Path $ConsoleLifecycleRoot 'forced-stop.txt'
+  $ConsoleLifecycleHarness = Join-Path $TempRoot 'console-lifecycle-harness.ps1'
+  $EscapedLifecycleStopCapture = $ConsoleLifecycleStopCapture.Replace("'", "''")
+  $EscapedLifecycleLauncher = $InstalledLauncher.Replace("'", "''")
+  $ConsoleLifecycleHarnessSource = @"
+function Stop-Process {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = `$true)][int]`$Id,
+    [switch]`$Force
+  )
+  [IO.File]::AppendAllText(
+    '$EscapedLifecycleStopCapture',
+    "`$Id|`$Force`n",
+    (New-Object Text.UTF8Encoding(`$false))
+  )
+  Microsoft.PowerShell.Management\Stop-Process @PSBoundParameters
+}
+& '$EscapedLifecycleLauncher' @args
+exit `$LASTEXITCODE
+"@
+  [IO.File]::WriteAllText(
+    $ConsoleLifecycleHarness,
+    $ConsoleLifecycleHarnessSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $ConsoleLifecyclePort = Get-FreeLoopbackPort
+  $ConsoleLifecycleEnvironment = $ConsoleEnvironment.Clone()
+  $ConsoleLifecycleEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'lifecycle'
+  $ConsoleLifecycleEnvironment['AIRLOCK_CONSOLE_STUB_MARKER'] = $ConsoleLifecycleMarker
+  $ConsoleLifecycleEnvironment['AIRLOCK_CONSOLE_STUB_PID_RECORD'] = $ConsoleLifecyclePidRecord
+  $ConsoleLifecycle = Invoke-LauncherProcess `
+    $ConsoleLifecycleHarness `
+    @('console', '--port', [string]$ConsoleLifecyclePort, '--no-open') `
+    $true $ConsoleLifecycleEnvironment
+  if ($ConsoleLifecycle.Output -ne "Airlock Console: http://127.0.0.1:$ConsoleLifecyclePort`n" -or
+      $ConsoleLifecycle.Error) {
+    throw "Windows Console lifecycle helper returned unexpected output: $($ConsoleLifecycle.Output)$($ConsoleLifecycle.Error)"
+  }
+  if (-not (Test-Path -LiteralPath $ConsoleLifecyclePidRecord -PathType Leaf)) {
+    throw 'Windows Console lifecycle helper did not record its child process.'
+  }
+  $ConsoleLifecyclePid = [int]([IO.File]::ReadAllText($ConsoleLifecyclePidRecord))
+  if (Get-Process -Id $ConsoleLifecyclePid -ErrorAction SilentlyContinue) {
+    throw "Windows Console lifecycle helper process $ConsoleLifecyclePid remained running."
+  }
+  if (Test-Path -LiteralPath $ConsoleLifecycleMarker) {
+    throw 'Windows Console normal shutdown left console-address.json behind.'
+  }
+  if (Test-Path -LiteralPath $ConsoleLifecycleStopCapture) {
+    throw 'Windows Console parent force-stopped a helper that was exiting normally.'
+  }
+  $ConsoleLifecycleListener = [Net.Sockets.TcpListener]::new(
+    [Net.IPAddress]::Loopback,
+    $ConsoleLifecyclePort
+  )
+  try {
+    $ConsoleLifecycleListener.Start()
+  } finally {
+    $ConsoleLifecycleListener.Stop()
+  }
+  $ConsoleBrowserCapture = Join-Path $TempRoot 'console-browser.json'
+  $ConsoleBrowserHarness = Join-Path $TempRoot 'console-browser-harness.ps1'
+  $EscapedBrowserCapture = $ConsoleBrowserCapture.Replace("'", "''")
+  $EscapedInstalledLauncher = $InstalledLauncher.Replace("'", "''")
+  $ConsoleBrowserHarnessSource = @"
+function Start-Process {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0, Mandatory = `$true)][string]`$FilePath,
+    [object[]]`$ArgumentList,
+    [switch]`$NoNewWindow,
+    [switch]`$PassThru,
+    [string]`$RedirectStandardError
+  )
+  if (`$FilePath -like 'http://127.0.0.1:*') {
+    `$capture = [ordered]@{
+      file_path = `$FilePath
+      argument_list_supplied = `$PSBoundParameters.ContainsKey('ArgumentList')
+    }
+    [IO.File]::WriteAllText(
+      '$EscapedBrowserCapture',
+      (ConvertTo-Json -InputObject `$capture -Compress),
+      (New-Object Text.UTF8Encoding(`$false))
+    )
+    return
+  }
+  Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
+}
+& '$EscapedInstalledLauncher' @args
+exit `$LASTEXITCODE
+"@
+  [IO.File]::WriteAllText(
+    $ConsoleBrowserHarness,
+    $ConsoleBrowserHarnessSource,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $ConsoleBrowserPort = Get-FreeLoopbackPort
+  $ConsoleBrowserEnvironment = $ConsoleEnvironment.Clone()
+  $ConsoleBrowserEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'serve'
+  $ConsoleBrowser = Invoke-LauncherProcess `
+    $ConsoleBrowserHarness @('console', '--port', [string]$ConsoleBrowserPort) $true $ConsoleBrowserEnvironment
+  if ($ConsoleBrowser.Output -ne "Airlock Console: http://127.0.0.1:$ConsoleBrowserPort`n" -or
+      $ConsoleBrowser.Error) {
+    throw "Windows Console browser launch returned unexpected output: $($ConsoleBrowser.Output)$($ConsoleBrowser.Error)"
+  }
+  $ConsoleBrowserInvocation = Get-Content -LiteralPath $ConsoleBrowserCapture -Raw | ConvertFrom-Json
+  if ($ConsoleBrowserInvocation.file_path -ne "http://127.0.0.1:$ConsoleBrowserPort" -or
+      $ConsoleBrowserInvocation.argument_list_supplied) {
+    throw 'Windows Console did not pass one exact loopback URL to Start-Process.'
+  }
+  Remove-Item -LiteralPath $ConsoleBrowserCapture -Force
+  $ConsoleNoOpenPort = Get-FreeLoopbackPort
+  $ConsoleNoOpen = Invoke-LauncherProcess `
+    $ConsoleBrowserHarness @('console', '--port', [string]$ConsoleNoOpenPort, '--no-open') $true $ConsoleBrowserEnvironment
+  if ($ConsoleNoOpen.Output -ne "Airlock Console: http://127.0.0.1:$ConsoleNoOpenPort`n" -or
+      $ConsoleNoOpen.Error -or (Test-Path -LiteralPath $ConsoleBrowserCapture)) {
+    throw 'Windows Console --no-open invoked the browser opener or returned unexpected output.'
+  }
+  $OccupiedPort = Get-FreeLoopbackPort
+  $OccupiedEnvironment = $ConsoleEnvironment.Clone()
+  $OccupiedEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'occupied'
+  $OccupiedConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', [string]$OccupiedPort, '--no-open') $true $OccupiedEnvironment
+  if ($OccupiedConsole.Output -ne "Airlock Console: http://127.0.0.1:$OccupiedPort`n" -or
+      $OccupiedConsole.Error) {
+    throw "Windows Console did not accept its helper's exact occupied-port result: $($OccupiedConsole.Output)$($OccupiedConsole.Error)"
+  }
+  $OccupiedOtherEnvironment = $ConsoleEnvironment.Clone()
+  $OccupiedOtherEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'occupied-other'
+  $OccupiedOtherConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', '51238', '--no-open') $true $OccupiedOtherEnvironment
+  if ($OccupiedOtherConsole.Output -ne "Airlock Console: http://127.0.0.1:4783`n" -or
+      $OccupiedOtherConsole.Error) {
+    throw "Windows Console did not reopen the validated existing Console URL: $($OccupiedOtherConsole.Output)$($OccupiedOtherConsole.Error)"
+  }
+  $OccupiedRacePort = Get-FreeLoopbackPort
+  $OccupiedRaceEnvironment = $ConsoleEnvironment.Clone()
+  $OccupiedRaceEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'occupied-race'
+  $OccupiedRaceConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', [string]$OccupiedRacePort, '--no-open') $true $OccupiedRaceEnvironment
+  if ($OccupiedRaceConsole.Output -ne "Airlock Console: http://127.0.0.1:$OccupiedRacePort`n" -or
+      $OccupiedRaceConsole.Error) {
+    throw "Windows Console lost the occupied-port race: $($OccupiedRaceConsole.Output)$($OccupiedRaceConsole.Error)"
+  }
+  $StartingEnvironment = $ConsoleEnvironment.Clone()
+  $StartingEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'starting'
+  $StartingConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', '51239', '--no-open') $false $StartingEnvironment
+  if ($StartingConsole.ExitCode -ne 2 -or
+      $StartingConsole.Error -notmatch 'another console is already starting') {
+    throw "Windows Console treated a starting lock as an existing console: $($StartingConsole.Error)"
+  }
+  $NearOccupiedPort = Get-FreeLoopbackPort
+  $NearOccupiedEnvironment = $ConsoleEnvironment.Clone()
+  $NearOccupiedEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'near-occupied'
+  $NearOccupiedConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', [string]$NearOccupiedPort, '--no-open') $false $NearOccupiedEnvironment
+  if ($NearOccupiedConsole.ExitCode -ne 2 -or
+      $NearOccupiedConsole.Error -notmatch 'console already running at http://127\.0\.0\.1:.*\.$') {
+    throw "Windows Console accepted or changed a near-match occupied-port error: $($NearOccupiedConsole.Error)"
+  }
+  $BadHealthPort = Get-FreeLoopbackPort
+  $BadHealthEnvironment = $ConsoleEnvironment.Clone()
+  $BadHealthEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'bad-health'
+  $BadHealthConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', [string]$BadHealthPort, '--no-open') $false $BadHealthEnvironment
+  if ($BadHealthConsole.ExitCode -ne 1 -or
+      $BadHealthConsole.Error -notmatch 'helper exited before its loopback health check passed') {
+    throw "Windows Console accepted a health response whose ok value was false: $($BadHealthConsole.Error)"
+  }
+  $BadServerPort = Get-FreeLoopbackPort
+  $BadServerEnvironment = $ConsoleEnvironment.Clone()
+  $BadServerEnvironment['AIRLOCK_CONSOLE_STUB_MODE'] = 'bad-server'
+  $BadServerConsole = Invoke-LauncherProcess `
+    $InstalledLauncher @('console', '--port', [string]$BadServerPort, '--no-open') $false $BadServerEnvironment
+  if ($BadServerConsole.ExitCode -ne 1 -or
+      $BadServerConsole.Error -notmatch 'helper exited before its loopback health check passed') {
+    throw "Windows Console accepted a health response from the wrong server: $($BadServerConsole.Error)"
+  }
 
   $NoRouterMessage = 'no Airlock router is running for this terminal'
   $NoRouterStatus = Invoke-LauncherProcess $InstalledLauncher @('status')
@@ -582,7 +1388,7 @@ server.server_close()
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, composer',
-    'Hybrid root aliases: auto, sonnet, sol, terra, luna, opus, fable, haiku, grok, composer'
+    'Hybrid root aliases: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku, grok, composer'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
@@ -725,6 +1531,70 @@ server.server_close()
     throw 'Windows launcher accepted an unsupported OpenRouter command.'
   }
 
+  # Registry management is delegated without exposing an endpoint or upstream
+  # identity in launcher output. This mock has no registry or network access.
+  $OpenModelHelperStub = Join-Path $TempRoot 'openmodel-helper-stub.py'
+  [IO.File]::WriteAllText(
+    $OpenModelHelperStub,
+    "import os, sys`nfrom pathlib import Path`ninput_path = os.environ.get('AIRLOCK_TEST_HELPER_STDIN')`nif input_path:`n    Path(input_path).write_bytes(sys.stdin.buffer.read())`nprint('MOCK_OPENMODEL=' + '|'.join(sys.argv[1:]))`nsys.exit(int(os.environ.get('AIRLOCK_TEST_HELPER_EXIT', '0')))`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $OpenModelRegistry = Join-Path (Join-Path $TempRoot 'openmodel-private') 'openmodel-registry.json'
+  $OpenModelList = Invoke-LauncherProcess $InstalledLauncher @('open-model', 'list') $true @{
+    AIRLOCK_OPENMODEL_HELPER = $OpenModelHelperStub
+    AIRLOCK_OPENMODEL_REGISTRY_FILE = $OpenModelRegistry
+  }
+  $ExpectedOpenModelDispatch = "MOCK_OPENMODEL=--registry|$OpenModelRegistry|list"
+  if (-not $OpenModelList.Output.Contains($ExpectedOpenModelDispatch)) {
+    throw "Windows open-model command was not dispatched safely: $($OpenModelList.Output)"
+  }
+  $FailedOpenModelCheck = Invoke-LauncherProcess $InstalledLauncher @('open-model', 'check', 'local-coder') $false @{
+    AIRLOCK_OPENMODEL_HELPER = $OpenModelHelperStub
+    AIRLOCK_OPENMODEL_REGISTRY_FILE = $OpenModelRegistry
+    AIRLOCK_TEST_HELPER_EXIT = '25'
+  }
+  if ($FailedOpenModelCheck.ExitCode -ne 25) {
+    throw "Windows open-model helper exit status was lost: $($FailedOpenModelCheck.ExitCode)"
+  }
+
+  $OpenModelStdinCapture = Join-Path $TempRoot 'openmodel-helper.stdin'
+  $PrivateEndpointInput = '{"base_url":"http://127.0.0.1:18098/v1"}'
+  $EndpointAdd = Invoke-LauncherProcess $InstalledLauncher @(
+    'open-model', 'endpoint', 'add', 'stdin-server', '--stdin',
+    '--max-concurrency', '1'
+  ) $true @{
+    AIRLOCK_OPENMODEL_HELPER = $OpenModelHelperStub
+    AIRLOCK_OPENMODEL_REGISTRY_FILE = $OpenModelRegistry
+    AIRLOCK_TEST_HELPER_STDIN = $OpenModelStdinCapture
+  } $PrivateEndpointInput
+  $ExpectedEndpointArgs = "MOCK_OPENMODEL=--registry|$OpenModelRegistry|endpoint|add|stdin-server|--stdin|--max-concurrency|1"
+  if (-not $EndpointAdd.Output.Contains($ExpectedEndpointArgs)) {
+    throw "Windows endpoint add changed safe helper argv: $($EndpointAdd.Output)"
+  }
+  if ([IO.File]::ReadAllText($OpenModelStdinCapture) -ne $PrivateEndpointInput) {
+    throw 'Windows endpoint add did not preserve bounded private stdin.'
+  }
+  if (($EndpointAdd.Output + $EndpointAdd.Error) -match '127\.0\.0\.1') {
+    throw 'Windows endpoint add exposed its private URL in output.'
+  }
+
+  $PrivateRouteInput = '{"upstream_model":"private/synthetic-stdin-model","accepted_response_models":["private/synthetic-stdin-model"]}'
+  $RouteAdd = Invoke-LauncherProcess $InstalledLauncher @(
+    'open-model', 'add', 'stdin-route', 'stdin-server', '--stdin',
+    '--context-window', '32768', '--max-output-tokens', '4096',
+    '--no-streaming', '--tools', 'none', '--no-worker'
+  ) $true @{
+    AIRLOCK_OPENMODEL_HELPER = $OpenModelHelperStub
+    AIRLOCK_OPENMODEL_REGISTRY_FILE = $OpenModelRegistry
+    AIRLOCK_TEST_HELPER_STDIN = $OpenModelStdinCapture
+  } $PrivateRouteInput
+  if (($RouteAdd.Output + $RouteAdd.Error) -match 'private/synthetic-stdin-model') {
+    throw 'Windows route add exposed its private identity in helper argv or output.'
+  }
+  if ([IO.File]::ReadAllText($OpenModelStdinCapture) -ne $PrivateRouteInput) {
+    throw 'Windows route add did not preserve bounded private stdin.'
+  }
+
   # Capture the protected OPR launch request without starting a router or reading
   # a real credential. The bridge itself has separate Python tests.
   $OprAccessStub = Join-Path $TempRoot 'opr-access-stub.py'
@@ -746,9 +1616,25 @@ route = {
     "quantization": "unknown",
     "canonical_slug": "moonshotai/kimi-k3-20260715",
 }
+openmodel = {
+    "route": "local-coder",
+    "model": "openmodel/local-coder",
+}
 if args and args[0] == "bundle-check":
+    expected_adapter = os.environ.get("AIRLOCK_TEST_OPENMODEL_ADAPTER_COMPONENT")
+    if expected_adapter:
+        components = [
+            args[index + 1]
+            for index, argument in enumerate(args[:-1])
+            if argument == "--component"
+        ]
+        if f"bin/airlock_openmodel_adapter.py={expected_adapter}" not in components:
+            raise SystemExit(26)
     raise SystemExit(0)
 if args and args[0] == "fast-transition-create":
+    fast_marker = os.environ.get("AIRLOCK_TEST_FAST_CREATE_MARKER")
+    if fast_marker:
+        Path(fast_marker).write_text("called", encoding="utf-8")
     print("fast-transition-0123456789abcdef0123456789abcdef.json\t" + "a" * 64)
     raise SystemExit(0)
 if args and args[0] == "fast-transition-cleanup":
@@ -756,10 +1642,19 @@ if args and args[0] == "fast-transition-cleanup":
 if args == ["openrouter-routes"]:
     print(json.dumps([route], separators=(",", ":")))
     raise SystemExit(0)
+if args == ["openmodel-routes"]:
+    print(json.dumps([openmodel], separators=(",", ":")))
+    raise SystemExit(0)
 if len(args) == 2 and args[0] == "openrouter-resolve" and args[1] == route["route"]:
     print(json.dumps(route, separators=(",", ":")))
     raise SystemExit(0)
-print("unknown or disabled OpenRouter route", file=sys.stderr)
+if len(args) == 2 and args[0] == "openmodel-resolve" and args[1] == openmodel["route"]:
+    print(json.dumps(openmodel, separators=(",", ":")))
+    raise SystemExit(0)
+if args and args[0].startswith("openmodel-"):
+    print("unknown or disabled open-model route", file=sys.stderr)
+else:
+    print("unknown or disabled OpenRouter route", file=sys.stderr)
 raise SystemExit(2)
 '@
   [IO.File]::WriteAllText(
@@ -767,6 +1662,15 @@ raise SystemExit(2)
     $OprAccessStubSource,
     (New-Object Text.UTF8Encoding($false))
   )
+  $AdapterComponentSentinel = Join-Path $TempRoot 'adapter-component-sentinel.py'
+  $BundleAdapterCheck = Invoke-LauncherProcess $InstalledLauncher @('bundle') $true @{
+    AIRLOCK_ACCESS_HELPER = $OprAccessStub
+    AIRLOCK_OPENMODEL_ADAPTER_HELPER = $AdapterComponentSentinel
+    AIRLOCK_TEST_OPENMODEL_ADAPTER_COMPONENT = $AdapterComponentSentinel
+  }
+  if ($BundleAdapterCheck.Output -notmatch '(?m)^Managed bundle is current and complete\.$') {
+    throw "Windows bundle check did not verify the open-model adapter component: $($BundleAdapterCheck.Output)"
+  }
   $InstalledBridge = Join-Path $InstallDir 'airlock-hybrid.py'
   $InstalledBridgeBytes = [IO.File]::ReadAllBytes($InstalledBridge)
   $CaptureBridgeSource = @'
@@ -812,6 +1716,10 @@ print("OPR_REQUEST=" + json.dumps(request, separators=(",", ":"), sort_keys=True
     if ($OprRequest.profile -ne 'openrouter-pure' -or
         $OprRequest.openrouter_root_route -ne 'kimi-k3') {
       throw "Windows OPR launch lost its exact route: $($OprMatch.Groups[1].Value)"
+    }
+    $ExpectedLaunchWorkdir = [IO.Path]::GetFullPath((Get-Location).Path)
+    if ([string]$OprRequest.workdir -cne [string]$ExpectedLaunchWorkdir) {
+      throw "Windows OPR launch lost its working directory: $($OprMatch.Groups[1].Value)"
     }
     foreach ($ForbiddenField in @('proxy_url', 'root_model', 'root_name')) {
       if ($OprRequest.PSObject.Properties.Name -contains $ForbiddenField) {
@@ -869,9 +1777,272 @@ print("OPR_REQUEST=" + json.dumps(request, separators=(",", ":"), sort_keys=True
         $UnknownOprRoute.Error -notmatch 'unknown or disabled OpenRouter route') {
       throw 'Windows OPR launch accepted an unknown route.'
     }
+
+    # Open-model roots use their explicit namespace regardless of the saved
+    # profile. Capture the request before the bridge can start its loopback
+    # router, which keeps this assertion entirely offline. Local roots must not
+    # arm Fast handoff or include parent-binding metadata in the request.
+    $OpenModelFastMarker = Join-Path $TempRoot 'openmodel-fast-create.marker'
+    Remove-Item -LiteralPath $OpenModelFastMarker -Force -ErrorAction SilentlyContinue
+    foreach ($SavedProfile in @('hybrid', 'grok')) {
+      $OmCapture = Invoke-LauncherProcess $InstalledLauncher `
+        @('om', 'local-coder', '-r') $true @{
+          AIRLOCK_ACCESS_HELPER = $OprAccessStub
+          AIRLOCK_DEFAULT_PROFILE = $SavedProfile
+          AIRLOCK_TEST_FAST_CREATE_MARKER = $OpenModelFastMarker
+        }
+      $OmMatch = [regex]::Match($OmCapture.Output, '(?m)^OPR_REQUEST=(.+)$')
+      if (-not $OmMatch.Success) {
+        throw "Windows OM launch did not reach the protected bridge under ${SavedProfile}: $($OmCapture.Output)"
+      }
+      $OmRequest = $OmMatch.Groups[1].Value | ConvertFrom-Json
+      if ($OmRequest.profile -ne 'openmodel-pure' -or
+          $OmRequest.openmodel_root_route -ne 'local-coder' -or
+          @($OmRequest.args)[-1] -ne '-r') {
+        throw "Windows OM launch lost its exact local route under ${SavedProfile}: $($OmMatch.Groups[1].Value)"
+      }
+      foreach ($ForbiddenField in @(
+        'proxy_url', 'root_model', 'root_name', 'openrouter_root_route',
+        'fast_transition_launcher_pid', 'fast_transition_cwd'
+      )) {
+        if ($OmRequest.PSObject.Properties.Name -contains $ForbiddenField) {
+          throw "Windows OM request trusted forbidden field ${ForbiddenField}."
+        }
+      }
+    }
+    foreach ($Override in @('--model=openmodel/local-coder', '--model', '-m')) {
+      $BlockedOm = Invoke-LauncherProcess $InstalledLauncher `
+        @('om', 'local-coder', $Override, 'blocked') $false @{
+          AIRLOCK_ACCESS_HELPER = $OprAccessStub
+        }
+      if ($BlockedOm.ExitCode -ne 2 -or
+          $BlockedOm.Error -notmatch 'selected by exact registry route') {
+        throw "Windows OM launch accepted model override ${Override}."
+      }
+    }
+    $UnknownOm = Invoke-LauncherProcess $InstalledLauncher `
+      @('om', 'missing-route', '-p', 'test') $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($UnknownOm.ExitCode -ne 2 -or
+        $UnknownOm.Error -notmatch 'unknown or disabled open-model route') {
+      throw 'Windows OM launch accepted an unknown route.'
+    }
+    $BareOm = Invoke-LauncherProcess $InstalledLauncher @('om') $false @{
+      AIRLOCK_ACCESS_HELPER = $OprAccessStub
+    }
+    if ($BareOm.ExitCode -ne 2 -or
+        $BareOm.Error -notmatch 'route is required outside an interactive terminal') {
+      throw 'Windows noninteractive OM launch accepted a missing route.'
+    }
+
+    $HybridOmCapture = Invoke-LauncherProcess $InstalledLauncher `
+      @('hybrid', 'om:local-coder', '-r', '--model', 'openmodel/local-coder') $true @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+        AIRLOCK_TEST_FAST_CREATE_MARKER = $OpenModelFastMarker
+      }
+    $HybridOmMatch = [regex]::Match($HybridOmCapture.Output, '(?m)^OPR_REQUEST=(.+)$')
+    if (-not $HybridOmMatch.Success) {
+      throw "Windows hybrid om: launch did not reach the protected bridge: $($HybridOmCapture.Output)"
+    }
+    $HybridOmRequest = $HybridOmMatch.Groups[1].Value | ConvertFrom-Json
+    if ($HybridOmRequest.profile -ne 'hybrid-openmodel-root' -or
+        $HybridOmRequest.openmodel_root_route -ne 'local-coder' -or
+        -not $HybridOmRequest.proxy_url -or
+        @($HybridOmRequest.args)[-2] -ne '--model' -or
+        @($HybridOmRequest.args)[-1] -ne 'openmodel/local-coder') {
+      throw "Windows hybrid om: launch changed the selected local route: $($HybridOmMatch.Groups[1].Value)"
+    }
+    foreach ($ForbiddenField in @(
+      'root_model', 'root_name', 'openrouter_root_route',
+      'fast_transition_launcher_pid', 'fast_transition_cwd'
+    )) {
+      if ($HybridOmRequest.PSObject.Properties.Name -contains $ForbiddenField) {
+        throw "Windows hybrid OM request trusted forbidden field ${ForbiddenField}."
+      }
+    }
+    if (Test-Path -LiteralPath $OpenModelFastMarker) {
+      throw 'Windows local roots created Fast handoff state.'
+    }
+    $MismatchedHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @('hybrid', 'om:local-coder', '--model', 'openmodel/other', '-p', 'test') $false @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+      }
+    if ($MismatchedHybridOm.ExitCode -ne 2 -or
+        $MismatchedHybridOm.Error -notmatch 'forwarded --model disagrees with the selected local open-model root route') {
+      throw 'Windows hybrid om: root accepted a mismatched model override.'
+    }
+    $MismatchedShortHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @('hybrid', 'om:local-coder', '-m', 'gpt-5.6-sol', '-p', 'test') $false @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+      }
+    if ($MismatchedShortHybridOm.ExitCode -ne 2 -or
+        $MismatchedShortHybridOm.Error -notmatch 'forwarded --model disagrees with the selected local open-model root route') {
+      throw 'Windows hybrid om: root accepted a mismatched -m selector.'
+    }
+    $MismatchedShortEqualsHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @('hybrid', 'om:local-coder', '-m=gpt-5.6-sol', '-p', 'test') $false @{
+        AIRLOCK_ACCESS_HELPER = $OprAccessStub
+      }
+    if ($MismatchedShortEqualsHybridOm.ExitCode -ne 2 -or
+        $MismatchedShortEqualsHybridOm.Error -notmatch 'forwarded --model disagrees with the selected local open-model root route') {
+      throw 'Windows hybrid om: root accepted a mismatched -m= selector.'
+    }
+    $DuplicateHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @(
+        'hybrid', 'om:local-coder', '--model', 'openmodel/local-coder',
+        '-m', 'openmodel/local-coder', '-p', 'test'
+      ) $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($DuplicateHybridOm.ExitCode -ne 2 -or
+        $DuplicateHybridOm.Error -notmatch '--model or -m may be provided only once') {
+      throw 'Windows hybrid om: root accepted duplicate model selectors.'
+    }
+    $DuplicateLongHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @(
+        'hybrid', 'om:local-coder', '--model=openmodel/local-coder',
+        '--model=openmodel/local-coder', '-p', 'test'
+      ) $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($DuplicateLongHybridOm.ExitCode -ne 2 -or
+        $DuplicateLongHybridOm.Error -notmatch '--model or -m may be provided only once') {
+      throw 'Windows hybrid om: root accepted duplicate long model selectors.'
+    }
+    $UnknownHybridOm = Invoke-LauncherProcess $InstalledLauncher `
+      @('hybrid', 'om:missing-route', '-p', 'test') $false @{ AIRLOCK_ACCESS_HELPER = $OprAccessStub }
+    if ($UnknownHybridOm.ExitCode -ne 2 -or
+        $UnknownHybridOm.Error -notmatch 'not an enabled local open-model route') {
+      throw 'Windows hybrid om: root accepted an unknown local route.'
+    }
   } finally {
     [IO.File]::WriteAllBytes($InstalledBridge, $InstalledBridgeBytes)
   }
+
+  # Run the real Windows bridge for a worker-disabled local route. This proves
+  # that the protected request is resolved again by the bridge, that the
+  # route's declared context replaces the generic saved fallback, and that a
+  # pure root does not require a generated named Agent.
+  $BridgeOpenModelDirectory = Join-Path $TempRoot 'bridge-openmodel-private'
+  $BridgeOpenModelRegistry = Join-Path $BridgeOpenModelDirectory 'openmodel-registry.json'
+  $ProtectBridgeRegistryDirectory = Join-Path $TempRoot 'protect-bridge-registry-directory.py'
+  [IO.File]::WriteAllText(
+    $ProtectBridgeRegistryDirectory,
+    @'
+from pathlib import Path
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import airlock_policy
+
+directory = Path(sys.argv[2])
+directory.mkdir(parents=True, exist_ok=True)
+airlock_policy.protect_private_path(directory)
+'@,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  & $RealPython $ProtectBridgeRegistryDirectory $InstallDir $BridgeOpenModelDirectory
+  if ($LASTEXITCODE -ne 0) { throw 'Windows bridge fixture could not protect its registry directory.' }
+  $InstalledOpenModelHelper = Join-Path $InstallDir 'airlock_openmodel.py'
+  '{"base_url":"http://127.0.0.1:18096/v1"}' |
+    & $RealPython $InstalledOpenModelHelper --registry $BridgeOpenModelRegistry `
+      endpoint add local-bridge --stdin --max-concurrency 1 *> $null
+  if ($LASTEXITCODE -ne 0) { throw 'Windows bridge fixture could not add its local endpoint.' }
+  '{"upstream_model":"private/synthetic-bridge-model","accepted_response_models":["private/synthetic-bridge-model"]}' |
+    & $RealPython $InstalledOpenModelHelper --registry $BridgeOpenModelRegistry `
+      add quiet-route local-bridge --stdin `
+      --context-window 64000 --max-output-tokens 4096 `
+      --no-streaming --tools none --no-worker *> $null
+  if ($LASTEXITCODE -ne 0) { throw 'Windows bridge fixture could not add its worker-disabled route.' }
+
+  # The bridge accepts only its managed sibling router. Replace that temporary
+  # installed copy with a bounded stub so this launcher test does not need to
+  # keep a real router daemon alive, then restore it before later assertions.
+  $InstalledBridgeOpenModelRouter = Join-Path $InstallDir 'airlock-router.py'
+  $InstalledBridgeOpenModelRouterBytes = [IO.File]::ReadAllBytes($InstalledBridgeOpenModelRouter)
+  [IO.File]::WriteAllText(
+    $InstalledBridgeOpenModelRouter,
+    @'
+import os
+import sys
+
+if len(sys.argv) >= 2 and sys.argv[1] == "watch":
+    raise SystemExit(0)
+if len(sys.argv) < 2 or sys.argv[1] != "start":
+    raise SystemExit(71)
+print("http://127.0.0.1:28476")
+print(os.getpid())
+'@,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $BridgeOpenModelBundle = Join-Path $TempRoot 'bridge-openmodel-bundle.json'
+  $BundleRewriteHelper = Join-Path $TempRoot 'rewrite-openmodel-bundle.py'
+  [IO.File]::WriteAllText(
+    $BundleRewriteHelper,
+    @'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+source, output, router = map(Path, sys.argv[1:])
+bundle = json.loads(source.read_text(encoding="utf-8"))
+bundle["components"]["bin/airlock-router.py"] = hashlib.sha256(router.read_bytes()).hexdigest()
+output.write_text(json.dumps(bundle), encoding="utf-8")
+'@,
+    (New-Object Text.UTF8Encoding($false))
+  )
+  & $RealPython $BundleRewriteHelper (Join-Path $ConfigDir 'managed-bundle.json') `
+    $BridgeOpenModelBundle $InstalledBridgeOpenModelRouter
+  if ($LASTEXITCODE -ne 0) { throw 'Windows bridge fixture could not rewrite its router bundle hash.' }
+  $BridgeOpenModelEnvironment = @{
+    AIRLOCK_OPENMODEL_REGISTRY_FILE = $BridgeOpenModelRegistry
+    AIRLOCK_MANAGED_BUNDLE_FILE = $BridgeOpenModelBundle
+  }
+  $BridgeOpenModelPure = Invoke-LauncherProcess $InstalledLauncher `
+    @('om', 'quiet-route', '-p', 'test') $true $BridgeOpenModelEnvironment
+  foreach ($Expected in @(
+    'ACTIVE_PROFILE=openmodel-pure',
+    'ROOT_MODEL=openmodel/quiet-route',
+    'COMPACT_WINDOW=unset',
+    'MAX_CONTEXT=64000',
+    'ALWAYS_EFFORT=unset',
+    'CUSTOM_CAPS=unset'
+  )) {
+    if ($BridgeOpenModelPure.Output -notmatch "(?m)^$([regex]::Escape($Expected))$") {
+      throw "Windows worker-disabled local root missed ${Expected}: $($BridgeOpenModelPure.Output)"
+    }
+  }
+  if ($BridgeOpenModelPure.Output -notmatch '(?m)^ARG=--agents\nARG=\{\}$') {
+    throw "Windows worker-disabled local root did not render an empty Agent object: $($BridgeOpenModelPure.Output)"
+  }
+  $BridgeOpenModelAuto = Invoke-LauncherProcess $InstalledLauncher `
+    @('om', 'quiet-route', '-p', 'test') $true ($BridgeOpenModelEnvironment + @{
+      AIRLOCK_CONTEXT_WINDOW = 'auto'
+    })
+  if ($BridgeOpenModelAuto.Output -notmatch '(?m)^COMPACT_WINDOW=unset$' -or
+      $BridgeOpenModelAuto.Output -notmatch '(?m)^MAX_CONTEXT=64000$') {
+    throw "Windows local root discarded AIRLOCK_CONTEXT_WINDOW=auto: $($BridgeOpenModelAuto.Output)"
+  }
+  $BridgeOpenModelInherited = Invoke-LauncherProcess $InstalledLauncher `
+    @('om', 'quiet-route', '-p', 'test') $true ($BridgeOpenModelEnvironment + @{
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW = '450000'
+    })
+  if ($BridgeOpenModelInherited.Output -notmatch '(?m)^COMPACT_WINDOW=450000$' -or
+      $BridgeOpenModelInherited.Output -notmatch '(?m)^MAX_CONTEXT=64000$') {
+    throw "Windows local root discarded an inherited compact-window override: $($BridgeOpenModelInherited.Output)"
+  }
+  $BridgeOpenModelHybrid = Invoke-LauncherProcess $InstalledLauncher `
+    @('hybrid', 'om:quiet-route', '-p', 'test') $true $BridgeOpenModelEnvironment
+  foreach ($Expected in @(
+    'ACTIVE_PROFILE=hybrid-openmodel-root',
+    'ROOT_MODEL=openmodel/quiet-route',
+    'COMPACT_WINDOW=unset',
+    'MAX_CONTEXT=64000',
+    'ALWAYS_EFFORT=unset',
+    'CUSTOM_CAPS=unset',
+    'FABLE_CAPS=effort,xhigh_effort,max_effort'
+  )) {
+    if ($BridgeOpenModelHybrid.Output -notmatch "(?m)^$([regex]::Escape($Expected))$") {
+      throw "Windows hybrid local root missed ${Expected}: $($BridgeOpenModelHybrid.Output)"
+    }
+  }
+  [IO.File]::WriteAllBytes($InstalledBridgeOpenModelRouter, $InstalledBridgeOpenModelRouterBytes)
 
   $LegacyConfig = @'
 AIRLOCK_MODEL=terra
@@ -981,6 +2152,11 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
       $HybridLaunch.Output -notmatch '(?m)^FAST_MODE=off$' -or
       $HybridLaunch.Output -notmatch '(?m)^ARG=claude-sonnet-5\[1m\]$') {
     throw "Saved Claude hybrid root did not launch with a pinned policy snapshot: $($HybridLaunch.Output)"
+  }
+  if ($HybridLaunch.Output -notmatch '(?m)^SETTINGS_MCP_SERVERS=airlock-console-tools$' -or
+      $HybridLaunch.Output -notmatch '(?m)^MCP_SERVERS=airlock-console-tools$' -or
+      $HybridLaunch.Output -match 'airlock-web-tools') {
+    throw "Anthropic-rooted Windows session did not receive Console-only MCP config: $($HybridLaunch.Output)"
   }
   $HybridSnapshotMatch = [regex]::Match($HybridLaunch.Output, '(?m)^SESSION_SNAPSHOT=(.+)$')
   if (-not $HybridSnapshotMatch.Success -or
@@ -1380,9 +2556,67 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
       $GrokLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=grok-pure$') {
     throw "Explicit Grok profile did not launch: $($GrokLaunch.Output)"
   }
+  if ($GrokLaunch.Output -notmatch '(?m)^SETTINGS_MCP_SERVERS=airlock-console-tools,airlock-web-tools$' -or
+      $GrokLaunch.Output -notmatch '(?m)^MCP_SERVERS=airlock-console-tools,airlock-web-tools$') {
+    throw "Windows Grok session did not receive one combined managed MCP config: $($GrokLaunch.Output)"
+  }
+  $WebToolsOff = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test') $true @{
+    AIRLOCK_WEB_TOOLS = 'off'
+  }
+  if ($WebToolsOff.Output -notmatch '(?m)^SETTINGS_MCP_SERVERS=airlock-console-tools$' -or
+      $WebToolsOff.Output -notmatch '(?m)^MCP_SERVERS=airlock-console-tools$' -or
+      $WebToolsOff.Output -match 'airlock-web-tools') {
+    throw "AIRLOCK_WEB_TOOLS=off changed or removed Windows Console tools: $($WebToolsOff.Output)"
+  }
+  $ConsoleToolsOff = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test') $true @{
+    AIRLOCK_CONSOLE_TOOLS = 'off'
+  }
+  if ($ConsoleToolsOff.Output -notmatch '(?m)^SETTINGS_MCP_SERVERS=airlock-web-tools$' -or
+      $ConsoleToolsOff.Output -notmatch '(?m)^MCP_SERVERS=airlock-web-tools$' -or
+      $ConsoleToolsOff.Output -match 'airlock-console-tools') {
+    throw "AIRLOCK_CONSOLE_TOOLS=off did not omit only Windows Console tools: $($ConsoleToolsOff.Output)"
+  }
+  $BothToolsOff = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test') $true @{
+    AIRLOCK_WEB_TOOLS = 'off'
+    AIRLOCK_CONSOLE_TOOLS = 'off'
+  }
+  if ($BothToolsOff.Output -notmatch '(?m)^SETTINGS_MCP_SERVERS=$' -or
+      $BothToolsOff.Output -match '(?m)^MCP_SERVERS=') {
+    throw "Disabled Windows managed tools still produced an MCP config: $($BothToolsOff.Output)"
+  }
+  $ConsoleToolsUppercase = Invoke-LauncherProcess $InstalledLauncher @('grok', '-p', 'test') $true @{
+    AIRLOCK_CONSOLE_TOOLS = 'OFF'
+  }
+  if ($ConsoleToolsUppercase.Output -notmatch '(?m)^MCP_SERVERS=airlock-console-tools,airlock-web-tools$') {
+    throw "Windows Console tools switch accepted a value other than literal off: $($ConsoleToolsUppercase.Output)"
+  }
   if ($GrokLaunch.Output -notmatch '(?m)^COMPACT_WINDOW=400000$' -or
       $GrokLaunch.Output -notmatch '(?m)^MAX_CONTEXT=500000$') {
     throw "Grok 4.6 lost its documented window declaration: $($GrokLaunch.Output)"
+  }
+  # Astra is off in the saved pool, so an explicit Astra root must enable its
+  # own route and declare the documented 922000-token input ceiling, matching
+  # the POSIX launcher. Other roots keep Astra off.
+  $AstraHybrid = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'astra', '-p', 'test') $true @{}
+  if ($AstraHybrid.Output -notmatch '(?m)^ACTIVE_PROFILE=hybrid-openai-root$' -or
+      $AstraHybrid.Output -notmatch '(?m)^ROOT_MODEL=gpt-6-astra$' -or
+      $AstraHybrid.Output -notmatch 'airlock-astra' -or
+      $AstraHybrid.Output -notmatch 'airlock-sol' -or
+      $AstraHybrid.Output -notmatch '(?m)^COMPACT_WINDOW=736000$' -or
+      $AstraHybrid.Output -notmatch '(?m)^MAX_CONTEXT=922000$') {
+    throw "Windows hybrid Astra root did not enable Astra with its documented window: $($AstraHybrid.Output)"
+  }
+  $AstraPure = Invoke-LauncherProcess $InstalledLauncher @('astra', '-p', 'test') $true @{}
+  if ($AstraPure.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$' -or
+      $AstraPure.Output -notmatch '(?m)^ROOT_MODEL=gpt-6-astra$' -or
+      $AstraPure.Output -notmatch '(?m)^DEFAULT_OPUS=gpt-6-astra$' -or
+      $AstraPure.Output -notmatch '(?m)^COMPACT_WINDOW=736000$' -or
+      $AstraPure.Output -notmatch '(?m)^MAX_CONTEXT=922000$') {
+    throw "Windows OpenAI-only Astra root did not route Astra with its documented window: $($AstraPure.Output)"
+  }
+  $SolHybrid = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'sol', '-p', 'test') $true @{}
+  if ($SolHybrid.Output -match 'gpt-6-astra') {
+    throw "A Windows Sol root enabled Astra without being asked: $($SolHybrid.Output)"
   }
   if ($GrokLaunch.Output -notmatch 'airlock-grok' -or $GrokLaunch.Output -notmatch 'airlock-composer') {
     throw "Grok-only session did not expose the Grok workers: $($GrokLaunch.Output)"
@@ -1502,10 +2736,20 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   if ($DoctorCompact -notmatch 'PASS Release updater: .*airlock-update\.py \(manual checks only\)') {
     throw "Windows doctor did not verify the release updater: $DoctorOutput"
   }
+  # Out-String wraps long paths at the host width on Windows PowerShell 5.1.
+  # Match the whitespace-normalized output, as the updater check above does.
+  if ($DoctorCompact -notmatch 'PASS Airlock Console helper: .*?airlock_console\.py' -or
+      $DoctorCompact -notmatch 'PASS Airlock Console tools helper: .*?airlock_console_tools\.py' -or
+      $DoctorCompact -notmatch 'PASS Airlock Console MCP wrapper: .*?airlock_console_mcp\.py' -or
+      $DoctorCompact -notmatch ('PASS Airlock Console site: .*?' + [regex]::Escape('share\airlock\console')) -or
+      $DoctorCompact -notmatch '(PASS Airlock Console health: http://127\.0\.0\.1:4783/healthz|INFO Airlock Console is not running at 127\.0\.0\.1:4783)') {
+    throw "Windows doctor did not report the Console installation safely: $DoctorOutput"
+  }
   if ($DoctorOutput -notmatch '(?m)^INFO  OpenRouter registry is not configured: ' -or
+      $DoctorOutput -notmatch '(?m)^INFO  Open-model registry is not configured: ' -or
       $DoctorOutput -notmatch '(?m)^PASS  OpenRouter credential backend is available: windows-dpapi$' -or
       $DoctorOutput -notmatch '(?m)^INFO  Doctor does not read the OpenRouter credential;') {
-    throw "Windows doctor did not report safe OpenRouter state: $DoctorOutput"
+    throw "Windows doctor did not report safe OpenRouter or open-model state: $DoctorOutput"
   }
 
   $DoctorModelsStub = Join-Path $TempRoot 'doctor-models-stub.py'
@@ -1530,6 +2774,44 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_MODELS_HELPER'
   Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_AUTH_HELPER'
 
+  # Doctor must keep all local registry data offline and print only sanitized
+  # counts and declared route labels. The helper output is synthetic so this
+  # test never starts or contacts an inference server.
+  $DoctorOpenModelStub = Join-Path $TempRoot 'doctor-openmodel-stub.py'
+  [IO.File]::WriteAllText(
+    $DoctorOpenModelStub,
+    "import os`nstate = os.environ.get('AIRLOCK_TEST_OPENMODEL_DOCTOR_STATE', 'valid')`nprint('STATE=' + state)`nprint('ENDPOINT_COUNT=2')`nprint('ACTIVE_ENDPOINT_COUNT=1')`nprint('ROUTE_COUNT=3')`nprint('ACTIVE_ROUTE_COUNT=2')`nif state == 'valid':`n print('ENDPOINT=local-a`tenabled	loopback')`n print('ROUTE=local-coder	enabled	declared')`n",
+    (New-Object Text.UTF8Encoding($false))
+  )
+  $env:AIRLOCK_OPENMODEL_HELPER = $DoctorOpenModelStub
+  $env:AIRLOCK_OPENMODEL_REGISTRY_FILE = $OpenModelRegistry
+  Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_OPENMODEL_DOCTOR_STATE' -ErrorAction SilentlyContinue
+  try {
+    $ValidOpenModelDoctor = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
+    $ExpectedOpenModelDoctor = (
+      'PASS  Open-model registry is valid (1/2 endpoint(s) active, 2/3 route(s) active): ' + $OpenModelRegistry
+    ) -replace '\s', ''
+    $CompactValidOpenModelDoctor = $ValidOpenModelDoctor -replace '\s', ''
+    if ($CompactValidOpenModelDoctor -notmatch [regex]::Escape($ExpectedOpenModelDoctor) -or
+        $ValidOpenModelDoctor -notmatch '(?m)^INFO  Open-model endpoint: local-a \(enabled, loopback\)$' -or
+        $ValidOpenModelDoctor -notmatch '(?m)^INFO  Open-model route: airlock-om-local-coder \(enabled, declared\)$' -or
+        $ValidOpenModelDoctor -notmatch 'Doctor did not contact a local inference server') {
+      throw "Windows doctor did not report the sanitized valid open-model registry: $ValidOpenModelDoctor"
+    }
+    $env:AIRLOCK_TEST_OPENMODEL_DOCTOR_STATE = 'invalid'
+    $InvalidOpenModelDoctor = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
+    $ExpectedInvalidOpenModelDoctor = (
+      'FAIL  Open-model registry is invalid: ' + $OpenModelRegistry
+    ) -replace '\s', ''
+    if (($InvalidOpenModelDoctor -replace '\s', '') -notmatch [regex]::Escape($ExpectedInvalidOpenModelDoctor)) {
+      throw "Windows doctor did not reject the invalid open-model registry safely: $InvalidOpenModelDoctor"
+    }
+  } finally {
+    Remove-Item -LiteralPath 'Env:AIRLOCK_OPENMODEL_HELPER' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_OPENMODEL_REGISTRY_FILE' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_OPENMODEL_DOCTOR_STATE' -ErrorAction SilentlyContinue
+  }
+
   Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@if `"%1 %2`"==`"auth status`" exit /b 1`r`n@exit /b 0"
   $SignedOutOutput = ((& (Join-Path $Root 'scripts\doctor.ps1') *>&1 | Out-String).Replace("`r", ''))
   if ($LASTEXITCODE -eq 0) { throw 'Windows doctor ignored an unhealthy proxy with Claude signed out.' }
@@ -1549,6 +2831,9 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_PROXY_LOG' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_MODELS_HELPER' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath 'Env:AIRLOCK_OPENROUTER_AUTH_HELPER' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENMODEL_HELPER' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_OPENMODEL_REGISTRY_FILE' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:AIRLOCK_TEST_OPENMODEL_DOCTOR_STATE' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
