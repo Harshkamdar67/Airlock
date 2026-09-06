@@ -27,7 +27,7 @@
     "config/openai-direct-agents.json": "d2f6936f8d46eebb935ab65a1dfa127bc78fe1dbab803a9b5bedabdc43a45034",
     "plugins/airlock/.claude-plugin/plugin.json": "b8b43c013c31c6528dbc90f884bd85962310ce32294fdf5339b49ae419b8d4cd",
     "plugins/airlock/hooks/hooks.json": "832ea3bbd0665fcf4f29a88889eb496043d129feea6752633c77ec90bcf3e9ea",
-    "plugins/airlock/mcp-server/airlock_console_mcp.py": "33a53524ddab52dc83923e15d37e9c6cbc202d971373da345b33b9be5457c4d3",
+    "plugins/airlock/mcp-server/airlock_console_mcp.py": "b35fb6191f08bf29c0056c2a379845313e371ee2e5d11bdf3d0783792cbce2ff",
     "plugins/airlock/mcp-server/airlock_web_tools.py": "71c0dd86dc8af4544a955431cb4605ea4724637760c12fd43d8614bfc3606847",
     "plugins/airlock/scripts/agent-guard.py": "f7f51c37da37bec49fde0a5314d34396b35312ee570be8846f983f913a7f5e0f",
     "plugins/airlock/scripts/agent-guard.sh": "f7c7dcea6d3a64df2d7cbeb377b1bec16fa82929a2a1216e548a061f765ebabd",
