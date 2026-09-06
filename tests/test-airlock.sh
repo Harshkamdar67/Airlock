@@ -2214,14 +2214,35 @@ import time
 from urllib.parse import urlsplit
 
 parsed = urlsplit(os.environ["HYBRID_ROUTER_URL"])
-for _ in range(4):
+
+
+def health_status():
     connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=1)
-    connection.request("GET", "/healthz")
-    response = connection.getresponse()
-    response.read()
-    connection.close()
-    if response.status != 200:
-        raise AssertionError(f"held hybrid router returned {response.status}")
+    try:
+        connection.request("GET", "/healthz")
+        response = connection.getresponse()
+        response.read()
+        return response.status
+    finally:
+        connection.close()
+
+
+# The router publishes its URL from its ready file the moment it binds, so on a
+# slow runner the first connection can race the accept loop. Wait for the held
+# router to answer once, then confirm it stays healthy across the hold window.
+deadline = time.monotonic() + 10
+while True:
+    try:
+        first_status = health_status()
+        break
+    except OSError:
+        if time.monotonic() >= deadline:
+            raise AssertionError("held hybrid router never became reachable")
+        time.sleep(0.1)
+for _ in range(4):
+    status = health_status()
+    if status != 200:
+        raise AssertionError(f"held hybrid router returned {status}")
     time.sleep(0.55)
 PY
 if wait "$router_hold_pid"; then
