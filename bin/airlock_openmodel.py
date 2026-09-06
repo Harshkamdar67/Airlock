@@ -51,6 +51,11 @@ def _read_private_json(
             raise OpenModelError("open-model private input is invalid") from exc
     if type(raw) is not bytes or len(raw) > MAX_PRIVATE_INPUT_BYTES:
         raise OpenModelError("open-model private input is too large")
+    # Windows PowerShell 5.1 prepends a UTF-8 byte order mark when it pipes a
+    # string into a native command on a UTF-8 console, so piped JSON arrives
+    # as BOM + text. The mark carries no data; drop it before validation.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
     try:
         payload = policy.load_json_bytes(
             raw, max_bytes=MAX_PRIVATE_INPUT_BYTES

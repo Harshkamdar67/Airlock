@@ -255,6 +255,23 @@ class ManagementTests(unittest.TestCase):
                     )
                 self.assertNotIn(PRIVATE_MODEL, str(caught.exception))
 
+    def test_private_stdin_tolerates_a_utf8_byte_order_mark(self) -> None:
+        # Windows PowerShell 5.1 pipes strings into native commands with a
+        # UTF-8 BOM on a UTF-8 console; the JSON after it must still be read.
+        body = json.dumps({"base_url": "http://127.0.0.1:18093/v1"}).encode("utf-8")
+        plain = openmodel.endpoint_private_input(
+            from_stdin=True, input_stream=io.BytesIO(body + b"\r\n")
+        )
+        with_bom = openmodel.endpoint_private_input(
+            from_stdin=True, input_stream=io.BytesIO(b"\xef\xbb\xbf" + body + b"\r\n")
+        )
+        self.assertEqual(with_bom, plain)
+        # Only a leading mark is data-free; one inside the payload is still bad input.
+        with self.assertRaises(openmodel.OpenModelError):
+            openmodel.endpoint_private_input(
+                from_stdin=True, input_stream=io.BytesIO(b"{\xef\xbb\xbf" + body[1:])
+            )
+
     def test_hidden_private_input_defaults_response_identity_to_upstream(self) -> None:
         with mock.patch.object(
             openmodel, "_read_hidden", side_effect=[PRIVATE_MODEL, ""]

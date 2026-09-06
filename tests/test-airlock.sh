@@ -240,6 +240,7 @@ cat > "$console_stub" <<'PY'
 import http.server
 import json
 import os
+import socketserver
 import sys
 
 record = os.environ.get("AIRLOCK_CONSOLE_STUB_RECORD")
@@ -279,7 +280,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+class LoopbackServer(http.server.HTTPServer):
+    # HTTPServer.server_bind calls socket.getfqdn(), which can stall for many
+    # seconds on macOS runners. Loopback needs no name lookup at all.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+server = LoopbackServer(("127.0.0.1", port), Handler)
 server.timeout = 5
 server.handle_request()
 server.server_close()
@@ -341,6 +350,8 @@ cat > "$opener_dir/xdg-open" <<'SH'
 printf '%s\n' "$#" "$1" > "$AIRLOCK_CONSOLE_BROWSER_CAPTURE"
 SH
 chmod +x "$opener_dir/xdg-open"
+cp "$opener_dir/xdg-open" "$opener_dir/open"
+chmod +x "$opener_dir/open"
 console_browser_capture="$tmp_dir/console-browser-args"
 console_browser_port="$(python - <<'PY'
 import socket
@@ -757,6 +768,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import socketserver
 import sys
 import time
 
@@ -802,11 +814,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, _format, *args):
         del args
 
-server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+class LoopbackServer(http.server.HTTPServer):
+    # HTTPServer.server_bind calls socket.getfqdn(), which can stall for many
+    # seconds on macOS runners. Loopback needs no name lookup at all.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+server = LoopbackServer(("127.0.0.1", 0), Handler)
 port = int(server.server_address[1])
 if port == 4783:
     server.server_close()
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    server = LoopbackServer(("127.0.0.1", 0), Handler)
     port = int(server.server_address[1])
 marker_path.write_text(json.dumps({
     "schema_version": 1,
@@ -830,7 +850,7 @@ LOCALAPPDATA="$console_mcp_state" XDG_STATE_HOME="$console_mcp_state" \
   python "$console_mcp_server" "$console_mcp_ready" "$console_mcp_request" \
   2>"$console_mcp_server_stderr" &
 console_mcp_server_pid=$!
-for _ in {1..200}; do
+for _ in {1..600}; do
   [[ -s "$console_mcp_ready" ]] && break
   if ! kill -0 "$console_mcp_server_pid" 2>/dev/null; then
     break

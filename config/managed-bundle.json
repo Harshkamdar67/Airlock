@@ -14,7 +14,7 @@
     "bin/airlock_console.py": "bfc08e28307e0e1afc3e0227bdb77696c0ad71fedfa8a1aa2c05b4213a6c23c3",
     "bin/airlock_console_history.py": "05deabe4ef0caf84efbf30e06476712a9fdf8012870ad180aeb09dd167ec243d",
     "bin/airlock_console_tools.py": "677b9d8a9a376440efc8cf3aadd63520a6cfa64766ab5e531579312bde086da2",
-    "bin/airlock_openmodel.py": "bbe4a1a8a6dc1d10179c8d2137e6664d372d39abb2499658b25d4f21a9257661",
+    "bin/airlock_openmodel.py": "a630777ba62c4363070cbacb30ae4de34cf85c991f3ecb1ecdae98f3c7887b25",
     "bin/airlock_openmodel_adapter.py": "d0359498aed9db95cd49144e22549ccdf737cbb7e86f6a71461c1580266bc3d4",
     "bin/airlock_openrouter_auth.py": "8bc75d695b6392d0c49d285c94db568adc3ad3661ddc3b1ee2843452098722f4",
     "bin/airlock_openrouter_models.py": "808e4b6d15c644de93276406c9d6d70200db3e530bbe7e17559967b19c71a97f",
