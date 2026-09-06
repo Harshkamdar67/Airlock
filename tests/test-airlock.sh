@@ -2837,7 +2837,10 @@ grep -Eq '^ALLOWED_AGENTS=.*airlock-astra' <<<"$hybrid_astra_output"
 grep -Eq '^ALLOWED_AGENTS=.*airlock-sol' <<<"$hybrid_astra_output"
 grep -q '^COMPACT_WINDOW=736000$' <<<"$hybrid_astra_output"
 grep -q '^MAX_CONTEXT=922000$' <<<"$hybrid_astra_output"
-pure_astra_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" \
+# No AIRLOCK_STUB_INSPECT_ROUTER here either: the pure Astra profile talks to the
+# proxy directly, so probing ANTHROPIC_BASE_URL would need a live proxy, which
+# CI does not run (it only appeared to pass locally because one was listening).
+pure_astra_output="$(AIRLOCK_REAL_CLAUDE="$stub" \
   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" astra -p test)"
 grep -q '^ACTIVE_PROFILE=openai-pure$' <<<"$pure_astra_output"
 grep -q '^ROOT_MODEL=gpt-6-astra$' <<<"$pure_astra_output"
