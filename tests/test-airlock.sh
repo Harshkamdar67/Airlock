@@ -2309,7 +2309,9 @@ AIRLOCK_STUB_HOLD_SECONDS=30 AIRLOCK_STUB_SIGNAL_FILE="$router_signal_file" \
   AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   "$launcher" hybrid terra -p test >"$router_signal_output" 2>"$router_signal_error" &
 router_signal_pid=$!
-for _ in $(seq 1 100); do
+# A cold CI runner can take well over five seconds to render the profile and
+# start the router before Claude prints its environment, so allow thirty.
+for _ in $(seq 1 600); do
   [[ -f "$router_signal_output" ]] && grep -q '^SESSION_ROUTER=http://127\.0\.0\.1:' "$router_signal_output" && break
   sleep 0.05
 done
