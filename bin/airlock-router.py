@@ -1332,11 +1332,14 @@ class RouterServer(ThreadingHTTPServer):
                 observed_input = False
                 if isinstance(usage, dict):
                     fields = ["input_tokens"]
-                    # The open-model adapter maps OpenAI prompt_tokens to
-                    # input_tokens whole. Its cached-token count is a subset,
-                    # unlike native Anthropic usage where cache reads and
-                    # creations sit outside input_tokens and must be added.
-                    if provider != "openmodel":
+                    # Only native Anthropic usage reports cache reads and
+                    # creations outside input_tokens, so only there do they
+                    # add up. Every OpenAI-shaped upstream (the proxy's
+                    # OpenAI, Grok and OpenRouter routes, and the open-model
+                    # adapter) maps prompt_tokens to input_tokens whole and
+                    # reports its cached tokens as a subset of that number;
+                    # adding them there counts the cache twice.
+                    if provider == "anthropic":
                         fields.extend((
                             "cache_read_input_tokens",
                             "cache_creation_input_tokens",
@@ -2285,11 +2288,15 @@ class RouterHandler(BaseHTTPRequestHandler):
             return exc.prompt_tokens
         last = self.router.last_usage.get((provider, model))
         if last:
-            total = (
-                last.get("input_tokens", 0)
-                + last.get("cache_creation_input_tokens", 0)
-                + last.get("cache_read_input_tokens", 0)
-            )
+            total = last.get("input_tokens", 0)
+            # Same rule as the context observation: cache counts add to the
+            # prompt only on native Anthropic usage. Elsewhere input_tokens
+            # already contains them.
+            if provider == "anthropic":
+                total += (
+                    last.get("cache_creation_input_tokens", 0)
+                    + last.get("cache_read_input_tokens", 0)
+                )
             if total > 0:
                 return total
         return None

@@ -414,11 +414,22 @@ class RecordingHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             self.close_connection = True
             return
-        if self.recorder.mode == "usage_json":
+        if self.recorder.mode in {"usage_json", "cached_usage_json"}:
+            usage: dict[str, int] = {"input_tokens": 11, "output_tokens": 22}
+            if self.recorder.mode == "cached_usage_json":
+                # A prompt whose cache counts are large next to input_tokens.
+                # Anthropic keeps them separate; an OpenAI-shaped upstream has
+                # already folded them into input_tokens.
+                usage = {
+                    "input_tokens": 240,
+                    "cache_read_input_tokens": 221,
+                    "cache_creation_input_tokens": 10,
+                    "output_tokens": 22,
+                }
             response = json.dumps({
                 "id": "msg_test",
                 "content": [{"type": "text", "text": "hello"}],
-                "usage": {"input_tokens": 11, "output_tokens": 22},
+                "usage": usage,
             }, separators=(",", ":")).encode("utf-8")
             self.send_response(200)
             self.send_header("content-type", "application/json")
@@ -1981,9 +1992,11 @@ class RouterProtocolTests(unittest.TestCase):
                 })
             observed = standalone.diagnostic_report()
             self.assertEqual(observed["last_request_at"], "2026-09-05T09:02:12Z")
+            # An OpenAI-shaped upstream already counts its cached tokens inside
+            # input_tokens, so the prompt is 100, not 100 + 20 + 3.
             self.assertEqual(observed["context"], {
                 "model": "gpt-included",
-                "input_tokens": 123,
+                "input_tokens": 100,
                 "observed_at": "2026-09-05T09:02:11Z",
             })
             self.assertEqual(set(observed["context"]), {
@@ -4325,6 +4338,36 @@ class RouterControlTests(unittest.TestCase):
         self.assertEqual(status, 200)
         wait_for_request_event(before)
         self.assertEqual(self.gateway.diagnostic_report()["context"], original)
+
+    def test_cache_counts_add_to_the_prompt_only_for_anthropic(self) -> None:
+        # An OpenAI-shaped upstream reports prompt_tokens as input_tokens with
+        # the cached tokens already inside it. Adding the cache there inflated
+        # a 240k prompt to 462k, which made a 272k route look too small to hold
+        # its own conversation and wrongly excluded it from failover.
+        def observed_for(model: str) -> dict[str, object]:
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                context = self.gateway.diagnostic_report()["context"]
+                if context and context.get("model") == model:
+                    return context
+                time.sleep(0.01)
+            self.fail(f"no context observation recorded for {model}")
+
+        self.openai.mode = "cached_usage_json"
+        status, _payload = self.model_request("gpt-root")
+        self.assertEqual(status, 200)
+        self.assertEqual(observed_for("gpt-root")["input_tokens"], 240)
+
+        # Native Anthropic usage keeps them outside input_tokens, so there they
+        # are part of the prompt and must be added.
+        pin_status, pin_payload, _h, _r = self.pin("claude-pin")
+        self.assertEqual(pin_status, 200, pin_payload)
+        self.anthropic.mode = "cached_usage_json"
+        status, _payload = self.model_request("gpt-root")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            observed_for("claude-pin")["input_tokens"], 240 + 221 + 10
+        )
 
     def test_pinned_failover_uses_pin_chain_without_mutating_pin(self) -> None:
         self.assertEqual(self.pin("claude-pin")[0], 200)

@@ -4,6 +4,12 @@ All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
 
+## Unreleased
+
+### Fixed
+
+- The observed context size for a session rooted on OpenAI, Grok, OpenRouter, or a local open model no longer counts cached tokens twice. Those upstreams report the whole prompt in `input_tokens` with the cached part already inside it, while native Anthropic usage keeps cache reads and creations outside `input_tokens`; Airlock applied the Anthropic rule to both. A 292,000-token GPT-6 Astra prompt was reported as 550,000, and because that inflated number decides whether a route still fits the conversation, routes that could hold it were marked too small and skipped during failover, and the overflow handoff could fire early. Sessions rooted on Anthropic models were never affected. A running session keeps its old figure until it restarts, because each session's router is a separate long-lived process.
+
 ## 0.1.0-beta.9 - 2026-09-06
 
 ### Added

@@ -3035,13 +3035,16 @@ def context_from_events(events: list[dict[str, Any]]) -> tuple[int | None, str |
         usage = event.get("usage")
         if not isinstance(usage, dict):
             continue
+        # Only native Anthropic usage keeps cache reads and creations outside
+        # input_tokens. Every OpenAI-shaped upstream reports prompt_tokens as
+        # input_tokens with its cached tokens already inside that number, so
+        # adding them there would count the cache twice.
+        keys = ["input_tokens"]
+        if event.get("provider") == "anthropic":
+            keys.extend(("cache_read_input_tokens", "cache_creation_input_tokens"))
         total = 0
         found = False
-        for key in (
-            "input_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ):
+        for key in keys:
             value = non_negative_int(usage.get(key))
             if value is None:
                 continue
