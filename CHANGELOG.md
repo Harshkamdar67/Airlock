@@ -4,7 +4,7 @@ All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
 
-## Unreleased
+## 0.1.0-beta.10 - 2026-09-07
 
 ### Fixed
 
