@@ -1500,9 +1500,15 @@ class RouterProtocolTests(unittest.TestCase):
         status, _response, _elapsed = self.request("grok-test")
         self.assertEqual(status, 200)
         _diagnostics_status, diagnostics = self.get_json("/diagnostics")
-        event = diagnostics["events"][-1]
-        self.assertEqual(event["provider"], "grok")
-        self.assertEqual(event["model"], "grok-test")
+        # Take the event for this request rather than the last one recorded:
+        # the router's own bookkeeping can append an event after the reply is
+        # returned, so the tail is not reliably this request's.
+        request_events = [
+            event for event in diagnostics["events"]
+            if event.get("model") == "grok-test"
+        ]
+        self.assertTrue(request_events, diagnostics["events"])
+        self.assertEqual(request_events[-1]["provider"], "grok")
 
     def test_count_tokens_uses_the_model_route(self) -> None:
         status, _response, _elapsed = self.request(
