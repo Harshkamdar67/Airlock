@@ -554,6 +554,50 @@ class RegistryTests(ConsoleTestCase):
         self.assertEqual(state.records["r-oldshape"].url, router.url)
 
 
+class ContextFromEventsTests(unittest.TestCase):
+    """Cache reads add to the prompt only on native Anthropic usage."""
+
+    @staticmethod
+    def event(provider: str, **usage: int) -> dict[str, object]:
+        return {
+            "outcome": "completed", "model": "m", "provider": provider,
+            "usage": dict(usage),
+        }
+
+    def test_anthropic_adds_cache_counts_to_input_tokens(self) -> None:
+        # Native Anthropic reports a tiny input_tokens beside the cache.
+        tokens, model = console.context_from_events([
+            self.event(
+                "anthropic", input_tokens=90,
+                cache_read_input_tokens=112169, cache_creation_input_tokens=233,
+            )
+        ])
+        self.assertEqual(tokens, 112492)
+        self.assertEqual(model, "m")
+
+    def test_openai_shaped_providers_do_not_add_the_cache_twice(self) -> None:
+        # The proxy maps prompt_tokens to input_tokens whole, so the cached
+        # count is already inside it. Summing would report a 240k prompt on a
+        # 272k route as 462k and make the route look too small for its own
+        # conversation.
+        for provider in ("openai", "grok", "openrouter", "openmodel"):
+            with self.subTest(provider=provider):
+                tokens, _model = console.context_from_events([
+                    self.event(
+                        provider, input_tokens=240612,
+                        cache_read_input_tokens=221184,
+                        cache_creation_input_tokens=0,
+                    )
+                ])
+                self.assertEqual(tokens, 240612)
+
+    def test_unknown_provider_stays_conservative(self) -> None:
+        tokens, _model = console.context_from_events([
+            self.event("", input_tokens=1000, cache_read_input_tokens=5000)
+        ])
+        self.assertEqual(tokens, 1000)
+
+
 class DerivationTests(ConsoleTestCase):
     def session_from(
         self,

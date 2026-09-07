@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.9
+0.1.0-beta.10
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
