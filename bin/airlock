@@ -2475,8 +2475,11 @@ fi
 # custom-models support and simply leaves the catalog empty; other nonzero
 # exits are the helper's own named diagnostics for a malformed user-owned
 # file and stay fatal.
+# Only stdout is discarded here. The helper's stderr is the only description of
+# a malformed user-owned file, so it stays on the terminal; discarding it once
+# turned every failure into a bare exit code with no message at all.
 custom_models_status=0
-run_access custom-models >/dev/null 2>&1 || custom_models_status=$?
+run_access custom-models >/dev/null || custom_models_status=$?
 case "$custom_models_status" in
   0|2) ;;
   *) exit "$custom_models_status" ;;

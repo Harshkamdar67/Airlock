@@ -72,7 +72,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.09.07.1"
+MANAGED_BUNDLE_VERSION = "2026.09.18.1"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -1196,9 +1196,16 @@ def known_failover_model_ids() -> frozenset[str]:
     for entry in load_custom_models():
         ids.add(entry.model_id)
         ids.add(wire_model_id(entry.model_id))
+    # Name legality only. An expired route is read leniently here so that a
+    # chain naming it reports nothing at all rather than calling a route the
+    # user really did declare an unknown model. This grants no routing: the
+    # session's own worker table still has no such route, so the hop is skipped
+    # for exactly the reason described below.
     try:
-        registry = load_openrouter_registry()
-    except AccessError:
+        registry = POLICY_SCHEMA.load_openrouter_registry(
+            openrouter_registry_path(), require_fresh=False
+        )
+    except (POLICY_SCHEMA.RegistryNotFoundError, POLICY_SCHEMA.PolicyValidationError):
         registry = None
     for entry in getattr(registry, "models", ()):
         if getattr(entry, "enabled", False):
@@ -1365,17 +1372,70 @@ def openrouter_registry_path() -> Path:
     return config_path().parent / "openrouter-registry.json"
 
 
+OPENROUTER_REGISTRY_REMEDY = (
+    "refresh it with 'airlock openrouter models refresh --apply', or remove the "
+    "affected route with 'airlock openrouter models remove ROUTE'"
+)
+
+
+def _empty_openrouter_registry() -> Any:
+    return POLICY_SCHEMA.validate_openrouter_registry({
+        "schema_version": 1,
+        "models": [],
+    })
+
+
 def load_openrouter_registry() -> Any:
     path = openrouter_registry_path()
     try:
         return POLICY_SCHEMA.load_openrouter_registry(path)
     except POLICY_SCHEMA.RegistryNotFoundError:
-        return POLICY_SCHEMA.validate_openrouter_registry({
-            "schema_version": 1,
-            "models": [],
-        })
+        return _empty_openrouter_registry()
     except POLICY_SCHEMA.PolicyValidationError as exc:
         raise AccessError(f"OpenRouter registry is invalid: {exc}") from exc
+
+
+def load_openrouter_registry_for_session() -> tuple[Any, str | None]:
+    """Load the registry for session composition without blocking other providers.
+
+    An unusable registry yields no routes plus the reason it is unusable, rather
+    than stopping the session outright. The reason travels in the policy so that
+    naming an OpenRouter route still fails closed with the real diagnostic, while
+    a session that never touches OpenRouter is not stopped by a file it does not
+    use. Nothing is ever routed on unverified metadata: the routes are gone, not
+    silently trusted.
+    """
+
+    try:
+        return load_openrouter_registry(), None
+    except AccessError as exc:
+        return _empty_openrouter_registry(), str(exc)
+
+
+def unusable_openrouter_registry_reason(policy: dict[str, Any]) -> str | None:
+    reason = policy.get("_openrouter_registry_error")
+    return reason if isinstance(reason, str) and reason else None
+
+
+def require_usable_openrouter_registry(policy: dict[str, Any]) -> None:
+    """Fail closed when an OpenRouter route is named but the registry is unusable."""
+
+    reason = unusable_openrouter_registry_reason(policy)
+    if reason:
+        raise AccessError(f"{reason}; {OPENROUTER_REGISTRY_REMEDY}")
+
+
+def warn_unusable_openrouter_registry(policy: dict[str, Any]) -> None:
+    """Say once that OpenRouter routes are gone, without stopping the session."""
+
+    reason = unusable_openrouter_registry_reason(policy)
+    if reason:
+        print(
+            f"airlock: OpenRouter routes are unavailable: {reason}; "
+            f"{OPENROUTER_REGISTRY_REMEDY}. "
+            "Other providers are unaffected.",
+            file=sys.stderr,
+        )
 
 
 def openmodel_registry_path() -> Path:
@@ -2211,7 +2271,9 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
 
 def load_policy(path: Path | None = None) -> dict[str, Any]:
     policy = apply_runtime_overrides(load_cached_policy(path))
-    policy["_openrouter_registry"] = load_openrouter_registry()
+    registry, registry_error = load_openrouter_registry_for_session()
+    policy["_openrouter_registry"] = registry
+    policy["_openrouter_registry_error"] = registry_error
     policy["_openmodel_registry"] = load_openmodel_registry()
     policy["_custom_models"] = load_custom_models()
     validate_declared_identity_collisions(policy)
@@ -2300,7 +2362,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.10",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.11",
             }},
         }):
             return None
@@ -2553,7 +2615,9 @@ def refresh_policy(path: Path | None = None) -> dict[str, Any]:
     policy["providers"]["openai"].update(detect_openai())
     _write_policy(policy, target)
     policy = apply_runtime_overrides(policy)
-    policy["_openrouter_registry"] = load_openrouter_registry()
+    registry, registry_error = load_openrouter_registry_for_session()
+    policy["_openrouter_registry"] = registry
+    policy["_openrouter_registry_error"] = registry_error
     policy["_openmodel_registry"] = load_openmodel_registry()
     policy["_custom_models"] = load_custom_models()
     validate_declared_identity_collisions(policy)
@@ -3274,6 +3338,9 @@ def list_enabled_openrouter_routes(policy: dict[str, Any]) -> list[dict[str, str
 
 def resolve_openrouter_route(policy: dict[str, Any], route: str) -> Any:
     """Resolve one exact enabled route from the validated registry, or fail closed."""
+    # Naming a route is the point of use. An unusable registry stops here with
+    # the real reason rather than reporting the route as merely unknown.
+    require_usable_openrouter_registry(policy)
     registry = policy.get("_openrouter_registry")
     entries = getattr(registry, "models", ())
     if isinstance(route, str):
@@ -3350,6 +3417,10 @@ def enabled_openrouter_workers(
 
 
 def _custom_openrouter_route(policy: dict[str, Any], model: CustomModelEntry) -> Any:
+    # A models.json entry that declares an OpenRouter model is a real dependency
+    # on the registry, so it fails closed even though the session as a whole no
+    # longer does.
+    require_usable_openrouter_registry(policy)
     registry = policy.get("_openrouter_registry")
     matches = [
         entry for entry in getattr(registry, "models", ())
@@ -7062,6 +7133,9 @@ def main() -> int:
         if args.command in {"custom-models", "custom-model-resolve"}:
             policy = load_policy()
             if args.command == "custom-models":
+                # The launchers run this once per session, so it is the one
+                # place that reports a degraded registry without repeating it.
+                warn_unusable_openrouter_registry(policy)
                 output = [
                     custom_model_fields(policy, entry.model_id, entry.provider)
                     for entry in enabled_custom_models(policy)
@@ -7074,6 +7148,9 @@ def main() -> int:
             return 0
         policy = load_or_refresh_policy()
         if args.command == "openrouter-routes":
+            # Only OpenRouter work asks for this list, so an unusable registry
+            # is reported as itself instead of as an empty route list.
+            require_usable_openrouter_registry(policy)
             print(json.dumps(
                 list_enabled_openrouter_routes(policy),
                 separators=(",", ":"),

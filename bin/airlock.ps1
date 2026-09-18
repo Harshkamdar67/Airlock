@@ -413,14 +413,22 @@ function Import-CustomModels {
   }
   # Windows PowerShell 5.1 turns redirected native stderr into a terminating
   # error under Stop preference, so this one probe runs under Continue.
+  # The helper's stderr carries the only description of a malformed user-owned
+  # file, so it is left on the inherited console rather than discarded. Sending
+  # it to $null here once turned every failure into a bare exit code with no
+  # message at all. It is deliberately not redirected: Windows PowerShell 5.1
+  # rewraps redirected native stderr as a NativeCommandError, which would bury
+  # the diagnostic in a call-stack banner, so this follows Invoke-AccessJson and
+  # only captures stdout. The Continue preference stays because that same 5.1
+  # behaviour turns native stderr into a terminating error under Stop.
   $previousPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $raw = @(& $python $AccessHelper 'custom-models' 2>$null)
+    $raw = @(& $python $AccessHelper 'custom-models')
+    $rawExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
   }
-  $rawExit = $LASTEXITCODE
   if ($rawExit -eq 2) { return }
   if ($rawExit -ne 0) { exit $rawExit }
   try {

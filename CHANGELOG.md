@@ -4,6 +4,18 @@ All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
 
+## 0.1.0-beta.11 - 2026-09-18
+
+### Fixed
+
+- A stale or invalid OpenRouter registry no longer stops sessions that do not use OpenRouter. A route's verified metadata expires 30 days after its last check, and an expired entry made the whole registry file invalid, which stopped every Airlock session, including OpenAI-only and Grok-only ones that never read the registry. Because the expiry is reached by the clock rather than by anything the user changed, a machine that worked one day stopped working the next with no local change at all. The refusal now lands where a route is used instead of where a session starts: a session that never names an OpenRouter route starts, reports the reason once, and runs with no OpenRouter workers, while naming a route from an unusable registry still fails closed with the same reason. Nothing is routed on unverified metadata in either case, because the routes are removed rather than trusted.
+- The launchers no longer discard the reason a session refused to start. Both launchers ran the access helper's `custom-models` catalog load with its standard error sent to `$null` on Windows and `/dev/null` elsewhere, then exited with its status code, so a malformed user-owned file produced a bare exit code and no message. The helper's diagnostic now reaches the terminal. On Windows it is deliberately left on the inherited console rather than redirected, because Windows PowerShell 5.1 rewraps redirected native standard error as a `NativeCommandError` and buries the message in a call-stack banner.
+- The commands that repair an OpenRouter registry are reachable again. The catalog preflight ran before command dispatch, so an unusable registry also blocked `airlock openrouter models list`, `refresh`, and `remove`, which are the commands that fix it. Recovery previously required calling the helper directly.
+
+### Changed
+
+- The managed bundle version is now `2026.09.18.1`.
+
 ## 0.1.0-beta.10 - 2026-09-07
 
 ### Fixed
