@@ -35,7 +35,7 @@ A hybrid session starts one temporary router on an unused `127.0.0.1` port. Clau
 The router reads only the top-level model ID needed for routing:
 
 - exact enabled `gpt-*` IDs go to the local OpenAI proxy
-- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5[1m]` becoming `claude-opus-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
+- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5-5[1m]` becoming `claude-opus-5-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
 - exact enabled `claude-*` IDs go to `https://api.anthropic.com`
 - exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - an explicitly enabled `openmodel/ROUTE` goes directly to the route's signed loopback Chat Completions endpoint
@@ -115,7 +115,7 @@ airlock opr [ROUTE] [Claude arguments...]
 
 Adding or refreshing a route fetches public model and endpoint metadata from `openrouter.ai`, without sending your key, and asks for confirmation by name unless you pass `--yes`. Airlock checks that both catalog responses identify the requested routable model, that the named endpoint actually serves it, and that both the model and the endpoint report `tools` and `tool_choice` support, since named workers rely on real tool calls. It freezes the endpoint tag, catalog provider name, provider-registry routing slug, endpoint quantization, and separate `canonical_slug`. The provider name must map to exactly one routing slug, and the provider plus quantization must identify only that one endpoint in the model's current catalog. If any frozen identity changes, refresh stops rather than silently accepting the remap. The credential-free session snapshot carries the bounded routing values and canonical slug to the router; guidance text and credentials remain excluded. A preset freezes the same values, so a changed preset identity requires an Airlock update before it can be added. A route that fails any check is not added. `airlock openrouter models refresh` re-checks declared routes and reports what changed; it never rewrites the saved registry by itself, so add `--apply` once you are ready to save the refreshed metadata. The registry holds at most 10 declared routes. Preset endpoints were selected from low-priced eligible endpoints when the preset catalog was reviewed, but provider prices and availability can change; Airlock never silently changes the saved endpoint or claims it will remain cheapest.
 
-The registry also records when each route was last verified. A route older than 30 days is treated as stale. Refresh it with `airlock openrouter models refresh --apply` before starting a session: a stale or otherwise invalid registry file stops every Airlock session, not only ones using OpenRouter.
+The registry also records when each route was last verified. A route older than 30 days is treated as stale. Refresh it with `airlock openrouter models refresh --apply`: a stale or otherwise invalid registry file makes every route in it unusable until you do. Sessions that do not name an OpenRouter route still start, report the reason once, and run without OpenRouter workers.
 
 A declared route becomes a named Agent, `airlock-or-ROUTE`, inside a hybrid session (`airlock hybrid ...`), where it can run alongside your OpenAI and Claude workers. `airlock openai`, `airlock grok`, and their pure profiles never include OpenRouter routes.
 
@@ -200,7 +200,7 @@ Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact 
 - A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
 - The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
 
-These are Claude Code family slots, not claims that GPT-6 Astra or GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
+These are Claude Code family slots, not claims that GPT-6 Astra or GPT-6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 

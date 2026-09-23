@@ -183,6 +183,17 @@ fi
 prepare_private_proxy_directory "$proxy_config_dir"
 prepare_private_proxy_directory "$proxy_state_home"
 
+# An older installed Homebrew proxy can still authenticate but reject the new
+# exact model IDs. Check its offline catalog before installing launchers that
+# select them. Leave Homebrew upgrades to the user to avoid changing a shared
+# proxy installation behind their back.
+proxy_catalog="$(run_proxy_command models 2>/dev/null)" || proxy_catalog=''
+if [[ ! " $proxy_catalog " =~ (^|[[:space:],])gpt-6-sol([[:space:],]|$) \
+  || ! " $proxy_catalog " =~ (^|[[:space:],])gpt-6-luna([[:space:],]|$) ]]; then
+  printf 'install: claude-code-proxy must support gpt-6-sol and gpt-6-luna. Upgrade the Homebrew proxy to v0.1.42 or newer, then rerun Airlock setup.\n' >&2
+  exit 1
+fi
+
 if ! run_proxy_command codex auth status >/dev/null 2>&1; then
   if [[ "$run_login" -eq 1 ]]; then
     run_proxy_command codex auth login

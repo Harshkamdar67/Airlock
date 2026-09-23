@@ -471,10 +471,10 @@ class OpenRouterAccessTests(unittest.TestCase):
 
         root_model = "anthropic/claude-sonnet-4.5"
         wrapper_models = {
-            "gpt-5.6-sol",
+            "gpt-6-sol",
             "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "claude-opus-5[1m]",
+            "gpt-6-luna",
+            "claude-opus-5-5[1m]",
             "claude-sonnet-5[1m]",
             "claude-haiku-4-5-20251001",
         }
@@ -783,7 +783,7 @@ class OpenRouterAccessTests(unittest.TestCase):
         self.assertIn("20250929", raw_snapshot)
         with self.assertRaisesRegex(ACCESS.AccessError, "root model"):
             ACCESS.build_session_snapshot(
-                policy, "hybrid-anthropic-root", "gpt-5.6-sol"
+                policy, "hybrid-anthropic-root", "gpt-6-sol"
             )
 
     def test_preset_snapshot_includes_routing_metadata_but_excludes_guidance(self) -> None:
@@ -974,9 +974,71 @@ class OpenRouterAccessTests(unittest.TestCase):
         )
         self.assertEqual(set(rendered), {"airlock-or-declared-sonnet"})
 
+        # An unusable registry no longer stops the session, but naming a route
+        # from it still fails closed. See the dedicated cases below.
         self.registry.write_text('{"schema_version":1,"models":[],"extra":true}', encoding="utf-8")
+        degraded = ACCESS.load_policy()
+        self.assertRegex(
+            ACCESS.unusable_openrouter_registry_reason(degraded) or "",
+            "OpenRouter registry is invalid",
+        )
         with self.assertRaisesRegex(ACCESS.AccessError, "OpenRouter registry is invalid"):
-            ACCESS.load_policy()
+            ACCESS.resolve_openrouter_route(degraded, "declared-sonnet")
+
+    def test_stale_registry_does_not_stop_a_session_that_never_uses_openrouter(
+        self,
+    ) -> None:
+        # A route's metadata expires after 30 days. Before this was fixed, that
+        # expiry stopped every session, including OpenAI-only and Grok-only ones
+        # that never read the registry, and the launcher discarded the reason.
+        stale = int(time.time()) - (31 * 24 * 60 * 60)
+        self.write_registry(registry_entry(checked_at=stale))
+        policy = ACCESS.load_policy()
+
+        reason = ACCESS.unusable_openrouter_registry_reason(policy)
+        self.assertIsNotNone(reason)
+        self.assertIn("older than 30 days", reason or "")
+
+        # The routes are gone rather than silently trusted, and a session that
+        # does not name one still composes instead of refusing to start.
+        self.assertEqual(ACCESS.list_enabled_openrouter_routes(policy), [])
+        guidance = ACCESS.profile_guidance(policy, "hybrid-anthropic-root")
+        self.assertNotIn("airlock-or-declared-sonnet", guidance)
+
+    def test_stale_route_stays_a_legal_failover_name(self) -> None:
+        # A chain may name a declared OpenRouter model. When that route expired,
+        # the name stopped being recognised and failover.json was rejected as
+        # naming an unknown model, which stopped the session a second way with a
+        # message that pointed at the wrong file.
+        stale = int(time.time()) - (31 * 24 * 60 * 60)
+        self.write_registry(registry_entry(checked_at=stale))
+        self.assertIn(
+            "anthropic/claude-sonnet-4.5", ACCESS.known_failover_model_ids()
+        )
+
+    def test_unusable_registry_fails_closed_only_where_a_route_is_named(
+        self,
+    ) -> None:
+        stale = int(time.time()) - (31 * 24 * 60 * 60)
+        self.write_registry(registry_entry(checked_at=stale))
+        policy = ACCESS.load_policy()
+
+        # Naming the route is the point of use, and it reports the real reason
+        # rather than calling a declared route unknown. The remedy is attached
+        # where the failure is reported, not stored in the reason itself.
+        with self.assertRaises(ACCESS.AccessError) as raised:
+            ACCESS.resolve_openrouter_route(policy, "declared-sonnet")
+        self.assertIn("older than 30 days", str(raised.exception))
+        self.assertIn(
+            "airlock openrouter models refresh --apply", str(raised.exception)
+        )
+        with self.assertRaisesRegex(ACCESS.AccessError, "older than 30 days"):
+            ACCESS.render_profile(
+                policy,
+                "openrouter-pure",
+                {},
+                openrouter_root_route="declared-sonnet",
+            )
 
     def test_guidance_marks_declared_route_as_unknown_and_extra(self) -> None:
         self.write_registry(registry_entry())

@@ -55,7 +55,7 @@ airlock update --yes
 
 Without `--yes`, a noninteractive terminal is refused. Installation is also refused inside an active Airlock session because that session is still using the old managed files. Exit it and rerun the command from the terminal.
 
-The updater preserves the existing Airlock configuration and the recognized optional `airlock-worker`. It delegates file replacement to the existing installers, which replace only recognized managed files. An unknown launcher, service file, symlink, or `airlock-worker.md` is refused instead of overwritten. The updater does not use `sudo`, modify native Claude or Codex settings, or update Claude Code or `claude-code-proxy`.
+The updater preserves the existing Airlock configuration and the recognized optional `airlock-worker`. It delegates file replacement to the existing installers, which replace only recognized managed files. An unknown launcher, service file, symlink, or `airlock-worker.md` is refused instead of overwritten. The updater does not use `sudo` or modify native Claude or Codex settings. On Windows, the installer upgrades only the exact previously distributed Airlock `claude-code-proxy` binary in Airlock's install directory when the new release needs it. A custom or unknown proxy remains under your control; review it and use `-UpgradeProxy` explicitly if you want the carried build. Claude Code itself is never updated.
 
 ## Manual update
 

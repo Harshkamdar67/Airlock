@@ -4,7 +4,7 @@
 
 [![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.10-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.11-orange.svg)](CHANGELOG.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
 An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
@@ -30,7 +30,6 @@ airlock status          # Current session root and recent router actions
 - Keep normal `claude` and `codex` unchanged.
 - Start with an OpenAI or Anthropic model, and reach both from the same session.
 - Use real Claude Code Agents for both providers, each with an exact model, and move them all with `/effort`.
-- Keep native Agent cards, tools, background work, cancellation, and worktrees.
 - Let Plan and general-purpose inherit the main model, route routine Explore through the economical `haiku` family slot, or choose an exact named worker for one call.
 - Set a budget mode and a smaller worker cap when you want one.
 - See OpenAI plan usage without making a model request.
@@ -40,7 +39,6 @@ airlock status          # Current session root and recent router actions
 
 ```text
 OpenAI-only profile
-
 Claude Code
     |
     `-- 127.0.0.1 OpenAI proxy
@@ -89,6 +87,8 @@ Clone this repository and run:
 
 The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`. If the upstream proxy's normal config or state parent is also blocked, setup gives the proxy a private writable fallback and uses it consistently for OAuth, the service, the launcher, and Doctor.
 
+The macOS/Linux installer requires a `claude-code-proxy` build whose offline catalog includes `gpt-6-sol` and `gpt-6-luna`; upstream v0.1.42 includes both. If an older Homebrew proxy is already installed, upgrade it before running setup again.
+
 Provider Fast startup is part of safety and budget. Background-command, utility, Luna swarm selection, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 
 For the tested defaults without the wizard:
@@ -104,7 +104,7 @@ You need:
 - [Claude Code](https://code.claude.com/docs/en/setup)
 - [Git for Windows](https://git-scm.com/download/win), including Git Bash
 - Python 3
-- `claude-code-proxy`. The Windows installer downloads Airlock's carried build of [`claude-code-proxy`](https://github.com/Harshkamdar67/claude-code-proxy) when none is installed and verifies its checksum. Stock releases open browser login through `cmd start`, which truncates OAuth URLs at the first ampersand and breaks Grok login; see [Troubleshooting](docs/troubleshooting.md).
+- `claude-code-proxy`. The Windows installer downloads Airlock's carried build of [`claude-code-proxy`](https://github.com/Harshkamdar67/claude-code-proxy) when none is installed and verifies its checksum. It also upgrades the exact verified previous Airlock build in Airlock's install directory. Other installed proxy builds are left under your control; see [Troubleshooting](docs/troubleshooting.md).
 - A ChatGPT plan with Codex access
 
 Complete the official proxy login in an interactive terminal:
@@ -214,7 +214,7 @@ Read [Security](SECURITY.md) and the [threat model](docs/threat-model.md).
 - Anthropic supports Claude Code gateways and saved-login forwarding, but it does not officially support non-Claude models behind a gateway.
 - GPT model IDs may not appear in Claude Code's `/model` discovery list. Start the exact root with `airlock` or `airlock hybrid`, use Claude Code's family aliases for built-in Agents, and use a named `airlock-*` Agent when exact model identity matters.
 - Remote Control is unavailable when Claude Code uses a non-Anthropic base URL.
-- Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents.
+- Native Claude Code decides which tools subagents can use. Airlock cannot add a tool that Claude Code itself excludes from subagents. On OpenAI and Grok routes, Anthropic's `defer_loading` marker is removed before proxy translation, so large tool catalogs can still consume context; native Claude routes retain deferred loading.
 - Native Agent cards can report zero tokens for custom OpenAI and Grok IDs even when the provider returned usage. In a hybrid session, `airlock session-usage` shows the router's cumulative Anthropic, OpenAI, and Grok provider-reported totals without changing provider responses; OpenRouter is omitted because it belongs to a separate account. It is not a bill. Because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is process-wide, native Anthropic roots stay uncapped and other OpenAI and Grok roots keep the saved conservative fallback; explicit user overrides still win for every worker.
 - Grok routes share the local proxy with Codex but need their own login, and Airlock cannot read Grok plan windows, so `airlock usage` covers OpenAI only.
 - OpenRouter routes are entirely user-declared. Airlock checks the exact model and endpoint against the public catalog when you add or refresh one, but it does not verify or rank a route's real capability, context window, or cost, and it does not offer `count_tokens` for those routes.

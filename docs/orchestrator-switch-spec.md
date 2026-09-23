@@ -63,7 +63,7 @@ These are the load bearing facts. All are documented.
 | `/compact` is terminal only. It does not work in `-p` mode. `/model`, `/effort`, `/config`, `/mcp`, `/color` do work in `-p`. | There is no headless compaction. This shapes the whole compaction plan in section 7. |
 | `/autocompact <value>` saves the value to the user's own settings file. | Airlock must never run it. Airlock uses the `--autocompact` flag, which is per launch and does not touch user settings. |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` outranks the flag, the command, and the setting. | Airlock's existing precedence handling stays correct. |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` declares the window for a model ID Claude Code does not recognize, and applies directly when the ID neither starts with `claude-` nor contains `[1m]`. | This is the correct way to tell Claude Code the truth about `gpt-5.6-sol`, `grok-4.6`, and OpenRouter IDs. Airlock now uses it for `grok-4.6`. |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` declares the window for a model ID Claude Code does not recognize, and applies directly when the ID neither starts with `claude-` nor contains `[1m]`. | This is the correct way to tell Claude Code the truth about `gpt-6-sol`, `grok-4.6`, and OpenRouter IDs. Airlock now uses it for `grok-4.6`. |
 | For an unrecognized ID containing `[1m]`, Claude Code assumes 1M and the variable only applies alongside `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, which is process wide and would also cap real Claude models at 200K. | Airlock's earlier decision to drop the `[1m]` suffix from GPT IDs is what keeps the clean case available. Keep it that way. |
 | For an ID that resolves to a Claude model, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` only applies with `DISABLE_COMPACT`, which turns compaction off entirely. | Never use it for Claude roots. |
 | When the context exceeds the model's limit mid conversation, Claude Code compacts automatically and continues. | A downward switch is survivable, within limits. |
@@ -236,7 +236,7 @@ Airlock uses. Claude roots keep native sizing and must not receive the variable.
 
 | Root | H, hard limit | W to declare | T to set |
 | --- | --- | --- | --- |
-| `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, `claude-fable-5-1[1m]` | 1,000,000 | leave native | leave native, or `0.8 * H` when the session is switch ready |
+| `claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`, `claude-fable-5-1[1m]` | 1,000,000 | leave native | leave native, or `0.8 * H` when the session is switch ready |
 | `claude-haiku-4-5-20251001` | 200,000 | leave native | leave native |
 | `gpt-5.6-*` | believed 272,000, unproven above 300,000 | 272,000 | 218,000 |
 | `grok-4.6` | documented 500,000 | 500,000 via `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | 400,000 |
@@ -392,7 +392,7 @@ prompts, no transcript text:
       "five_hour_used_percent": 41.0,
       "seven_day_used_percent": 88.0,
       "resets_at": 0,
-      "recent_failures": [{"kind": "rate_limit", "at": 0, "model": "claude-opus-5"}],
+      "recent_failures": [{"kind": "rate_limit", "at": 0, "model": "claude-opus-5-5"}],
       "cooldown_until": 0,
       "scope": "account"
     }
@@ -636,7 +636,7 @@ carry their own freshness and provenance per section.
     "objective": {
       "text": "...",
       "refreshed_at": 0, "trigger": "milestone", "turn": 141,
-      "model": "claude-opus-5", "repo_revision": "abc123", "tokens": 512
+      "model": "claude-opus-5-5", "repo_revision": "abc123", "tokens": 512
     },
     "critical_turns": {
       "text": "...", "turn_from": 138, "turn_to": 141,

@@ -5,7 +5,7 @@ This project does not publish from a developer laptop. A version tag starts the 
 ## Current release target
 
 ```text
-0.1.0-beta.10
+0.1.0-beta.11
 ```
 
 The current working tree is not a release until its changes are reviewed, committed, and pushed by the maintainer.
@@ -120,6 +120,7 @@ Before merge:
 - review the full diff
 - verify new files are intentional
 - confirm generated archives are not committed
+- publish and checksum a compatible carried `claude-code-proxy` build for Windows AMD64 and ARM64, then update the installer pin before tagging an Airlock release that defaults to GPT-6 Sol or Luna; the older `0.1.35-airlock.3` build does not accept those IDs
 - confirm CI passes on Linux, macOS, and Windows
 - confirm no live quota test ran without permission
 
@@ -148,8 +149,8 @@ After the release commit is merged into protected `main` and every required chec
 ```bash
 git switch main
 git pull --ff-only origin main
-git tag -a v0.1.0-beta.6 -m "Airlock v0.1.0-beta.6"
-git push origin v0.1.0-beta.6
+git tag -a v0.1.0-beta.11 -m "Airlock v0.1.0-beta.11"
+git push origin v0.1.0-beta.11
 ```
 
 Pushing the tag is an outward action. Confirm it immediately before running the command.

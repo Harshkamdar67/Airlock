@@ -2065,7 +2065,7 @@ def wire_model_id(model: str) -> str:
     """Return the provider wire form of a model ID.
 
     Claude Code strips a trailing ``[1m]`` instruction before the request
-    reaches the provider, so ``claude-opus-5`` and ``claude-opus-5[1m]``
+    reaches the provider, so ``claude-opus-5-5`` and ``claude-opus-5-5[1m]``
     name the same source. Console treats those forms as duplicates on
     chain writes without importing the access helper.
     """

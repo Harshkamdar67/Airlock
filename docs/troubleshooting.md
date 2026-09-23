@@ -80,9 +80,29 @@ airlock proxy grok auth login
 
 macOS and Linux install upstream through Homebrew and never had this problem.
 
-## Every Airlock session fails because of the OpenRouter registry
+## OpenRouter routes are unavailable
 
-An expired or invalid OpenRouter registry entry does not just disable that one route. It makes the whole registry file invalid, which stops every Airlock session, including OpenAI-only and Grok-only ones. This is deliberate: a stale or broken declared route is treated as untrusted input rather than left running on unverified metadata.
+An expired or invalid OpenRouter registry entry does not just disable that one route. It makes the whole registry file unusable, so every route declared in it disappears at once. This is deliberate: a stale or broken declared route is treated as untrusted input rather than left running on unverified metadata.
+
+Sessions that do not name an OpenRouter route still start. They print the reason once and run with no OpenRouter workers:
+
+```
+airlock: OpenRouter routes are unavailable: OpenRouter registry is invalid:
+models[0].checked_at is older than 30 days; refresh it with 'airlock openrouter
+models refresh --apply', or remove the affected route with 'airlock openrouter
+models remove ROUTE'. Other providers are unaffected.
+```
+
+Naming a route from an unusable registry stops with that same reason, so nothing runs on unverified metadata.
+
+Note that the 30-day expiry is reached by the clock, not by anything you changed. A session that worked yesterday can fail today because a route crossed the 30-day line overnight.
+
+Before Airlock 0.1.0-beta.11 this stopped every session, including OpenAI-only and Grok-only ones, and the launcher discarded the reason, so the only symptom was a silent exit code. It also blocked the commands below, which are the ones that repair it. If you are on an older version and stuck, run the refresh directly:
+
+```bash
+python ~/.local/bin/airlock_openrouter_models.py \
+  --registry ~/.config/airlock/openrouter-registry.json refresh --apply --yes
+```
 
 Check what is declared:
 
@@ -112,7 +132,7 @@ If you never ran `airlock openrouter models add` or `airlock openrouter models a
 - **`unknown or disabled OpenRouter route`**: the name does not match a currently declared, enabled route. Check the exact spelling with `airlock openrouter models list`; a route you removed, disabled, or never added cannot be selected, and route names are matched exactly.
 - **`no enabled OpenRouter routes are available`**: your registry has nothing declared yet, or every declared route is disabled. Add one with `airlock openrouter models add` or `add-preset` first.
 - **`OpenRouter roots are selected by exact registry route; --model and -m cannot be forwarded`**: `airlock opr` picks the model through the route, not through `--model`. Drop that flag and pass Claude Code's other arguments normally.
-- **A stale or invalid registry entry**: the same registry check that blocks other Airlock sessions also blocks `airlock opr`. See [Every Airlock session fails because of the OpenRouter registry](#every-airlock-session-fails-because-of-the-openrouter-registry) above.
+- **A stale or invalid registry entry**: `airlock opr` names a route, so an unusable registry stops it with the reason even though other sessions still start. See [OpenRouter routes are unavailable](#openrouter-routes-are-unavailable) above.
 
 These checks run before Airlock contacts OpenRouter, so a rejected `airlock opr` launch never sends a request.
 
@@ -270,7 +290,7 @@ If it fails, reinstall and restart. Do not add a caller `model` override to a na
 The error looks like this, and it appears before anything is fetched:
 
 ```
-[claude-code:unrecognized_model] {"model":"gpt-5.6-luna","query_source":"web_fetch_apply"}
+[claude-code:unrecognized_model] {"model":"gpt-6-luna","query_source":"web_fetch_apply"}
 ```
 
 WebFetch reads the fetched page with Claude Code's Haiku-class model, and Claude
@@ -361,7 +381,7 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Two shipped roots declare a hard limit from provider documentation instead: `grok-4.6` declares 500,000 tokens and compacts at 400,000, and `gpt-6-astra` declares its 922,000-token input ceiling and compacts at 736,000. Neither number is verified by an Airlock proof.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized GPT-5.6 Sol proof above 300,000 tokens did not pass on 2026-08-09 and the new GPT-6 routes have no Airlock long-context proof yet. Two shipped roots declare a hard limit from provider documentation instead: `grok-4.6` declares 500,000 tokens and compacts at 400,000, and `gpt-6-astra` declares its 922,000-token input ceiling and compacts at 736,000. Neither number is verified by an Airlock proof.
 
 To take the control back for a session, start it with:
 

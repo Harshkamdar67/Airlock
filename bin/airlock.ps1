@@ -20,7 +20,7 @@ $ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:
 $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
-$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-5.6-sol' }
+$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-6-sol' }
 $ExplicitContextWin = Test-Path Env:\AIRLOCK_CONTEXT_WINDOW
 $ContextWin = if ($ExplicitContextWin) { [string]$env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 # A window the user set themselves outranks Airlock's default. Record it before
@@ -106,10 +106,10 @@ $UpdateNoticeFile = Join-Path $ConfigDir 'update-notice.json'
 
 $Models = @{
   'astra'    = @('gpt-6-astra',        'GPT-6 Astra')
-  'sol'      = @('gpt-5.6-sol',        'GPT-5.6 Sol')
+  'sol'      = @('gpt-6-sol',        'GPT-6 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
-  'luna'     = @('gpt-5.6-luna',       'GPT-5.6 Luna')
+  'luna'     = @('gpt-6-luna',       'GPT-6 Luna')
   '5.5'      = @('gpt-5.5',            'GPT-5.5')
   '5.4'      = @('gpt-5.4',            'GPT-5.4')
   'mini'     = @('gpt-5.4-mini',       'GPT-5.4 Mini')
@@ -150,14 +150,14 @@ $DeclaredContextLimits = @{
 
 $HybridRoots = @{
   'astra'  = @('gpt-6-astra', 'GPT-6 Astra', 'openai')
-  'sol'    = @('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai')
+  'sol'    = @('gpt-6-sol', 'GPT-6 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
-  'luna'   = @('gpt-5.6-luna', 'GPT-5.6 Luna', 'openai')
+  'luna'   = @('gpt-6-luna', 'GPT-6 Luna', 'openai')
   # Claude Code only grants these models their native 1M window when
   # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
   # always points it at the session router. The [1m] suffix is the one lever
   # that survives that. Haiku 4.5 is a genuine 200000 model, so it stays bare.
-  'opus'   = @('claude-opus-5[1m]', 'Claude Opus 5', 'anthropic')
+  'opus'   = @('claude-opus-5-5[1m]', 'Claude Opus 5.5', 'anthropic')
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5-1[1m]', 'Claude Fable 5.1', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
@@ -413,14 +413,22 @@ function Import-CustomModels {
   }
   # Windows PowerShell 5.1 turns redirected native stderr into a terminating
   # error under Stop preference, so this one probe runs under Continue.
+  # The helper's stderr carries the only description of a malformed user-owned
+  # file, so it is left on the inherited console rather than discarded. Sending
+  # it to $null here once turned every failure into a bare exit code with no
+  # message at all. It is deliberately not redirected: Windows PowerShell 5.1
+  # rewraps redirected native stderr as a NativeCommandError, which would bury
+  # the diagnostic in a call-stack banner, so this follows Invoke-AccessJson and
+  # only captures stdout. The Continue preference stays because that same 5.1
+  # behaviour turns native stderr into a terminating error under Stop.
   $previousPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $raw = @(& $python $AccessHelper 'custom-models' 2>$null)
+    $raw = @(& $python $AccessHelper 'custom-models')
+    $rawExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
   }
-  $rawExit = $LASTEXITCODE
   if ($rawExit -eq 2) { return }
   if ($rawExit -ne 0) { exit $rawExit }
   try {
@@ -1309,7 +1317,7 @@ function Get-SessionFastMode {
   param([string]$RootModel)
   # The root model carries a [1m] suffix on the models that need it, so this
   # gate has to compare the base name rather than the whole string.
-  if (($RootModel -replace '\[1m\]$', '') -ne 'claude-opus-5' -or $AnthropicFast -ne 'on') { return 'off' }
+  if (($RootModel -replace '\[1m\]$', '') -ne 'claude-opus-5-5' -or $AnthropicFast -ne 'on') { return 'off' }
   switch ($ExtraUsagePolicy) {
     'allow' { return 'on' }
     'never' {
@@ -1555,10 +1563,10 @@ function Select-HybridRoot {
   }
   Write-Host 'Choose the Airlock hybrid orchestrator:'
   Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5[1m])'
-  Write-Host '  2) GPT-5.6 Sol (gpt-5.6-sol)'
+  Write-Host '  2) GPT-6 Sol (gpt-6-sol)'
   Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra)'
-  Write-Host '  4) GPT-5.6 Luna (gpt-5.6-luna)'
-  Write-Host '  5) Claude Opus 5 (claude-opus-5[1m])'
+  Write-Host '  4) GPT-6 Luna (gpt-6-luna)'
+  Write-Host '  5) Claude Opus 5.5 (claude-opus-5-5[1m])'
   Write-Host '  6) Claude Fable 5.1 (claude-fable-5-1[1m]; may use extra usage)'
   Write-Host '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)'
   Write-Host '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)'

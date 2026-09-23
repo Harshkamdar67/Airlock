@@ -64,12 +64,12 @@ def valid_snapshot() -> dict[str, object]:
         "root_provider": "anthropic",
         "routes": {
             "claude-opus-4-6[1m]": "anthropic",
-            "gpt-5.6-sol": "openai",
+            "gpt-6-sol": "openai",
             "anthropic/claude-sonnet-4.5": "openrouter",
         },
         "agents": {
             "airlock-sol": {
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-sol",
                 "provider": "openai",
                 "extra_usage": False,
             },
@@ -947,7 +947,7 @@ class SnapshotValidationTests(PolicyTestCase):
         snapshot = policy.validate_session_snapshot(value)
         self.assertEqual(snapshot.root_model, "claude-opus-4-6[1m]")
         self.assertEqual(snapshot.to_dict()["root_model"], snapshot.root_model)
-        self.assertEqual(snapshot.routes["gpt-5.6-sol"], "openai")
+        self.assertEqual(snapshot.routes["gpt-6-sol"], "openai")
         metadata = snapshot.openrouter["anthropic/claude-sonnet-4.5"]
         self.assertEqual(metadata.endpoint_provider, "anthropic")
         self.assertEqual(metadata.provider_name, "Anthropic")
@@ -1040,13 +1040,13 @@ class SnapshotValidationTests(PolicyTestCase):
     def test_agent_fields_references_and_provider_agreement_are_strict(self) -> None:
         cases = []
         bad_name = valid_snapshot()
-        bad_name["agents"] = {"worker": {"model": "gpt-5.6-sol", "provider": "openai"}}
+        bad_name["agents"] = {"worker": {"model": "gpt-6-sol", "provider": "openai"}}
         cases.append(bad_name)
         malformed_name = valid_snapshot()
-        malformed_name["agents"] = {"Airlock Worker": {"model": "gpt-5.6-sol", "provider": "openai"}}
+        malformed_name["agents"] = {"Airlock Worker": {"model": "gpt-6-sol", "provider": "openai"}}
         cases.append(malformed_name)
         unknown_field = valid_snapshot()
-        unknown_field["agents"] = {"airlock-sol": {"model": "gpt-5.6-sol", "provider": "openai", "effort": "high"}}
+        unknown_field["agents"] = {"airlock-sol": {"model": "gpt-6-sol", "provider": "openai", "effort": "high"}}
         cases.append(unknown_field)
         missing_route = valid_snapshot()
         missing_route["agents"] = {"airlock-sol": {"model": "gpt-missing", "provider": "openai"}}
@@ -1096,7 +1096,7 @@ class SnapshotValidationTests(PolicyTestCase):
         missing["openrouter"] = {}
         wrong_route = valid_snapshot()
         wrong_route["openrouter"] = {
-            "gpt-5.6-sol": {"endpoint_provider": "openai"},
+            "gpt-6-sol": {"endpoint_provider": "openai"},
             "anthropic/claude-sonnet-4.5": {"endpoint_provider": "anthropic"},
         }
         dangling = valid_snapshot()
@@ -1175,7 +1175,7 @@ class SnapshotValidationTests(PolicyTestCase):
             with self.subTest(field=field):
                 self.assert_invalid_snapshot(value)
         value = valid_snapshot()
-        value["agents"] = {"airlock-sol": "gpt-5.6-sol"}
+        value["agents"] = {"airlock-sol": "gpt-6-sol"}
         self.assert_invalid_snapshot(value)
         value = valid_snapshot()
         value["openrouter"] = {"anthropic/claude-sonnet-4.5": "anthropic"}
