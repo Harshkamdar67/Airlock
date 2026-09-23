@@ -5,9 +5,9 @@
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
     "bin/airlock": "2139e20b3c5890d61b6ad8e2ea70fad066d8c7bb4e318c03e6eb0d5fb7f81347",
-    "bin/airlock-access.py": "daa4f1d228765b12424045e41a2ea223dc9390f170d8a00f4b5def926b6937d7",
+    "bin/airlock-access.py": "ca7f2d14834f50568ea22a8e9dd125c7e36a709925af434c8c24ab1c74d6d18f",
     "bin/airlock-hybrid.py": "22553b26c18634566286d05feb3383a960d98265d031ef4517039e64f8a65735",
-    "bin/airlock-router.py": "54bdd715c06424b35be85754fa2131d44703075adeaf826ac3241409f8fae9e7",
+    "bin/airlock-router.py": "1247583fbb908d97d0062561146b8b23ec8943045b73c69a96359eec5e623f3e",
     "bin/airlock-update.py": "0e748148537a43bfd5d6e19faa3360343b5e6bcf444019e63cb56f877635a2a8",
     "bin/airlock.cmd": "55037fa96606b4de9f7c79d3592d1dcbac04f9d271e502a4d9b71e76c2671356",
     "bin/airlock.ps1": "87bcfa9b17313ec62410443eeff8e247a000d45951dc17e392aa4a456e018284",
