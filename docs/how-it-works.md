@@ -35,7 +35,7 @@ A hybrid session starts one temporary router on an unused `127.0.0.1` port. Clau
 The router reads only the top-level model ID needed for routing:
 
 - exact enabled `gpt-*` IDs go to the local OpenAI proxy
-- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5[1m]` becoming `claude-opus-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
+- Claude Code's deterministic wire form also routes to the same provider for supported native Claude IDs, such as `claude-opus-5-5[1m]` becoming `claude-opus-5-5`; legacy GPT IDs ending in `[1m]` are normalized to bare IDs before routing
 - exact enabled `claude-*` IDs go to `https://api.anthropic.com`
 - exact enabled `grok-*` IDs go to the same local proxy as GPT, which picks the Grok upstream
 - an explicitly enabled `openmodel/ROUTE` goes directly to the route's signed loopback Chat Completions endpoint
@@ -200,7 +200,7 @@ Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact 
 - A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
 - The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
 
-These are Claude Code family slots, not claims that GPT-6 Astra or GPT-5.6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
+These are Claude Code family slots, not claims that GPT-6 Astra or GPT-6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 

@@ -1,12 +1,12 @@
 {
   "_comment": "Managed by https://github.com/Harshkamdar67/Airlock",
   "airlock-opus": {
-    "description": "Claude Opus 5 native worker. Configured strength: difficult architecture, UI/UX design and visual direction, product-flow and design-system work, high-fidelity experiences, long-horizon planning, complex root-cause analysis, security reasoning, high-impact review, and technical synthesis. Limitation: premium Anthropic usage. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "description": "Claude Opus 5.5 native worker. Configured strength: difficult architecture, UI/UX design and visual direction, product-flow and design-system work, high-fidelity experiences, long-horizon planning, complex root-cause analysis, security reasoning, high-impact review, and technical synthesis. Limitation: premium Anthropic usage. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
     "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect primary evidence, preserve unrelated work, and keep edits within the requested scope. For architecture or security work, state assumptions, trust boundaries, tradeoffs, and verification evidence. For UI/UX work, inspect the existing design system and assets, prioritize product flow and accessibility, and verify rendered behavior when tools permit. Run the stated acceptance checks and report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
     "disallowedTools": [
       "Agent"
     ],
-    "model": "claude-opus-5[1m]",
+    "model": "claude-opus-5-5[1m]",
     "effort": "xhigh"
   },
   "airlock-sonnet": {

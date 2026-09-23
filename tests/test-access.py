@@ -442,7 +442,7 @@ for line in sys.stdin:
                 alias_model = (
                     "claude-haiku-4-5-20251001"
                     if profile.startswith("hybrid-")
-                    else "gpt-5.6-luna"
+                    else "gpt-6-luna"
                 )
                 self.assertIn(
                     f"pass `model=haiku` (resolved to {alias_model})", guidance
@@ -568,7 +568,7 @@ for line in sys.stdin:
         # AIRLOCK_DISCOVERY_MODEL channel.
         self.assertTrue(hybrid["picker_models"]["haiku"].startswith("claude-"))
         self.assertNotEqual(hybrid["picker_models"]["haiku"], hybrid["discovery_model"])
-        self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
+        self.assertEqual(hybrid["discovery_model"], "gpt-6-luna")
         self.assertTrue(set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"]))
 
         # An Agent family alias cannot carry Airlock's explicit extra-usage
@@ -577,7 +577,7 @@ for line in sys.stdin:
         policy["providers"]["openai"]["models"]["terra"]["access"] = "extra"
         policy["policies"]["extra_usage"] = "ask"
         picker = ACCESS.proxy_picker_models(policy, "openai-pure")
-        self.assertEqual(picker["sonnet"], "gpt-5.6-sol")
+        self.assertEqual(picker["sonnet"], "gpt-6-sol")
         self.assertNotIn("gpt-5.6-terra", picker.values())
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
@@ -599,11 +599,11 @@ for line in sys.stdin:
         policy["policies"]["extra_usage"] = "allow"
         self.assertEqual(
             ACCESS.discovery_model(policy, "openai-pure"),
-            "gpt-5.6-luna",
+            "gpt-6-luna",
         )
         self.assertEqual(
             ACCESS.proxy_picker_models(policy, "openai-pure")["haiku"],
-            "gpt-5.6-luna",
+            "gpt-6-luna",
         )
 
     def test_auto_hybrid_root_never_selects_extra_or_unavailable_models(self) -> None:
@@ -661,7 +661,7 @@ for line in sys.stdin:
         self.assertFalse(anthropic["haiku"]["model"].endswith("[1m]"))
         # Native Claude models use the suffix to request their larger context
         # window, while legacy GPT suffixes normalize defensively to bare IDs.
-        self.assertEqual(ACCESS.wire_model_id("claude-opus-5[1m]"), "claude-opus-5")
+        self.assertEqual(ACCESS.wire_model_id("claude-opus-5-5[1m]"), "claude-opus-5-5")
         self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("gpt-5.6-terra[1m]"), "gpt-5.6-terra")
         self.assertEqual(ACCESS.wire_model_id("grok-4.6"), "grok-4.6")
@@ -675,49 +675,49 @@ for line in sys.stdin:
         }):
             pure = ACCESS.session_route_policy(policy, "openai-pure")
             self.assertEqual(set(pure["routes"].values()), {"openai"})
-            self.assertEqual(pure["routes"]["gpt-5.6-sol"], "openai")
+            self.assertEqual(pure["routes"]["gpt-6-sol"], "openai")
             self.assertEqual(pure["routes"]["gpt-5.6-terra"], "openai")
             self.assertEqual(
                 set(pure["model_ids"]),
-                {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+                {"gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna"},
             )
-            self.assertIn("gpt-5.6-sol", pure["model_ids"])
-            self.assertEqual(pure["discovery_model"], "gpt-5.6-luna")
+            self.assertIn("gpt-6-sol", pure["model_ids"])
+            self.assertEqual(pure["discovery_model"], "gpt-6-luna")
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "discovery-model"),
-                "gpt-5.6-luna",
+                "gpt-6-luna",
             )
             self.assertEqual(pure["picker_models"], {
-                "fable": "gpt-5.6-sol",
-                "opus": "gpt-5.6-sol",
+                "fable": "gpt-6-sol",
+                "opus": "gpt-6-sol",
                 "sonnet": "gpt-5.6-terra",
-                "haiku": "gpt-5.6-luna",
+                "haiku": "gpt-6-luna",
             })
             self.assertEqual(
                 ACCESS.session_route_field(policy, "openai-pure", "picker-models"),
-                "fable=gpt-5.6-sol\nhaiku=gpt-5.6-luna\n"
-                "opus=gpt-5.6-sol\nsonnet=gpt-5.6-terra",
+                "fable=gpt-6-sol\nhaiku=gpt-6-luna\n"
+                "opus=gpt-6-sol\nsonnet=gpt-5.6-terra",
             )
             hybrid = ACCESS.session_route_policy(policy, "hybrid-openai-root")
-            self.assertEqual(hybrid["discovery_model"], "gpt-5.6-luna")
+            self.assertEqual(hybrid["discovery_model"], "gpt-6-luna")
             # The Haiku slot holds a Claude model so Claude Code's own
             # background work keeps running; discovery stays on Luna.
             self.assertEqual(hybrid["picker_models"], {
-                "fable": "gpt-5.6-sol",
-                "opus": "claude-opus-5[1m]",
+                "fable": "gpt-6-sol",
+                "opus": "claude-opus-5-5[1m]",
                 "sonnet": "claude-sonnet-5[1m]",
                 "haiku": "claude-haiku-4-5-20251001",
             })
             self.assertTrue(
                 set(hybrid["picker_models"].values()) <= set(hybrid["model_ids"])
             )
-            self.assertEqual(hybrid["routes"]["claude-opus-5"], "anthropic")
+            self.assertEqual(hybrid["routes"]["claude-opus-5-5"], "anthropic")
             # The Anthropic ids carry a [1m] suffix so Claude Code keeps their
             # native 1M window from behind the router, and Claude Code strips
             # that suffix before the request leaves. Both forms have to route.
-            self.assertEqual(hybrid["routes"]["claude-opus-5[1m]"], "anthropic")
-            self.assertEqual(hybrid["routes"]["gpt-5.6-sol"], "openai")
-            self.assertIn("gpt-5.6-sol", hybrid["model_ids"])
+            self.assertEqual(hybrid["routes"]["claude-opus-5-5[1m]"], "anthropic")
+            self.assertEqual(hybrid["routes"]["gpt-6-sol"], "openai")
+            self.assertIn("gpt-6-sol", hybrid["model_ids"])
             self.assertNotIn("claude-fable-5-1[1m]", hybrid["model_ids"])
             self.assertNotIn("gpt-5.6-luna-fast", hybrid["model_ids"])
 
@@ -750,18 +750,18 @@ for line in sys.stdin:
         )
         permission_models = set(model_field.split(","))
         snapshot = ACCESS.build_session_snapshot(
-            policy, "hybrid-openai-root", "gpt-5.6-sol"
+            policy, "hybrid-openai-root", "gpt-6-sol"
         )
         self.assertEqual(permission_models, set(route_policy["routes"]))
         self.assertEqual(permission_models, set(snapshot.routes))
-        self.assertTrue({"claude-opus-5[1m]", "claude-opus-5"} <= permission_models)
-        self.assertEqual(snapshot.route_categories["gpt-5.6-sol"], "included")
-        self.assertEqual(snapshot.route_categories["claude-opus-5"], "extra")
+        self.assertTrue({"claude-opus-5-5[1m]", "claude-opus-5-5"} <= permission_models)
+        self.assertEqual(snapshot.route_categories["gpt-6-sol"], "included")
+        self.assertEqual(snapshot.route_categories["claude-opus-5-5"], "extra")
         self.assertEqual(
             snapshot.route_categories["claude-fable-5-1"], "metered"
         )
-        self.assertEqual(snapshot.effort_ceilings["gpt-5.6-sol"], "max")
-        self.assertEqual(snapshot.effort_ceilings["claude-opus-5"], "max")
+        self.assertEqual(snapshot.effort_ceilings["gpt-6-sol"], "max")
+        self.assertEqual(snapshot.effort_ceilings["claude-opus-5-5"], "max")
         self.assertEqual(
             snapshot.effort_ceilings["claude-fable-5-1[1m]"], "max"
         )
@@ -771,7 +771,7 @@ for line in sys.stdin:
         )
         self.assertEqual(
             set(extra_field.split(",")),
-            {"claude-opus-5[1m]", "claude-opus-5"},
+            {"claude-opus-5-5[1m]", "claude-opus-5-5"},
         )
 
         policy["policies"]["extra_usage"] = "never"
@@ -779,7 +779,7 @@ for line in sys.stdin:
             policy, "hybrid-openai-root", "model-ids"
         ).split(","))
         self.assertTrue(
-            {"claude-opus-5[1m]", "claude-opus-5"}.isdisjoint(never_models)
+            {"claude-opus-5-5[1m]", "claude-opus-5-5"}.isdisjoint(never_models)
         )
 
     def test_portfolio_guidance_is_conservative_and_hides_disabled_workers(self) -> None:
@@ -881,6 +881,21 @@ for line in sys.stdin:
                     self.assertIn("design-system work", catalog["airlock-opus"]["description"])
                 if "airlock-sonnet" in catalog:
                     self.assertIn("design-system-aligned UI implementation", catalog["airlock-sonnet"]["description"])
+
+    def test_depth_two_worker_guidance_avoids_main_only_task_controls(self) -> None:
+        self.config.write_text("AIRLOCK_AGENT_DEPTH=2\n", encoding="utf-8")
+        source = json.loads(
+            (ROOT / "config" / "openai-direct-agents.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        rendered = ACCESS.render_provider_agents(
+            ACCESS.load_policy(), "openai", source
+        )
+        prompt = rendered["airlock-sol"]["prompt"]
+        self.assertIn("notify_when_idle", prompt)
+        self.assertIn("main-conversation-only", prompt)
+        self.assertIn("never pass a child Agent ID to TaskStop", prompt)
 
     def test_native_catalog_renderer_rejects_legacy_or_mismatched_entries(self) -> None:
         policy = ACCESS.default_policy()
@@ -991,8 +1006,8 @@ for line in sys.stdin:
                     self.assertIn("use run_in_background=true", luna_description)
                     self.assertIn("useful non-overlapping batch before waiting", luna_description)
                     self.assertNotIn("automatic Luna army", rendered["airlock-sol"]["description"])
-                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-5.6-sol")
-                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5[1m]")
+                    self.assertEqual(rendered["airlock-sol"]["model"], "gpt-6-sol")
+                    self.assertEqual(rendered["airlock-opus"]["model"], "claude-opus-5-5[1m]")
                     for agent in rendered.values():
                         self.assertNotIn("tools", agent)
                         self.assertNotIn("permissionMode", agent)
@@ -1892,7 +1907,7 @@ class SessionUsageTests(unittest.TestCase):
             "events": [
                 {
                     "provider": "openai",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "prompt": "must-not-leak",
                     "authorization": "must-not-leak-either",
                 }
@@ -1900,7 +1915,7 @@ class SessionUsageTests(unittest.TestCase):
             "summary": [
                 {
                     "provider": "openai",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "requests": 2,
                     "completed": 1,
                     "errors": 1,
@@ -1945,7 +1960,7 @@ class SessionUsageTests(unittest.TestCase):
         report = ACCESS.session_usage_report(payload)
         self.assertEqual(
             [(group["provider"], group["model"]) for group in report["groups"]],
-            [("openai", "gpt-5.6-sol")],
+            [("openai", "gpt-6-sol")],
         )
         self.assertNotIn("deepseek/", json.dumps(report))
 
@@ -2044,12 +2059,12 @@ class SessionUsageTests(unittest.TestCase):
         report = ACCESS.session_usage_report(self.payload())
         self.assertEqual(report["cooldowns"], [])
         payload = self.payload()
-        payload["rate_limit_cooldowns"] = ["gpt-5.6-luna", "gpt-5.6-luna", "grok-test"]
+        payload["rate_limit_cooldowns"] = ["gpt-6-luna", "gpt-6-luna", "grok-test"]
         report = ACCESS.session_usage_report(payload)
-        self.assertEqual(report["cooldowns"], ["gpt-5.6-luna", "grok-test"])
+        self.assertEqual(report["cooldowns"], ["gpt-6-luna", "grok-test"])
         lines = "\n".join(ACCESS.session_usage_lines(report))
         self.assertIn("Cooling down after rate limits", lines)
-        self.assertIn("gpt-5.6-luna, grok-test", lines)
+        self.assertIn("gpt-6-luna, grok-test", lines)
         quiet = "\n".join(ACCESS.session_usage_lines(self.report_without_cds()))
         self.assertNotIn("Cooling down", quiet)
 
@@ -2058,7 +2073,7 @@ class SessionUsageTests(unittest.TestCase):
 
     def test_session_usage_rejects_invalid_cooldown_entries(self) -> None:
         for cooldowns in (
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             [42],
             ["bad model name with spaces"],
             ["x" * 200],
@@ -2116,18 +2131,18 @@ class FailoverChainTests(unittest.TestCase):
 
     def routes(self):
         return {
-            "gpt-5.6-luna": "openai",
+            "gpt-6-luna": "openai",
             "grok-composer-2.5-fast": "grok",
             "claude-haiku-4-5-20251001": "anthropic",
-            "gpt-5.6-sol": "openai",
-            "claude-opus-5[1m]": "anthropic",
-            "claude-opus-5": "anthropic",
+            "gpt-6-sol": "openai",
+            "claude-opus-5-5[1m]": "anthropic",
+            "claude-opus-5-5": "anthropic",
             "vendor/model-test": "openrouter",
         }
 
     def test_economical_models_chain_within_their_category(self) -> None:
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
             self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
             self.worker(
                 "haiku", "claude-haiku-4-5-20251001", "anthropic", "economical"
@@ -2136,35 +2151,35 @@ class FailoverChainTests(unittest.TestCase):
         chains = ACCESS.session_failover_chains(
             self.policy(), workers, self.routes()
         )
-        self.assertEqual(chains["gpt-5.6-luna"], [
+        self.assertEqual(chains["gpt-6-luna"], [
             "grok-composer-2.5-fast",
             "claude-haiku-4-5-20251001",
         ])
         self.assertEqual(chains["grok-composer-2.5-fast"], [
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             "claude-haiku-4-5-20251001",
         ])
 
     def test_premium_and_standard_categories_do_not_mix(self) -> None:
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
-            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
-            self.worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
+            self.worker("sol", "gpt-6-sol", "openai", "premium"),
+            self.worker("opus", "claude-opus-5-5[1m]", "anthropic", "premium"),
             self.worker("terra", "gpt-5.6-terra", "openai", "standard"),
         ]
         chains = ACCESS.session_failover_chains(
             self.policy(), workers, self.routes()
         )
-        self.assertEqual(chains["gpt-5.6-sol"], ["claude-opus-5"])
-        self.assertEqual(chains["claude-opus-5[1m]"], ["gpt-5.6-sol"])
-        self.assertEqual(chains["claude-opus-5"], ["gpt-5.6-sol"])
+        self.assertEqual(chains["gpt-6-sol"], ["claude-opus-5-5"])
+        self.assertEqual(chains["claude-opus-5-5[1m]"], ["gpt-6-sol"])
+        self.assertEqual(chains["claude-opus-5-5"], ["gpt-6-sol"])
         # A lone standard worker has no same-category peer and no chain.
         self.assertNotIn("gpt-5.6-terra", chains)
-        self.assertNotIn("gpt-5.6-luna", chains)
+        self.assertNotIn("gpt-6-luna", chains)
 
     def test_extra_gated_targets_require_the_allow_policy(self) -> None:
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
             self.worker(
                 "or-a", "vendor/model-a", "openrouter", "unknown", access="extra"
             ),
@@ -2173,7 +2188,7 @@ class FailoverChainTests(unittest.TestCase):
             ),
         ]
         routes = {
-            "gpt-5.6-luna": "openai",
+            "gpt-6-luna": "openai",
             "vendor/model-a": "openrouter",
             "vendor/model-b": "openrouter",
         }
@@ -2190,11 +2205,11 @@ class FailoverChainTests(unittest.TestCase):
         # each other; luna still has no same-category peer.
         self.assertEqual(allow["vendor/model-a"], ["vendor/model-b"])
         self.assertEqual(allow["vendor/model-b"], ["vendor/model-a"])
-        self.assertNotIn("gpt-5.6-luna", allow)
+        self.assertNotIn("gpt-6-luna", allow)
 
     def test_never_policy_disables_all_chains(self) -> None:
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
             self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
         ]
         chains = ACCESS.session_failover_chains(
@@ -2204,13 +2219,13 @@ class FailoverChainTests(unittest.TestCase):
 
     def test_peers_outside_the_route_table_are_dropped(self) -> None:
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
             self.worker("composer", "grok-composer-2.5-fast", "grok", "economical"),
         ]
         chains = ACCESS.session_failover_chains(
             self.policy(),
             workers,
-            {"gpt-5.6-luna": "openai"},
+            {"gpt-6-luna": "openai"},
         )
         self.assertEqual(chains, {})
 
@@ -2226,8 +2241,8 @@ class FailoverChainTests(unittest.TestCase):
         """
         policy = ACCESS.load_policy()
         for profile, root in (
-            ("hybrid-anthropic-root", "claude-opus-5[1m]"),
-            ("hybrid-openai-root", "gpt-5.6-sol"),
+            ("hybrid-anthropic-root", "claude-opus-5-5[1m]"),
+            ("hybrid-openai-root", "gpt-6-sol"),
         ):
             with self.subTest(profile=profile):
                 snapshot = ACCESS.build_session_snapshot(policy, profile, root)
@@ -2247,7 +2262,7 @@ class FailoverChainTests(unittest.TestCase):
         """Editing the tree by hand meant knowing exact IDs, suffix and all.
 
         The point of the command is that a person types "sol" and "opus",
-        never "gpt-5.6-sol" or "claude-opus-5[1m]", and that a typo is
+        never "gpt-6-sol" or "claude-opus-5-5[1m]", and that a typo is
         answered with the list of names that would have worked.
         """
         temporary = tempfile.TemporaryDirectory()
@@ -2260,7 +2275,7 @@ class FailoverChainTests(unittest.TestCase):
             written = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(written["schema_version"], 1)
             self.assertEqual(
-                written["chains"], {"gpt-5.6-sol": ["claude-opus-5"]}
+                written["chains"], {"gpt-6-sol": ["claude-opus-5-5"]}
             )
             # The tree marks a declared order so it is distinguishable.
             tree = chr(10).join(ACCESS.run_handoff("show", [], profile))
@@ -2269,7 +2284,7 @@ class FailoverChainTests(unittest.TestCase):
             ACCESS.run_handoff("off", ["sol"], profile)
             self.assertEqual(
                 json.loads(target.read_text(encoding="utf-8"))["chains"],
-                {"gpt-5.6-sol": []},
+                {"gpt-6-sol": []},
             )
 
             ACCESS.run_handoff("clear", ["sol"], profile)
@@ -2336,11 +2351,11 @@ class FailoverChainTests(unittest.TestCase):
         chains = json.loads(target.read_text(encoding="utf-8"))["chains"]
         self.assertEqual(
             chains["claude-fable-5-1"],
-            ["gpt-5.6-sol", "claude-opus-5", "grok-4.6"],
+            ["gpt-6-sol", "claude-opus-5-5", "grok-4.6"],
         )
         self.assertEqual(
-            chains["gpt-5.6-sol"],
-            ["claude-opus-5", "grok-4.6", "claude-fable-5-1"],
+            chains["gpt-6-sol"],
+            ["claude-opus-5-5", "grok-4.6", "claude-fable-5-1"],
         )
         self.assertIn("grok-4.6", chains)
         self.assertIn("grok-composer-2.5-fast", chains)
@@ -2403,14 +2418,14 @@ class FailoverChainTests(unittest.TestCase):
             })
         # A real session registers the Claude wire form alongside each full ID.
         routes = {
-            "claude-opus-5[1m]": "anthropic",
-            "claude-opus-5": "anthropic",
-            "gpt-5.6-sol": "openai",
+            "claude-opus-5-5[1m]": "anthropic",
+            "claude-opus-5-5": "anthropic",
+            "gpt-6-sol": "openai",
             "grok-4.6": "grok",
         }
         chains = ACCESS.session_failover_chains(policy, workers, routes)
-        self.assertEqual(chains["claude-opus-5"], ["grok-4.6", "gpt-5.6-sol"])
-        self.assertEqual(chains["gpt-5.6-sol"], ["grok-4.6", "claude-opus-5"])
+        self.assertEqual(chains["claude-opus-5-5"], ["grok-4.6", "gpt-6-sol"])
+        self.assertEqual(chains["gpt-6-sol"], ["grok-4.6", "claude-opus-5-5"])
         # Whatever the shipped pin is, every Grok hop a chain produces has to
         # be an ID the tested proxy catalogs list.
         proxy_catalog = {"grok-4.5", "grok-4.6", "grok-composer-2.5-fast"}
@@ -2443,30 +2458,30 @@ class DeclaredFailoverChainTests(unittest.TestCase):
 
     def routes(self):
         return {
-            "gpt-5.6-luna": "openai",
+            "gpt-6-luna": "openai",
             "grok-composer-2.5-fast": "grok",
             "claude-haiku-4-5-20251001": "anthropic",
-            "gpt-5.6-sol": "openai",
-            "claude-opus-5[1m]": "anthropic",
-            "claude-opus-5": "anthropic",
+            "gpt-6-sol": "openai",
+            "claude-opus-5-5[1m]": "anthropic",
+            "claude-opus-5-5": "anthropic",
             "vendor/model-test": "openrouter",
         }
 
     def workers(self):
         return [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
             self.worker(
                 "composer", "grok-composer-2.5-fast", "grok", "economical"
             ),
             self.worker(
                 "haiku", "claude-haiku-4-5-20251001", "anthropic", "economical"
             ),
-            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
-            self.worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+            self.worker("sol", "gpt-6-sol", "openai", "premium"),
+            self.worker("opus", "claude-opus-5-5[1m]", "anthropic", "premium"),
         ]
 
     def test_declared_chain_replaces_derived_verbatim(self) -> None:
-        declared = {"claude-opus-5[1m]": ("gpt-5.6-luna", "grok-composer-2.5-fast")}
+        declared = {"claude-opus-5-5[1m]": ("gpt-6-luna", "grok-composer-2.5-fast")}
         chains = ACCESS.session_failover_chains(
             self.policy(),
             self.workers(),
@@ -2474,23 +2489,23 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             declared=declared,
         )
         # Verbatim order wins over the derived premium chain.
-        self.assertEqual(chains["claude-opus-5[1m]"], [
-            "gpt-5.6-luna",
+        self.assertEqual(chains["claude-opus-5-5[1m]"], [
+            "gpt-6-luna",
             "grok-composer-2.5-fast",
         ])
-        self.assertEqual(chains["claude-opus-5"], [
-            "gpt-5.6-luna",
+        self.assertEqual(chains["claude-opus-5-5"], [
+            "gpt-6-luna",
             "grok-composer-2.5-fast",
         ])
         # Undeclared sources keep their derived chains.
-        self.assertEqual(chains["gpt-5.6-sol"], ["claude-opus-5"])
+        self.assertEqual(chains["gpt-6-sol"], ["claude-opus-5-5"])
 
     def test_declared_chain_may_cross_categories_and_reverse_order(self) -> None:
         declared = {
-            "gpt-5.6-sol": (
+            "gpt-6-sol": (
                 "claude-haiku-4-5-20251001",
-                "gpt-5.6-luna",
-                "claude-opus-5[1m]",
+                "gpt-6-luna",
+                "claude-opus-5-5[1m]",
             ),
         }
         chains = ACCESS.session_failover_chains(
@@ -2499,24 +2514,24 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             self.routes(),
             declared=declared,
         )
-        self.assertEqual(chains["gpt-5.6-sol"], [
+        self.assertEqual(chains["gpt-6-sol"], [
             "claude-haiku-4-5-20251001",
-            "gpt-5.6-luna",
-            "claude-opus-5",
+            "gpt-6-luna",
+            "claude-opus-5-5",
         ])
 
     def test_empty_peer_list_opts_the_source_out(self) -> None:
-        declared = {"gpt-5.6-sol": ()}
+        declared = {"gpt-6-sol": ()}
         chains = ACCESS.session_failover_chains(
             self.policy(),
             self.workers(),
             self.routes(),
             declared=declared,
         )
-        self.assertNotIn("gpt-5.6-sol", chains)
+        self.assertNotIn("gpt-6-sol", chains)
         # Opting out one source does not strip it from other chains.
         self.assertEqual(chains["claude-haiku-4-5-20251001"], [
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             "grok-composer-2.5-fast",
         ])
 
@@ -2525,20 +2540,20 @@ class DeclaredFailoverChainTests(unittest.TestCase):
         # source must simply have no chain; an empty list would fail the
         # session policy snapshot and refuse the launch.
         declared = {
-            "gpt-5.6-luna": ("claude-sonnet-5", "grok-composer-2.5-fast"),
+            "gpt-6-luna": ("claude-sonnet-5", "grok-composer-2.5-fast"),
         }
         workers = [
-            self.worker("luna", "gpt-5.6-luna", "openai", "economical"),
-            self.worker("sol", "gpt-5.6-sol", "openai", "premium"),
+            self.worker("luna", "gpt-6-luna", "openai", "economical"),
+            self.worker("sol", "gpt-6-sol", "openai", "premium"),
         ]
-        routes = {"gpt-5.6-luna": "openai", "gpt-5.6-sol": "openai"}
+        routes = {"gpt-6-luna": "openai", "gpt-6-sol": "openai"}
         chains = ACCESS.session_failover_chains(
             self.policy(), workers, routes, declared=declared
         )
-        self.assertNotIn("gpt-5.6-luna", chains)
+        self.assertNotIn("gpt-6-luna", chains)
         self.assertNotIn([], list(chains.values()))
         # The other source keeps its derived chain untouched.
-        self.assertNotIn("gpt-5.6-luna", chains.get("gpt-5.6-sol", []))
+        self.assertNotIn("gpt-6-luna", chains.get("gpt-6-sol", []))
 
     def test_extra_gated_peers_still_require_the_allow_policy(self) -> None:
         workers = self.workers() + [
@@ -2547,19 +2562,19 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             ),
         ]
         routes = dict(self.routes(), **{"vendor/model-a": "openrouter"})
-        declared = {"claude-opus-5[1m]": ("vendor/model-a", "gpt-5.6-sol")}
+        declared = {"claude-opus-5-5[1m]": ("vendor/model-a", "gpt-6-sol")}
         ask = ACCESS.session_failover_chains(
             self.policy(extra_usage="ask"), workers, routes, declared=declared
         )
         # The extra peer is filtered; the remaining named peer survives.
-        self.assertEqual(ask["claude-opus-5[1m]"], ["gpt-5.6-sol"])
+        self.assertEqual(ask["claude-opus-5-5[1m]"], ["gpt-6-sol"])
         allow = ACCESS.session_failover_chains(
             self.policy(extra_usage="allow"), workers, routes, declared=declared
         )
-        self.assertEqual(allow["claude-opus-5[1m]"], ["vendor/model-a", "gpt-5.6-sol"])
+        self.assertEqual(allow["claude-opus-5-5[1m]"], ["vendor/model-a", "gpt-6-sol"])
 
     def test_never_policy_kills_declared_chains_too(self) -> None:
-        declared = {"gpt-5.6-sol": ("gpt-5.6-luna",)}
+        declared = {"gpt-6-sol": ("gpt-6-luna",)}
         chains = ACCESS.session_failover_chains(
             self.policy(failover="never"),
             self.workers(),
@@ -2570,24 +2585,24 @@ class DeclaredFailoverChainTests(unittest.TestCase):
 
     def test_unrouted_sources_and_peers_are_dropped(self) -> None:
         declared = {
-            "vendor/model-test": ("gpt-5.6-luna",),
-            "gpt-5.6-sol": ("grok-composer-2.5-fast",),
+            "vendor/model-test": ("gpt-6-luna",),
+            "gpt-6-sol": ("grok-composer-2.5-fast",),
         }
         chains = ACCESS.session_failover_chains(
             self.policy(),
             self.workers(),
-            {"gpt-5.6-luna": "openai", "gpt-5.6-sol": "openai"},
+            {"gpt-6-luna": "openai", "gpt-6-sol": "openai"},
             declared=declared,
         )
         # vendor/model-test is unrouted here so its declaration is inert;
         # sol's composer peer is not a session worker and is filtered, which
         # leaves sol with no chain at all rather than an empty list.
         self.assertNotIn("vendor/model-test", chains)
-        self.assertNotIn("gpt-5.6-sol", chains)
+        self.assertNotIn("gpt-6-sol", chains)
 
     def test_self_and_duplicate_peers_are_filtered_at_runtime(self) -> None:
         declared = {
-            "gpt-5.6-sol": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-luna"),
+            "gpt-6-sol": ("gpt-6-sol", "gpt-6-luna", "gpt-6-luna"),
         }
         chains = ACCESS.session_failover_chains(
             self.policy(),
@@ -2595,7 +2610,7 @@ class DeclaredFailoverChainTests(unittest.TestCase):
             self.routes(),
             declared=declared,
         )
-        self.assertEqual(chains["gpt-5.6-sol"], ["gpt-5.6-luna"])
+        self.assertEqual(chains["gpt-6-sol"], ["gpt-6-luna"])
 
 
 class FailoverFileTests(unittest.TestCase):
@@ -2618,8 +2633,8 @@ class FailoverFileTests(unittest.TestCase):
             json.dumps({
                 "schema_version": 1,
                 "chains": {
-                    "claude-opus-5[1m]": ["gpt-5.6-sol", "gpt-5.6-luna"],
-                    "gpt-5.6-sol": [],
+                    "claude-opus-5-5[1m]": ["gpt-6-sol", "gpt-6-luna"],
+                    "gpt-6-sol": [],
                 },
             }),
             encoding="utf-8",
@@ -2627,8 +2642,8 @@ class FailoverFileTests(unittest.TestCase):
         self.assertEqual(
             self.load(),
             {
-                "claude-opus-5[1m]": ("gpt-5.6-sol", "gpt-5.6-luna"),
-                "gpt-5.6-sol": (),
+                "claude-opus-5-5[1m]": ("gpt-6-sol", "gpt-6-luna"),
+                "gpt-6-sol": (),
             },
         )
 
@@ -2641,8 +2656,8 @@ class FailoverFileTests(unittest.TestCase):
             json.dumps({
                 "schema_version": 1,
                 "chains": {
-                    "claude-fable-5": ["gpt-5.6-sol"],
-                    "gpt-5.6-sol": ["claude-opus-5", "claude-fable-5"],
+                    "claude-fable-5": ["gpt-6-sol"],
+                    "gpt-6-sol": ["claude-opus-5-5", "claude-fable-5"],
                 },
             }),
             encoding="utf-8",
@@ -2650,8 +2665,29 @@ class FailoverFileTests(unittest.TestCase):
         self.assertEqual(
             self.load(),
             {
-                "claude-fable-5": ("gpt-5.6-sol",),
-                "gpt-5.6-sol": ("claude-opus-5", "claude-fable-5"),
+                "claude-fable-5": ("gpt-6-sol",),
+                "gpt-6-sol": ("claude-opus-5-5", "claude-fable-5"),
+            },
+        )
+
+    def test_beta10_failover_models_do_not_block_a_new_session(self) -> None:
+        self.path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chains": {
+                    "claude-opus-5[1m]": ["gpt-5.6-sol"],
+                    "gpt-5.6-sol": ["claude-opus-5", "gpt-5.6-luna"],
+                    "gpt-5.6-terra": ["gpt-5.6-luna"],
+                },
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.load(),
+            {
+                "claude-opus-5[1m]": ("gpt-5.6-sol",),
+                "gpt-5.6-sol": ("claude-opus-5", "gpt-5.6-luna"),
+                "gpt-5.6-terra": ("gpt-5.6-luna",),
             },
         )
 
@@ -2659,7 +2695,7 @@ class FailoverFileTests(unittest.TestCase):
         self.path.write_text(
             json.dumps({
                 "schema_version": 1,
-                "chains": {"totally-made-up": ["gpt-5.6-sol"]},
+                "chains": {"totally-made-up": ["gpt-6-sol"]},
             }),
             encoding="utf-8",
         )
@@ -2670,11 +2706,11 @@ class FailoverFileTests(unittest.TestCase):
         self.path.write_text(
             json.dumps({
                 "schema_version": 1,
-                "chains": {"gpt-5.6-sol": ["nope/nope"]},
+                "chains": {"gpt-6-sol": ["nope/nope"]},
             }),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(ACCESS.AccessError, r"chains\[.gpt-5\.6-sol.\]\[0\]"):
+        with self.assertRaisesRegex(ACCESS.AccessError, r"chains\[.gpt-6-sol.\]\[0\]"):
             self.load()
 
     def test_wrong_schema_version_fails_closed(self) -> None:
@@ -2688,7 +2724,7 @@ class FailoverFileTests(unittest.TestCase):
         self.path.write_text(
             json.dumps({
                 "schema_version": 1,
-                "chains": {"gpt-5.6-sol": ["gpt-5.6-sol"]},
+                "chains": {"gpt-6-sol": ["gpt-6-sol"]},
             }),
             encoding="utf-8",
         )
@@ -2700,7 +2736,7 @@ class FailoverFileTests(unittest.TestCase):
             json.dumps({
                 "schema_version": 1,
                 "chains": {
-                    "gpt-5.6-sol": ["gpt-5.6-luna", "gpt-5.6-luna"],
+                    "gpt-6-sol": ["gpt-6-luna", "gpt-6-luna"],
                 },
             }),
             encoding="utf-8",
@@ -2714,12 +2750,12 @@ class FailoverFileTests(unittest.TestCase):
         # still counted both keys, so validation rejects the conflict.
         for chains in (
             {
-                "claude-opus-5": ["gpt-5.6-sol"],
-                "claude-opus-5[1m]": ["gpt-5.6-luna"],
+                "claude-opus-5-5": ["gpt-6-sol"],
+                "claude-opus-5-5[1m]": ["gpt-6-luna"],
             },
             {
-                "claude-opus-5[1m]": ["gpt-5.6-luna"],
-                "claude-opus-5": ["gpt-5.6-sol"],
+                "claude-opus-5-5[1m]": ["gpt-6-luna"],
+                "claude-opus-5-5": ["gpt-6-sol"],
             },
         ):
             self.path.write_text(
@@ -2727,7 +2763,7 @@ class FailoverFileTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                ACCESS.AccessError, r"duplicates an earlier source.*claude-opus-5"
+                ACCESS.AccessError, r"duplicates an earlier source.*claude-opus-5-5"
             ):
                 self.load()
 
@@ -2735,13 +2771,13 @@ class FailoverFileTests(unittest.TestCase):
         self.path.write_text(
             json.dumps({
                 "schema_version": 1,
-                "chains": {"claude-opus-5[1m]": ["gpt-5.6-sol"]},
+                "chains": {"claude-opus-5-5[1m]": ["gpt-6-sol"]},
             }),
             encoding="utf-8",
         )
         self.assertEqual(
             self.load(),
-            {"claude-opus-5[1m]": ("gpt-5.6-sol",)},
+            {"claude-opus-5-5[1m]": ("gpt-6-sol",)},
         )
 
     def test_garbage_json_fails_closed(self) -> None:
@@ -2768,7 +2804,7 @@ class DeclaredSnapshotIntegrationTests(unittest.TestCase):
             {
                 "route": "sol",
                 "agent": "airlock-sol",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-sol",
                 "provider": "openai",
                 "access": "included",
                 "cost": "premium",
@@ -2776,15 +2812,15 @@ class DeclaredSnapshotIntegrationTests(unittest.TestCase):
             {
                 "route": "luna",
                 "agent": "airlock-luna",
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "provider": "openai",
                 "access": "included",
                 "cost": "economical",
             },
         ]
-        routes = {"gpt-5.6-sol": "openai", "gpt-5.6-luna": "openai"}
+        routes = {"gpt-6-sol": "openai", "gpt-6-luna": "openai"}
         policy = {"policies": {"failover": "ask", "extra_usage": "ask"}}
-        declared = {"gpt-5.6-sol": ("gpt-5.6-luna",)}
+        declared = {"gpt-6-sol": ("gpt-6-luna",)}
         original = ACCESS.load_failover_chains
         seen: list[bool] = []
 
@@ -2800,8 +2836,8 @@ class DeclaredSnapshotIntegrationTests(unittest.TestCase):
         self.assertEqual(seen, [True])
         # sol's derived chain is replaced by the declared one; luna has no
         # same-category peer and no declaration, so it keeps no chain.
-        self.assertEqual(chains["gpt-5.6-sol"], ["gpt-5.6-luna"])
-        self.assertNotIn("gpt-5.6-luna", chains)
+        self.assertEqual(chains["gpt-6-sol"], ["gpt-6-luna"])
+        self.assertNotIn("gpt-6-luna", chains)
 
 
 class OpenRouterLastResortPeerTests(unittest.TestCase):
@@ -2838,17 +2874,17 @@ class OpenRouterLastResortPeerTests(unittest.TestCase):
     def _workers(self):
         return [
             self._worker("grok", "grok-4.6", "grok", "premium"),
-            self._worker("sol", "gpt-5.6-sol", "openai", "premium"),
-            self._worker("opus", "claude-opus-5[1m]", "anthropic", "premium"),
+            self._worker("sol", "gpt-6-sol", "openai", "premium"),
+            self._worker("opus", "claude-opus-5-5[1m]", "anthropic", "premium"),
             self._worker("ox", "stealth/ox-alpha", "openrouter", "standard"),
         ]
 
     def _routes(self):
         return {
             "grok-4.6": "grok",
-            "gpt-5.6-sol": "openai",
-            "claude-opus-5[1m]": "anthropic",
-            "claude-opus-5": "anthropic",
+            "gpt-6-sol": "openai",
+            "claude-opus-5-5[1m]": "anthropic",
+            "claude-opus-5-5": "anthropic",
             "stealth/ox-alpha": "openrouter",
         }
 
@@ -2857,12 +2893,12 @@ class OpenRouterLastResortPeerTests(unittest.TestCase):
             self._policy(), self._workers(), self._routes()
         )
         self.assertEqual(
-            chains["claude-opus-5[1m]"],
-            ["grok-4.6", "gpt-5.6-sol", "stealth/ox-alpha"],
+            chains["claude-opus-5-5[1m]"],
+            ["grok-4.6", "gpt-6-sol", "stealth/ox-alpha"],
         )
         self.assertEqual(
-            chains["gpt-5.6-sol"],
-            ["grok-4.6", "claude-opus-5", "stealth/ox-alpha"],
+            chains["gpt-6-sol"],
+            ["grok-4.6", "claude-opus-5-5", "stealth/ox-alpha"],
         )
 
     def test_openrouter_sources_never_receive_the_peer(self) -> None:
@@ -2876,7 +2912,7 @@ class OpenRouterLastResortPeerTests(unittest.TestCase):
             chains = ACCESS.session_failover_chains(
                 self._policy(), self._workers(), self._routes()
             )
-        self.assertEqual(chains["claude-opus-5[1m]"], ["grok-4.6", "gpt-5.6-sol"])
+        self.assertEqual(chains["claude-opus-5-5[1m]"], ["grok-4.6", "gpt-6-sol"])
         self.assertNotIn("stealth/ox-alpha", json.dumps(chains))
 
 
@@ -2977,7 +3013,7 @@ class RouterStatusLinesTests(unittest.TestCase):
     def _payload(events: list[dict[str, object]]) -> dict[str, object]:
         return {
             "profile": "hybrid-openai-root",
-            "root_model": "gpt-5.6-sol",
+            "root_model": "gpt-6-sol",
             "root_provider": "openai",
             "events": events,
         }
@@ -2985,7 +3021,7 @@ class RouterStatusLinesTests(unittest.TestCase):
     def test_renders_each_recorded_event_shape(self) -> None:
         lines = ACCESS.router_status_lines(self._payload([
             {"timestamp": "2026-08-26T10:00:01Z", "kind": "session_model_pinned",
-             "model": "gpt-5.6-sol", "provider": "openai"},
+             "model": "gpt-6-sol", "provider": "openai"},
             {"timestamp": "2026-08-26T10:00:02Z", "kind": "openrouter_effort_clamped",
              "model": "stealth/ox-alpha", "requested": "max", "forwarded": "high"},
             {"timestamp": "2026-08-26T10:00:03Z", "kind": "openrouter_effort_clamped",
@@ -2995,8 +3031,8 @@ class RouterStatusLinesTests(unittest.TestCase):
              "message": "SHOULD_NOT_PRINT", "credential": "SENTINEL_SECRET"},
         ]))
         self.assertEqual(lines, [
-            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
-            "10:00:01Z - Pinned gpt-5.6-sol (openai) as the session root.",
+            "Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)",
+            "10:00:01Z - Pinned gpt-6-sol (openai) as the session root.",
             # Routers older than per-route ceilings recorded no ceiling; the
             # line must not invent one.
             "10:00:02Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high.",
@@ -3019,7 +3055,7 @@ class RouterStatusLinesTests(unittest.TestCase):
     def test_reports_an_empty_event_window_without_inventing_lines(self) -> None:
         lines = ACCESS.router_status_lines(self._payload([]))
         self.assertEqual(lines, [
-            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
+            "Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)",
             "No router actions have been recorded yet.",
         ])
 
@@ -3029,31 +3065,31 @@ class RouterStatusLinesTests(unittest.TestCase):
         # every handoff event the router emits is pinned here.
         lines = ACCESS.router_status_lines(self._payload([
             {"timestamp": "2026-08-26T10:00:01Z", "kind": "rate_limit_cooldown_skipped",
-             "model": "gpt-5.6-sol"},
+             "model": "gpt-6-sol"},
             {"timestamp": "2026-08-26T10:00:02Z", "kind": "rate_limit_provider_cooldown",
              "model": "gpt-5.6-terra", "provider": "openai"},
             {"timestamp": "2026-08-26T10:00:03Z", "kind": "rate_limit_provider_cooldown",
              "model": "gpt-5.6-terra", "provider": "SENTINEL_PROVIDER"},
             {"timestamp": "2026-08-26T10:00:04Z", "kind": "rate_limit_chain_exhausted",
-             "model": "gpt-5.6-sol", "models_considered": 2, "retry_after": 30},
+             "model": "gpt-6-sol", "models_considered": 2, "retry_after": 30},
             {"timestamp": "2026-08-26T10:00:05Z", "kind": "rate_limit_chain_exhausted",
-             "model": "gpt-5.6-sol", "models_considered": 2, "retry_after": 99999},
+             "model": "gpt-6-sol", "models_considered": 2, "retry_after": 99999},
             {"timestamp": "2026-08-26T10:00:06Z",
              "kind": "anthropic_rate_limit_passthrough",
-             "model": "claude-opus-5", "provider": "anthropic", "status": 429},
+             "model": "claude-opus-5-5", "provider": "anthropic", "status": 429},
         ]))
         self.assertEqual(lines, [
-            "Airlock router: hybrid-openai-root profile; root gpt-5.6-sol (openai)",
-            "10:00:01Z - Skipped gpt-5.6-sol because its rate-limit cooldown is active.",
+            "Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)",
+            "10:00:01Z - Skipped gpt-6-sol because its rate-limit cooldown is active.",
             "10:00:02Z - gpt-5.6-terra was the second openai model to hit a rate limit,"
             " so the whole subscription is cooling down.",
             # An unknown provider is never reflected into the line.
             "10:00:03Z - Router action: rate_limit_provider_cooldown.",
-            "10:00:04Z - The failover chain for gpt-5.6-sol exhausted 2 models."
+            "10:00:04Z - The failover chain for gpt-6-sol exhausted 2 models."
             " Retry in about 30s.",
             # Out of range, so the line drops the hint rather than printing it.
-            "10:00:05Z - The failover chain for gpt-5.6-sol exhausted 2 models.",
-            "10:00:06Z - claude-opus-5 hit an Anthropic rate limit; passed it to"
+            "10:00:05Z - The failover chain for gpt-6-sol exhausted 2 models.",
+            "10:00:06Z - claude-opus-5-5 hit an Anthropic rate limit; passed it to"
             " Claude Code unchanged instead of handing off.",
         ])
 
@@ -3063,7 +3099,7 @@ class RouterStatusLinesTests(unittest.TestCase):
                 {"timestamp": "2026-08-26T10:00:01Z", "kind": "future_action_v1"},
             ] * (ACCESS.MAX_SESSION_DIAGNOSTIC_EVENTS + 1)))
         with self.assertRaises(ACCESS.AccessError):
-            ACCESS.router_status_lines({"profile": "", "root_model": "gpt-5.6-sol",
+            ACCESS.router_status_lines({"profile": "", "root_model": "gpt-6-sol",
                                         "root_provider": "openai", "events": []})
 
 
@@ -3084,18 +3120,18 @@ class FailoverPersistenceTests(unittest.TestCase):
 
     def sample_chains(self) -> dict[str, list[str]]:
         return {
-            "gpt-5.6-sol": ["claude-opus-5", "gpt-5.6-luna"],
-            "claude-opus-5[1m]": ["gpt-5.6-sol"],
+            "gpt-6-sol": ["claude-opus-5-5", "gpt-6-luna"],
+            "claude-opus-5-5[1m]": ["gpt-6-sol"],
         }
 
     def test_digest_is_stable_across_key_order(self) -> None:
         left = {
-            "gpt-5.6-sol": ["claude-opus-5"],
-            "claude-opus-5[1m]": ["gpt-5.6-luna"],
+            "gpt-6-sol": ["claude-opus-5-5"],
+            "claude-opus-5-5[1m]": ["gpt-6-luna"],
         }
         right = {
-            "claude-opus-5[1m]": ["gpt-5.6-luna"],
-            "gpt-5.6-sol": ["claude-opus-5"],
+            "claude-opus-5-5[1m]": ["gpt-6-luna"],
+            "gpt-6-sol": ["claude-opus-5-5"],
         }
         self.assertEqual(
             ACCESS.failover_chains_digest(left),
@@ -3105,8 +3141,8 @@ class FailoverPersistenceTests(unittest.TestCase):
         self.assertRegex(ACCESS.failover_chains_digest(left), r"^[0-9a-f]{64}$")
 
     def test_digest_changes_when_peer_order_changes(self) -> None:
-        forward = {"gpt-5.6-sol": ["claude-opus-5", "gpt-5.6-luna"]}
-        reverse = {"gpt-5.6-sol": ["gpt-5.6-luna", "claude-opus-5"]}
+        forward = {"gpt-6-sol": ["claude-opus-5-5", "gpt-6-luna"]}
+        reverse = {"gpt-6-sol": ["gpt-6-luna", "claude-opus-5-5"]}
         self.assertNotEqual(
             ACCESS.failover_chains_digest(forward),
             ACCESS.failover_chains_digest(reverse),
@@ -3148,8 +3184,8 @@ class FailoverPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["chains"], self.sample_chains())
         # Pretty form sorts keys; peer arrays keep declared order.
-        self.assertLess(raw.index("claude-opus-5[1m]"), raw.index("gpt-5.6-sol"))
-        self.assertLess(raw.index('"claude-opus-5"'), raw.index('"gpt-5.6-luna"'))
+        self.assertLess(raw.index("claude-opus-5-5[1m]"), raw.index("gpt-6-sol"))
+        self.assertLess(raw.index('"claude-opus-5-5"'), raw.index('"gpt-6-luna"'))
 
     @unittest.skipIf(os.name == "nt", "POSIX file modes are not enforced on Windows")
     def test_written_file_and_lock_use_mode_0600(self) -> None:
@@ -3224,7 +3260,7 @@ class FailoverPersistenceTests(unittest.TestCase):
         before = self.path.read_bytes()
         with self.assertRaises(ACCESS.FailoverConflictError) as raised:
             ACCESS.compare_and_swap_failover_chains(
-                {"gpt-5.6-sol": ["gpt-5.6-luna"]},
+                {"gpt-6-sol": ["gpt-6-luna"]},
                 expected_digest="0" * 64,
             )
         self.assertIsInstance(raised.exception, ACCESS.AccessError)
@@ -3244,13 +3280,13 @@ class FailoverPersistenceTests(unittest.TestCase):
             try:
                 start.wait(timeout=5)
                 results.append(
-                    ACCESS.compare_and_swap_failover_chains({"gpt-5.6-sol": peers})
+                    ACCESS.compare_and_swap_failover_chains({"gpt-6-sol": peers})
                 )
             except BaseException as exc:  # noqa: BLE001 - collect for the main thread
                 errors.append(exc)
 
-        first = threading.Thread(target=writer, args=(["claude-opus-5"],))
-        second = threading.Thread(target=writer, args=(["gpt-5.6-luna"],))
+        first = threading.Thread(target=writer, args=(["claude-opus-5-5"],))
+        second = threading.Thread(target=writer, args=(["gpt-6-luna"],))
         first.start()
         second.start()
         first.join(timeout=10)
@@ -3262,8 +3298,8 @@ class FailoverPersistenceTests(unittest.TestCase):
         self.assertIn(
             final,
             (
-                {"gpt-5.6-sol": ("claude-opus-5",)},
-                {"gpt-5.6-sol": ("gpt-5.6-luna",)},
+                {"gpt-6-sol": ("claude-opus-5-5",)},
+                {"gpt-6-sol": ("gpt-6-luna",)},
             ),
         )
         lock_path = self.path.parent / ".failover.lock"
@@ -3304,7 +3340,7 @@ class FailoverPersistenceTests(unittest.TestCase):
                 ACCESS.AccessError, "could not be written securely"
             ):
                 ACCESS.compare_and_swap_failover_chains(
-                    {"gpt-5.6-sol": ["gpt-5.6-luna"]}
+                    {"gpt-6-sol": ["gpt-6-luna"]}
                 )
         self.assertEqual(self.path.read_bytes(), before)
         leftovers = list(self.root.glob(".failover.*.tmp"))
@@ -3336,7 +3372,7 @@ class FailoverPersistenceTests(unittest.TestCase):
         self.assertIn("sol now hands off to opus.", lines[0])
         written = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(written["schema_version"], 1)
-        self.assertEqual(written["chains"], {"gpt-5.6-sol": ["claude-opus-5"]})
+        self.assertEqual(written["chains"], {"gpt-6-sol": ["claude-opus-5-5"]})
         self.assertTrue((self.path.parent / ".failover.lock").is_file())
         ACCESS.run_handoff("reset", [], profile)
         self.assertFalse(self.path.exists())

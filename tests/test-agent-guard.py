@@ -25,9 +25,9 @@ MARKER = "Extra usage authorized: yes"
 ROOT_MODELS = {
     "openrouter-pure": "anthropic/claude-sonnet-4.5",
     "openmodel-pure": "openmodel/local-root",
-    "openai-pure": "gpt-5.6-sol",
+    "openai-pure": "gpt-6-sol",
     "grok-pure": "grok-4.6",
-    "hybrid-openai-root": "gpt-5.6-sol",
+    "hybrid-openai-root": "gpt-6-sol",
     "hybrid-anthropic-root": "claude-sonnet-5[1m]",
     "hybrid-grok-root": "grok-4.6",
     "hybrid-openmodel-root": "openmodel/local-root",
@@ -308,12 +308,12 @@ class AgentGuardTests(unittest.TestCase):
         ]
         permission_models = set(configured.split(",")) if configured else set()
         self.assertTrue(any(model.endswith("[1m]") for model in permission_models))
-        self.assertIn("claude-opus-5", permission_models)
+        self.assertIn("claude-opus-5-5", permission_models)
         self.assertEqual(permission_models, snapshot_models)
 
     def test_extra_usage_claude_declared_and_wire_aliases_share_authorization(self) -> None:
-        canonical = "claude-opus-5[1m]"
-        wire = "claude-opus-5"
+        canonical = "claude-opus-5-5[1m]"
+        wire = "claude-opus-5-5"
         ask = self.session(
             "hybrid-openai-root",
             extra_claude_route="opus",
@@ -334,7 +334,7 @@ class AgentGuardTests(unittest.TestCase):
                 }))
         self.assert_denied(self.invoke(ask, {
             "subagent_type": "Plan",
-            "model": "claude-opus-5[2m]",
+            "model": "claude-opus-5-5[2m]",
             "prompt": MARKER,
         }), "configured family alias")
 
@@ -595,7 +595,7 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_named_workers_reject_every_model_override(self) -> None:
         session = self.session("openai-pure")
-        for model in ("gpt-5.6-sol", None):
+        for model in ("gpt-6-sol", None):
             with self.subTest(model=model):
                 self.assert_denied(self.invoke(session, {
                     "subagent_type": "airlock-sol", "model": model,
@@ -646,7 +646,7 @@ class AgentGuardTests(unittest.TestCase):
         self.assert_denied(self.invoke(
             session,
             {"subagent_type": "airlock-sol"},
-            environment_changes={"AIRLOCK_ROOT_MODEL": "gpt-5.6-luna"},
+            environment_changes={"AIRLOCK_ROOT_MODEL": "gpt-6-luna"},
         ), "permission set")
         self.assert_denied(self.invoke(
             session,
@@ -680,7 +680,7 @@ class AgentGuardTests(unittest.TestCase):
         value = session["snapshot"].to_dict()
         value["agents"] = dict(value["agents"])
         value["agents"]["airlock-intruder"] = {
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "provider": "openai",
             "extra_usage": False,
         }

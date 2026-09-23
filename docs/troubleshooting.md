@@ -290,7 +290,7 @@ If it fails, reinstall and restart. Do not add a caller `model` override to a na
 The error looks like this, and it appears before anything is fetched:
 
 ```
-[claude-code:unrecognized_model] {"model":"gpt-5.6-luna","query_source":"web_fetch_apply"}
+[claude-code:unrecognized_model] {"model":"gpt-6-luna","query_source":"web_fetch_apply"}
 ```
 
 WebFetch reads the fetched page with Claude Code's Haiku-class model, and Claude
@@ -381,7 +381,7 @@ Remote Control is unavailable behind a non-Anthropic base URL.
 
 ## The auto-compact setting in `/config` is greyed out
 
-Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Two shipped roots declare a hard limit from provider documentation instead: `grok-4.6` declares 500,000 tokens and compacts at 400,000, and `gpt-6-astra` declares its 922,000-token input ceiling and compacts at 736,000. Neither number is verified by an Airlock proof.
+Claude Code disables that control whenever `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set. Native Anthropic roots leave it unset. OpenAI roots and Grok roots keep the saved conservative fallback because the authorized GPT-5.6 Sol proof above 300,000 tokens did not pass on 2026-08-09 and the new GPT-6 routes have no Airlock long-context proof yet. Two shipped roots declare a hard limit from provider documentation instead: `grok-4.6` declares 500,000 tokens and compacts at 400,000, and `gpt-6-astra` declares its 922,000-token input ceiling and compacts at 736,000. Neither number is verified by an Airlock proof.
 
 To take the control back for a session, start it with:
 

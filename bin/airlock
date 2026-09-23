@@ -173,7 +173,7 @@ fi
 if [[ -z "$proxy_state_home" ]] && ! directory_is_writable_or_creatable "$default_proxy_state_home"; then
   proxy_state_home="$config_root/proxy-state"
 fi
-background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-5.6-sol}}}"
+background_model="${AIRLOCK_SMALL_FAST_MODEL:-${AIRLOCK_BACKGROUND_MODEL:-${config_small_fast_model:-gpt-6-sol}}}"
 background_model="$(normalize_openai_model_id "$background_model")"
 # Legacy GPT [1m] values remain accepted at launcher boundaries, but all
 # resolved OpenAI IDs are bare before they reach the session policy.
@@ -811,10 +811,10 @@ resolve_model() {
   requested_model="$(normalize_openai_model_id "$1")"
   case "$requested_model" in
     astra|gpt-6-astra) selected_model='gpt-6-astra'; model_name='GPT-6 Astra' ;;
-    sol|gpt-5.6-sol) selected_model='gpt-5.6-sol'; model_name='GPT-5.6 Sol' ;;
+    sol|gpt-6-sol) selected_model='gpt-6-sol'; model_name='GPT-6 Sol' ;;
     sol-fast|gpt-5.6-sol-fast) selected_model='gpt-5.6-sol-fast'; model_name='GPT-5.6 Sol Fast' ;;
     terra|gpt-5.6-terra) selected_model='gpt-5.6-terra'; model_name='GPT-5.6 Terra' ;;
-    luna|gpt-5.6-luna) selected_model='gpt-5.6-luna'; model_name='GPT-5.6 Luna' ;;
+    luna|gpt-6-luna) selected_model='gpt-6-luna'; model_name='GPT-6 Luna' ;;
     5.5|gpt-5.5) selected_model='gpt-5.5'; model_name='GPT-5.5' ;;
     5.4|gpt-5.4) selected_model='gpt-5.4'; model_name='GPT-5.4' ;;
     mini|5.4-mini|gpt-5.4-mini) selected_model='gpt-5.4-mini'; model_name='GPT-5.4 Mini' ;;
@@ -876,16 +876,16 @@ enable_explicit_openai_root() {
 resolve_hybrid_alias() {
   case "$1" in
     astra|gpt-6-astra) root_model='gpt-6-astra'; root_name='GPT-6 Astra'; root_provider='openai' ;;
-    sol|gpt-5.6-sol) root_model='gpt-5.6-sol'; root_name='GPT-5.6 Sol'; root_provider='openai' ;;
+    sol|gpt-6-sol) root_model='gpt-6-sol'; root_name='GPT-6 Sol'; root_provider='openai' ;;
     terra|gpt-5.6-terra) root_model='gpt-5.6-terra'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
-    luna|gpt-5.6-luna) root_model='gpt-5.6-luna'; root_name='GPT-5.6 Luna'; root_provider='openai' ;;
+    luna|gpt-6-luna) root_model='gpt-6-luna'; root_name='GPT-6 Luna'; root_provider='openai' ;;
     # Claude Code only grants these models their native 1M window when
     # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
     # always points it at the session router. The [1m] suffix is the one lever
     # that survives that, so it keeps the window these models have natively
     # instead of silently dropping them to 200000. Haiku 4.5 is a genuine
     # 200000 model and must not carry the suffix.
-    opus) root_model='claude-opus-5[1m]'; root_name='Claude Opus 5'; root_provider='anthropic' ;;
+    opus) root_model='claude-opus-5-5[1m]'; root_name='Claude Opus 5.5'; root_provider='anthropic' ;;
     sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
     fable) root_model='claude-fable-5-1[1m]'; root_name='Claude Fable 5.1'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
@@ -1870,7 +1870,7 @@ launch_session() {
   fast_mode='off'
   # The root model carries a [1m] suffix on the models that need it, so this
   # gate has to compare the base name rather than the whole string.
-  if [[ "${session_model%\[1m\]}" == 'claude-opus-5' && "$anthropic_fast_policy" == 'on' ]]; then
+  if [[ "${session_model%\[1m\]}" == 'claude-opus-5-5' && "$anthropic_fast_policy" == 'on' ]]; then
     confirm_anthropic_fast || exit $?
     fast_mode='on'
   fi
@@ -2130,10 +2130,10 @@ select_hybrid_root() {
   printf '%s\n' \
     'Choose the Airlock hybrid orchestrator:' \
     '  1) Claude Sonnet 5 (claude-sonnet-5[1m])' \
-    '  2) GPT-5.6 Sol (gpt-5.6-sol)' \
+    '  2) GPT-6 Sol (gpt-6-sol)' \
     '  3) GPT-5.6 Terra (gpt-5.6-terra)' \
-    '  4) GPT-5.6 Luna (gpt-5.6-luna)' \
-    '  5) Claude Opus 5 (claude-opus-5[1m])' \
+    '  4) GPT-6 Luna (gpt-6-luna)' \
+    '  5) Claude Opus 5.5 (claude-opus-5-5[1m])' \
     '  6) Claude Fable 5.1 (claude-fable-5-1[1m]; may use extra usage)' \
     '  7) Claude Haiku 4.5 (claude-haiku-4-5-20251001)' \
     '  8) Grok 4.6 (grok-4.6; requires Grok OAuth)' \

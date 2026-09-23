@@ -61,6 +61,7 @@ if [[ "${1:-}" == "install" ]]; then
   cat > "$AIRLOCK_TEST_PROXY_TARGET" <<'PROXY'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then printf 'Proxy test\n'; fi
+if [[ "${1:-}" == "models" ]]; then printf 'codex: gpt-6-sol, gpt-6-luna\n'; fi
 exit 0
 PROXY
   chmod 0755 "$AIRLOCK_TEST_PROXY_TARGET"
@@ -93,6 +94,7 @@ write_stub brew ''
 write_stub claude 'if [[ "${1:-}" == "--version" ]]; then printf "Claude Code test\\n"; fi'
 write_stub claude-code-proxy \
   'if [[ "${1:-}" == "--version" ]]; then printf "Proxy test\\n"; fi' \
+  'if [[ "${1:-}" == "models" && "${AIRLOCK_TEST_PROXY_MODELS:-on}" != "off" ]]; then printf "codex: gpt-6-sol, gpt-6-luna\\n"; fi' \
   'if [[ "${1:-} ${2:-} ${3:-}" == "codex auth status" ]]; then [[ -f "$AIRLOCK_TEST_AUTH_STATE" ]]; exit; fi' \
   'if [[ "${1:-} ${2:-} ${3:-}" == "codex auth login" ]]; then : > "$AIRLOCK_TEST_AUTH_STATE"; exit 0; fi'
 
@@ -102,6 +104,15 @@ export AIRLOCK_INSTALL_DIR="$install_dir"
 export AIRLOCK_AGENT_DIR="$agent_dir"
 export AIRLOCK_TEST_AUTH_STATE="$tmp_dir/proxy-authenticated"
 unset AIRLOCK_CONFIG_FILE AIRLOCK_ACCESS_FILE AIRLOCK_PLUGIN_DIR AIRLOCK_MANAGED_BUNDLE_FILE
+
+# A previously installed proxy without both new exact IDs must be rejected
+# before Airlock copies launchers that would request those models.
+if AIRLOCK_TEST_PROXY_MODELS=off "$repo_root/scripts/install.sh" --no-service > "$tmp_dir/old-proxy.out" 2>&1; then
+  printf 'test: installer accepted a proxy without GPT-6 Sol and Luna\n' >&2
+  exit 1
+fi
+grep -q '^install: claude-code-proxy must support gpt-6-sol and gpt-6-luna\.' "$tmp_dir/old-proxy.out"
+test ! -e "$install_dir/airlock"
 
 # A present proxy without Codex OAuth must stop cleanly unless login was
 # explicitly allowed. The interactive login stub stores only a fake state bit.
@@ -675,6 +686,7 @@ EOF
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${CCP_CONFIG_DIR:-unset}" "${XDG_STATE_HOME:-unset}" "$*" >> "$AIRLOCK_TEST_PROXY_LOG"
 if [[ "${1:-}" == "--version" ]]; then printf 'Proxy test\n'; exit 0; fi
+if [[ "${1:-}" == "models" ]]; then printf 'codex: gpt-6-sol, gpt-6-luna\n'; exit 0; fi
 if [[ "${1:-} ${2:-} ${3:-}" == "codex auth status" ]]; then
   [[ -f "$AIRLOCK_TEST_AUTH_STATE" ]]
   exit

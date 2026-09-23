@@ -459,17 +459,22 @@ foreach ($requirement in @(
   }
 }
 
-# Airlock carries a Windows claude-code-proxy build with one patch. Stock
-# releases open OAuth login URLs through cmd start without quoting, cmd cuts
-# the URL at the first ampersand, and x.ai rejects the sign-in with "Missing
-# or invalid client_id". macOS and Linux install upstream through Homebrew
-# and were never affected. Each release below is upstream plus that patch;
-# refresh the version, archives, and hashes together when adopting a newer
-# carried build.
-$ProxyReleaseVersion = '0.1.35-airlock.3'
+# Airlock carries a Windows claude-code-proxy build with the OAuth browser fix
+# and exact GPT-6 Sol/Luna support. Stock releases opened login URLs through
+# cmd start without quoting, which cut an OAuth URL at the first ampersand.
+# Refresh the version, archives, and hashes together for each carried build.
+$ProxyReleaseVersion = '0.1.35-airlock.5'
 $ProxyReleaseAssets = [ordered]@{
-  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '7fe1aae0300fe9c2be2fe8868f31569c30cebee8a2f341433eda98c23feab18f' }
-  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '1575a35f79dedb2ee2cbbdc2fc2ee4875c6edd25c0818e176d23040c68fc39f3' }
+  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '6022f96e1adce4e45cf18fd18dce8c84dd4fcef81ad42d278022f558f0bf5569' }
+  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '091242bd0a816e2cec75ed895bcb5752507d34db55b789d4c4a58ac49e436c09' }
+}
+$PreviousCarriedProxyVersion = '0.1.35-airlock.3'
+# Only an exact Airlock-distributed binary inside Airlock's install directory
+# can be upgraded without -UpgradeProxy. Unknown and custom proxy builds stay
+# under the user's control, even when they print the same version string.
+$PreviousCarriedProxyHashes = @{
+  'AMD64' = '00d606be80c6ab9ce1bbb449b6c95645a546b49229c57e4ff1edd2dcc1f858e9'
+  'ARM64' = 'df0a80b50b08ca65ccab91d622a73dd355cabde701d411134d1f28674c5d421e'
 }
 
 function Get-ProxyVersionLine {
@@ -554,6 +559,22 @@ if ($env:AIRLOCK_PROXY_DOWNLOAD -eq 'off') {
 } else {
   if ($Proxy) {
     $proxyVersionLine = Get-ProxyVersionLine $Proxy
+    if ($proxyVersionLine -eq "claude-code-proxy $PreviousCarriedProxyVersion" -and -not $UpgradeProxy) {
+      $managedProxy = Join-Path $InstallDir 'claude-code-proxy.exe'
+      $arch = "$env:PROCESSOR_ARCHITECTURE"
+      $expectedHash = $PreviousCarriedProxyHashes[$arch]
+      $actualHash = (Get-FileHash -LiteralPath $Proxy -Algorithm SHA256).Hash.ToLower()
+      if ($expectedHash -and
+          ([IO.Path]::GetFullPath($Proxy) -ieq [IO.Path]::GetFullPath($managedProxy)) -and
+          $actualHash -eq $expectedHash) {
+        Write-Host "Upgrading Airlock's verified carried proxy to $ProxyReleaseVersion."
+        Repair-CarriedProxy -ExistingProxy $Proxy
+        $Proxy = Resolve-Application @('claude-code-proxy.exe', 'claude-code-proxy')
+        $proxyVersionLine = Get-ProxyVersionLine $Proxy
+      } else {
+        throw "install: the existing $PreviousCarriedProxyVersion proxy is not the verified Airlock-managed binary. Review it and rerun with -UpgradeProxy to replace it."
+      }
+    }
     if ($proxyVersionLine -and $proxyVersionLine -notlike '*airlock*') {
       Write-Host ''
       Write-Host "The found claude-code-proxy is a stock build ($proxyVersionLine). Stock"

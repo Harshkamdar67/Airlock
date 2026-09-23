@@ -33,7 +33,7 @@ import unicodedata
 from urllib.parse import urlsplit
 import zlib
 
-MANAGED_BUNDLE_VERSION = "2026.09.07.1"
+MANAGED_BUNDLE_VERSION = "2026.09.23.1"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_CONTROL_REQUEST_BYTES = 4 * 1024
@@ -3335,6 +3335,14 @@ class RouterHandler(BaseHTTPRequestHandler):
                 model, body, skip_response_headers=skip_response_headers
             )
         if provider in {"openai", "grok"}:
+            # Current Claude Code versions add Anthropic's defer_loading marker to
+            # client-tool declarations. The shared subscription proxy translates
+            # those declarations to provider-native tools, where the marker has
+            # no meaning; xAI rejects the whole request when it reaches that
+            # boundary. Strip only that transport-specific field, at the final
+            # subscription hop, so native Anthropic requests retain it and every
+            # direct, failover, and pinned OpenAI/Grok attempt is covered.
+            body = prepare_subscription_request(body)
             upstream = self.router.config.openai
             if upstream is None:
                 raise UpstreamError("Subscription proxy upstream is unavailable")
@@ -3878,6 +3886,32 @@ def request_payload(body: bytes) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise InvalidRequestError("Request body must be a JSON object")
     return payload
+
+
+def prepare_subscription_request(body: bytes) -> bytes:
+    """Remove Anthropic-only tool metadata before the subscription proxy."""
+
+    payload = request_payload(body)
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return body
+    changed = False
+    for tool in tools:
+        if isinstance(tool, dict) and "defer_loading" in tool:
+            tool.pop("defer_loading")
+            changed = True
+    if not changed:
+        return body
+    try:
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise InvalidRequestError("Subscription request body is invalid") from exc
 
 
 def request_model(body: bytes) -> str:

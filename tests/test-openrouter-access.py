@@ -471,10 +471,10 @@ class OpenRouterAccessTests(unittest.TestCase):
 
         root_model = "anthropic/claude-sonnet-4.5"
         wrapper_models = {
-            "gpt-5.6-sol",
+            "gpt-6-sol",
             "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "claude-opus-5[1m]",
+            "gpt-6-luna",
+            "claude-opus-5-5[1m]",
             "claude-sonnet-5[1m]",
             "claude-haiku-4-5-20251001",
         }
@@ -783,7 +783,7 @@ class OpenRouterAccessTests(unittest.TestCase):
         self.assertIn("20250929", raw_snapshot)
         with self.assertRaisesRegex(ACCESS.AccessError, "root model"):
             ACCESS.build_session_snapshot(
-                policy, "hybrid-anthropic-root", "gpt-5.6-sol"
+                policy, "hybrid-anthropic-root", "gpt-6-sol"
             )
 
     def test_preset_snapshot_includes_routing_metadata_but_excludes_guidance(self) -> None:

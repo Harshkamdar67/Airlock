@@ -984,6 +984,55 @@ class RouterProtocolTests(unittest.TestCase):
         self.assertNotIn("cookie", headers)
         self.assertEqual(headers["x-claude-code-session-id"], "session-test")
 
+    def test_subscription_routes_strip_deferred_tool_loading_metadata(self) -> None:
+        for model in ("gpt-test", "grok-test"):
+            with self.subTest(model=model):
+                del self.openai.requests[:]
+                original = {
+                    "model": model,
+                    "messages": [{
+                        "role": "user",
+                        "content": "use the deferred tool",
+                    }],
+                    "tools": [{
+                        "name": "lookup",
+                        "description": "synthetic tool",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                        },
+                        "defer_loading": True,
+                    }],
+                    # The sanitizer is deliberately narrow: an identically
+                    # named application value outside a tool declaration stays.
+                    "metadata": {"defer_loading": "preserved"},
+                }
+                body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+                status, response, _elapsed = self.request(model, body=body)
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(response)["ok"])
+                forwarded = json.loads(self.openai.requests[0]["body"])
+                self.assertNotIn("defer_loading", forwarded["tools"][0])
+                self.assertEqual(
+                    forwarded["metadata"], {"defer_loading": "preserved"}
+                )
+
+    def test_anthropic_route_preserves_deferred_tool_loading_metadata(self) -> None:
+        original = {
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{
+                "name": "lookup",
+                "input_schema": {"type": "object"},
+                "defer_loading": True,
+            }],
+        }
+        body = json.dumps(original, separators=(",", ":")).encode("utf-8")
+        status, response, _elapsed = self.request("claude-test", body=body)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(response)["ok"])
+        self.assertEqual(json.loads(self.anthropic.requests[0]["body"]), original)
+
     def test_openrouter_route_pins_model_endpoint_and_credential_boundary(self) -> None:
         status, response, _elapsed = self.request("vendor/model-test")
         self.assertEqual(status, 200)
@@ -5175,6 +5224,35 @@ class RateLimitFailoverTests(unittest.TestCase):
         for action in actions:
             self.assertRegex(action["timestamp"], DIAGNOSTIC_TIMESTAMP_PATTERN)
 
+    def test_anthropic_handoff_strips_deferred_tool_loading_for_grok(self) -> None:
+        self.start_gateway(
+            {"claude-test": ("grok-test",)},
+            anthropic_rate_limit="handoff",
+        )
+        self.anthropic.rate_limited_models = {"claude-test"}
+        original = {
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{
+                "name": "lookup",
+                "input_schema": {"type": "object"},
+                "defer_loading": True,
+            }],
+        }
+        status, payload, _headers = self.raw_request(
+            json.dumps(original, separators=(",", ":")).encode("utf-8")
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(payload)["ok"])
+        self.assertTrue(
+            json.loads(self.anthropic.requests[0]["body"])["tools"][0][
+                "defer_loading"
+            ]
+        )
+        handed_off = json.loads(self.openai.requests[0]["body"])
+        self.assertEqual(handed_off["model"], "grok-test")
+        self.assertNotIn("defer_loading", handed_off["tools"][0])
+
     def test_cooldown_skips_the_limited_model_on_later_requests(self) -> None:
         self.start_gateway({"gpt-test": ("grok-test",)})
         self.openai.rate_limited_models = {"gpt-test"}
@@ -5224,7 +5302,7 @@ class RateLimitFailoverTests(unittest.TestCase):
 
         same = [
             {"kind": "rate_limit_failover_succeeded",
-             "from_model": "gpt-5.6-sol", "to_model": "claude-opus-5"}
+             "from_model": "gpt-6-sol", "to_model": "claude-opus-5-5"}
             for _ in range(4)
         ]
         message, total = notice_module.notice(same, 0)
@@ -5240,7 +5318,7 @@ class RateLimitFailoverTests(unittest.TestCase):
         # Distinct switches still each get a line.
         mixed = same[:2] + [{
             "kind": "rate_limit_failover_succeeded",
-            "from_model": "gpt-5.6-luna", "to_model": "claude-haiku-4-5-20251001",
+            "from_model": "gpt-6-luna", "to_model": "claude-haiku-4-5-20251001",
         }]
         self.assertEqual(len(notice_module.notice(mixed, 0)[0].splitlines()[1:]), 2)
 

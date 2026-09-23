@@ -72,7 +72,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.09.18.1"
+MANAGED_BUNDLE_VERSION = "2026.09.23.1"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -85,6 +85,10 @@ MAX_FAILOVER_CHAIN_SOURCES = 64
 RETIRED_FAILOVER_MODEL_IDS = frozenset({
     "claude-fable-5",
     "claude-fable-5[1m]",
+    "claude-opus-5",
+    "claude-opus-5[1m]",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
 })
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
@@ -166,7 +170,10 @@ VALID_AGENT_DEPTHS = frozenset({"1", "2"})
 NESTED_AGENT_RULE = (
     "You may invoke Agent, but only to spawn your own Agent type, so every "
     "worker you start runs your model. Never pass a model override, and keep "
-    "fan-out to what the task needs."
+    "fan-out to what the task needs. A child Agent's completion is delivered "
+    "through the native Agent lifecycle. From inside a named worker, never set "
+    "SendMessage's notify_when_idle option, which is main-conversation-only, "
+    "and never pass a child Agent ID to TaskStop."
 )
 
 
@@ -287,7 +294,7 @@ CATALOG_EXPECTED_AGENTS = {
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
 MAX_RENDERED_AGENTS_BYTES = 64 * 1024
 MODEL_PROFILES = {
-    # Claude Code only grants Opus 5, Sonnet 5, and Fable 5 their native 1M
+    # Claude Code only grants Opus 5.5, Sonnet 5, and Fable 5.1 their native 1M
     # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com,
     # and Airlock always points it at the session router. The [1m] suffix is
     # the one lever that still reaches 1M from behind the router. Haiku 4.5 is
@@ -296,7 +303,7 @@ MODEL_PROFILES = {
     # model without one is attempted regardless of conversation size.
     "anthropic": {
         "opus": {
-            "agent": "airlock-opus", "model": "claude-opus-5[1m]", "effort": "xhigh",
+            "agent": "airlock-opus", "model": "claude-opus-5-5[1m]", "effort": "xhigh",
             "capability": "frontier", "cost": "premium", "window": 1000000,
             "strength": "difficult architecture, UI/UX design and visual direction, product-flow and design-system work, long-horizon planning, complex debugging, security reasoning, high-impact review, and synthesis",
         },
@@ -327,7 +334,9 @@ MODEL_PROFILES = {
             "strength": "the hardest implementation, long-horizon agentic work across very large repositories, computer use and browsing, security reasoning, difficult debugging, and synthesis",
         },
         "sol": {
-            "agent": "airlock-sol", "model": "gpt-5.6-sol", "effort": "xhigh",
+            # Keep the subscription ceiling conservative until this exact
+            # model passes a long-context Airlock proof.
+            "agent": "airlock-sol", "model": "gpt-6-sol", "effort": "xhigh",
             "capability": "frontier", "cost": "premium", "window": 272000,
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },
@@ -337,7 +346,8 @@ MODEL_PROFILES = {
             "strength": "independent second opinions, adversarial review, competing designs, and debugging hypotheses",
         },
         "luna": {
-            "agent": "airlock-luna", "model": "gpt-5.6-luna", "effort": "max",
+            # Keep the subscription ceiling conservative until tested end to end.
+            "agent": "airlock-luna", "model": "gpt-6-luna", "effort": "max",
             "capability": "utility", "cost": "economical", "window": 272000,
             "strength": "high-volume discovery, webpage reading, extraction, lookup, summarization, test or log triage, and small mechanical work",
         },
@@ -3643,7 +3653,7 @@ def session_failover_chains(
 
     A user-owned ``$AIRLOCK_CONFIG_DIR/failover.json`` (override with
     ``AIRLOCK_FAILOVER_FILE``) may declare exact chains per model:
-    ``{"schema_version": 1, "chains": {"claude-opus-5": ["gpt-5.6-sol"]}}``.
+    ``{"schema_version": 1, "chains": {"claude-opus-5-5": ["gpt-6-sol"]}}``.
     A declared source REPLACES its derived chain verbatim -- any order, any
     mix of providers and cost categories, since writing the file is itself
     the deliberate upspend decision. An empty peer list opts that source out

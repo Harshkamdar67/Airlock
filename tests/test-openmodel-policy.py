@@ -421,9 +421,9 @@ class SnapshotValidationTests(unittest.TestCase):
             "schema_version": 1,
             "protocol_version": 5,
             "profile": "openai-pure",
-            "root_model": "gpt-5.6-sol",
+            "root_model": "gpt-6-sol",
             "root_provider": "openai",
-            "routes": {"gpt-5.6-sol": "openai"},
+            "routes": {"gpt-6-sol": "openai"},
             "agents": {},
             "openrouter": {},
         }
@@ -480,21 +480,21 @@ class SnapshotValidationTests(unittest.TestCase):
         as_source = valid_snapshot()
         as_source["routes"] = {
             **as_source["routes"],  # type: ignore[dict-item]
-            "gpt-5.6-sol": "openai",
+            "gpt-6-sol": "openai",
         }
         as_source["agents"] = {
             **as_source["agents"],  # type: ignore[dict-item]
             "airlock-sol": {
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-sol",
                 "provider": "openai",
                 "extra_usage": False,
             },
         }
-        as_source["failover"] = {"openmodel/synthetic-route": ["gpt-5.6-sol"]}
+        as_source["failover"] = {"openmodel/synthetic-route": ["gpt-6-sol"]}
         self.assert_invalid(as_source, "must not appear")
 
         as_peer = deepcopy(as_source)
-        as_peer["failover"] = {"gpt-5.6-sol": ["openmodel/synthetic-route"]}
+        as_peer["failover"] = {"gpt-6-sol": ["openmodel/synthetic-route"]}
         self.assert_invalid(as_peer, "must not appear")
 
         compactor = valid_snapshot()

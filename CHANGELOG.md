@@ -4,17 +4,26 @@ All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
 
-## 0.1.0-beta.11 - 2026-09-18
+## 0.1.0-beta.11 - 2026-09-23
+
+### Added
+
+- Airlock's `opus`, `sol`, and `luna` roots and named workers now select Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna. The setup wizard, both launchers, default utility route, model catalogs, and managed bundle use the same exact IDs. Existing GPT-5.6 Fast shortcuts remain separately named while subscription Fast eligibility for GPT-6 is unverified.
+- The Windows installer carries proxy `0.1.35-airlock.5` and upgrades the exact verified previous Airlock proxy during an Airlock update, so GPT-6 Sol and Luna work on existing Windows installs.
+- Saved failover files from beta.10 may still name Opus 5 or GPT-5.6 Sol/Luna. Those retired exact IDs now load safely as inert entries instead of blocking every session; use `airlock handoff recommended` to generate chains for the new models.
+- GPT-6 Sol and Luna keep the conservative 272,000-token subscription compaction fallback until an authorized long-context proof succeeds for those exact routes.
 
 ### Fixed
 
 - A stale or invalid OpenRouter registry no longer stops sessions that do not use OpenRouter. A route's verified metadata expires 30 days after its last check, and an expired entry made the whole registry file invalid, which stopped every Airlock session, including OpenAI-only and Grok-only ones that never read the registry. Because the expiry is reached by the clock rather than by anything the user changed, a machine that worked one day stopped working the next with no local change at all. The refusal now lands where a route is used instead of where a session starts: a session that never names an OpenRouter route starts, reports the reason once, and runs with no OpenRouter workers, while naming a route from an unusable registry still fails closed with the same reason. Nothing is routed on unverified metadata in either case, because the routes are removed rather than trusted.
 - The launchers no longer discard the reason a session refused to start. Both launchers ran the access helper's `custom-models` catalog load with its standard error sent to `$null` on Windows and `/dev/null` elsewhere, then exited with its status code, so a malformed user-owned file produced a bare exit code and no message. The helper's diagnostic now reaches the terminal. On Windows it is deliberately left on the inherited console rather than redirected, because Windows PowerShell 5.1 rewraps redirected native standard error as a `NativeCommandError` and buries the message in a call-stack banner.
 - The commands that repair an OpenRouter registry are reachable again. The catalog preflight ran before command dispatch, so an unusable registry also blocked `airlock openrouter models list`, `refresh`, and `remove`, which are the commands that fix it. Recovery previously required calling the helper directly.
+- Grok workers no longer fail when current Claude Code versions mark a client tool with Anthropic's `defer_loading` field. The shared subscription proxy translates the tool declaration for xAI, where that field is unsupported and caused an HTTP 400; Airlock now removes only the Anthropic-specific marker at the Sol/Grok transport boundary. Native Claude requests keep it, and direct, pinned, and failover requests use the same sanitizer. This also restores large-context handoffs where Sol first rejects an oversized request and Grok is the larger-window peer.
+- Depth-2 workers are now told not to request `notify_when_idle` from `SendMessage` or pass a child Agent ID to `TaskStop`. Claude Code reserves the first control for the main conversation and assigns the second task to the child itself, so either attempt produced a noisy ownership error even though the child later completed normally. Same-type nesting remains enabled when configured.
 
 ### Changed
 
-- The managed bundle version is now `2026.09.18.1`.
+- The managed bundle version is now `2026.09.23.1`.
 
 ## 0.1.0-beta.10 - 2026-09-07
 

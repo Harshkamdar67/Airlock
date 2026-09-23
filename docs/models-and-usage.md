@@ -192,7 +192,7 @@ The four `airlock mode fast` choices set both provider controls together. The pr
 
 OpenAI Fast permits eligible `sol-fast` and `luna-fast` routes. It does not rename a standard route or claim that an unsupported model became faster. Use `airlock sol-fast` for the explicit Fast root. Luna Fast can also be selected for an automatic army by the advanced policy below. Both paths still require an eligible sanitized OpenAI plan and verified proxy support.
 
-Anthropic Fast is Claude Code's native Fast mode. Airlock enables it only when the exact session root is `claude-opus-5[1m]`; it never changes a Sonnet, Fable, or Haiku root into Opus. Anthropic Fast uses paid usage credits from the first token. With `AIRLOCK_EXTRA_USAGE_POLICY=ask`, an interactive launch asks first, or one noninteractive launch can set `AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes`. `never` refuses the launch and `allow` starts it directly.
+Anthropic Fast is Claude Code's native Fast mode. Airlock enables it only when the exact session root is `claude-opus-5-5[1m]`; it never changes a Sonnet, Fable, or Haiku root into Opus. Anthropic Fast uses paid usage credits from the first token. With `AIRLOCK_EXTRA_USAGE_POLICY=ask`, an interactive launch asks first, or one noninteractive launch can set `AIRLOCK_ANTHROPIC_FAST_AUTHORIZED=yes`. `never` refuses the launch and `allow` starts it directly.
 
 Unsupported models stay at standard speed. These settings are session-scoped and do not change global Claude Code settings.
 
@@ -294,8 +294,8 @@ The derived order above is a default, not a rule. A user-owned file at `$AIRLOCK
 {
   "schema_version": 1,
   "chains": {
-    "claude-opus-5[1m]": ["gpt-5.6-sol", "grok-4.6"],
-    "gpt-5.6-sol": ["claude-opus-5[1m]", "gpt-5.6-luna"],
+    "claude-opus-5-5[1m]": ["gpt-6-sol", "grok-4.6"],
+    "gpt-6-sol": ["claude-opus-5-5[1m]", "gpt-6-luna"],
     "gpt-5.6-terra": []
   }
 }
@@ -508,7 +508,7 @@ Airlock now seats the cheapest model the session serves in the undocumented `CLA
 
 ```bash
 # pin any exact model ID for the classifier
-AIRLOCK_AUTO_MODE_MODEL=gpt-5.6-luna airlock hybrid sonnet
+AIRLOCK_AUTO_MODE_MODEL=gpt-6-luna airlock hybrid sonnet
 
 # turn the override off and go back to stock behaviour
 AIRLOCK_AUTO_MODE_MODEL=off airlock opr
@@ -552,7 +552,7 @@ Airlock does not read login files, decode tokens, scrape the screen, or guess a 
 
 Claude Code decides when to compact from the context window assigned to the root process. Native Anthropic roots already have model-aware sizing, so Airlock leaves the process-wide override unset for them.
 
-The authorized Sol proof above 300,000 tokens did not pass on 2026-08-09. Airlock therefore uses the honest bare ID `gpt-5.6-sol` and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI roots and Grok roots whose window Airlock does not verify. The fallback defaults to `272000`. `grok-4.6` is the exception: Airlock declares its documented 500,000-token hard ceiling and uses 400,000 as the default compaction trigger. For roots without a known or declared hard ceiling, Airlock drops any inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` so a stale value cannot silently cap the session's workers.
+The authorized GPT-5.6 Sol proof above 300,000 tokens did not pass on 2026-08-09. GPT-6 Sol and Luna have not had an Airlock long-context proof. Airlock therefore uses bare IDs for them and keeps the saved `AIRLOCK_CONTEXT_WINDOW` fallback for OpenAI roots and Grok roots whose window Airlock does not verify. The fallback defaults to `272000`. `grok-4.6` is the exception: Airlock declares its documented 500,000-token hard ceiling and uses 400,000 as the default compaction trigger. For roots without a known or declared hard ceiling, Airlock drops any inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` so a stale value cannot silently cap the session's workers.
 
 `gpt-6-astra` is handled the same way as `grok-4.6`. OpenAI documents a 1,050,000-token window for it, made of 922,000 input tokens and 128,000 output tokens. An Astra root declares `CLAUDE_CODE_MAX_CONTEXT_TOKENS=922000`, the input ceiling, and compacts at 736,000, which is 80 percent of it, unless you set `AIRLOCK_CONTEXT_WINDOW` yourself. That ceiling comes from OpenAI's documentation, not from an Airlock proof; no Airlock proof above 300,000 tokens has run on this route yet. A Claude-rooted hybrid session keeps Claude Code's own sizing even when Astra is enabled as a worker.
 
@@ -579,13 +579,13 @@ While the variable is set, Claude Code disables the auto-compact control in `/co
 
 ### Why long-context model IDs carry a `[1m]` suffix
 
-Opus 5, Sonnet 5, and Fable 5 have a one million token context window. Claude Code grants it automatically, but only when `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`. Airlock always points that variable at its own session router, so Claude Code stops treating the connection as first party and drops all three models to 200000 tokens.
+Opus 5.5, Sonnet 5, and Fable 5.1 have a one million token context window. Claude Code grants it automatically, but only when `ANTHROPIC_BASE_URL` is unset or points at `api.anthropic.com`. Airlock always points that variable at its own session router, so Claude Code stops treating the connection as first party and drops all three models to 200000 tokens.
 
 Nothing reports this. The session simply compacts four times as often as the same model would outside Airlock, which costs more usage rather than less.
 
-Airlock fixes it by asking for those models as `claude-opus-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5-1[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
+Airlock fixes it by asking for those models as `claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`, and `claude-fable-5-1[1m]`. Claude Code reads the suffix as a direct request for the one million token window, which it honors regardless of the base URL. The suffix never reaches Anthropic: Claude Code strips it and sends the base model name with the `context-1m-2025-08-07` beta header instead, so the router forwards an ordinary request. The router allowlist accepts both spellings for that reason.
 
-GPT-5.6 Sol now uses the bare exact ID `gpt-5.6-sol`; Airlock does not label it `[1m]` after the failed proof. All OpenAI worker IDs, including Terra and Luna, are bare because no OpenAI route has a recorded successful proof above 300000 tokens. Legacy suffixed GPT input remains accepted at launcher and setup boundaries, then normalizes to the bare ID. The guarded helper in `scripts/test-sol-long-context.py` can test Sol separately with one synthetic root-only request when a new exact authorization is granted. On 2026-08-09 the installed candidate exited with status 1 and produced no valid marker or usage result, so Airlock retained the conservative OpenAI fallback.
+GPT-6 Sol uses the bare exact ID `gpt-6-sol`. All OpenAI worker IDs, including Terra and Luna, are bare because no OpenAI route has a recorded successful Airlock proof above 300000 tokens. Legacy suffixed GPT input remains accepted at launcher and setup boundaries, then normalizes to the bare ID. The guarded helper in `scripts/test-sol-long-context.py` still targets GPT-5.6 Sol and requires a new exact authorization. Its 2026-08-09 candidate exited with status 1 and produced no valid marker or usage result. A separate authorized GPT-6 proof is needed before raising the conservative subscription fallback.
 
 Claude Haiku 4.5 is genuinely a 200000 token model, so it carries no suffix. Claiming a window a model does not have would let the session grow past what the API accepts and turn compaction into hard request failures.
 
