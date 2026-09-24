@@ -1102,6 +1102,31 @@ for line in sys.stdin:
                         )
                     )
 
+    def test_web_tools_entry_carries_search_backend_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            web_script = Path(temp) / "airlock_web_tools.py"
+            web_script.write_text("# helper\n", encoding="utf-8")
+
+            plain = ACCESS.web_tools_server_entry(str(web_script))
+            self.assertEqual(set(plain), {"command", "args"})
+
+            self.config.write_text(
+                "AIRLOCK_WEB_SEARCH_BACKENDS=duckduckgo,wikipedia\n"
+                "AIRLOCK_WEB_SEARXNG_URL=http://127.0.0.1:8888\n"
+                "AIRLOCK_WEB_DDGS_ENGINES=\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {
+                "AIRLOCK_WEB_SEARCH_BACKENDS": "searxng",
+                "AIRLOCK_WEB_DDGS_PYTHON": "bad\nvalue",
+            }):
+                entry = ACCESS.web_tools_server_entry(str(web_script))
+            self.assertEqual(entry["env"], {
+                # The environment wins over the config file.
+                "AIRLOCK_WEB_SEARCH_BACKENDS": "searxng",
+                "AIRLOCK_WEB_SEARXNG_URL": "http://127.0.0.1:8888",
+            })
+
     def test_managed_mcp_environment_switches_require_exact_off(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

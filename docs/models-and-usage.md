@@ -624,11 +624,40 @@ The launcher hands the server to Claude Code through an `--mcp-config` file that
 
 The local server needs only Python 3 and ships inside the plugin. It exposes two tools:
 
-- `web_search` takes `query` and optional `max_results` (1 to 12, default 6). It queries DuckDuckGo's HTML endpoint and returns ranked links with short descriptions. Follow up with `fetch_page` to read any result.
-- `fetch_page` takes `url` and optional `max_chars`. It downloads one public page and returns readable text without sending it through any model.
+- `web_search` takes `query`, or `queries` with up to 5 related queries that run in parallel in one call, plus optional `max_results` (1 to 12 per query, default 6), `timelimit` (`d`, `w`, `m`, or `y` for the past day, week, month, or year), `region` (such as `us-en` or `de-de`), `page` (1 to 5), `category` (`text` or `news`), and `backends`. Results from several queries or backends are merged, and a link already shown is not repeated. Follow up with `fetch_page` to read any result.
+- `fetch_page` takes `url` and optional `max_chars`, `start_char`, `format`, and `find`. It downloads one public page and returns its readable text as light markdown with headings, list items, code blocks, and absolute links, without sending it through any model. It reports the final address after redirects and the page's declared publication and modification dates when it has them. A truncated page ends with the `start_char` to continue from, and a repeat read within ten minutes comes from memory instead of the network. `find` takes up to 5 exact phrases and reports whether each appears on the page with the surrounding text, ignoring case, spacing, and curly quotes, which makes checking a quotation cheap. `format: text` drops the markup.
 
-Both tools contact the public web directly from your machine. They accept only http and https, resolve every address and refuse private, loopback, and link-local targets, follow redirects only while each hop passes the same checks, cap responses at 2 MB and 20 seconds, and truncate returned text to 20000 characters (up to 100000 when asked).
+Both tools contact the public web directly from your machine. They accept only http and https, and they refuse every address that is not a public internet address, including private, loopback, link-local, and shared (100.64.0.0/10) ranges and IPv4 addresses wrapped in IPv6. The check runs when the connection is made and the connection goes to the exact address that passed, so a host name cannot pass the check with one address and connect to another. Redirects are followed only while each hop passes the same check. Responses are capped at 2 MB and 20 seconds, and returned text at 20000 characters (up to 100000 when asked). When a system proxy is configured, requests go through it, and the proxy resolves the host.
 
-DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
+Tool calls run in parallel inside the server, so a group of workers sharing one session does not queue behind one slow page. Requests to one search backend are spaced out (one DuckDuckGo search per second) so a large worker group does not trip its bot protection.
+
+### Search backends
+
+| Backend | What it queries | Available |
+|---|---|---|
+| `duckduckgo` | DuckDuckGo's HTML endpoint | always; the default |
+| `wikipedia` | the official MediaWiki search API, in the language of `region` | always |
+| `searxng` | the JSON API of a SearXNG instance you run | when `AIRLOCK_WEB_SEARXNG_URL` is set |
+| `ddgs` | the third-party [`ddgs`](https://github.com/deedy5/ddgs) metasearch package | when `AIRLOCK_WEB_DDGS_PYTHON` is set |
+
+`AIRLOCK_WEB_SEARCH_BACKENDS` sets the default list, for example `duckduckgo,wikipedia`. A model can still name other available backends in a single call. `news` searches need `searxng` or `ddgs`.
+
+DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice. The tool reports a challenge as such instead of as an empty result.
+
+**SearXNG.** SearXNG is an open-source metasearch engine you host yourself. Enable the JSON format in its `settings.yml` (`search.formats: [html, json]`), then set `AIRLOCK_WEB_SEARXNG_URL=http://127.0.0.1:8888` or wherever it runs. This address comes from your configuration, not from a model, so it may be on your own network. Do not put credentials in the URL.
+
+**ddgs.** `ddgs` queries several engines at once, including Bing, Brave, DuckDuckGo, Google, Mojeek, Yahoo, and Wikipedia, and has a news search. It depends on compiled packages and presents itself to those engines as a browser, and its authors describe it as for educational purposes. Scraping some of those engines can conflict with their terms, so Airlock never installs it for you. To opt in, install it into its own virtual environment and point Airlock at that interpreter:
+
+```bash
+python3 -m venv ~/.local/share/airlock/ddgs
+~/.local/share/airlock/ddgs/bin/pip install 'ddgs==9.16.0'
+echo "AIRLOCK_WEB_DDGS_PYTHON=$HOME/.local/share/airlock/ddgs/bin/python" >> ~/.config/airlock/config
+```
+
+The path must be absolute; `~` is not expanded inside the config file.
+
+On Windows the interpreter is `ddgs\Scripts\python.exe` inside the environment. The server runs that interpreter in isolated mode (`-I`) for each search and uses only its search functions. Pages are always read by Airlock's own guarded `fetch_page`, never by `ddgs`, because `ddgs` does not refuse private addresses. `AIRLOCK_WEB_DDGS_ENGINES` picks the engines `ddgs` uses, for example `brave,mojeek,wikipedia`; the default is `auto`.
+
+The config file and the environment both work for these settings, with the environment winning. The launcher hands them to the server when the session starts, and the server ignores any value it cannot validate.
 
 Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.

@@ -6413,7 +6413,32 @@ def web_tools_server_entry(script: str | None) -> dict[str, object] | None:
     path = Path(script)
     if path.is_symlink() or not path.is_file():
         return None
-    return {"command": sys.executable, "args": [str(path.resolve())]}
+    entry: dict[str, object] = {"command": sys.executable, "args": [str(path.resolve())]}
+    settings = web_tools_settings()
+    if settings:
+        entry["env"] = settings
+    return entry
+
+
+# Search backend settings the web tools server reads. The server validates
+# each value itself and ignores anything malformed, so these are passed
+# through as plain strings from the config file, with the environment winning.
+WEB_TOOLS_SETTING_KEYS = (
+    "AIRLOCK_WEB_SEARCH_BACKENDS",
+    "AIRLOCK_WEB_SEARXNG_URL",
+    "AIRLOCK_WEB_DDGS_PYTHON",
+    "AIRLOCK_WEB_DDGS_ENGINES",
+)
+
+
+def web_tools_settings() -> dict[str, str]:
+    config = read_flat_config()
+    settings: dict[str, str] = {}
+    for key in WEB_TOOLS_SETTING_KEYS:
+        value = os.environ.get(key, config.get(key, "")).strip()
+        if value and len(value) <= 4096 and "\n" not in value and "\x00" not in value:
+            settings[key] = value
+    return settings
 
 
 def console_tools_server_entry(

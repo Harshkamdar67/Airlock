@@ -4,6 +4,23 @@ All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
 
+## Unreleased
+
+### Added
+
+- `web_search` in the local web tools server takes up to 5 queries per call and runs them in parallel, filters by time (`timelimit`), region, and page, and merges results from several backends without repeating a link. Besides DuckDuckGo it can query Wikipedia's official search API, your own SearXNG instance (`AIRLOCK_WEB_SEARXNG_URL`), and, when you opt in by installing it yourself, the `ddgs` metasearch package (`AIRLOCK_WEB_DDGS_PYTHON`). `AIRLOCK_WEB_SEARCH_BACKENDS` picks the default. News search works through SearXNG or `ddgs`.
+- `fetch_page` returns light markdown with headings, lists, code blocks, and absolute links, reports the final address and the page's publication date, continues long pages from `start_char`, and checks exact phrases with `find` so a worker can verify a quotation without reading the whole page.
+
+### Changed
+
+- The web tools server answers tool calls in parallel, so workers sharing a session no longer wait behind each other's page loads, and it spaces out requests to each search backend. Identical searches and page reads within ten minutes are answered from memory.
+- A DuckDuckGo bot challenge is reported as one instead of as an empty result.
+
+### Security
+
+- `fetch_page` now connects to the exact address it checked. Before, it checked a host name's addresses and then let the HTTP library resolve the name again, so a hostile DNS server could pass the check with a public address and then point the connection at a private one.
+- The private-address check refuses every address that is not a public internet address, which adds the shared 100.64.0.0/10 range used by carrier-grade NAT and some VPNs, and IPv4 addresses wrapped in IPv6.
+
 ## 0.1.0-beta.11 - 2026-09-23
 
 ### Added

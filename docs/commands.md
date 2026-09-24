@@ -307,6 +307,10 @@ variables in this table have no `airlock mode` equivalent.
 | `AIRLOCK_OPENMODEL_REGISTRY_FILE` | path to the private open-model endpoint and route registry |
 | `AIRLOCK_FAILOVER_FILE` | path to your handoff file |
 | `AIRLOCK_CONSOLE_TOOLS` | `off` skips registering the `airlock-console-tools` MCP server for this session |
+| `AIRLOCK_WEB_SEARCH_BACKENDS` | default `web_search` backends, comma-separated from `duckduckgo`, `wikipedia`, `searxng`, `ddgs`; default `duckduckgo` |
+| `AIRLOCK_WEB_SEARXNG_URL` | base URL of your own SearXNG instance with its JSON format enabled |
+| `AIRLOCK_WEB_DDGS_PYTHON` | absolute path to a Python interpreter that has `ddgs` installed; opts in to the `ddgs` backend |
+| `AIRLOCK_WEB_DDGS_ENGINES` | engines for the `ddgs` backend, such as `brave,mojeek,wikipedia`; default `auto` |
 | `AIRLOCK_CONSOLE_SITE` | path to the built console page, overriding the one installed beside `bin/` |
 | `AIRLOCK_MODELS_FILE` | path to your declared models file |
 | `AIRLOCK_PYTHON` | exact Python 3 interpreter to use |
