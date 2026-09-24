@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # Managed by https://github.com/Harshkamdar67/Airlock
-"""Operating-system credential custody for an OpenRouter API key."""
+"""Operating-system credential custody for OpenRouter API keys.
+
+One key is stored under the label ``default`` exactly where earlier releases
+stored their only key. Further keys carry a short user-chosen label, such as
+``work``, and live beside it in the same credential store. The ordered list
+of labels a session may use is the non-secret ``AIRLOCK_OPENROUTER_KEYS``
+setting; the router tries them in that order when one key is refused,
+rate limited, or out of credits.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +16,10 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import getpass
+import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +38,10 @@ SECRET_SERVICE_ATTRIBUTES = (
 )
 DPAPI_MAGIC = b"AIRLOCK-DPAPI\x00"
 DPAPI_ENTROPY = b"Airlock OpenRouter credential v1"
+DEFAULT_LABEL = "default"
+LABEL_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
+MAX_LABELS = 8
+LABELS_SETTING = "AIRLOCK_OPENROUTER_KEYS"
 
 
 class CredentialError(RuntimeError):
@@ -49,6 +63,85 @@ def validate_key(raw: bytes | bytearray) -> bytes:
     if any(byte < 0x21 or byte > 0x7E for byte in value):
         raise CredentialError("OpenRouter key contains invalid characters")
     return value
+
+
+def validate_label(label: object) -> str:
+    # A key pasted where a label belongs must never be accepted or echoed.
+    if not isinstance(label, str) or not LABEL_PATTERN.fullmatch(label) or label.startswith("sk-"):
+        raise CredentialError(
+            "OpenRouter key label must be 1 to 24 lowercase letters, digits, "
+            "or hyphens and start with a letter"
+        )
+    return label
+
+
+def parse_labels(raw: str) -> tuple[str, ...]:
+    """Parse the ordered label list. A malformed list fails closed."""
+
+    labels: list[str] = []
+    for item in raw.split(","):
+        label = item.strip()
+        if not label:
+            continue
+        validate_label(label)
+        if label in labels:
+            raise CredentialError(f"{LABELS_SETTING} names {label} twice")
+        labels.append(label)
+    if not labels:
+        raise CredentialError(f"{LABELS_SETTING} names no key")
+    if len(labels) > MAX_LABELS:
+        raise CredentialError(f"{LABELS_SETTING} names more than {MAX_LABELS} keys")
+    return tuple(labels)
+
+
+def _access_module():
+    """Load the access helper for its config-file location and writer."""
+
+    path = Path(__file__).with_name("airlock-access.py")
+    if path.is_symlink() or not path.is_file():
+        raise CredentialError("Airlock access helper is unavailable")
+    spec = importlib.util.spec_from_file_location("airlock_openrouter_auth_access", path)
+    if spec is None or spec.loader is None:
+        raise CredentialError("Airlock access helper is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def labels_from_environment() -> bool:
+    return bool(os.environ.get(LABELS_SETTING, "").strip())
+
+
+def configured_labels() -> tuple[str, ...]:
+    """The ordered key labels a session uses; the environment wins.
+
+    Without any setting, only the default key is used, which is exactly
+    what earlier releases did.
+    """
+
+    raw = os.environ.get(LABELS_SETTING, "").strip()
+    if not raw:
+        try:
+            raw = _access_module().read_flat_config().get(LABELS_SETTING, "").strip()
+        except CredentialError:
+            raise
+        except Exception as exc:
+            raise CredentialError("Airlock config could not be read") from exc
+    return parse_labels(raw) if raw else (DEFAULT_LABEL,)
+
+
+def _write_labels(labels: tuple[str, ...] | None) -> None:
+    try:
+        _access_module().write_flat_config_overrides(
+            {LABELS_SETTING: ",".join(labels) if labels else None}
+        )
+    except CredentialError:
+        raise
+    except Exception as exc:
+        raise CredentialError(
+            f"the key was stored, but {LABELS_SETTING} could not be updated in the Airlock config"
+        ) from exc
 
 
 def read_key_from_stdin() -> bytes:
@@ -136,16 +229,31 @@ def _run_secret_tool(
     return completed.stdout
 
 
-def _linux_store(key: bytes) -> None:
+def _secret_service_attributes(label: str) -> tuple[str, ...]:
+    # The default key keeps the exact attributes earlier releases wrote. A
+    # labeled key changes the credential value rather than adding an
+    # attribute, because Secret Service matches on a subset of attributes and
+    # a lookup of the default key would otherwise also match labeled keys.
+    if label == DEFAULT_LABEL:
+        return SECRET_SERVICE_ATTRIBUTES
+    return (
+        "service", "airlock", "credential", f"openrouter-api-key-{validate_label(label)}"
+    )
+
+
+def _linux_store(key: bytes, label: str = DEFAULT_LABEL) -> None:
+    name = "Airlock OpenRouter API key"
+    if label != DEFAULT_LABEL:
+        name += f" ({label})"
     _run_secret_tool(
-        ["store", "--label=Airlock OpenRouter API key", *SECRET_SERVICE_ATTRIBUTES],
+        ["store", f"--label={name}", *_secret_service_attributes(label)],
         input_bytes=key + b"\n",
     )
 
 
-def _linux_lookup_raw() -> bytes | None:
+def _linux_lookup_raw(label: str = DEFAULT_LABEL) -> bytes | None:
     value = _run_secret_tool(
-        ["lookup", *SECRET_SERVICE_ATTRIBUTES], missing_is_empty=True
+        ["lookup", *_secret_service_attributes(label)], missing_is_empty=True
     )
     if not value:
         return None
@@ -154,17 +262,17 @@ def _linux_lookup_raw() -> bytes | None:
     return value
 
 
-def _linux_load() -> bytes | None:
-    value = _linux_lookup_raw()
+def _linux_load(label: str = DEFAULT_LABEL) -> bytes | None:
+    value = _linux_lookup_raw(label)
     return None if value is None else validate_key(value)
 
 
-def _linux_delete() -> bool:
-    existing = _linux_lookup_raw()
+def _linux_delete(label: str = DEFAULT_LABEL) -> bool:
+    existing = _linux_lookup_raw(label)
     if existing is None:
         return False
     _run_secret_tool(
-        ["clear", *SECRET_SERVICE_ATTRIBUTES], missing_is_empty=True
+        ["clear", *_secret_service_attributes(label)], missing_is_empty=True
     )
     return True
 
@@ -217,8 +325,14 @@ def _load_macos_libraries():
     return security, core
 
 
-def _macos_find():
+def _keychain_account(label: str) -> bytes:
+    # The default key keeps the account name earlier releases used.
+    return KEYCHAIN_ACCOUNT if label == DEFAULT_LABEL else validate_label(label).encode("ascii")
+
+
+def _macos_find(label: str = DEFAULT_LABEL):
     security, core = _load_macos_libraries()
+    account = _keychain_account(label)
     length = ctypes.c_uint32()
     data = ctypes.c_void_p()
     item = ctypes.c_void_p()
@@ -226,8 +340,8 @@ def _macos_find():
         None,
         len(KEYCHAIN_SERVICE),
         KEYCHAIN_SERVICE,
-        len(KEYCHAIN_ACCOUNT),
-        KEYCHAIN_ACCOUNT,
+        len(account),
+        account,
         ctypes.byref(length),
         ctypes.byref(data),
         ctypes.byref(item),
@@ -235,8 +349,9 @@ def _macos_find():
     return security, core, status, length, data, item
 
 
-def _macos_store(key: bytes) -> None:
-    security, core, status, length, data, item = _macos_find()
+def _macos_store(key: bytes, label: str = DEFAULT_LABEL) -> None:
+    account = _keychain_account(label)
+    security, core, status, length, data, item = _macos_find(label)
     if data:
         ctypes.memset(data, 0, length.value)
         security.SecKeychainItemFreeContent(None, data)
@@ -251,8 +366,8 @@ def _macos_store(key: bytes) -> None:
                 None,
                 len(KEYCHAIN_SERVICE),
                 KEYCHAIN_SERVICE,
-                len(KEYCHAIN_ACCOUNT),
-                KEYCHAIN_ACCOUNT,
+                len(account),
+                account,
                 len(key),
                 ctypes.cast(buffer, ctypes.c_void_p),
                 None,
@@ -267,8 +382,8 @@ def _macos_store(key: bytes) -> None:
             core.CFRelease(item)
 
 
-def _macos_load() -> bytes | None:
-    security, core, status, length, data, item = _macos_find()
+def _macos_load(label: str = DEFAULT_LABEL) -> bytes | None:
+    security, core, status, length, data, item = _macos_find(label)
     try:
         if status == -25300:
             return None
@@ -284,8 +399,8 @@ def _macos_load() -> bytes | None:
             core.CFRelease(item)
 
 
-def _macos_delete() -> bool:
-    security, core, status, length, data, item = _macos_find()
+def _macos_delete(label: str = DEFAULT_LABEL) -> bool:
+    security, core, status, length, data, item = _macos_find(label)
     try:
         if status == -25300:
             return False
@@ -314,10 +429,11 @@ def _blob(value: bytes):
     return buffer, _DataBlob(len(value), buffer)
 
 
-def _windows_credential_path() -> Path:
+def _windows_credential_path(label: str = DEFAULT_LABEL) -> Path:
     local = os.environ.get("LOCALAPPDATA")
     root = Path(local) if local else Path.home() / "AppData" / "Local"
-    return root / "Airlock" / "credentials" / "openrouter.dpapi"
+    name = "openrouter.dpapi" if label == DEFAULT_LABEL else f"openrouter-{validate_label(label)}.dpapi"
+    return root / "Airlock" / "credentials" / name
 
 
 def _windows_crypt32():
@@ -403,8 +519,8 @@ def _dpapi_unprotect(value: bytes) -> bytes:
             kernel32.LocalFree(description)
 
 
-def _windows_store(key: bytes) -> None:
-    path = _windows_credential_path()
+def _windows_store(key: bytes, label: str = DEFAULT_LABEL) -> None:
+    path = _windows_credential_path(label)
     parent = path.parent
     temporary_path: Path | None = None
     descriptor = -1
@@ -474,8 +590,8 @@ def _windows_store(key: bytes) -> None:
                 pass
 
 
-def _windows_load() -> bytes | None:
-    path = _windows_credential_path()
+def _windows_load(label: str = DEFAULT_LABEL) -> bytes | None:
+    path = _windows_credential_path(label)
     try:
         if path.is_symlink() or path.parent.is_symlink():
             raise CredentialError("Windows credential path is unsafe")
@@ -498,8 +614,8 @@ def _windows_load() -> bytes | None:
     return validate_key(_dpapi_unprotect(raw[len(DPAPI_MAGIC):]))
 
 
-def _windows_delete() -> bool:
-    path = _windows_credential_path()
+def _windows_delete(label: str = DEFAULT_LABEL) -> bool:
+    path = _windows_credential_path(label)
     try:
         if path.is_symlink() or path.parent.is_symlink():
             raise CredentialError("Windows credential path is unsafe")
@@ -520,38 +636,57 @@ def _windows_delete() -> bool:
         raise CredentialError("Windows credential could not be deleted") from exc
 
 
-def store_key(key: bytes | bytearray) -> None:
+def store_key(key: bytes | bytearray, label: str = DEFAULT_LABEL) -> None:
     value = validate_key(key)
+    validate_label(label)
     backend = backend_name()
     if backend == "macos-keychain":
-        _macos_store(value)
+        _macos_store(value, label)
     elif backend == "windows-dpapi":
-        _windows_store(value)
+        _windows_store(value, label)
     else:
-        _linux_store(value)
+        _linux_store(value, label)
 
 
-def load_key() -> bytes | None:
+def load_key(label: str = DEFAULT_LABEL) -> bytes | None:
+    validate_label(label)
     backend = backend_name()
     if backend == "macos-keychain":
-        return _macos_load()
+        return _macos_load(label)
     if backend == "windows-dpapi":
-        return _windows_load()
-    return _linux_load()
+        return _windows_load(label)
+    return _linux_load(label)
 
 
-def delete_key() -> bool:
+def delete_key(label: str = DEFAULT_LABEL) -> bool:
+    validate_label(label)
     backend = backend_name()
     if backend == "macos-keychain":
-        return _macos_delete()
+        return _macos_delete(label)
     if backend == "windows-dpapi":
-        return _windows_delete()
-    return _linux_delete()
+        return _windows_delete(label)
+    return _linux_delete(label)
 
 
-def local_status() -> str:
+def load_keys() -> tuple[tuple[str, bytes], ...]:
+    """Every configured key that is present, in the configured order.
+
+    A missing labeled key is skipped so one forgotten login does not stop a
+    session that has other keys. An unreadable one fails closed.
+    """
+
+    found = []
+    for label in configured_labels():
+        key = load_key() if label == DEFAULT_LABEL else load_key(label)
+        if key is not None:
+            found.append((label, key))
+    return tuple(found)
+
+
+def local_status(label: str = DEFAULT_LABEL) -> str:
     try:
-        return "configured" if load_key() is not None else "missing"
+        key = load_key() if label == DEFAULT_LABEL else load_key(label)
+        return "configured" if key is not None else "missing"
     except CredentialBackendUnavailable:
         return "backend-unavailable"
     except CredentialError:
@@ -591,10 +726,53 @@ def build_parser() -> argparse.ArgumentParser:
     set_key.add_argument(
         "--stdin", action="store_true", help="read the key from bounded standard input"
     )
-    subparsers.add_parser("status", help="report local credential status")
+    set_key.add_argument("--label", default=DEFAULT_LABEL, help="store the key under this label")
+    status = subparsers.add_parser("status", help="report local credential status")
+    status.add_argument("--label", default=None, help="report only this label")
     logout = subparsers.add_parser("logout", help="delete the local credential")
     logout.add_argument("--yes", action="store_true", help="confirm deletion")
+    logout.add_argument("--label", default=DEFAULT_LABEL, help="delete the key with this label")
     return parser
+
+
+def _describe(label: str) -> str:
+    return "OpenRouter credential" if label == DEFAULT_LABEL else f"OpenRouter credential {label}"
+
+
+def _add_label(label: str) -> str | None:
+    """Put a newly stored label in the configured list; return a notice."""
+
+    if labels_from_environment():
+        labels = configured_labels()
+        if label in labels:
+            return None
+        return (
+            f"{LABELS_SETTING} is set in the environment and does not name {label}; "
+            "add it there to use this key."
+        )
+    labels = configured_labels()
+    if label in labels:
+        return None
+    if labels == (DEFAULT_LABEL,) and load_key() is None:
+        labels = ()
+    updated = labels + (label,)
+    if len(updated) > MAX_LABELS:
+        raise CredentialError(f"at most {MAX_LABELS} OpenRouter keys can be configured")
+    _write_labels(updated)
+    return f"{LABELS_SETTING} is now {','.join(updated)}."
+
+
+def _remove_label(label: str) -> str | None:
+    if labels_from_environment():
+        return None
+    labels = configured_labels()
+    if label not in labels or labels == (DEFAULT_LABEL,):
+        return None
+    remaining = tuple(item for item in labels if item != label)
+    # An empty list and a list of only the default key both mean "use the
+    # default key", which needs no setting at all.
+    _write_labels(remaining if remaining and remaining != (DEFAULT_LABEL,) else None)
+    return f"{LABELS_SETTING} is now {','.join(remaining) or 'unset'}."
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -607,18 +785,35 @@ def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(arguments)
     try:
         if arguments.command == "set-key":
+            label = validate_label(arguments.label)
             key = read_key_from_stdin() if arguments.stdin else read_key_hidden()
-            store_key(key)
-            print(f"OpenRouter credential stored in {backend_name()}.")
+            if label == DEFAULT_LABEL:
+                store_key(key)
+            else:
+                store_key(key, label)
+            print(f"{_describe(label)} stored in {backend_name()}.")
+            if label != DEFAULT_LABEL:
+                notice = _add_label(label)
+                if notice:
+                    print(notice)
             return 0
         if arguments.command == "status":
-            state = local_status()
-            print(f"OpenRouter credential: {state} ({backend_name()}).")
-            return 2 if state == "backend-unavailable" else 0
+            labels = (
+                (validate_label(arguments.label),)
+                if arguments.label is not None
+                else configured_labels()
+            )
+            unavailable = False
+            for label in labels:
+                state = local_status() if label == DEFAULT_LABEL else local_status(label)
+                unavailable = unavailable or state == "backend-unavailable"
+                print(f"{_describe(label)}: {state} ({backend_name()}).")
+            return 2 if unavailable else 0
+        label = validate_label(arguments.label)
         if not arguments.yes:
             try:
                 answer = input(
-                    "Delete the local OpenRouter credential? [y/N] "
+                    f"Delete the local {_describe(label)}? [y/N] "
                 ).strip().lower()
             except (EOFError, KeyboardInterrupt) as exc:
                 raise CredentialError(
@@ -627,9 +822,13 @@ def main(argv: list[str] | None = None) -> int:
             if answer not in {"y", "yes"}:
                 print("OpenRouter credential was not changed.")
                 return 0
-        removed = delete_key()
+        removed = delete_key() if label == DEFAULT_LABEL else delete_key(label)
         state = "deleted" if removed else "already missing"
-        print(f"OpenRouter credential: {state} ({backend_name()}).")
+        print(f"{_describe(label)}: {state} ({backend_name()}).")
+        if label != DEFAULT_LABEL:
+            notice = _remove_label(label)
+            if notice:
+                print(notice)
         return 0
     except CredentialError as exc:
         print(f"airlock openrouter auth: {exc}", file=sys.stderr)

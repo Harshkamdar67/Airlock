@@ -170,8 +170,9 @@ Grok has no readable plan window either.
 
 ```bash
 airlock openrouter auth set-key    # store a key in OS credential storage
-airlock openrouter auth status
-airlock openrouter auth logout
+airlock openrouter auth set-key --label work   # store another key; used when others are limited
+airlock openrouter auth status     # every configured key, or --label NAME
+airlock openrouter auth logout     # --label NAME removes one extra key
 airlock openrouter models list
 airlock openrouter models presets   # curated opt-in starting points
 airlock openrouter models add-preset NAME

@@ -481,6 +481,40 @@ fi
 [[ "$openrouter_invalid_status" -eq 2 ]]
 grep -q '^airlock: usage: airlock openrouter auth|models \.\.\.$' "$tmp_dir/openrouter-invalid.err"
 
+# openrouter auth takes one optional flag per action plus --label NAME. A
+# key pasted where a label belongs is refused before the helper runs, and
+# the refusal never echoes it.
+cat >"$tmp_dir/openrouter-auth-stub.py" <<'PY'
+import sys
+print("HELPER " + " ".join(sys.argv[1:]))
+PY
+for accepted in \
+  'set-key' 'set-key --stdin' 'set-key --label work' 'set-key --stdin --label team-2' \
+  'status' 'status --label work' 'logout --yes' 'logout --label work --yes'; do
+  # shellcheck disable=SC2086
+  accepted_output="$(AIRLOCK_OPENROUTER_AUTH_HELPER="$tmp_dir/openrouter-auth-stub.py" \
+    "$launcher" openrouter auth $accepted 2>&1)"
+  grep -qxF "HELPER $accepted" <<<"$accepted_output" || {
+    printf 'test: openrouter auth refused valid arguments: %s\n' "$accepted" >&2
+    exit 1
+  }
+done
+pasted_key='sk-or-v1-PASTED_KEY_MUST_NOT_ECHO_123'
+for refused in \
+  "set-key --label $pasted_key" 'set-key --label Work' 'set-key --label' \
+  'set-key --label a --label b' 'status --yes' 'logout --stdin' "set-key $pasted_key"; do
+  # shellcheck disable=SC2086
+  if refused_output="$(AIRLOCK_OPENROUTER_AUTH_HELPER="$tmp_dir/openrouter-auth-stub.py" \
+    "$launcher" openrouter auth $refused 2>&1)"; then
+    printf 'test: openrouter auth accepted invalid arguments: %s\n' "$refused" >&2
+    exit 1
+  fi
+  if grep -q 'HELPER\|PASTED_KEY' <<<"$refused_output"; then
+    printf 'test: openrouter auth reached the helper or echoed a key: %s\n' "$refused" >&2
+    exit 1
+  fi
+done
+
 if "$launcher" version unexpected >/dev/null 2>&1; then
   printf 'test: version command accepted an unexpected argument\n' >&2
   exit 1

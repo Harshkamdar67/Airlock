@@ -1580,6 +1580,19 @@ def _valid_max_agents(value: object) -> bool:
     return 1 <= int(value) <= MAX_CONCURRENT_SUBAGENTS
 
 
+def _valid_openrouter_key_labels(value: object) -> bool:
+    """The ordered OpenRouter key labels; the credential helper owns the rules."""
+
+    if not isinstance(value, str):
+        return False
+    labels = value.split(",")
+    return (
+        1 <= len(labels) <= 8
+        and len(set(labels)) == len(labels)
+        and all(re.fullmatch(r"[a-z][a-z0-9-]{0,23}", label) for label in labels)
+    )
+
+
 def _valid_positive_limit(value: object) -> bool:
     if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]?", value):
         return False
@@ -1777,6 +1790,7 @@ def write_flat_config_overrides(
         MODE_CONFIG_KEYS["repair_rounds"]: _valid_repair_rounds,
         USAGE_CONFIG_KEYS["claude_plan"]: VALID_CLAUDE_PLANS,
         USAGE_CONFIG_KEYS["openai_capacity"]: VALID_OPENAI_CAPACITIES,
+        "AIRLOCK_OPENROUTER_KEYS": _valid_openrouter_key_labels,
     }
     if not updates:
         raise AccessError("config update requires at least one setting")

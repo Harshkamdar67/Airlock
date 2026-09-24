@@ -94,6 +94,18 @@ Airlock checks locally that the value has the shape of a real OpenRouter key bef
 
 `airlock openrouter auth logout` asks for confirmation before it deletes the stored key, unless you pass `--yes`.
 
+You can store more than one key, for example one per OpenRouter account or one per credit budget:
+
+```bash
+airlock openrouter auth set-key --label work
+airlock openrouter auth status
+airlock openrouter auth logout --label work
+```
+
+Each labeled key goes into the same operating-system store as the first one, under its own entry: Keychain account `work` for service `dev.airlock.openrouter`, Secret Service credential `openrouter-api-key-work`, or `openrouter-work.dpapi` beside `openrouter.dpapi`. The unlabeled key keeps exactly the entry earlier releases used. Labels are short lowercase names; the launchers refuse anything that looks like a key where a label belongs, so a pasted key never lands in an argument list or an error message. The ordered list of labels a session may use is the non-secret `AIRLOCK_OPENROUTER_KEYS` setting, which `set-key --label` and `logout --label` keep up to date in the Airlock config. The keys themselves never enter the config, the session snapshot, diagnostics, or the router's command line: the router's daemon receives only the labels and reads each key from the credential store itself.
+
+When OpenRouter refuses a key (401), reports it out of credits (402), or rate limits it (429), the router sets that key aside and sends the same request with the next key before it considers another model. Diagnostics record which label sat out and why, never the key. Using several keys to go beyond what your OpenRouter agreement allows is your responsibility; Airlock only changes which of your own keys a request uses.
+
 ## The OpenRouter model registry
 
 Every OpenRouter route is one you add yourself:

@@ -108,6 +108,9 @@ class RecordingServer(ThreadingHTTPServer):
         # stub would refuse every attempt including the condensed one.
         self.overflow_max_bytes: dict[str, int] = {}
         self.compactor_models: set[str] = set()
+        # Bearer token -> status the stub answers for that key: 401 (revoked),
+        # 402 (out of credits), or 429 (rate limited), as OpenRouter does.
+        self.refused_keys: dict[str, int] = {}
         self.compactor_text = "Goal: continue the work."
         self.usage_input_tokens = 11
         self.usage_output_tokens = 22
@@ -140,6 +143,18 @@ class RecordingHandler(BaseHTTPRequestHandler):
             })
             limited = requested_model in self.recorder.rate_limited_models
             unpaid = requested_model in self.recorder.payment_required_models
+            bearer = (self.headers.get("authorization") or "").removeprefix("Bearer ")
+            refused = self.recorder.refused_keys.get(bearer)
+        if refused is not None:
+            payload = b'{"error":{"message":"key refused"}}'
+            self.send_response(refused)
+            self.send_header("content-type", "application/json")
+            if refused == 429:
+                self.send_header("retry-after", "30")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if unpaid:
             payload = json.dumps({
                 "type": "error",
@@ -2403,6 +2418,11 @@ class RouterProtocolTests(unittest.TestCase):
                     mock.patch.object(
                         router, "safe_runtime_root", return_value=Path(directory)
                     ),
+                    mock.patch.object(
+                        router,
+                        "resolve_openrouter_key_labels",
+                        return_value=("default",),
+                    ),
                 ):
                     args = router.parser().parse_args([
                         "start",
@@ -2417,6 +2437,8 @@ class RouterProtocolTests(unittest.TestCase):
 
                 command = popen.call_args.args[0]
                 self.assertNotIn("--openai-url", command)
+                # A single default key needs no label argument.
+                self.assertNotIn("--openrouter-key-labels", command)
 
     def test_subscription_routes_require_an_openai_upstream_at_startup_and_config(self) -> None:
         for provider in ("openai", "grok"):
@@ -4993,6 +5015,205 @@ class OpenRouterStreamIdentityTests(unittest.TestCase):
         self.assertIsNone(
             router.openrouter_sse_model(b"event: message_start\ndata: {", self.MODEL)
         )
+
+
+KEY_ONE = "sk-or-v1-SENTINEL_KEY_ONE_1234567890"
+KEY_TWO = "sk-or-v1-SENTINEL_KEY_TWO_1234567890"
+KEY_THREE = "sk-or-v1-SENTINEL_KEY_THREE_123456789"
+
+
+class OpenRouterKeyRingTests(unittest.TestCase):
+    """Several OpenRouter keys: a refused key sits out and the next one serves."""
+
+    def setUp(self) -> None:
+        self.openai = RecordingServer()
+        self.anthropic = RecordingServer()
+        self.openrouter = RecordingServer()
+        self.openrouter.mode = "or_json"
+        for server in (self.openai, self.anthropic, self.openrouter):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.gateway: router.RouterServer | None = None
+
+    def tearDown(self) -> None:
+        if self.gateway is not None:
+            self.gateway.shutdown()
+            self.gateway.server_close()
+        for server in (self.openai, self.anthropic, self.openrouter):
+            server.shutdown()
+            server.server_close()
+
+    def start(self, keys: tuple[tuple[str, str], ...]) -> None:
+        config = router.RouterConfig(
+            {"vendor/model-test": "openrouter", "gpt-test": "openai"},
+            f"http://127.0.0.1:{self.openai.server_address[1]}",
+            f"http://127.0.0.1:{self.anthropic.server_address[1]}",
+            production=False,
+            openrouter={
+                "vendor/model-test": router.OpenRouterRoute(
+                    endpoint_provider="deepinfra/fp4",
+                    provider_name="DeepInfra",
+                    provider_slug="deepinfra",
+                    quantization="fp4",
+                    canonical_slug="vendor/model-test-20260810",
+                ),
+            },
+            openrouter_keys=tuple((label, key.encode("ascii")) for label, key in keys),
+            openrouter_url=f"http://127.0.0.1:{self.openrouter.server_address[1]}/api/v1",
+            failover={"vendor/model-test": ("gpt-test",)},
+        )
+        self.gateway = router.RouterServer(("127.0.0.1", 0), config)
+        threading.Thread(target=self.gateway.serve_forever, daemon=True).start()
+
+    def request(self, model: str = "vendor/model-test") -> tuple[int, bytes]:
+        assert self.gateway is not None
+        body = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+        }, separators=(",", ":")).encode("utf-8")
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.gateway.server_address[1], timeout=5
+        )
+        connection.request("POST", "/v1/messages", body=body, headers={
+            "content-type": "application/json",
+            "authorization": "Bearer synthetic-claude-oauth",
+            "anthropic-version": "2023-06-01",
+        })
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        return response.status, payload
+
+    def keys_used(self) -> list[str]:
+        return [
+            str(request["headers"]["authorization"]).removeprefix("Bearer ")
+            for request in self.openrouter.requests
+        ]
+
+    def diagnostics(self) -> list[dict[str, object]]:
+        assert self.gateway is not None
+        return list(self.gateway.diagnostics)
+
+    def test_out_of_credits_key_hands_the_same_request_to_the_next_key(self) -> None:
+        self.start((("default", KEY_ONE), ("work", KEY_TWO)))
+        self.openrouter.refused_keys = {KEY_ONE: 402}
+        status, payload = self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["model"], "vendor/model-test")
+        self.assertEqual(self.keys_used(), [KEY_ONE, KEY_TWO])
+        # The session stays on the working key instead of retrying the spent one.
+        self.request()
+        self.assertEqual(self.keys_used(), [KEY_ONE, KEY_TWO, KEY_TWO])
+        self.assertEqual(self.openai.requests, [])
+        events = self.diagnostics()
+        sitting = [e for e in events if e.get("kind") == "openrouter_key_sitting_out"]
+        self.assertEqual(sitting[0]["key"], "default")
+        self.assertEqual(sitting[0]["reason"], "credits")
+        switch = [e for e in events if e.get("kind") == "openrouter_key_switch"]
+        self.assertEqual((switch[0]["from_key"], switch[0]["to_key"]), ("default", "work"))
+        rendered = json.dumps(events)
+        for key in (KEY_ONE, KEY_TWO):
+            self.assertNotIn(key, rendered)
+
+    def test_a_revoked_key_is_skipped_while_another_remains(self) -> None:
+        self.start((("default", KEY_ONE), ("work", KEY_TWO), ("team", KEY_THREE)))
+        self.openrouter.refused_keys = {KEY_ONE: 401, KEY_TWO: 429}
+        status, _payload = self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(self.keys_used(), [KEY_ONE, KEY_TWO, KEY_THREE])
+        reasons = [
+            e["reason"] for e in self.diagnostics()
+            if e.get("kind") == "openrouter_key_sitting_out"
+        ]
+        self.assertEqual(reasons, ["rejected", "rate_limited"])
+
+    def test_every_key_limited_falls_to_the_model_chain_then_skips_openrouter(self) -> None:
+        self.start((("default", KEY_ONE), ("work", KEY_TWO)))
+        self.openrouter.refused_keys = {KEY_ONE: 429, KEY_TWO: 402}
+        status, _payload = self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(self.keys_used(), [KEY_ONE, KEY_TWO])
+        self.assertEqual(json.loads(self.openai.requests[-1]["body"])["model"], "gpt-test")
+        # Both keys are sitting out, so the next request does not touch OpenRouter.
+        self.request()
+        self.assertEqual(len(self.openrouter.requests), 2)
+        self.assertEqual(len(self.openai.requests), 2)
+
+    def test_limited_then_revoked_keys_still_fail_over(self) -> None:
+        self.start((("default", KEY_ONE), ("work", KEY_TWO)))
+        self.openrouter.refused_keys = {KEY_ONE: 429, KEY_TWO: 401}
+        status, _payload = self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(self.openai.requests[-1]["body"])["model"], "gpt-test")
+
+    def test_a_single_revoked_key_still_reports_the_rejection(self) -> None:
+        self.start((("default", KEY_ONE),))
+        self.openrouter.refused_keys = {KEY_ONE: 401}
+        status, payload = self.request()
+        self.assertEqual(status, 401)
+        self.assertNotIn(KEY_ONE.encode("ascii"), payload)
+        self.assertEqual(self.openai.requests, [])
+
+    def test_overload_is_not_blamed_on_a_key(self) -> None:
+        self.start((("default", KEY_ONE), ("work", KEY_TWO)))
+        self.openrouter.refused_keys = {KEY_ONE: 529}
+        status, _payload = self.request()
+        self.assertEqual(status, 200)
+        # 529 goes to the model chain directly; the second key is never tried.
+        self.assertEqual(self.keys_used(), [KEY_ONE])
+        self.assertEqual(json.loads(self.openai.requests[-1]["body"])["model"], "gpt-test")
+
+
+class OpenRouterKeyLoadingTests(unittest.TestCase):
+    def test_keyring_orders_sits_out_and_stays_on_the_working_key(self) -> None:
+        ring = router.OpenRouterKeyRing(((("a", b"1")), ("b", b"2"), ("c", b"3")))
+        self.assertEqual([label for label, _ in ring.candidates()], ["a", "b", "c"])
+        self.assertEqual(ring.sit_out("a", 402, None), router.OPENROUTER_KEY_CREDITS_COOLDOWN_SECONDS)
+        self.assertEqual(ring.sit_out("b", 429, 5000), router.MAX_RATE_LIMIT_COOLDOWN_SECONDS)
+        self.assertEqual([label for label, _ in ring.candidates()], ["c"])
+        self.assertEqual(ring.use("c"), "a")
+        self.assertIsNone(ring.use("c"))
+        self.assertLessEqual(ring.retry_after(), router.MAX_RATE_LIMIT_COOLDOWN_SECONDS)
+
+    def test_load_skips_missing_labels_and_requires_one_key(self) -> None:
+        stored = {"work": b"sk-or-v1-WORK_KEY_1234567890123"}
+
+        def load(label: str = "default") -> bytes:
+            if label not in stored:
+                raise router.RouterError("OpenRouter credential is missing")
+            return stored[label]
+
+        with mock.patch.object(router, "load_openrouter_key", side_effect=load):
+            self.assertEqual(
+                router.load_openrouter_keys(("default", "work", "team")),
+                (("work", stored["work"]),),
+            )
+            with self.assertRaisesRegex(router.RouterError, "missing"):
+                router.load_openrouter_keys(("default", "team"))
+
+    def test_an_unreadable_labeled_key_stops_startup(self) -> None:
+        with mock.patch.object(
+            router,
+            "load_openrouter_key",
+            side_effect=router.RouterError("OpenRouter credential is unavailable"),
+        ):
+            with self.assertRaisesRegex(router.RouterError, "unavailable"):
+                router.load_openrouter_keys(("default", "work"))
+
+    def test_label_argument_is_validated(self) -> None:
+        self.assertEqual(router.parse_openrouter_key_labels("default,work"), ("default", "work"))
+        for raw in ("", "Work", "a,a", "1abc", ",".join(f"k{i}" for i in range(9)), "a;b"):
+            with self.assertRaises(router.RouterError, msg=raw):
+                router.parse_openrouter_key_labels(raw)
+
+    def test_config_rejects_malformed_keys(self) -> None:
+        with self.assertRaises(router.RouterError):
+            router.RouterConfig(
+                {"gpt-test": "openai"},
+                "http://127.0.0.1:1",
+                "http://127.0.0.1:2",
+                production=False,
+                openrouter_keys=(("Bad Label", b"k"),),
+            )
 
 
 class RateLimitFailoverTests(unittest.TestCase):

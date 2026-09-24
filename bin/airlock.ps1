@@ -224,6 +224,7 @@ function Show-Models {
   Write-Host 'OpenRouter credential commands:'
   Write-Host '  airlock openrouter auth set-key     Store a key using a hidden prompt'
   Write-Host '  airlock openrouter auth set-key --stdin'
+  Write-Host '  airlock openrouter auth set-key --label NAME   Store an extra key used when others are limited'
   Write-Host '  airlock openrouter auth status      Show only local credential state'
   Write-Host '  airlock openrouter auth logout      Delete the local credential after confirmation'
   Write-Host ''
@@ -953,6 +954,31 @@ function Invoke-AirlockConsole {
     }
     Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
   }
+}
+
+# Accept only the one optional flag an action allows plus an optional
+# --label NAME. A label is a short lowercase name, so an API key pasted in
+# its place is refused here and never reaches the helper's argument list.
+function Test-OpenRouterAuthArguments {
+  param([string]$Flag, [object[]]$Arguments)
+  $seenFlag = $false
+  $seenLabel = $false
+  $index = 0
+  while ($index -lt $Arguments.Count) {
+    $item = [string]$Arguments[$index]
+    if ($Flag -and $item -ceq $Flag -and -not $seenFlag) {
+      $seenFlag = $true
+      $index += 1
+    } elseif ($item -ceq '--label' -and -not $seenLabel -and ($index + 1) -lt $Arguments.Count -and
+      ([string]$Arguments[$index + 1]) -cmatch '^[a-z][a-z0-9-]{0,23}$' -and
+      -not ([string]$Arguments[$index + 1]).StartsWith('sk-')) {
+      $seenLabel = $true
+      $index += 2
+    } else {
+      return $false
+    }
+  }
+  return $true
 }
 
 function Invoke-OpenRouterAuth {
@@ -1849,20 +1875,20 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'openrouter') {
   if ($openRouterRest.Count -gt 2) { $authRest = @($openRouterRest[2..($openRouterRest.Count - 1)]) }
   switch ($authAction) {
     'set-key' {
-      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--stdin')) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth set-key [--stdin]')
+      if (-not (Test-OpenRouterAuthArguments -Flag '--stdin' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth set-key [--stdin] [--label NAME]')
         exit 2
       }
     }
     'status' {
-      if ($authRest.Count -ne 0) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth status')
+      if (-not (Test-OpenRouterAuthArguments -Flag '' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth status [--label NAME]')
         exit 2
       }
     }
     'logout' {
-      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--yes')) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth logout [--yes]')
+      if (-not (Test-OpenRouterAuthArguments -Flag '--yes' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth logout [--yes] [--label NAME]')
         exit 2
       }
     }

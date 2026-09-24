@@ -257,6 +257,7 @@ Other commands: console, fast, bg, mode, handoff, usage, session-usage, status, 
 OpenRouter credential commands:
   airlock openrouter auth set-key     Store a key using a hidden prompt
   airlock openrouter auth set-key --stdin
+  airlock openrouter auth set-key --label NAME   Store an extra key used when others are limited
   airlock openrouter auth status      Show only local credential state
   airlock openrouter auth logout      Delete the local credential after confirmation
 
@@ -541,6 +542,27 @@ run_console() {
     return 1
   fi
   return "$child_status"
+}
+
+# Accept only the one optional flag an action allows plus an optional
+# --label NAME. A label is a short lowercase name, so an API key pasted in
+# its place is refused here and never reaches the helper's argument list.
+valid_openrouter_auth_arguments() {
+  local flag="$1" seen_flag=0 seen_label=0
+  shift
+  while (( $# > 0 )); do
+    if [[ -n "$flag" && "$1" == "$flag" && "$seen_flag" -eq 0 ]]; then
+      seen_flag=1
+      shift
+    elif [[ "$1" == '--label' && "$seen_label" -eq 0 && $# -ge 2 ]] \
+      && [[ "$2" =~ ^[a-z][a-z0-9-]{0,23}$ && "$2" != sk-* ]]; then
+      seen_label=1
+      shift 2
+    else
+      return 1
+    fi
+  done
+  return 0
 }
 
 run_openrouter_auth() {
@@ -2846,22 +2868,22 @@ if [[ "${1:-}" == 'openrouter' ]]; then
       if (( $# > 0 )); then shift; fi
       case "$openrouter_auth_action" in
         set-key)
-          if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != '--stdin' ]]; }; then
-            printf 'airlock: usage: airlock openrouter auth set-key [--stdin]\n' >&2
+          valid_openrouter_auth_arguments --stdin "$@" || {
+            printf 'airlock: usage: airlock openrouter auth set-key [--stdin] [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         status)
-          if (( $# != 0 )); then
-            printf 'airlock: usage: airlock openrouter auth status\n' >&2
+          valid_openrouter_auth_arguments '' "$@" || {
+            printf 'airlock: usage: airlock openrouter auth status [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         logout)
-          if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != '--yes' ]]; }; then
-            printf 'airlock: usage: airlock openrouter auth logout [--yes]\n' >&2
+          valid_openrouter_auth_arguments --yes "$@" || {
+            printf 'airlock: usage: airlock openrouter auth logout [--yes] [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         *)
           printf 'airlock: unsupported OpenRouter auth action: %s\n' \

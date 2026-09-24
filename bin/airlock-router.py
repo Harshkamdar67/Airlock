@@ -147,6 +147,15 @@ PROVIDER_COOLDOWN_MIN_MODELS = 2
 MAX_RATE_LIMIT_COOLDOWN_SECONDS = 300.0
 MAX_FAILOVER_PEERS_PER_MODEL = 8
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_KEY_LABEL = "default"
+OPENROUTER_KEY_LABEL_PATTERN = re.compile(r"[a-z][a-z0-9-]{0,23}")
+MAX_OPENROUTER_KEYS = 8
+# How long a key sits out after OpenRouter refuses it. A 429 uses the
+# Retry-After hint within the ordinary rate-limit bounds. Credits (402) and a
+# revoked key (401) do not come back on their own within a session, so those
+# keys sit out much longer, and the session keeps working on the next key.
+OPENROUTER_KEY_CREDITS_COOLDOWN_SECONDS = 30 * 60.0
+OPENROUTER_KEY_REJECTED_COOLDOWN_SECONDS = 6 * 60 * 60.0
 OPENROUTER_REFERER = "https://github.com/Harshkamdar67/Airlock"
 OPENROUTER_TITLE = "Airlock"
 OPENROUTER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -322,6 +331,69 @@ def retry_after_seconds(value: float | None) -> int | None:
     if value is None or value != value or value < 0:
         return None
     return max(1, min(int(value + 0.5), int(MAX_RATE_LIMIT_COOLDOWN_SECONDS)))
+
+
+class OpenRouterKeyRejected(RouterError):
+    """OpenRouter refused the key itself (401) before any response byte."""
+
+
+class OpenRouterKeyRing:
+    """Which OpenRouter key to use next, and which keys are sitting out.
+
+    The session stays on one key until OpenRouter refuses it, then moves to
+    the next configured key that is not sitting out and stays there. It does
+    not drift back as soon as the first key recovers, so one conversation is
+    not bounced between keys. Labels are the user's own names; the keys
+    themselves never leave this object except into a request header.
+    """
+
+    def __init__(self, keys: tuple[tuple[str, bytes], ...]) -> None:
+        self._keys = tuple(keys)
+        self._lock = threading.Lock()
+        self._until: dict[str, float] = {}
+        self._active = keys[0][0] if keys else None
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        return tuple(label for label, _ in self._keys)
+
+    def candidates(self) -> list[tuple[str, bytes]]:
+        """Usable keys, the active one first, then the rest in order."""
+
+        now = time.monotonic()
+        with self._lock:
+            usable = [
+                (label, key) for label, key in self._keys
+                if self._until.get(label, 0.0) <= now
+            ]
+            usable.sort(key=lambda item: item[0] != self._active)
+            return usable
+
+    def retry_after(self) -> float | None:
+        now = time.monotonic()
+        with self._lock:
+            waits = [until - now for until in self._until.values() if until > now]
+        return min(waits) if waits else None
+
+    def sit_out(self, label: str, status: int, retry_after: float | None) -> float:
+        if status == 401:
+            seconds = OPENROUTER_KEY_REJECTED_COOLDOWN_SECONDS
+        elif status == 402:
+            seconds = OPENROUTER_KEY_CREDITS_COOLDOWN_SECONDS
+        else:
+            seconds = DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS if retry_after is None else retry_after
+            seconds = max(1.0, min(seconds, MAX_RATE_LIMIT_COOLDOWN_SECONDS))
+        with self._lock:
+            self._until[label] = time.monotonic() + seconds
+        return seconds
+
+    def use(self, label: str) -> str | None:
+        """Record the key that served a request; return the previous one if it changed."""
+
+        with self._lock:
+            previous = self._active
+            self._active = label
+        return previous if previous != label else None
 
 
 class RateLimitCooldowns:
@@ -534,7 +606,7 @@ def load_router_snapshot(path: str, digest: str):
     return snapshot
 
 
-def load_openrouter_key() -> bytes:
+def openrouter_auth_module() -> Any:
     path = Path(__file__).with_name("airlock_openrouter_auth.py")
     try:
         if path.is_symlink() or not path.is_file():
@@ -545,9 +617,17 @@ def load_openrouter_key() -> bytes:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        key = module.load_key()
     except RouterError:
         raise
+    except Exception as exc:
+        raise RouterError("OpenRouter credential helper is unavailable") from exc
+    return module
+
+
+def load_openrouter_key(label: str = DEFAULT_OPENROUTER_KEY_LABEL) -> bytes:
+    module = openrouter_auth_module()
+    try:
+        key = module.load_key() if label == DEFAULT_OPENROUTER_KEY_LABEL else module.load_key(label)
     except Exception as exc:
         raise RouterError("OpenRouter credential is unavailable") from exc
     if key is None:
@@ -556,6 +636,58 @@ def load_openrouter_key() -> bytes:
         return module.validate_key(key)
     except Exception as exc:
         raise RouterError("OpenRouter credential is invalid") from exc
+
+
+def resolve_openrouter_key_labels() -> tuple[str, ...]:
+    """The ordered key labels from the launcher's config and environment.
+
+    Only the start and watch processes can see the user's config, so they
+    resolve the labels and hand them to the daemon as an argument, the same
+    way the Anthropic rate-limit choice travels.
+    """
+
+    module = openrouter_auth_module()
+    try:
+        return tuple(module.configured_labels())
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, getattr(module, "CredentialError", ())) else ""
+        raise RouterError(
+            "OpenRouter key labels are invalid" + (f": {reason}" if reason else "")
+        ) from exc
+
+
+def parse_openrouter_key_labels(raw: str) -> tuple[str, ...]:
+    labels = tuple(raw.split(",")) if raw else ()
+    if (
+        not labels
+        or len(labels) > MAX_OPENROUTER_KEYS
+        or len(set(labels)) != len(labels)
+        or not all(OPENROUTER_KEY_LABEL_PATTERN.fullmatch(label) for label in labels)
+    ):
+        raise RouterError("OpenRouter key labels are invalid")
+    return labels
+
+
+def load_openrouter_keys(labels: tuple[str, ...]) -> tuple[tuple[str, bytes], ...]:
+    """Load every labeled key that exists, in order.
+
+    A label with no stored key is skipped so one forgotten key does not stop
+    a session that has others; a store that fails or holds an invalid key
+    stops startup, as a single key always has.
+    """
+
+    if labels == (DEFAULT_OPENROUTER_KEY_LABEL,):
+        return ((DEFAULT_OPENROUTER_KEY_LABEL, load_openrouter_key()),)
+    keys = []
+    for label in labels:
+        try:
+            keys.append((label, load_openrouter_key(label)))
+        except RouterError as exc:
+            if str(exc) != "OpenRouter credential is missing":
+                raise
+    if not keys:
+        raise RouterError("OpenRouter credential is missing")
+    return tuple(keys)
 
 
 class UsageObserver:
@@ -874,6 +1006,7 @@ class RouterConfig:
         production: bool = True,
         openrouter: dict[str, OpenRouterRoute] | None = None,
         openrouter_key: bytes | None = None,
+        openrouter_keys: tuple[tuple[str, bytes], ...] | None = None,
         openrouter_url: str = OPENROUTER_URL,
         openmodel_endpoints: dict[str, OpenModelEndpoint] | None = None,
         openmodel: dict[str, OpenModelRoute] | None = None,
@@ -939,7 +1072,20 @@ class RouterConfig:
             for route in metadata.values()
         ):
             raise RouterError("OpenRouter route metadata is invalid")
-        if openrouter_routes and openrouter_key is None:
+        if openrouter_keys is None and openrouter_key is not None:
+            openrouter_keys = ((DEFAULT_OPENROUTER_KEY_LABEL, openrouter_key),)
+        if openrouter_keys is not None and (
+            len(openrouter_keys) > MAX_OPENROUTER_KEYS
+            or len({label for label, _ in openrouter_keys}) != len(openrouter_keys)
+            or not all(
+                isinstance(label, str)
+                and OPENROUTER_KEY_LABEL_PATTERN.fullmatch(label)
+                and isinstance(key, (bytes, bytearray))
+                for label, key in openrouter_keys
+            )
+        ):
+            raise RouterError("OpenRouter credentials are invalid")
+        if openrouter_routes and not openrouter_keys:
             raise RouterError("OpenRouter credential is missing")
 
         openmodel_route_ids = {
@@ -1010,7 +1156,11 @@ class RouterConfig:
         self.root_provider = routes[root_model]
         self.failover = failover_map
         self.openrouter_routes = metadata
-        self.openrouter_key = bytes(openrouter_key) if openrouter_key is not None else None
+        self.openrouter_keys = tuple(
+            (label, bytes(key)) for label, key in (openrouter_keys or ())
+        )
+        # The first key, kept for callers that only ever knew one.
+        self.openrouter_key = self.openrouter_keys[0][1] if self.openrouter_keys else None
         self.openmodel_endpoints = MappingProxyType(normalized_endpoints)
         self.openmodel_routes = MappingProxyType(normalized_openmodel)
         self.openmodel_capabilities = MappingProxyType(openmodel_capabilities)
@@ -1151,6 +1301,7 @@ class RouterServer(ThreadingHTTPServer):
         # enter diagnostics, the ready marker, request forwarding, or errors.
         self.control_token = secrets.token_urlsafe(32)
         self.rate_limits = RateLimitCooldowns()
+        self.openrouter_keyring = OpenRouterKeyRing(config.openrouter_keys)
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
@@ -3478,12 +3629,80 @@ class RouterHandler(BaseHTTPRequestHandler):
         *,
         skip_response_headers: bool = False,
     ) -> tuple[int, int, str, dict[str, int] | None]:
+        """Send one OpenRouter request, moving across the user's keys.
+
+        A key that OpenRouter refuses (401), that is out of credits (402), or
+        that is rate limited (429) sits out, and the same request goes to the
+        next configured key before the router considers another model. A 529
+        is OpenRouter or its upstream being overloaded, which another key
+        cannot fix, so it goes straight to the ordinary model failover. Every
+        refusal arrives before any response byte, so a retry is always safe.
+        """
+
+        keyring = self.router.openrouter_keyring
+        candidates = keyring.candidates()
+        if not candidates:
+            if not keyring.labels:
+                raise UpstreamError("OpenRouter credential is unavailable", retryable=False)
+            raise RateLimitedError(429, keyring.retry_after())
+        last_error: RateLimitedError | None = None
+        for index, (label, key) in enumerate(candidates):
+            # A refused key is reported to the client only when it is the last
+            # word: no key left to try and no earlier key merely rate limited,
+            # which would otherwise send the request down the failover chain.
+            more = index + 1 < len(candidates) or last_error is not None
+            try:
+                result = self._forward_openrouter_with_key(
+                    model,
+                    body,
+                    key,
+                    reject_key=more,
+                    skip_response_headers=skip_response_headers,
+                )
+            except OpenRouterKeyRejected:
+                keyring.sit_out(label, 401, None)
+                self._record_key_event(model, label, 401)
+                continue
+            except RateLimitedError as exc:
+                if exc.status == 529:
+                    raise
+                keyring.sit_out(label, exc.status, exc.retry_after)
+                self._record_key_event(model, label, exc.status)
+                last_error = exc
+                continue
+            previous = keyring.use(label)
+            if previous is not None:
+                self.router.record_diagnostic({
+                    "kind": "openrouter_key_switch",
+                    "model": model,
+                    "from_key": previous,
+                    "to_key": label,
+                })
+            return result
+        if last_error is not None:
+            raise RateLimitedError(last_error.status, keyring.retry_after())
+        raise UpstreamError("OpenRouter rejected every configured key", retryable=False)
+
+    def _record_key_event(self, model: str, label: str, status: int) -> None:
+        self.router.record_diagnostic({
+            "kind": "openrouter_key_sitting_out",
+            "model": model,
+            "key": label,
+            "reason": {401: "rejected", 402: "credits", 429: "rate_limited"}.get(status, str(status)),
+        })
+
+    def _forward_openrouter_with_key(
+        self,
+        model: str,
+        body: bytes,
+        key: bytes,
+        *,
+        reject_key: bool,
+        skip_response_headers: bool = False,
+    ) -> tuple[int, int, str, dict[str, int] | None]:
         upstream = self.router.config.openrouter
         route = self.router.config.openrouter_routes[model]
         allowed_response_models = {model, route.canonical_slug}
-        key = self.router.config.openrouter_key
-        if key is None:
-            raise UpstreamError("OpenRouter credential is unavailable", retryable=False)
         connection = make_connection(upstream)
         headers = openrouter_headers(key, len(body))
         target = f"{upstream[3]}/messages"
@@ -3505,6 +3724,8 @@ class RouterHandler(BaseHTTPRequestHandler):
                 raise RateLimitedError(
                     status, parse_retry_after(response.getheader("retry-after"))
                 )
+            if status == 401 and reject_key:
+                raise OpenRouterKeyRejected("OpenRouter rejected the key")
             if 300 <= status < 400:
                 raise UpstreamError("OpenRouter redirects are not allowed", retryable=False)
             set_stream_timeout(connection, response)
@@ -4943,6 +5164,8 @@ def router_config_from_snapshot(
     anthropic_url: str,
     anthropic_rate_limit: str = "native",
     background_model: str | None = None,
+    *,
+    openrouter_key_labels: tuple[str, ...] = (DEFAULT_OPENROUTER_KEY_LABEL,),
 ) -> RouterConfig:
     openrouter = {
         model: OpenRouterRoute(
@@ -4978,14 +5201,14 @@ def router_config_from_snapshot(
         )
         for model, metadata in snapshot.openmodel.models.items()
     }
-    key = load_openrouter_key() if openrouter else None
+    keys = load_openrouter_keys(openrouter_key_labels) if openrouter else None
     return RouterConfig(
         dict(snapshot.routes),
         openai_url,
         anthropic_url,
         production=True,
         openrouter=openrouter,
-        openrouter_key=key,
+        openrouter_keys=keys,
         openmodel_endpoints=openmodel_endpoints,
         openmodel=openmodel,
         failover={
@@ -5056,8 +5279,10 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
     snapshot = load_router_snapshot(args.snapshot, args.snapshot_sha256)
     if any(provider in {"openai", "grok"} for provider in snapshot.routes.values()) and not args.openai_url:
         raise RouterError("subscription proxy upstream is required")
+    key_labels = (DEFAULT_OPENROUTER_KEY_LABEL,)
     if snapshot.openrouter:
-        load_openrouter_key()
+        key_labels = resolve_openrouter_key_labels()
+        load_openrouter_keys(key_labels)
     workdir = validated_workdir(getattr(args, "workdir", None))
     root = prepare_private_runtime_directory(
         safe_runtime_root(), "router startup"
@@ -5084,6 +5309,11 @@ def launch_router(args: argparse.Namespace) -> tuple[str, int]:
         command.extend(("--workdir", workdir))
     if args.openai_url:
         command.extend(("--openai-url", args.openai_url))
+    # The daemon's scrubbed environment cannot see the user's config, so the
+    # key labels resolved here travel as an argument. The keys do not: the
+    # daemon reads them from the operating-system store itself.
+    if key_labels != (DEFAULT_OPENROUTER_KEY_LABEL,):
+        command.extend(("--openrouter-key-labels", ",".join(key_labels)))
     # The daemon runs with a scrubbed environment, so the launcher resolves
     # saved config and environment precedence before this process and passes
     # the validated choice as an argument. The watch carries the same argument
@@ -5298,6 +5528,7 @@ def serve_router(args: argparse.Namespace) -> int:
         args.anthropic_url,
         args.anthropic_rate_limit,
         args.background_model,
+        openrouter_key_labels=parse_openrouter_key_labels(args.openrouter_key_labels),
     )
     ready = Path(args.ready_file)
     if ready.parent.resolve() != safe_runtime_root().resolve() or ready.exists():
@@ -5415,6 +5646,9 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--print-pid", action="store_true")
         if name == "serve":
             sub.add_argument("--ready-file", required=True)
+            sub.add_argument(
+                "--openrouter-key-labels", default=DEFAULT_OPENROUTER_KEY_LABEL
+            )
         if name == "watch":
             # The process to watch. A port probe cannot stand in for it: a
             # host that drops packets to closed ports rather than refusing
