@@ -169,7 +169,7 @@ fi
 
 plugin_dir="$config_dir/plugins/airlock"
 for relative in .claude-plugin/plugin.json hooks/hooks.json skills/usage/SKILL.md \
-  skills/airlock-fast/SKILL.md scripts/file_safety.py; do
+  skills/airlock-fast/SKILL.md skills/airlock-research/SKILL.md scripts/file_safety.py; do
   if [[ ! -f "$plugin_dir/$relative" ]]; then
     printf 'test: installer missed plugin file %s\n' "$relative" >&2
     exit 1

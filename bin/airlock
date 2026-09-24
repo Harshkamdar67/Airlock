@@ -614,6 +614,7 @@ validate_managed_bundle() {
     --component "plugins/airlock/hooks/hooks.json=$plugin_dir/hooks/hooks.json"
     --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
     --component "plugins/airlock/skills/airlock-fast/SKILL.md=$plugin_dir/skills/airlock-fast/SKILL.md"
+    --component "plugins/airlock/skills/airlock-research/SKILL.md=$plugin_dir/skills/airlock-research/SKILL.md"
     --component "plugins/airlock/mcp-server/airlock_web_tools.py=$plugin_dir/mcp-server/airlock_web_tools.py"
     --component "plugins/airlock/mcp-server/airlock_console_mcp.py=$console_mcp_helper"
     --component "plugins/airlock/scripts/fast-session-end.sh=$plugin_dir/scripts/fast-session-end.sh"

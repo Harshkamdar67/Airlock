@@ -258,6 +258,20 @@ A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, an
 
 A session is only told about the routes it actually enabled. A Grok-only session is not given Luna army instructions, and a session with no economical high-volume route is told plainly that it has no automatic swarm route.
 
+### Deep research with `/airlock-research`
+
+`/airlock-research <question> [--depth quick|standard|deep]` runs a planned research army. The main model can also start it on its own when you ask for deep or thorough research.
+
+1. **Scope.** The main model asks up to three clarifying questions when the question is ambiguous, then writes a short brief. At `deep` it shows you the brief and the lane plan and waits for approval before any worker starts.
+2. **Plan.** It splits the question into lanes that do not overlap: sub-questions, perspectives, source types (primary documents, papers, code, practitioner discussion), a recent-changes sweep, and at `standard` and `deep` a contrarian lane that looks for evidence against the emerging answer. `quick` uses 1 to 3 lanes, `standard` 4 to 8, and `deep` 8 to 12, always within the concurrency limit.
+3. **Wave 1.** One swarm worker per lane, all started before waiting. Every task carries `Public web research authorized: yes`, the shared brief, the neighboring lanes to leave alone, a tool-call budget, and source-quality rules. Each worker returns a claim ledger: one line per claim with an exact supporting quote, the URL it read, the source type, the date, and a confidence, plus conflicts, questions it could not answer, and sources it rejected.
+4. **Merge and gaps.** The main model merges the ledgers, marks each claim as corroborated, single-source, or contested, and lists what the brief still lacks.
+5. **Wave 2.** A smaller wave targets only those gaps and conflicts and is told what is already established. There are never more than two waves.
+6. **Verify.** One or two workers check that each key quotation really appears on its page. With the local web tools this is `fetch_page` with `find`, which does not read the whole page.
+7. **Report.** The main model writes the report itself in one pass: a direct answer first, citations that carry each URL over from the ledgers unchanged, stated confidence, separate "contested or uncertain" and "not found" sections, and a one-line method note.
+
+Workers never write files, so a research run asks for no file permissions. The report goes to a file only when you ask for one. The skill uses whichever of `airlock-luna`, `airlock-luna-fast`, and `airlock-composer` the session enabled. In a session with no swarm route it runs the lanes one at a time. Research costs model allowance in proportion to the number of lanes and waves, so `quick` is the cheap setting.
+
 ## Concurrency
 
 ```bash

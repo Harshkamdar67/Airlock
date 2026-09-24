@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 ### Added
 
 - `web_search` in the local web tools server takes up to 5 queries per call and runs them in parallel, filters by time (`timelimit`), region, and page, and merges results from several backends without repeating a link. Besides DuckDuckGo it can query Wikipedia's official search API, your own SearXNG instance (`AIRLOCK_WEB_SEARXNG_URL`), and, when you opt in by installing it yourself, the `ddgs` metasearch package (`AIRLOCK_WEB_DDGS_PYTHON`). `AIRLOCK_WEB_SEARCH_BACKENDS` picks the default. News search works through SearXNG or `ddgs`.
+- `/airlock-research` is a managed skill for deep public-web research. The main model scopes the question, splits it into lanes that do not overlap (sub-questions, perspectives, source types, a recency sweep, and a contrarian lane), runs a Luna or Composer army that returns quote-backed claim ledgers, sends a smaller second wave at the gaps and conflicts, has workers check that key quotations really appear on their pages, and writes one cited report itself. `quick`, `standard`, and `deep` set the number of lanes, and `deep` shows the plan for approval first.
 - `fetch_page` returns light markdown with headings, lists, code blocks, and absolute links, reports the final address and the page's publication date, continues long pages from `start_char`, and checks exact phrases with `find` so a worker can verify a quotation without reading the whole page.
 
 ### Changed
