@@ -435,11 +435,13 @@ ensure_plugin_directory "$plugin_target/mcp-server"
 ensure_plugin_directory "$plugin_target/skills"
 ensure_plugin_directory "$plugin_target/skills/usage"
 ensure_plugin_directory "$plugin_target/skills/airlock-fast"
+ensure_plugin_directory "$plugin_target/skills/airlock-research"
 ensure_plugin_directory "$plugin_target/scripts"
 install_managed_file "$repo_root/plugins/airlock/.claude-plugin/plugin.json" "$plugin_target/.claude-plugin/plugin.json" 0644
 install_managed_file "$repo_root/plugins/airlock/hooks/hooks.json" "$plugin_target/hooks/hooks.json" 0644
 install_managed_file "$repo_root/plugins/airlock/skills/usage/SKILL.md" "$plugin_target/skills/usage/SKILL.md" 0644
 install_managed_file "$repo_root/plugins/airlock/skills/airlock-fast/SKILL.md" "$plugin_target/skills/airlock-fast/SKILL.md" 0644
+install_managed_file "$repo_root/plugins/airlock/skills/airlock-research/SKILL.md" "$plugin_target/skills/airlock-research/SKILL.md" 0644
 install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_web_tools.py" "$plugin_target/mcp-server/airlock_web_tools.py" 0755
 install_managed_file "$repo_root/plugins/airlock/mcp-server/airlock_console_mcp.py" "$plugin_target/mcp-server/airlock_console_mcp.py" 0755
 install_managed_file "$repo_root/plugins/airlock/scripts/fast-session-end.sh" "$plugin_target/scripts/fast-session-end.sh" 0755

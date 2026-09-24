@@ -395,7 +395,7 @@ try {
     throw 'Windows installer missed the managed plugin.'
   }
   foreach ($relative in @(
-    'skills\airlock-fast\SKILL.md',
+    'skills\airlock-fast\SKILL.md', 'skills\airlock-research\SKILL.md',
     'mcp-server\airlock_console_mcp.py',
     'scripts\fast-session-end.sh', 'scripts\fast-session-end.py',
     'scripts\router-session-end.sh', 'scripts\router-session-end.py',

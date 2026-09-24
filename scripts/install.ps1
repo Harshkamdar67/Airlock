@@ -649,6 +649,7 @@ $managedFiles = [ordered]@{
   'plugins\airlock\hooks\hooks.json' = (Join-Path $PluginTarget 'hooks\hooks.json')
   'plugins\airlock\skills\usage\SKILL.md' = (Join-Path $PluginTarget 'skills\usage\SKILL.md')
   'plugins\airlock\skills\airlock-fast\SKILL.md' = (Join-Path $PluginTarget 'skills\airlock-fast\SKILL.md')
+  'plugins\airlock\skills\airlock-research\SKILL.md' = (Join-Path $PluginTarget 'skills\airlock-research\SKILL.md')
   'plugins\airlock\mcp-server\airlock_web_tools.py' = (Join-Path $PluginTarget 'mcp-server\airlock_web_tools.py')
   'plugins\airlock\mcp-server\airlock_console_mcp.py' = (Join-Path $PluginTarget 'mcp-server\airlock_console_mcp.py')
   'plugins\airlock\scripts\fast-session-end.sh' = (Join-Path $PluginTarget 'scripts\fast-session-end.sh')
