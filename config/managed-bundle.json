@@ -5,7 +5,7 @@
   "managed_by": "Managed by https://github.com/Harshkamdar67/Airlock",
   "components": {
     "bin/airlock": "2e8b6546be302f06999e95cb0bc39738e7567bc5b4ac8632a6c683fdb64a4913",
-    "bin/airlock-access.py": "d159f3449f52c4f73d5523ea091f293b3f82f07d4796eb5c9de20da74f704c89",
+    "bin/airlock-access.py": "1f8b87185dfa949bd5859fe59adaea8d0176f11549d9f68af9031aef8da9f62c",
     "bin/airlock-hybrid.py": "ce8ded2ef7598a1416757d27cd14a17956a90c4168d3fa4376e1430a8ba4c070",
     "bin/airlock-router.py": "96fca153898d2c6dac3843b6f2dc5bf7e40dfef135668777fca3d61c7876d65c",
     "bin/airlock-update.py": "0e748148537a43bfd5d6e19faa3360343b5e6bcf444019e63cb56f877635a2a8",
@@ -28,7 +28,7 @@
     "plugins/airlock/.claude-plugin/plugin.json": "802f336392ee568c23fa97ce399858cae8085213a4274bf489d74186056560e7",
     "plugins/airlock/hooks/hooks.json": "832ea3bbd0665fcf4f29a88889eb496043d129feea6752633c77ec90bcf3e9ea",
     "plugins/airlock/mcp-server/airlock_console_mcp.py": "10f268800e2399d194bfa39619439f6a1e38b1625413d2e4c963ee8072224338",
-    "plugins/airlock/mcp-server/airlock_web_tools.py": "71c0dd86dc8af4544a955431cb4605ea4724637760c12fd43d8614bfc3606847",
+    "plugins/airlock/mcp-server/airlock_web_tools.py": "b157a35ee129c6d17026effdde5222a447eb04fa8d3205ea51bc7ba816bd7bb4",
     "plugins/airlock/scripts/agent-guard.py": "f7f51c37da37bec49fde0a5314d34396b35312ee570be8846f983f913a7f5e0f",
     "plugins/airlock/scripts/agent-guard.sh": "f7c7dcea6d3a64df2d7cbeb377b1bec16fa82929a2a1216e548a061f765ebabd",
     "plugins/airlock/scripts/fast-session-end.py": "b976f51607648a1b4c458bbdb457733d55082e709c91fcd4201c65881c7298e8",
