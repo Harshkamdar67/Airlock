@@ -19,6 +19,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - The web tools server answers tool calls in parallel, so workers sharing a session no longer wait behind each other's page loads, and it spaces out requests to each search backend. Identical searches and page reads within ten minutes are answered from memory.
 - A DuckDuckGo bot challenge is reported as one instead of as an empty result.
 
+### Fixed
+
+- `/compact` no longer fails with `The conversation does not fit any enabled model`. Once a conversation outgrew the session's model and every failover peer, the router correctly asked Claude Code to compact, but then refused the compaction request as well, because it carries the whole conversation. The session could not recover. The router now recognizes Claude Code's compaction request and condenses it onto the same model, through the provider's economy worker when one is enabled or by keeping the newest turns, so the model can write the summary. Ordinary turns still report the overflow, and `airlock mode overflow off` still forbids any condensing.
+
 ### Security
 
 - `fetch_page` now connects to the exact address it checked. Before, it checked a host name's addresses and then let the HTTP library resolve the name again, so a hostile DNS server could pass the check with a public address and then point the connection at a private one.
