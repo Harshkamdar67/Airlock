@@ -330,6 +330,8 @@ The model that does the condensing is the destination provider's own economy wor
 
 Fourth, if there is no compaction model or the compaction call fails, Airlock trims older turns to fit and retries once. If nothing fits even then, the request ends with a clear message saying the conversation does not fit any enabled model, instead of a raw provider error.
 
+A model with no failover peer is left to Claude Code: an ordinary turn that no longer fits gets that message, and Claude Code's own compaction is the way forward. Compaction works by sending the whole conversation back with an instruction to summarize it, so it cannot fit either. Airlock recognizes that compaction request and condenses it onto the same model with the steps above, so `/compact`, and automatic compaction, can always finish. `airlock mode overflow off` still turns all of this off.
+
 Control it with one setting:
 
 ```bash

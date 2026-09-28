@@ -6423,6 +6423,120 @@ class ContextOverflowHandoffTests(unittest.TestCase):
         self.assertEqual(exhausted["models_considered"], 1)
 
 
+COMPACTION_INSTRUCTION = (
+    "Your task is to create a detailed summary of the conversation so far, "
+    "paying close attention to the user's explicit requests and your previous actions."
+)
+
+
+class ClientCompactionRecoveryTests(ContextOverflowHandoffTests):
+    """Claude Code's /compact must not be refused for the size it exists to fix."""
+
+    def long_conversation(self, final: str) -> list[dict[str, object]]:
+        return [
+            {"role": "user", "content": "OLDEST " + "a" * 45000},
+            {"role": "assistant", "content": "MIDDLE " + "b" * 45000},
+            {"role": "user", "content": "a short recent follow up"},
+            {"role": "assistant", "content": "a short recent reply"},
+            {"role": "user", "content": [{"type": "text", "text": final}]},
+        ]
+
+    def test_compaction_on_a_bare_root_is_shrunk_onto_the_same_model(self) -> None:
+        # Without a compactor the shrink keeps the newest turns that fit the
+        # window and drops the oldest, which is still enough to summarize.
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 40000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway({}, windows={"gpt-test": 40000})
+        status, payload = self.request(
+            "gpt-test", messages=self.long_conversation(COMPACTION_INSTRUCTION)
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"does not fit any enabled model", payload)
+        served = [model for _provider, model in self.served_models()]
+        self.assertEqual(served, ["gpt-test", "gpt-test"])
+        retry = json.loads(self.openai.requests[-1]["body"])
+        serialized = json.dumps(retry["messages"])
+        self.assertIn("create a detailed summary of the conversation", serialized)
+        self.assertNotIn("OLDEST", serialized)
+        self.assertLessEqual(len(self.openai.requests[-1]["body"]), 60000)
+        kinds = [e.get("kind") for e in self.wait_for_kind("client_compaction_shrunk")]
+        self.assertIn("client_compaction_shrunk", kinds)
+
+    def test_compaction_uses_the_compactor_when_one_is_enabled(self) -> None:
+        self.openai.compactor_models = {"luna-test"}
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 272000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway(
+            {},
+            windows={"gpt-test": 272000, "luna-test": 272000},
+            compactors={"openai": "luna-test"},
+        )
+        status, payload = self.request(
+            "gpt-test", messages=self.long_conversation(COMPACTION_INSTRUCTION)
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b'"ok"', payload)
+        retry = json.loads(self.openai.requests[-1]["body"])
+        self.assertEqual(retry["model"], "gpt-test")
+        serialized = json.dumps(retry["messages"])
+        self.assertIn("Earlier conversation condensed", serialized)
+        self.assertIn("create a detailed summary of the conversation", serialized)
+        kinds = [e.get("kind") for e in self.wait_for_kind("failover_shrink_compacted")]
+        self.assertIn("failover_shrink_compacted", kinds)
+
+    def test_an_ordinary_turn_on_a_bare_root_still_reports_the_overflow(self) -> None:
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 20000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway({}, windows={"gpt-test": 20000})
+        status, payload = self.request(
+            "gpt-test", messages=self.long_conversation("what next?")
+        )
+        self.assertEqual(status, 400)
+        self.assertIn(b"The conversation does not fit any enabled model", payload)
+        self.assertEqual(len(self.openai.requests), 1)
+
+    def test_off_mode_still_never_shrinks_a_compaction(self) -> None:
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 20000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway({}, windows={"gpt-test": 20000}, shrink="off")
+        status, _payload = self.request(
+            "gpt-test", messages=self.long_conversation(COMPACTION_INSTRUCTION)
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(self.openai.requests), 1)
+
+
+class ClientCompactionDetectionTests(unittest.TestCase):
+    def body(self, messages: list[dict[str, object]]) -> bytes:
+        return json.dumps({"model": "m", "messages": messages}).encode("utf-8")
+
+    def test_recognizes_the_compaction_instruction(self) -> None:
+        for text in (
+            COMPACTION_INSTRUCTION,
+            "Your task is to create a detailed summary of the RECENT portion of the conversation.",
+            "Please write a concise summary of this conversation.",
+        ):
+            self.assertTrue(router.looks_like_client_compaction(
+                self.body([{"role": "user", "content": text}])
+            ), text)
+        self.assertTrue(router.looks_like_client_compaction(self.body([
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t", "content": "x"},
+                {"type": "text", "text": COMPACTION_INSTRUCTION},
+            ]},
+        ])))
+
+    def test_ignores_ordinary_requests(self) -> None:
+        for messages in (
+            [{"role": "user", "content": "summarize the README"}],
+            [{"role": "user", "content": COMPACTION_INSTRUCTION},
+             {"role": "assistant", "content": "working"}],
+            [],
+        ):
+            self.assertFalse(router.looks_like_client_compaction(self.body(messages)))
+        self.assertFalse(router.looks_like_client_compaction(b"not json"))
+
+
 class FailoverPlumbingTests(unittest.TestCase):
     """Unit coverage for Retry-After parsing and cooldown bookkeeping."""
 

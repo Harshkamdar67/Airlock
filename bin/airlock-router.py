@@ -1786,13 +1786,23 @@ class RouterHandler(BaseHTTPRequestHandler):
                     if nxt is None and not shrunk_attempted:
                         # Nothing left to walk toward: one chance to shrink
                         # the conversation and retry the best candidate.
+                        client_compaction = looks_like_client_compaction(
+                            original_body
+                        )
                         target = self._shrink_target(
                             model,
                             visited,
                             considered,
                             estimate,
                             overflowed_model=source_model,
+                            client_compaction=client_compaction,
                         )
+                        if target is not None and client_compaction:
+                            self.router.record_diagnostic({
+                                "kind": "client_compaction_shrunk",
+                                "model": model,
+                                "target_model": target,
+                            })
                         if target is not None:
                             shrunk_attempted = True
                             shrunk_provider, shrunk_body, committed = (
@@ -2308,6 +2318,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         considered: set[str],
         estimated_tokens: int | None,
         overflowed_model: str | None = None,
+        client_compaction: bool = False,
     ) -> str | None:
         """Pick the best remaining handoff candidate for a shrunk retry.
 
@@ -2315,6 +2326,13 @@ class RouterHandler(BaseHTTPRequestHandler):
         is no handoff to save, and Claude Code already compacts against its
         own window. Among chain candidates the largest known window wins so
         the retry has the most room; unknown-window candidates come last.
+
+        Claude Code's own compaction request is the exception. It carries
+        the entire conversation, so once the conversation has outgrown every
+        model it overflows too, and refusing it leaves the session with no
+        way to recover: the error asks for a compaction that can never fit.
+        When nothing else is left, that request is shrunk onto the model it
+        asked for, which then writes the summary from condensed history.
 
         The model that just overflowed is itself a candidate. A peer reached
         after a rate limit is already in ``visited``, and rejecting it here
@@ -2330,8 +2348,13 @@ class RouterHandler(BaseHTTPRequestHandler):
             for peer in cfg.failover.get(source, ())
             if peer != original_model
         }
+        last_resort = (
+            original_model
+            if client_compaction and original_model in cfg.routes
+            else None
+        )
         if not peers and overflowed_model in {None, original_model}:
-            return None
+            return last_resort
 
         def window_rank(model: str) -> tuple[int, int]:
             window = cfg.context_windows.get(model)
@@ -2359,7 +2382,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                 ):
                     candidates.append(peer)
         if not candidates:
-            return None
+            return last_resort
         candidates.sort(key=window_rank)
         return candidates[0]
 
@@ -4031,6 +4054,49 @@ def _message_has_tool_result(message: dict[str, Any]) -> bool:
         isinstance(block, dict) and block.get("type") == "tool_result"
         for block in _message_blocks(message)
     )
+
+
+# Claude Code compacts by sending the whole conversation back to the model
+# with one final instruction to summarize it. The wording is Claude Code's
+# and may drift, so this matches the stable core of it loosely. A false
+# match costs little: it only matters after the upstream has already
+# refused the request as too large.
+CLIENT_COMPACTION_PATTERN = re.compile(
+    r"(?:create|write|produce|provide)\s+a\s+(?:detailed\s+|concise\s+|comprehensive\s+)?"
+    r"summary\s+of\s+(?:the\s+|this\s+)?(?:recent\s+portion\s+of\s+the\s+|entire\s+|whole\s+)?"
+    r"conversation",
+    re.IGNORECASE,
+)
+MAX_COMPACTION_PROBE_CHARS = 64 * 1024
+
+
+def looks_like_client_compaction(body: bytes) -> bool:
+    """Whether this request is Claude Code asking for its own compaction."""
+
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    if not isinstance(messages, list) or not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return False
+    content = last.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        )
+    else:
+        return False
+    return CLIENT_COMPACTION_PATTERN.search(text[-MAX_COMPACTION_PROBE_CHARS:]) is not None
 
 
 def sanitize_unit_for_compaction(unit: list[dict[str, Any]]) -> list[dict[str, Any]]:

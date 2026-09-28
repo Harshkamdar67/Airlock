@@ -163,6 +163,12 @@ Claude Code can send `output_config.effort=max` for an unknown custom model afte
 
 In a routed hybrid session, `airlock status` records the clamp as a timestamped action naming the requested value, the forwarded value, and the ceiling. This is expected behavior, not a silent model or endpoint change.
 
+## `/compact` fails with `The conversation does not fit any enabled model`
+
+The conversation grew past the window of the session's model and every enabled failover peer, often because a large tool or worker result landed in one step before automatic compaction ran. Earlier releases then refused Claude Code's compaction request too, because it carries the whole conversation, so `/compact` failed with the same message and the session could not recover.
+
+Current releases condense that compaction request themselves, through the provider's economy worker or by keeping the newest turns, and let the model write the summary. Each session's router is a separate process that keeps running the code it started with, so update Airlock, exit the stuck session, start the same profile again with `-r` (for example `airlock hybrid -r`), pick the conversation, and run `/compact`. If `airlock mode overflow` is `off`, set it back to `auto` first, since `off` forbids any condensing.
+
 ## Fast handoff does not resume
 
 The direct `airlock fast -r` shortcut starts a new one-session `gpt-5.6-sol-fast` root and does not change saved `AIRLOCK_OPENAI_FAST`. It still requires an eligible OpenAI plan and verified proxy support, and never falls back.
