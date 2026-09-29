@@ -6727,6 +6727,75 @@ class ClientCompactionRecoveryTests(ContextOverflowHandoffTests):
         self.assertEqual(len(self.openai.requests), 1)
 
 
+class EnforcedWindowTests(ContextOverflowHandoffTests):
+    """An account can be granted less than a model's window; honor what it enforces."""
+
+    def test_compaction_shrinks_to_the_limit_the_upstream_enforced(self) -> None:
+        # Configured for 1M, but the upstream refuses anything past 200k, as
+        # Anthropic does for an account without the long-context window.
+        self.anthropic.overflow_models["big-test"] = ("anthropic", 400000, 200000)
+        self.anthropic.overflow_max_bytes["big-test"] = 400000
+        self.start_gateway({}, windows={"big-test": 1000000})
+        messages = [
+            {"role": "user", "content": "OLDEST " + "a" * 300000},
+            {"role": "assistant", "content": "MIDDLE " + "b" * 300000},
+            {"role": "user", "content": "a short recent follow up"},
+            {"role": "assistant", "content": "a short recent reply"},
+            {"role": "user", "content": COMPACTION_INSTRUCTION},
+        ]
+        status, payload = self.request("big-test", messages=messages)
+        self.assertEqual(status, 200, payload[:300])
+        retry = self.anthropic.requests[-1]["body"]
+        self.assertLessEqual(len(retry), 400000)
+        self.assertNotIn(b"OLDEST", retry)
+        events = self.wait_for_kind("context_window_smaller_than_configured")
+        smaller = [e for e in events if e.get("kind") == "context_window_smaller_than_configured"]
+        self.assertEqual(len(smaller), 1)
+        self.assertEqual(smaller[0]["configured_window"], 1000000)
+        self.assertEqual(smaller[0]["enforced_window"], 200000)
+        self.assertEqual(self.gateway.effective_window("big-test"), 200000)
+        # Both spellings name the same upstream model, so both learn the limit.
+        self.assertEqual(self.gateway.effective_window("big-test[1m]"), 200000)
+
+    def test_a_larger_or_missing_limit_changes_nothing(self) -> None:
+        self.start_gateway({}, windows={"big-test": 1000000})
+        self.gateway.observe_enforced_window("big-test", None)
+        self.gateway.observe_enforced_window("big-test", 1200000)
+        self.gateway.observe_enforced_window("unknown-model", 1000)
+        self.assertEqual(self.gateway.effective_window("big-test"), 1000000)
+        self.gateway.observe_enforced_window("big-test", 200000)
+        self.gateway.observe_enforced_window("big-test", 300000)
+        self.assertEqual(self.gateway.effective_window("big-test"), 200000)
+        kinds = [
+            e for e in self.diagnostics()
+            if e.get("kind") == "context_window_smaller_than_configured"
+        ]
+        self.assertEqual(len(kinds), 1)
+
+    def test_the_turn_notice_explains_the_smaller_window(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "turn_notice_window",
+            os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "plugins", "airlock", "scripts", "router-turn-notice.py",
+            ),
+        )
+        notice_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(notice_module)
+        message, total = notice_module.notice([{
+            "kind": "context_window_smaller_than_configured",
+            "model": "claude-opus-5-5",
+            "configured_window": 1000000,
+            "enforced_window": 200000,
+        }], 0)
+        self.assertEqual(total, 1)
+        self.assertIn("claude-opus-5-5 accepted at most 200,000 tokens", message)
+        self.assertIn("/compact", message)
+        self.assertIn("AIRLOCK_CONTEXT_WINDOW=180000", message)
+
+
 class ClientCompactionDetectionTests(unittest.TestCase):
     def body(self, messages: list[dict[str, object]]) -> bytes:
         return json.dumps({"model": "m", "messages": messages}).encode("utf-8")
