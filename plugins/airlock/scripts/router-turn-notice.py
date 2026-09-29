@@ -33,6 +33,7 @@ REPORTED_KINDS = (
     "failover_overflow_succeeded",
     "rate_limit_chain_exhausted",
     "anthropic_rate_limit_passthrough",
+    "context_window_smaller_than_configured",
 )
 
 
@@ -172,6 +173,20 @@ def sentence(event: dict[str, object], count: int) -> str | None:
             f"{model} hit an Anthropic rate limit {times}. Airlock left those"
             " for Claude Code to handle rather than switching models."
         )
+    if kind == "context_window_smaller_than_configured" and model:
+        enforced = event.get("enforced_window")
+        configured = event.get("configured_window")
+        if type(enforced) is int and type(configured) is int:
+            # Claude Code accepts a compaction trigger from 100,000 upward.
+            trigger = max(100_000, (enforced * 9 // 10) // 1000 * 1000)
+            return (
+                f"{model} accepted at most {enforced:,} tokens, not the"
+                f" {configured:,} its window allows, so this account appears to"
+                " lack the larger window and Claude Code will not compact in time"
+                " on its own. Run /compact when the session grows, or start the"
+                f" next session with AIRLOCK_CONTEXT_WINDOW={trigger} so it"
+                " compacts before the limit."
+            )
     return None
 
 

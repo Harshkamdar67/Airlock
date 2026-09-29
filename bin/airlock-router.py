@@ -1151,6 +1151,12 @@ class RouterServer(ThreadingHTTPServer):
         # enter diagnostics, the ready marker, request forwarding, or errors.
         self.control_token = secrets.token_urlsafe(32)
         self.rate_limits = RateLimitCooldowns()
+        # Limits an upstream actually enforced, learned from its overflow
+        # errors. A configured window is what the model supports; the account
+        # behind the session can be granted less, such as a plan without the
+        # 1M window, and only the provider's own rejection says so.
+        self.observed_windows: dict[str, int] = {}
+        self.observed_windows_lock = threading.Lock()
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
@@ -1172,6 +1178,38 @@ class RouterServer(ThreadingHTTPServer):
         with self.routing_lock:
             return self.pinned_model
 
+    def effective_window(self, model: str) -> int | None:
+        """The smaller of the configured window and any enforced limit seen."""
+
+        configured = self.config.context_windows.get(model)
+        with self.observed_windows_lock:
+            # "[1m]" and the bare wire ID name the same upstream model.
+            observed = self.observed_windows.get(model.removesuffix("[1m]"))
+        if configured is None:
+            return observed
+        if observed is None:
+            return configured
+        return min(configured, observed)
+
+    def observe_enforced_window(self, model: str, limit: int | None) -> None:
+        """Remember a limit smaller than configured, and say so once."""
+
+        configured = self.config.context_windows.get(model)
+        if limit is None or configured is None or limit >= configured or limit < 1000:
+            return
+        key = model.removesuffix("[1m]")
+        with self.observed_windows_lock:
+            previous = self.observed_windows.get(key)
+            if previous is not None and previous <= limit:
+                return
+            self.observed_windows[key] = limit
+        self.record_diagnostic({
+            "kind": "context_window_smaller_than_configured",
+            "model": model,
+            "configured_window": configured,
+            "enforced_window": limit,
+        })
+
     def pin_route(self, model: str) -> dict[str, object]:
         """Pin future requests after one short, current-state validation."""
         with self.routing_lock:
@@ -1182,7 +1220,7 @@ class RouterServer(ThreadingHTTPServer):
                     "model_not_enabled",
                     "Model is not enabled for this session",
                 )
-            window = self.config.context_windows.get(model)
+            window = self.effective_window(model)
             with self.diagnostics_lock:
                 context = (
                     None
@@ -1763,6 +1801,9 @@ class RouterHandler(BaseHTTPRequestHandler):
                     if exc.limit_tokens is not None:
                         overflow_event["limit_tokens"] = exc.limit_tokens
                     self.router.record_diagnostic(overflow_event)
+                    self.router.observe_enforced_window(
+                        attempt_model, exc.limit_tokens
+                    )
                     self.record_request(
                         attempt_provider,
                         attempt_model,
@@ -2082,10 +2123,11 @@ class RouterHandler(BaseHTTPRequestHandler):
                 considered.add(peer)
             if peer in visited:
                 continue
+            peer_window = self.router.effective_window(peer)
             if (
                 min_window is not None
-                and peer in self.router.config.context_windows
-                and self.router.config.context_windows[peer] < min_window
+                and peer_window is not None
+                and peer_window < min_window
             ):
                 self.record_overflow_skip(source, peer, min_window)
                 continue
@@ -2357,7 +2399,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             return last_resort
 
         def window_rank(model: str) -> tuple[int, int]:
-            window = cfg.context_windows.get(model)
+            window = self.router.effective_window(model)
             if window is None:
                 return 1, 0
             too_small = (
@@ -2497,8 +2539,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         self, payload: dict[str, Any], target_model: str
     ) -> bytes | None:
         """Pairing-aware drop-oldest fallback sized to the target window."""
-        cfg = self.router.config
-        window = cfg.context_windows.get(target_model)
+        window = self.router.effective_window(target_model)
         if window is None:
             return None
         max_tokens = payload.get("max_tokens")
