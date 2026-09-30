@@ -4,7 +4,7 @@
 
 [![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.11-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.12-orange.svg)](CHANGELOG.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
 An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
@@ -87,7 +87,7 @@ Clone this repository and run:
 
 The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`. If the upstream proxy's normal config or state parent is also blocked, setup gives the proxy a private writable fallback and uses it consistently for OAuth, the service, the launcher, and Doctor.
 
-The macOS/Linux installer requires a `claude-code-proxy` build whose offline catalog includes `gpt-6-sol` and `gpt-6-luna`; upstream v0.1.42 includes both. If an older Homebrew proxy is already installed, upgrade it before running setup again.
+The macOS/Linux installer requires a `claude-code-proxy` build whose offline catalog includes `gpt-6.1-sol` and `gpt-6-luna`. Airlock's carried `0.1.35-airlock.6` build includes both. Check `claude-code-proxy models` and upgrade the proxy before running setup again if either model is missing.
 
 Provider Fast startup is part of safety and budget. Background-command, utility, Luna swarm selection, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 

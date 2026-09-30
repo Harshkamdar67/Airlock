@@ -189,8 +189,9 @@ prepare_private_proxy_directory "$proxy_state_home"
 # proxy installation behind their back.
 proxy_catalog="$(run_proxy_command models 2>/dev/null)" || proxy_catalog=''
 if [[ ! " $proxy_catalog " =~ (^|[[:space:],])gpt-6-sol([[:space:],]|$) \
+  || ! " $proxy_catalog " =~ (^|[[:space:],])gpt-6.1-sol([[:space:],]|$) \
   || ! " $proxy_catalog " =~ (^|[[:space:],])gpt-6-luna([[:space:],]|$) ]]; then
-  printf 'install: claude-code-proxy must support gpt-6-sol and gpt-6-luna. Upgrade the Homebrew proxy to v0.1.42 or newer, then rerun Airlock setup.\n' >&2
+  printf 'install: claude-code-proxy must support gpt-6-sol, gpt-6.1-sol, and gpt-6-luna. Upgrade to a proxy build advertising these models (Airlock carries v0.1.35-airlock.6), then rerun Airlock setup.\n' >&2
   exit 1
 fi
 

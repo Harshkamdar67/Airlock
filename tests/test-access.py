@@ -52,6 +52,30 @@ def scrub_ambient_airlock_environment(keep: set[str]) -> None:
 
 
 class AccessUsageTests(unittest.TestCase):
+    def test_sol_6_1_catalog_keeps_subscription_guard_and_reasoning_ceiling(self) -> None:
+        sol = ACCESS.MODEL_PROFILES["openai"]["sol61"]
+        self.assertEqual(sol["model"], "gpt-6.1-sol")
+        self.assertEqual(sol["agent"], "airlock-sol61")
+        self.assertEqual(ACCESS.MODEL_PROFILES["openai"]["sol"]["model"], "gpt-6-sol")
+        self.assertEqual(ACCESS.default_policy()["providers"]["openai"]["models"]["sol61"]["access"], "unavailable")
+        self.assertEqual(sol["window"], 272000)
+        self.assertEqual(ACCESS.SHIPPED_MODEL_EFFORT_CEILINGS[sol["model"]], "max")
+        self.assertNotIn("ultra", ACCESS.VALID_EFFORTS)
+        for name in ("hybrid-agents.json", "openai-direct-agents.json"):
+            catalog = json.loads((ROOT / "config" / name).read_text(encoding="utf-8"))
+            self.assertEqual(catalog["airlock-sol61"]["model"], sol["model"])
+
+    def test_sol61_only_pool_fills_every_family_and_discovery_slot(self) -> None:
+        policy = ACCESS.default_policy()
+        for provider in policy["providers"].values():
+            for model in provider["models"].values():
+                model["access"] = "unavailable"
+        policy["providers"]["openai"]["models"]["sol61"]["access"] = "unknown"
+        for profile in ("openai-pure", "hybrid-openai-root"):
+            with self.subTest(profile=profile):
+                self.assertEqual(set(ACCESS.proxy_picker_models(policy, profile).values()), {"gpt-6.1-sol"})
+                self.assertEqual(ACCESS.discovery_model(policy, profile), "gpt-6.1-sol")
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -996,9 +1020,8 @@ for line in sys.stdin:
                     rendered = ACCESS.render_profile(policy, profile, catalogs)
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
                     # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
-                    # Astra is off by default too, but the loop above marks every
-                    # OpenAI route unknown, so it counts here as the ninth agent.
-                    expected = 11 if profile == "hybrid-grok-root" else 9
+                    # The loop enables both opt-in OpenAI routes for this size check.
+                    expected = 12 if profile == "hybrid-grok-root" else 10
                     self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
@@ -2690,6 +2713,16 @@ class FailoverFileTests(unittest.TestCase):
                 "gpt-5.6-terra": ("gpt-5.6-luna",),
             },
         )
+
+    def test_beta11_sol_failover_models_remain_readable(self) -> None:
+        chains = {
+            "gpt-6-sol": ["claude-opus-5-5[1m]"],
+            "claude-opus-5-5[1m]": ["gpt-6-sol"],
+        }
+        self.path.write_text(
+            json.dumps({"schema_version": 1, "chains": chains}), encoding="utf-8"
+        )
+        self.assertEqual(self.load(), {model: tuple(peers) for model, peers in chains.items()})
 
     def test_unknown_source_fails_closed_naming_the_key(self) -> None:
         self.path.write_text(

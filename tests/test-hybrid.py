@@ -226,6 +226,11 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
 
+    def test_sol61_root_keeps_the_conservative_window(self) -> None:
+        environment = self.build("hybrid-openai-root", "gpt-6.1-sol")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "272000")
+
     def test_explicit_airlock_window_can_override_a_bare_sol_root(self) -> None:
         environment = self.build(
             "hybrid-openai-root",

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.12 - 2026-09-30
+
+### Changed
+
+- Add opt-in GPT-6.1 Sol with exact `gpt-6.1-sol`, the `sol61` root shortcut, setup choice, and `airlock-sol61` worker. Preserve existing Sol routes and saved defaults.
+- Carry `claude-code-proxy` `0.1.35-airlock.6` for Windows with GPT-6.1 Sol routing through the subscription Responses lane.
+
 All user-facing changes are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
