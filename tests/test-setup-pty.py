@@ -34,10 +34,10 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 # One Enter for each question in the plain recommended path: the fourteen base
 # questions below, plus one per model when the saved worker mix does not match
 # a named preset and the wizard opens "Choose models individually". The fixture
-# asks about eight models, so the plain and narrow runs answer twenty-two prompts.
+# asks about nine models, so the plain and narrow runs answer twenty-three prompts.
 # The keyboard run has its own explicit script and selects the balanced preset,
 # so it still answers only the base questions.
-ENTER_PRESSES = 22
+ENTER_PRESSES = 23
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
