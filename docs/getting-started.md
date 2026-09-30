@@ -23,7 +23,7 @@ Install Claude Code, Homebrew, Git, Python 3, and curl. Then run:
 
 The guided terminal setup supports Up and Down arrow selection with Enter. Number and name entry still work. It has six short sections:
 
-1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-6 Sol. Choosing GPT-6 Astra as the hybrid root also adds it to the worker pool.
+1. **Session and orchestrator:** choose hybrid or OpenAI-only, then choose from full model names and exact IDs. New installs recommend the hybrid profile with GPT-6.1 Sol. Choosing GPT-6 Astra as the hybrid root also adds it to the worker pool.
 2. **Worker pool:** choose the Balanced pool, the Economical pool, the Balanced pool plus Claude Fable 5, or individual exact-model workers.
 3. **Effort:** choose the starting level and whether workers follow the session `/effort` setting, share one fixed level, or use selected pins.
 4. **Safety and budget:** choose extra-usage behavior, provider Fast startup, routing preference, and a parallel-worker ceiling.
@@ -135,7 +135,7 @@ Start the profile and orchestrator saved by setup:
 airlock
 ```
 
-New setup runs recommend the hybrid profile with GPT-6 Sol. Existing configs created before saved profiles were added keep their OpenAI-only bare command.
+New setup runs recommend the hybrid profile with GPT-6.1 Sol. Existing configs created before saved profiles were added keep their OpenAI-only bare command.
 
 Start the saved OpenAI-only root:
 

@@ -126,6 +126,8 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
+`sol` and `airlock-sol` use GPT-6.1 Sol (`gpt-6.1-sol`). Existing saved `sol` pools and defaults use this model after updating. `sol61` and `airlock-sol61` remain compatibility aliases; no additional worker enablement is needed when `sol` is already enabled.
+
 Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, `airlock hybrid choose`, `airlock om ROUTE`, or `airlock hybrid om:ROUTE`. [Common commands](#common-commands) lists the full set.
 
 `airlock fast -r` starts one `gpt-5.6-sol-fast` session through the Codex proxy without changing saved `AIRLOCK_OPENAI_FAST`; eligible OpenAI plan and proxy checks apply, with no fallback.

@@ -422,8 +422,8 @@ CHOICE_PRESENTATION = (
     "claude-fable-5-1",
     "Claude Haiku 4.5",
     "claude-haiku-4-5-20251001",
-    "GPT-6 Sol",
-    "gpt-6-sol",
+    "GPT-6.1 Sol",
+    "gpt-6.1-sol",
     "GPT-6 Astra",
     "gpt-6-astra",
     "Frontier reasoning with a 1,050,000 token window. Premium usage, and more "

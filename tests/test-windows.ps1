@@ -1184,25 +1184,25 @@ import threading
 
 payload = {
     "profile": "hybrid-openai-root",
-    "root_model": "gpt-6-sol",
+    "root_model": "gpt-6.1-sol",
     "root_provider": "openai",
     "events": [
         {
             "timestamp": "2026-08-26T10:00:01Z",
             "kind": "session_model_pinned",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
             "provider": "openai",
         },
         {
             "timestamp": "2026-08-26T10:00:02Z",
             "kind": "rate_limit_failover_attempted",
-            "from_model": "gpt-6-sol",
+            "from_model": "gpt-6.1-sol",
             "to_model": "gpt-5.6-terra",
         },
         {
             "timestamp": "2026-08-26T10:00:03Z",
             "kind": "rate_limit_failover_succeeded",
-            "from_model": "gpt-6-sol",
+            "from_model": "gpt-6.1-sol",
             "to_model": "gpt-5.6-terra",
         },
         {
@@ -1227,7 +1227,7 @@ payload = {
         {
             "timestamp": "2026-08-26T10:00:07Z",
             "kind": "rate_limit_chain_exhausted",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
             "models_considered": 2,
         },
         {
@@ -1306,14 +1306,14 @@ server.server_close()
     AIRLOCK_SESSION_ROUTER_URL = $StatusRouterUrl
   }
   $ExpectedStatusOutput = (@(
-    'Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)',
-    '10:00:01Z - Pinned gpt-6-sol (openai) as the session root.',
-    '10:00:02Z - gpt-6-sol hit a rate limit; trying gpt-5.6-terra.',
-    '10:00:03Z - gpt-6-sol hit a rate limit; continued on gpt-5.6-terra.',
+    'Airlock router: hybrid-openai-root profile; root gpt-6.1-sol (openai)',
+    '10:00:01Z - Pinned gpt-6.1-sol (openai) as the session root.',
+    '10:00:02Z - gpt-6.1-sol hit a rate limit; trying gpt-5.6-terra.',
+    '10:00:03Z - gpt-6.1-sol hit a rate limit; continued on gpt-5.6-terra.',
     '10:00:04Z - Skipped gpt-5.6-terra because its rate-limit cooldown is active.',
     '10:00:05Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high.',
     '10:00:06Z - Replaced the openrouter error for stealth/ox-alpha with a safe local message.',
-    '10:00:07Z - The failover chain for gpt-6-sol exhausted 2 models.',
+    '10:00:07Z - The failover chain for gpt-6.1-sol exhausted 2 models.',
     '10:00:08Z - Removed 2 unsupported OpenRouter server tools for stealth/ox-alpha.',
     '10:00:09Z - Router action: future_action_v2.'
   ) -join "`n") + "`n"
@@ -1877,7 +1877,7 @@ print("OPR_REQUEST=" + json.dumps(request, separators=(",", ":"), sort_keys=True
       throw 'Windows hybrid om: root accepted a mismatched model override.'
     }
     $MismatchedShortHybridOm = Invoke-LauncherProcess $InstalledLauncher `
-      @('hybrid', 'om:local-coder', '-m', 'gpt-6-sol', '-p', 'test') $false @{
+      @('hybrid', 'om:local-coder', '-m', 'gpt-6.1-sol', '-p', 'test') $false @{
         AIRLOCK_ACCESS_HELPER = $OprAccessStub
       }
     if ($MismatchedShortHybridOm.ExitCode -ne 2 -or
@@ -1885,7 +1885,7 @@ print("OPR_REQUEST=" + json.dumps(request, separators=(",", ":"), sort_keys=True
       throw 'Windows hybrid om: root accepted a mismatched -m selector.'
     }
     $MismatchedShortEqualsHybridOm = Invoke-LauncherProcess $InstalledLauncher `
-      @('hybrid', 'om:local-coder', '-m=gpt-6-sol', '-p', 'test') $false @{
+      @('hybrid', 'om:local-coder', '-m=gpt-6.1-sol', '-p', 'test') $false @{
         AIRLOCK_ACCESS_HELPER = $OprAccessStub
       }
     if ($MismatchedShortEqualsHybridOm.ExitCode -ne 2 -or
@@ -2073,7 +2073,7 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
 '@
   [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
   $LegacyLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
-  foreach ($Selector in @('sol61', 'gpt-6.1-sol')) {
+  foreach ($Selector in @('sol', 'sol61', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-sol[1m]')) {
     $Sol61Launch = Invoke-LauncherProcess $InstalledLauncher @($Selector, '-p', 'test')
     if ($Sol61Launch.ExitCode -ne 0 -or
         $Sol61Launch.Output -notmatch '(?m)^MODEL=gpt-6\.1-sol$' -or
@@ -2100,11 +2100,11 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
     throw "Windows pure-session snapshot remained after Claude exited: $($LegacySnapshotMatch.Groups[1].Value) [stderr] $($LegacyLaunch.Error)"
   }
   foreach ($ExpectedPickerLine in @(
-    'DEFAULT_FABLE=gpt-6-sol',
-    'DEFAULT_OPUS=gpt-6-sol',
+    'DEFAULT_FABLE=gpt-6.1-sol',
+    'DEFAULT_OPUS=gpt-6.1-sol',
     'DEFAULT_SONNET=gpt-5.6-terra',
     'DEFAULT_HAIKU=gpt-6-luna',
-    'FABLE_NAME=gpt-6-sol'
+    'FABLE_NAME=gpt-6.1-sol'
   )) {
     if ($LegacyLaunch.Output -notmatch "(?m)^$([regex]::Escape($ExpectedPickerLine))$") {
       throw "Windows OpenAI picker did not keep distinct enabled models: $($LegacyLaunch.Output)"
@@ -2370,8 +2370,8 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
     fast_mode = 'off'
     args = @((('x' * 32767) -join ''))
     proxy_url = 'http://127.0.0.1:18765'
-    root_model = 'gpt-6-sol'
-    root_name = 'GPT-6 Sol'
+    root_model = 'gpt-6.1-sol'
+    root_name = 'GPT-6.1 Sol'
   }
   [IO.File]::WriteAllText(
     $OverflowRequestPath,
@@ -2406,7 +2406,7 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   }
 
   foreach ($ExpectedFamilyLine in @(
-    'DEFAULT_FABLE=gpt-6-sol',
+    'DEFAULT_FABLE=gpt-6.1-sol',
     'DEFAULT_OPUS=claude-opus-5-5[1m]',
     'DEFAULT_SONNET=claude-sonnet-5[1m]',
     'DEFAULT_HAIKU=claude-sonnet-5[1m]',
@@ -2459,8 +2459,8 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
       $LegacyHybridFlag.Output -match '(?m)^ARG=gpt-6-luna\[1m\]$') {
     throw "Legacy hybrid --model value was not normalized before launch: $($LegacyHybridFlag.Output)"
   }
-  $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-6-sol', '-p', 'test')
-  if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-6-sol$') {
+  $EqualsOpenAI = Invoke-LauncherProcess $InstalledLauncher @('openai', '--model=gpt-6.1-sol', '-p', 'test')
+  if ($EqualsOpenAI.Output -notmatch '(?m)^MODEL=gpt-6.1-sol$') {
     throw "OpenAI --model= form did not launch: $($EqualsOpenAI.Output)"
   }
   $BackgroundLaunch = Invoke-LauncherProcess $InstalledLauncher @('background', '-p', 'test')

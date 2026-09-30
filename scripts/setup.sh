@@ -353,6 +353,7 @@ normalize_openai_model_id() {
   if [[ "$model" == gpt-* && "$model" == *'[1m]' ]]; then
     model="${model%\[1m\]}"
   fi
+  if [[ "$model" == gpt-6-sol ]]; then model='gpt-6.1-sol'; fi
   printf '%s' "$model"
 }
 
@@ -361,8 +362,7 @@ setup_model_alias() {
   model="$(normalize_openai_model_id "$1")"
   case "$model" in
     gpt-6-astra) printf 'astra' ;;
-    gpt-6-sol) printf 'sol' ;;
-    gpt-6.1-sol) printf 'sol61' ;;
+    gpt-6.1-sol) printf 'sol' ;;
     gpt-5.6-sol-fast) printf 'sol-fast' ;;
     gpt-5.6-terra) printf 'terra' ;;
     gpt-6-luna) printf 'luna' ;;
@@ -381,8 +381,7 @@ utility_alias_from_wire() {
   wire_model="$(normalize_openai_model_id "$1")"
   case "$wire_model" in
     gpt-6-astra) UTILITY_ALIAS='astra' ;;
-    gpt-6-sol) UTILITY_ALIAS='sol' ;;
-    gpt-6.1-sol) UTILITY_ALIAS='sol61' ;;
+    gpt-6.1-sol) UTILITY_ALIAS='sol' ;;
     gpt-5.6-terra) UTILITY_ALIAS='terra' ;;
     gpt-6-luna) UTILITY_ALIAS='luna' ;;
     gpt-5.5) UTILITY_ALIAS='5.5' ;;
@@ -403,8 +402,8 @@ set_model_info() {
     fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     astra) MODEL_TITLE='GPT-6 Astra'; MODEL_ID='gpt-6-astra'; MODEL_DETAIL='Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.' ;;
-    sol61) MODEL_TITLE='GPT-6.1 Sol'; MODEL_ID='gpt-6.1-sol'; MODEL_DETAIL='Coding and everyday work. Opt-in Sol route.' ;;
-    sol) MODEL_TITLE='GPT-6 Sol'; MODEL_ID='gpt-6-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
+    sol61) MODEL_TITLE='GPT-6.1 Sol'; MODEL_ID='gpt-6.1-sol'; MODEL_DETAIL='Compatibility alias for sol (GPT-6.1 Sol).' ;;
+    sol) MODEL_TITLE='GPT-6.1 Sol'; MODEL_ID='gpt-6.1-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
     terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
     luna) MODEL_TITLE='GPT-6 Luna'; MODEL_ID='gpt-6-luna'; MODEL_DETAIL='Discovery, triage, and bounded work. Economical usage.' ;;
@@ -428,7 +427,7 @@ model_summary() {
 wire_model_from_alias() {
   case "$1" in
     astra) WIRE_MODEL='gpt-6-astra' ;;
-    sol) WIRE_MODEL='gpt-6-sol' ;;
+    sol) WIRE_MODEL='gpt-6.1-sol' ;;
     sol61) WIRE_MODEL='gpt-6.1-sol' ;;
     sol-fast) WIRE_MODEL='gpt-5.6-sol-fast' ;;
     terra) WIRE_MODEL='gpt-5.6-terra' ;;
@@ -1313,7 +1312,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_question 'Default orchestrator' 'This model leads the session and decides when to use workers. Every choice below stays available as a worker.'
     hybrid_options=(
       'auto|Auto (recommended)|auto|Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet. Never picks an extra-class model.'
-      'sol|GPT-6 Sol|gpt-6-sol|Difficult implementation and integration. Premium usage.'
+      'sol|GPT-6.1 Sol|gpt-6.1-sol|Difficult implementation and integration. Premium usage.'
       'astra|GPT-6 Astra|gpt-6-astra|Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.'
       'sonnet|Claude Sonnet 5|claude-sonnet-5[1m]|Balanced engineering and repository work. Standard usage.'
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.'
@@ -1321,7 +1320,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       'opus|Claude Opus 5.5|claude-opus-5-5[1m]|Architecture, security, and visual direction. Premium usage.'
       'fable|Claude Fable 5.1|claude-fable-5-1[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
-      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Coding and everyday work. Opt-in Sol route.'
+      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).'
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
       hybrid_options+=(
@@ -1335,7 +1334,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
   else
     print_question 'Default orchestrator' 'OpenAI-only sessions can still use exact GPT workers.'
     choose_rich_option "${main_model:-$default_main_model}" sol \
-      'sol|GPT-6 Sol|gpt-6-sol|Difficult implementation and integration. Premium usage.' \
+      'sol|GPT-6.1 Sol|gpt-6.1-sol|Difficult implementation and integration. Premium usage.' \
       'astra|GPT-6 Astra|gpt-6-astra|Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.' \
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning. Standard usage.' \
       'luna|GPT-6 Luna|gpt-6-luna|Discovery, triage, and bounded work. Economical usage.' \
@@ -1346,7 +1345,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       '5.3|GPT-5.3 Codex|gpt-5.3-codex|Supported Codex root.' \
       'spark|GPT-5.3 Codex Spark|gpt-5.3-codex-spark|Fast supported Codex root.' \
       '5.2|GPT-5.2|gpt-5.2|Supported OpenAI root.' \
-      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Coding and everyday work. Opt-in Sol route.'
+      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).'
     main_model="$CHOICE"
   fi
 
@@ -1537,8 +1536,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
     print_rule '-'
     print_question 'Model for the separate `airlock bg` command' '`airlock bg` is a separate convenience command. It does not power normal Agents.'
     choose_rich_option "${bg_model:-$default_bg_model}" sol \
-      'sol|GPT-6 Sol|gpt-6-sol|Background command default.' \
-      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Coding and everyday work. Opt-in Sol route.' \
+      'sol|GPT-6.1 Sol|gpt-6.1-sol|Background command default.' \
+      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).' \
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Review and alternative reasoning.' \
       'luna|GPT-6 Luna|gpt-6-luna|Economical background work.' \
       'mini|GPT-5.4 Mini|gpt-5.4-mini|Small OpenAI root.'
@@ -1553,8 +1552,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
     choose_rich_option "${utility_model:-$default_utility_model}" luna \
       'luna|GPT-6 Luna|gpt-6-luna|Recommended economical utility route.' \
       'terra|GPT-5.6 Terra|gpt-5.6-terra|Standard usage.' \
-      'sol|GPT-6 Sol|gpt-6-sol|Premium usage.' \
-      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Coding and everyday work. Opt-in Sol route.' \
+      'sol|GPT-6.1 Sol|gpt-6.1-sol|Premium usage.' \
+      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).' \
       'mini|GPT-5.4 Mini|gpt-5.4-mini|Small OpenAI root.'
     utility_model="$CHOICE"
     print_question 'Luna swarm Fast processing'

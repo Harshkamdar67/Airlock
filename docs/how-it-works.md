@@ -200,7 +200,7 @@ Every profile binds Claude Code's Fable, Opus, Sonnet, and Haiku slots to exact 
 - A route that still needs explicit extra-usage confirmation is not placed behind a family alias because an alias has no way to carry Airlock's confirmation marker.
 - The exact root named on the launch command remains available as the custom option, and named `airlock-*` Agents keep their exact model identities.
 
-These are Claude Code family slots, not claims that GPT-6 Astra or GPT-6 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
+These are Claude Code family slots, not claims that GPT-6 Astra or GPT-6.1 Sol is Claude Opus or that Composer is Claude Haiku. Airlock sets each label to the exact model ID so the menu reports what will actually receive the request.
 
 The hybrid router can route both providers because every model uses the same local endpoint. This does not guarantee that every GPT ID appears in Claude Code's `/model` menu. Claude Code gateway discovery can ignore non-Claude IDs.
 

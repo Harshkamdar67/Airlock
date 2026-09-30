@@ -25,9 +25,9 @@ MARKER = "Extra usage authorized: yes"
 ROOT_MODELS = {
     "openrouter-pure": "anthropic/claude-sonnet-4.5",
     "openmodel-pure": "openmodel/local-root",
-    "openai-pure": "gpt-6-sol",
+    "openai-pure": "gpt-6.1-sol",
     "grok-pure": "grok-4.6",
-    "hybrid-openai-root": "gpt-6-sol",
+    "hybrid-openai-root": "gpt-6.1-sol",
     "hybrid-anthropic-root": "claude-sonnet-5[1m]",
     "hybrid-grok-root": "grok-4.6",
     "hybrid-openmodel-root": "openmodel/local-root",
@@ -595,7 +595,7 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_named_workers_reject_every_model_override(self) -> None:
         session = self.session("openai-pure")
-        for model in ("gpt-6-sol", None):
+        for model in ("gpt-6.1-sol", None):
             with self.subTest(model=model):
                 self.assert_denied(self.invoke(session, {
                     "subagent_type": "airlock-sol", "model": model,
@@ -680,7 +680,7 @@ class AgentGuardTests(unittest.TestCase):
         value = session["snapshot"].to_dict()
         value["agents"] = dict(value["agents"])
         value["agents"]["airlock-intruder"] = {
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
             "provider": "openai",
             "extra_usage": False,
         }
