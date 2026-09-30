@@ -865,7 +865,7 @@ enable_explicit_openai_root() {
   local route
   case "$root_model" in
     gpt-6-astra) route='astra' ;;
-    gpt-6.1-sol) route='sol61' ;;
+    gpt-6.1-sol) route='sol' ;;
     *) return 0 ;;
   esac
   local pool="${AIRLOCK_OPENAI_MODELS-$config_openai_models}"

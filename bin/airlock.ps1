@@ -133,7 +133,7 @@ function Enable-ExplicitOpenAIRoot {
   param([string]$RootModel)
   $route = switch ($RootModel) {
     'gpt-6-astra' { 'astra' }
-    'gpt-6.1-sol' { 'sol61' }
+    'gpt-6.1-sol' { 'sol' }
     default { return }
   }
   $pool = if ($null -ne $env:AIRLOCK_OPENAI_MODELS) { [string]$env:AIRLOCK_OPENAI_MODELS }
