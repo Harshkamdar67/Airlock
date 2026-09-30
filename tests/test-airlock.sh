@@ -1013,8 +1013,8 @@ notice_output="$(AIRLOCK_CONFIG_DIR="$notice_config_root" AIRLOCK_REAL_CLAUDE="$
 grep -q "^UPDATE_NOTICE=$notice_config_root/update-notice.json$" <<<"$notice_output"
 relative_notice_output="$(AIRLOCK_CONFIG_DIR='relative-notice-config' AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q "^UPDATE_NOTICE=$PWD/relative-notice-config/update-notice.json$" <<<"$relative_notice_output"
-grep -q '^MODEL=gpt-6-sol$' <<<"$normal_output"
-for sol61_selector in sol61 gpt-6.1-sol; do
+grep -q '^MODEL=gpt-6.1-sol$' <<<"$normal_output"
+for sol61_selector in sol sol61 gpt-6.1-sol gpt-6-sol 'gpt-6-sol[1m]'; do
   sol61_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" "$sol61_selector" -p test)"
   grep -q '^MODEL=gpt-6.1-sol$' <<<"$sol61_output"
   grep -q '^ROOT_MODEL=gpt-6.1-sol$' <<<"$sol61_output"
@@ -1039,7 +1039,7 @@ if [[ -z "$normal_snapshot" || -e "$normal_snapshot" ]]; then
 fi
 
 background_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg -p test)"
-grep -q '^MODEL=gpt-6-sol$' <<<"$background_output"
+grep -q '^MODEL=gpt-6.1-sol$' <<<"$background_output"
 grep -q '^ARG=medium$' <<<"$background_output"
 
 override_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" bg --effort high -p test)"
@@ -1099,7 +1099,7 @@ assert "built-in Explore, Plan, and general-purpose Agent types" in trust_contex
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna"}
-assert agents["airlock-sol"]["model"] == "gpt-6-sol"
+assert agents["airlock-sol"]["model"] == "gpt-6.1-sol"
 assert agents["airlock-terra"]["model"] == "gpt-5.6-terra"
 assert agents["airlock-luna"]["model"] == "gpt-6-luna"
 assert all("effort" not in agent for agent in agents.values())
@@ -1153,20 +1153,20 @@ PY
 grep -q '^OPENAI_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$normal_output"
 grep -q '^ACTIVE_PROFILE=openai-pure$' <<<"$normal_output"
-grep -q '^ROOT_MODEL=gpt-6-sol$' <<<"$normal_output"
+grep -q '^ROOT_MODEL=gpt-6.1-sol$' <<<"$normal_output"
 grep -q '^DISCOVERY_MODEL=gpt-6-luna$' <<<"$normal_output"
 grep -q '^SESSION_ROUTER=unset$' <<<"$normal_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-terra$' <<<"$normal_output"
-grep -q '^ALLOWED_MODELS=gpt-5.6-terra,gpt-6-luna,gpt-6-sol$' <<<"$normal_output"
+grep -q '^ALLOWED_MODELS=gpt-5.6-terra,gpt-6-luna,gpt-6.1-sol$' <<<"$normal_output"
 grep -q '^EXTRA_AGENTS=$' <<<"$normal_output"
 grep -q '^EXTRA_MODELS=$' <<<"$normal_output"
 grep -q '^AUTH_TOKEN_SET=yes$' <<<"$normal_output"
-grep -q '^DEFAULT_FABLE=gpt-6-sol$' <<<"$normal_output"
-grep -q '^DEFAULT_OPUS=gpt-6-sol$' <<<"$normal_output"
+grep -q '^DEFAULT_FABLE=gpt-6.1-sol$' <<<"$normal_output"
+grep -q '^DEFAULT_OPUS=gpt-6.1-sol$' <<<"$normal_output"
 grep -q '^DEFAULT_SONNET=gpt-5.6-terra$' <<<"$normal_output"
 grep -q '^DEFAULT_HAIKU=gpt-6-luna$' <<<"$normal_output"
-grep -q '^FABLE_NAME=gpt-6-sol$' <<<"$normal_output"
-grep -q '^OPUS_NAME=gpt-6-sol$' <<<"$normal_output"
+grep -q '^FABLE_NAME=gpt-6.1-sol$' <<<"$normal_output"
+grep -q '^OPUS_NAME=gpt-6.1-sol$' <<<"$normal_output"
 grep -q '^SONNET_NAME=gpt-5.6-terra$' <<<"$normal_output"
 grep -q '^HAIKU_NAME=gpt-6-luna$' <<<"$normal_output"
 grep -q '^FABLE_CAPS=effort,xhigh_effort,max_effort$' <<<"$normal_output"
@@ -2015,7 +2015,7 @@ fi
 grep -q 'forwarded --model disagrees with the selected local open-model root route' \
   "$tmp_dir/hybrid-om-mismatch.err"
 if AIRLOCK_OPENMODEL_REGISTRY_FILE="$hybrid_om_registry" \
-  "$launcher" hybrid om:hybrid-local -m gpt-6-sol -p test \
+  "$launcher" hybrid om:hybrid-local -m gpt-6.1-sol -p test \
   >/dev/null 2>"$tmp_dir/hybrid-om-short-mismatch.err"; then
   printf 'test: hybrid local open-model root accepted a mismatched -m selector\n' >&2
   exit 1
@@ -2023,7 +2023,7 @@ fi
 grep -q 'forwarded --model disagrees with the selected local open-model root route' \
   "$tmp_dir/hybrid-om-short-mismatch.err"
 if AIRLOCK_OPENMODEL_REGISTRY_FILE="$hybrid_om_registry" \
-  "$launcher" hybrid om:hybrid-local -m=gpt-6-sol -p test \
+  "$launcher" hybrid om:hybrid-local -m=gpt-6.1-sol -p test \
   >/dev/null 2>"$tmp_dir/hybrid-om-short-equals-mismatch.err"; then
   printf 'test: hybrid local open-model root accepted a mismatched -m= selector\n' >&2
   exit 1
@@ -2067,21 +2067,21 @@ if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_openai_output"; th
 fi
 grep -q '^OPENAI_BRIDGE=unset$' <<<"$hybrid_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=1$' <<<"$hybrid_openai_output"
-grep -q '^DEFAULT_FABLE=gpt-6-sol$' <<<"$hybrid_openai_output"
+grep -q '^DEFAULT_FABLE=gpt-6.1-sol$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SMALL_FAST=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 # The classifier rides the small fast seat, which prefers native Claude here.
 grep -q '^AUTO_MODE_MODEL=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
-grep -q '^FABLE_NAME=gpt-6-sol$' <<<"$hybrid_openai_output"
+grep -q '^FABLE_NAME=gpt-6.1-sol$' <<<"$hybrid_openai_output"
 grep -q '^OPUS_NAME=claude-opus-5-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^SONNET_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^HAIKU_NAME=claude-sonnet-5\[1m\]$' <<<"$hybrid_openai_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_openai_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_openai_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6-sol$' <<<"$hybrid_openai_output"
-grep -q '^ROUTER_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6-sol$' <<<"$hybrid_openai_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6.1-sol$' <<<"$hybrid_openai_output"
+grep -q '^ROUTER_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6.1-sol$' <<<"$hybrid_openai_output"
 hybrid_profile="$hybrid_openai_output" python - <<'PY'
 import base64
 import json
@@ -2109,7 +2109,7 @@ assert "native Claude Code tools" in agents["airlock-opus"]["prompt"]
 assert "exact model: claude-opus-5-5" in agents["airlock-opus"]["description"]
 assert "UI/UX design" in agents["airlock-opus"]["description"]
 assert "design-system-aligned UI implementation" in agents["airlock-sonnet"]["description"]
-assert agents["airlock-sol"]["model"] == "gpt-6-sol"
+assert agents["airlock-sol"]["model"] == "gpt-6.1-sol"
 assert "tools" not in agents["airlock-sol"] and "permissionMode" not in agents["airlock-sol"]
 assert "airlock-delegate" not in agents["airlock-sol"]["prompt"]
 assert all(agent["disallowedTools"] == ["Agent"] for agent in agents.values())
@@ -2388,7 +2388,7 @@ if grep -q '^BASE_URL=http://127\.0\.0\.1:18765$' <<<"$hybrid_anthropic_output";
 fi
 grep -q '^OPENAI_BRIDGE=1$' <<<"$hybrid_anthropic_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$hybrid_anthropic_output"
-grep -q '^DEFAULT_FABLE=gpt-6-sol$' <<<"$hybrid_anthropic_output"
+grep -q '^DEFAULT_FABLE=gpt-6.1-sol$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_OPUS=claude-opus-5-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_SONNET=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
 grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$hybrid_anthropic_output"
@@ -2404,7 +2404,7 @@ grep -q '^HAIKU_NAME=claude-haiku-4-5-20251001$' <<<"$hybrid_haiku_seat_output"
 grep -q '^AUTO_MODE_MODEL=unset$' <<<"$hybrid_haiku_seat_output"
 grep -q '^AUTH_TOKEN_SET=no$' <<<"$hybrid_anthropic_output"
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-opus,airlock-sol,airlock-sonnet,airlock-terra$' <<<"$hybrid_anthropic_output"
-grep -q '^ALLOWED_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6-sol$' <<<"$hybrid_anthropic_output"
+grep -q '^ALLOWED_MODELS=claude-opus-5-5,claude-opus-5-5\[1m\],claude-sonnet-5,claude-sonnet-5\[1m\],gpt-5.6-terra,gpt-6-luna,gpt-6.1-sol$' <<<"$hybrid_anthropic_output"
 hybrid_profile="$hybrid_anthropic_output" python - <<'PY'
 import base64
 import json
@@ -2424,7 +2424,7 @@ assert "built-in Explore, Plan, and general-purpose Agent types" in trust_contex
 assert "Git-ignored or unsafe paths" in trust_context
 agents = json.loads(args[args.index("--agents") + 1])
 assert set(agents) == {"airlock-sol", "airlock-terra", "airlock-luna", "airlock-opus", "airlock-sonnet"}
-assert agents["airlock-sol"]["model"] == "gpt-6-sol"
+assert agents["airlock-sol"]["model"] == "gpt-6.1-sol"
 assert "tools" not in agents["airlock-sol"] and "permissionMode" not in agents["airlock-sol"]
 assert "airlock-delegate" not in agents["airlock-sol"]["prompt"]
 assert agents["airlock-sonnet"]["model"] == "claude-sonnet-5[1m]"
@@ -2488,9 +2488,9 @@ for disabled in ("Agent(airlock-terra)", "Agent(airlock-opus)", "Agent(airlock-f
     assert disabled not in allowed
 PY
 grep -q '^ALLOWED_AGENTS=airlock-luna,airlock-sol,airlock-sonnet$' <<<"$reduced_output"
-grep -q '^ALLOWED_MODELS=claude-sonnet-5,claude-sonnet-5\[1m\],gpt-6-luna,gpt-6-sol$' <<<"$reduced_output"
+grep -q '^ALLOWED_MODELS=claude-sonnet-5,claude-sonnet-5\[1m\],gpt-6-luna,gpt-6.1-sol$' <<<"$reduced_output"
 
-for root_spec in 'sol:gpt-6-sol:openai' 'luna:gpt-6-luna:openai' 'opus:claude-opus-5-5[1m]:anthropic'; do
+for root_spec in 'sol:gpt-6.1-sol:openai' 'luna:gpt-6-luna:openai' 'opus:claude-opus-5-5[1m]:anthropic'; do
   IFS=':' read -r root_alias expected_model expected_provider <<<"$root_spec"
   root_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid "$root_alias" -p test)"
   grep -Fq "ARG=$expected_model" <<<"$root_output"
@@ -2539,7 +2539,7 @@ done
 bare_openai_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher")"
 # File-backed flags land early in argv and user passthrough lands last, so the
 # model/effort pair and the guidance flag are checked as independent elements.
-grep -Fq '"--model", "gpt-6-sol", "--effort", "high"' <<<"$bare_openai_output"
+grep -Fq '"--model", "gpt-6.1-sol", "--effort", "high"' <<<"$bare_openai_output"
 grep -Fq '"--append-system-prompt-file"' <<<"$bare_openai_output"
 grep -q '^ANTHROPIC_BRIDGE=unset$' <<<"$bare_openai_output"
 # OpenAI roots keep the conservative fallback because no long-context proof passed.
@@ -2580,8 +2580,8 @@ if grep -Fq 'ARG=gpt-6-luna[1m]' <<<"$legacy_hybrid_flag_output"; then
   printf 'test: legacy hybrid --model value reached Claude Code without normalization\n' >&2
   exit 1
 fi
-saved_equals_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai '--model=gpt-6-sol' -p test)"
-grep -q '^MODEL=gpt-6-sol$' <<<"$saved_equals_openai_output"
+saved_equals_openai_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" openai '--model=gpt-6.1-sol' -p test)"
+grep -q '^MODEL=gpt-6.1-sol$' <<<"$saved_equals_openai_output"
 saved_background_output="$(AIRLOCK_CONFIG_FILE="$saved_hybrid_config" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" background -p test)"
 grep -q '^MODEL=gpt-6-luna$' <<<"$saved_background_output"
 grep -q '^ARG=low$' <<<"$saved_background_output"
@@ -2969,17 +2969,17 @@ import sys
 payload = {
     "instance_id": "0123456789abcdef",
     "profile": "hybrid-openai-root",
-    "root_model": "gpt-6-sol",
+    "root_model": "gpt-6.1-sol",
     "root_provider": "openai",
     "rate_limit_cooldowns": ["gpt-5.6-terra"],
     "events": [
-        {"timestamp": "2026-08-26T10:00:01Z", "kind": "session_model_pinned", "profile": "hybrid-openai-root", "model": "gpt-6-sol", "provider": "openai"},
-        {"timestamp": "2026-08-26T10:00:02Z", "kind": "rate_limit_failover_attempted", "from_model": "gpt-6-sol", "to_model": "gpt-5.6-terra"},
-        {"timestamp": "2026-08-26T10:00:03Z", "kind": "rate_limit_failover_succeeded", "from_model": "gpt-6-sol", "to_model": "gpt-5.6-terra", "hops": 1},
+        {"timestamp": "2026-08-26T10:00:01Z", "kind": "session_model_pinned", "profile": "hybrid-openai-root", "model": "gpt-6.1-sol", "provider": "openai"},
+        {"timestamp": "2026-08-26T10:00:02Z", "kind": "rate_limit_failover_attempted", "from_model": "gpt-6.1-sol", "to_model": "gpt-5.6-terra"},
+        {"timestamp": "2026-08-26T10:00:03Z", "kind": "rate_limit_failover_succeeded", "from_model": "gpt-6.1-sol", "to_model": "gpt-5.6-terra", "hops": 1},
         {"timestamp": "2026-08-26T10:00:04Z", "kind": "rate_limit_cooldown_skipped", "model": "gpt-5.6-terra", "provider": "openai"},
         {"timestamp": "2026-08-26T10:00:05Z", "kind": "openrouter_effort_clamped", "model": "stealth/ox-alpha", "requested": "max", "forwarded": "high", "ceiling": "high"},
         {"timestamp": "2026-08-26T10:00:06Z", "kind": "sanitized_error_substituted", "model": "stealth/ox-alpha", "provider": "openrouter", "status": 403},
-        {"timestamp": "2026-08-26T10:00:07Z", "kind": "rate_limit_chain_exhausted", "model": "gpt-6-sol", "last_model": "gpt-5.6-terra", "models_considered": 2},
+        {"timestamp": "2026-08-26T10:00:07Z", "kind": "rate_limit_chain_exhausted", "model": "gpt-6.1-sol", "last_model": "gpt-5.6-terra", "models_considered": 2},
         {"timestamp": "2026-08-26T10:00:08Z", "kind": "openrouter_server_tools_stripped", "model": "stealth/ox-alpha", "removed_count": 2},
         {"timestamp": "2026-08-26T10:00:09Z", "kind": "future_action_v2", "message": "SHOULD_NOT_PRINT", "credential": "SENTINEL_STATUS_SECRET"},
     ],
@@ -3039,14 +3039,14 @@ import os
 
 lines = os.environ["STATUS_OUTPUT"].splitlines()
 assert lines == [
-    "Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)",
-    "10:00:01Z - Pinned gpt-6-sol (openai) as the session root.",
-    "10:00:02Z - gpt-6-sol hit a rate limit; trying gpt-5.6-terra.",
-    "10:00:03Z - gpt-6-sol hit a rate limit; continued on gpt-5.6-terra.",
+    "Airlock router: hybrid-openai-root profile; root gpt-6.1-sol (openai)",
+    "10:00:01Z - Pinned gpt-6.1-sol (openai) as the session root.",
+    "10:00:02Z - gpt-6.1-sol hit a rate limit; trying gpt-5.6-terra.",
+    "10:00:03Z - gpt-6.1-sol hit a rate limit; continued on gpt-5.6-terra.",
     "10:00:04Z - Skipped gpt-5.6-terra because its rate-limit cooldown is active.",
     "10:00:05Z - Clamped OpenRouter effort for stealth/ox-alpha from max to high (route ceiling high).",
     "10:00:06Z - Replaced the openrouter error for stealth/ox-alpha with a safe local message.",
-    "10:00:07Z - The failover chain for gpt-6-sol exhausted 2 models.",
+    "10:00:07Z - The failover chain for gpt-6.1-sol exhausted 2 models.",
     "10:00:08Z - Removed 2 unsupported OpenRouter server tools for stealth/ox-alpha.",
     "10:00:09Z - Router action: future_action_v2.",
 ]
@@ -3067,7 +3067,7 @@ value = json.loads(os.environ["HOOK_OUTPUT"])
 assert set(value) == {"systemMessage"}
 lines = value["systemMessage"].splitlines()
 assert 1 <= len(lines) <= 6
-assert lines[0] == "Airlock router: hybrid-openai-root profile; root gpt-6-sol (openai)"
+assert lines[0] == "Airlock router: hybrid-openai-root profile; root gpt-6.1-sol (openai)"
 assert lines[-1] == "10:00:09Z - Router action: future_action_v2."
 assert "SHOULD_NOT_PRINT" not in value["systemMessage"]
 assert "SENTINEL_STATUS_SECRET" not in value["systemMessage"]
@@ -3087,7 +3087,7 @@ value = json.loads(os.environ["TURN_NOTICE"])
 assert set(value) == {"systemMessage"}
 message = value["systemMessage"]
 assert message.startswith("Airlock routing")
-assert "gpt-6-sol was rate limited; gpt-5.6-terra answered instead." in message
+assert "gpt-6.1-sol was rate limited; gpt-5.6-terra answered instead." in message
 # One switch, one line. A turn that hands off many times must not repeat it.
 assert message.count("gpt-5.6-terra answered") == 1
 assert "every replacement Airlock could try were rate limited" in message

@@ -4,7 +4,7 @@
 
 [![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.12-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.13-orange.svg)](CHANGELOG.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
 An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
@@ -126,7 +126,7 @@ The installer does not change PATH, native Claude settings, native Codex setting
 
 ## First run
 
-Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, `airlock hybrid choose`, `airlock om ROUTE`, or `airlock hybrid om:ROUTE`. [Common commands](#common-commands) lists the full set.
+Run `airlock` to start the saved profile, or name a root directly with `airlock openai`, `airlock fast -r`, `airlock grok`, `airlock hybrid opus`, `airlock hybrid choose`, `airlock om ROUTE`, or `airlock hybrid om:ROUTE`. [Common commands](#common-commands) lists the full set. `sol` and `airlock-sol` now use exact GPT-6.1 Sol; existing saved Sol pools/defaults need no extra enablement. `sol61` and `airlock-sol61` remain compatibility aliases.
 
 `airlock fast -r` starts one `gpt-5.6-sol-fast` session through the Codex proxy without changing saved `AIRLOCK_OPENAI_FAST`; eligible OpenAI plan and proxy checks apply, with no fallback.
 In a managed session, `/airlock-fast` arms a one-shot handoff. Exit cleanly and the owning launcher resumes the exact conversation once on fixed `gpt-5.6-sol-fast`. This is not Claude Code Anthropic `/fast`; hard kill, crash, non-clean exit, hook failure, or expiry prevents relaunch. The private nonce-, PID-, cwd-, and session-bound marker carries no credentials, prompts, transcript data, arbitrary executable data, or model choice. The managed plugin SessionEnd hook is required and is not a global hook.

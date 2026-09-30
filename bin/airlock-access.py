@@ -336,7 +336,7 @@ MODEL_PROFILES = {
         "sol": {
             # Keep the subscription ceiling conservative until this exact
             # model passes a long-context Airlock proof.
-            "agent": "airlock-sol", "model": "gpt-6-sol", "effort": "xhigh",
+            "agent": "airlock-sol", "model": "gpt-6.1-sol", "effort": "xhigh",
             "capability": "frontier", "cost": "premium", "window": 272000,
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
         },
@@ -2379,7 +2379,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.12",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.13",
             }},
         }):
             return None
@@ -3661,7 +3661,7 @@ def session_failover_chains(
 
     A user-owned ``$AIRLOCK_CONFIG_DIR/failover.json`` (override with
     ``AIRLOCK_FAILOVER_FILE``) may declare exact chains per model:
-    ``{"schema_version": 1, "chains": {"claude-opus-5-5": ["gpt-6-sol"]}}``.
+    ``{"schema_version": 1, "chains": {"claude-opus-5-5": ["gpt-6.1-sol"]}}``.
     A declared source REPLACES its derived chain verbatim -- any order, any
     mix of providers and cost categories, since writing the file is itself
     the deliberate upspend decision. An empty peer list opts that source out

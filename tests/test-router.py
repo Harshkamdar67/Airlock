@@ -5302,7 +5302,7 @@ class RateLimitFailoverTests(unittest.TestCase):
 
         same = [
             {"kind": "rate_limit_failover_succeeded",
-             "from_model": "gpt-6-sol", "to_model": "claude-opus-5-5"}
+             "from_model": "gpt-6.1-sol", "to_model": "claude-opus-5-5"}
             for _ in range(4)
         ]
         message, total = notice_module.notice(same, 0)

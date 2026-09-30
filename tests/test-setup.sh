@@ -91,7 +91,7 @@ AIRLOCK_CONFIG_DIR="$config_dir" "$repo_root/scripts/setup.sh" \
   --main-effort xhigh \
   --worker-effort high \
   --worker-pins '' \
-  --bg-model 'gpt-6-sol[1m]' \
+  --bg-model 'gpt-6.1-sol[1m]' \
   --bg-effort medium \
   --utility-model 'gpt-5.4-mini[1m]' \
   --subagent-effort high \

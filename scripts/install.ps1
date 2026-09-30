@@ -460,7 +460,7 @@ foreach ($requirement in @(
 }
 
 # Airlock carries a Windows claude-code-proxy build with the OAuth browser fix
-# and exact GPT-6.1 Sol support alongside GPT-6 Sol/Luna. Stock releases opened login URLs through
+# and exact GPT-6.1 Sol support alongside GPT-6.1 Sol/Luna. Stock releases opened login URLs through
 # cmd start without quoting, which cut an OAuth URL at the first ampersand.
 # Refresh the version, archives, and hashes together for each carried build.
 $ProxyReleaseVersion = '0.1.35-airlock.6'

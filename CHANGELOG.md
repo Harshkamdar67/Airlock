@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.13 - 2026-09-30
+
+- Route canonical `sol` roots and `airlock-sol` workers to exact `gpt-6.1-sol`, including existing saved worker pools and defaults.
+- Keep `sol61` and `airlock-sol61` as compatible names for the same model.
+- Update both launchers, setup metadata, catalogues and regression expectations; retain the verified proxy v0.1.35-airlock.6 distribution.
+
 ## 0.1.0-beta.12 - 2026-09-30
 
 ### Changed

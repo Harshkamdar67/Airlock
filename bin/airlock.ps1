@@ -20,7 +20,7 @@ $ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:
 $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
 $BgEffort = if ($env:AIRLOCK_BG_EFFORT) { $env:AIRLOCK_BG_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_BG_EFFORT')) { $ConfigValues['AIRLOCK_BG_EFFORT'] } else { 'medium' }
-$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-6-sol' }
+$SmallFast = if ($env:AIRLOCK_SMALL_FAST_MODEL) { $env:AIRLOCK_SMALL_FAST_MODEL } elseif ($ConfigValues.ContainsKey('AIRLOCK_SMALL_FAST_MODEL')) { $ConfigValues['AIRLOCK_SMALL_FAST_MODEL'] } else { 'gpt-6.1-sol' }
 $ExplicitContextWin = Test-Path Env:\AIRLOCK_CONTEXT_WINDOW
 $ContextWin = if ($ExplicitContextWin) { [string]$env:AIRLOCK_CONTEXT_WINDOW } elseif ($ConfigValues.ContainsKey('AIRLOCK_CONTEXT_WINDOW')) { $ConfigValues['AIRLOCK_CONTEXT_WINDOW'] } else { '272000' }
 # A window the user set themselves outranks Airlock's default. Record it before
@@ -53,8 +53,9 @@ $GptEffortCapabilities = if ($env:AIRLOCK_GPT_EFFORT_CAPABILITIES) { $env:AIRLOC
 function Normalize-OpenAIModelId {
   param([string]$Model)
   if ($Model -and $Model.StartsWith('gpt-') -and $Model.EndsWith('[1m]')) {
-    return $Model.Substring(0, $Model.Length - 4)
+    $Model = $Model.Substring(0, $Model.Length - 4)
   }
+  if ($Model -eq 'gpt-6-sol') { return 'gpt-6.1-sol' }
   return $Model
 }
 
@@ -106,7 +107,7 @@ $UpdateNoticeFile = Join-Path $ConfigDir 'update-notice.json'
 
 $Models = @{
   'astra'    = @('gpt-6-astra',        'GPT-6 Astra')
-  'sol'      = @('gpt-6-sol',        'GPT-6 Sol')
+  'sol'      = @('gpt-6.1-sol',        'GPT-6.1 Sol')
   'sol61'    = @('gpt-6.1-sol',      'GPT-6.1 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
@@ -132,7 +133,7 @@ function Enable-ExplicitOpenAIRoot {
   param([string]$RootModel)
   $route = switch ($RootModel) {
     'gpt-6-astra' { 'astra' }
-    'gpt-6.1-sol' { 'sol61' }
+    'gpt-6.1-sol' { 'sol' }
     default { return }
   }
   $pool = if ($null -ne $env:AIRLOCK_OPENAI_MODELS) { [string]$env:AIRLOCK_OPENAI_MODELS }
@@ -155,7 +156,7 @@ $DeclaredContextLimits = @{
 
 $HybridRoots = @{
   'astra'  = @('gpt-6-astra', 'GPT-6 Astra', 'openai')
-  'sol'    = @('gpt-6-sol', 'GPT-6 Sol', 'openai')
+  'sol'    = @('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai')
   'sol61'  = @('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
   'luna'   = @('gpt-6-luna', 'GPT-6 Luna', 'openai')
@@ -1569,7 +1570,7 @@ function Select-HybridRoot {
   }
   Write-Host 'Choose the Airlock hybrid orchestrator:'
   Write-Host '  1) Claude Sonnet 5 (claude-sonnet-5[1m])'
-  Write-Host '  2) GPT-6 Sol (gpt-6-sol)'
+  Write-Host '  2) GPT-6.1 Sol (gpt-6.1-sol)'
   Write-Host '  3) GPT-5.6 Terra (gpt-5.6-terra)'
   Write-Host '  4) GPT-6 Luna (gpt-6-luna)'
   Write-Host '  5) Claude Opus 5.5 (claude-opus-5-5[1m])'
