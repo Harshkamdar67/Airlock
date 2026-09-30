@@ -1014,6 +1014,11 @@ grep -q "^UPDATE_NOTICE=$notice_config_root/update-notice.json$" <<<"$notice_out
 relative_notice_output="$(AIRLOCK_CONFIG_DIR='relative-notice-config' AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" -p test)"
 grep -q "^UPDATE_NOTICE=$PWD/relative-notice-config/update-notice.json$" <<<"$relative_notice_output"
 grep -q '^MODEL=gpt-6-sol$' <<<"$normal_output"
+for sol61_selector in sol61 gpt-6.1-sol; do
+  sol61_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" "$sol61_selector" -p test)"
+  grep -q '^MODEL=gpt-6.1-sol$' <<<"$sol61_output"
+  grep -q '^ROOT_MODEL=gpt-6.1-sol$' <<<"$sol61_output"
+done
 grep -q '^SMALL_FAST=gpt-6-luna$' <<<"$normal_output"
 grep -q '^EFFORT_ENV=unset$' <<<"$normal_output"
 # The classifier rides the small fast seat (luna), not the premium sol root.

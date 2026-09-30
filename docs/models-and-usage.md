@@ -4,6 +4,10 @@ Airlock does not force one model for every task. You choose which routes are ena
 
 ## Model roles
 
+The opt-in `sol61` shortcut and `airlock-sol61` worker select exact `gpt-6.1-sol` (GPT-6.1 Sol). Existing `sol` and `airlock-sol` remain on `gpt-6-sol`. Start `airlock sol61` or `airlock hybrid sol61`, or enable the worker with `AIRLOCK_OPENAI_MODELS=sol,sol61,terra,luna`. Its subscription route supports text and image input. Airlock keeps its existing conservative 272,000-token input guard; this is an Airlock safety setting, not a claim about the model's maximum context. Reasoning levels run from `low` through `max`; Codex's `ultra` orchestration mode is not a provider reasoning value.
+
+See [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and the account-specific [Codex model catalogue](https://learn.chatgpt.com/docs/app-server#list-models-modellist). API limits and prices do not describe subscription access.
+
 These descriptions guide selection. They are not vendor rankings.
 
 | Worker | Best fit | Relative plan use |

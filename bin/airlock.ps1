@@ -107,6 +107,7 @@ $UpdateNoticeFile = Join-Path $ConfigDir 'update-notice.json'
 $Models = @{
   'astra'    = @('gpt-6-astra',        'GPT-6 Astra')
   'sol'      = @('gpt-6-sol',        'GPT-6 Sol')
+  'sol61'    = @('gpt-6.1-sol',      'GPT-6.1 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
   'luna'     = @('gpt-6-luna',       'GPT-6 Luna')
@@ -129,15 +130,19 @@ $GrokModels = @{
 # the saved pool is kept as it is, and other roots leave the pool alone.
 function Enable-ExplicitOpenAIRoot {
   param([string]$RootModel)
-  if ($RootModel -ne 'gpt-6-astra') { return }
+  $route = switch ($RootModel) {
+    'gpt-6-astra' { 'astra' }
+    'gpt-6.1-sol' { 'sol61' }
+    default { return }
+  }
   $pool = if ($null -ne $env:AIRLOCK_OPENAI_MODELS) { [string]$env:AIRLOCK_OPENAI_MODELS }
     elseif ($ConfigValues.ContainsKey('AIRLOCK_OPENAI_MODELS')) { $ConfigValues['AIRLOCK_OPENAI_MODELS'] }
     else { '' }
-  if ((",$pool,") -like '*,astra,*') { return }
+  if ((",$pool,") -like "*,$route,*") { return }
   # No saved pool means the helper's defaults, which enable every OpenAI
   # route except Astra; name them so nothing else changes.
   if (-not $pool) { $pool = 'sol,terra,luna,luna-fast' }
-  $env:AIRLOCK_OPENAI_MODELS = "astra,$pool"
+  $env:AIRLOCK_OPENAI_MODELS = "$route,$pool"
 }
 
 # Roots whose documented window exceeds the conservative fallback:
@@ -151,6 +156,7 @@ $DeclaredContextLimits = @{
 $HybridRoots = @{
   'astra'  = @('gpt-6-astra', 'GPT-6 Astra', 'openai')
   'sol'    = @('gpt-6-sol', 'GPT-6 Sol', 'openai')
+  'sol61'  = @('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
   'luna'   = @('gpt-6-luna', 'GPT-6 Luna', 'openai')
   # Claude Code only grants these models their native 1M window when
@@ -212,9 +218,9 @@ function Show-Models {
   Write-Host '  airlock console  Start the local-only session console on 127.0.0.1'
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
-  Write-Host 'OpenAI root aliases: astra, sol, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
+  Write-Host 'OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
@@ -1574,7 +1580,8 @@ function Select-HybridRoot {
   Write-Host ' 10) GPT-6 Astra (gpt-6-astra; premium usage)'
   Write-Host ' 11) An exact OpenRouter registry route'
   Write-Host ' 12) An exact local open-model registry route'
-  $selection = Read-Host 'Selection [1-12]'
+  Write-Host ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)'
+  $selection = Read-Host 'Selection [1-13]'
   if ($selection -eq '11') {
     $route = Select-OpenRouterRootRoute
     $record = Resolve-OpenRouterRootRoute -Route $route
@@ -1589,7 +1596,7 @@ function Select-HybridRoot {
     $script:HybridSelectedOpenModelModel = [string]$record.model
     return $null
   }
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra' }
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
@@ -1657,11 +1664,11 @@ if ($DefaultHybridModel -eq 'auto') {
   )
   if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and
       -not $customOpenRouterDefault -and
-      $hybridOpenAIAlias -notin @('astra', 'sol', 'terra', 'luna')) {
+      $hybridOpenAIAlias -notin @('astra', 'sol', 'sol61', 'terra', 'luna')) {
     [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
     exit 2
   }
-  if ($hybridOpenAIAlias -in @('astra', 'sol', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
+  if ($hybridOpenAIAlias -in @('astra', 'sol', 'sol61', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 }
 $DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
 if (-not $DefaultBgAlias) {
@@ -1671,7 +1678,7 @@ if (-not $DefaultBgAlias) {
 $DefaultBgModel = $DefaultBgAlias
 $ExplicitCommands = @(
   'console', 'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'om', 'open-model', 'proxy', 'models', '--models', 'config', '--config',
-  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'astra', 'sol', 'sol-fast', 'terra',
+  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'astra', 'sol', 'sol61', 'sol-fast', 'terra',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
 if ($DefaultProfile -eq 'grok') {
@@ -2066,7 +2073,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       $rootAlias = $hybridCandidate
     } else {
       $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
-      if ($hybridCandidateAlias -in @('astra', 'sol', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
+      if ($hybridCandidateAlias -in @('astra', 'sol', 'sol61', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
     }
     if (-not $rootAlias -and -not $script:HybridSelectedRoute -and
         -not $script:HybridSelectedOpenModelRoute -and $hybridCandidate -and

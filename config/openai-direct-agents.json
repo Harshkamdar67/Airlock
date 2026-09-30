@@ -44,5 +44,14 @@
     ],
     "model": "gpt-5.6-luna-fast",
     "effort": "max"
+  },
+  "airlock-sol61": {
+    "description": "GPT-6.1 Sol native worker for coding and everyday work. Opt-in route with a conservative subscription context guard. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect the relevant code before changing it, preserve unrelated work, and keep edits within the requested scope. For bugs, establish a reproducer and causal explanation. For performance work, provide before-and-after measurements. Run the stated acceptance checks and report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "gpt-6.1-sol",
+    "effort": "low"
   }
 }

@@ -72,7 +72,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.09.23.1"
+MANAGED_BUNDLE_VERSION = "2026.09.30.1"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -233,7 +233,7 @@ ROUTING_OBJECTIVES = {
 }
 PROVIDER_ROUTES = {
     "anthropic": ("opus", "sonnet", "fable", "haiku"),
-    "openai": ("astra", "sol", "terra", "luna", "luna-fast"),
+    "openai": ("astra", "sol", "sol61", "terra", "luna", "luna-fast"),
     "grok": ("grok", "composer"),
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
@@ -281,10 +281,10 @@ PROFILE_ROOT_PROVIDERS = {
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {
-        "airlock-astra", "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
     },
     "openai_wrappers": {
-        "airlock-astra", "airlock-sol", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
     },
     "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
     "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
@@ -339,6 +339,12 @@ MODEL_PROFILES = {
             "agent": "airlock-sol", "model": "gpt-6-sol", "effort": "xhigh",
             "capability": "frontier", "cost": "premium", "window": 272000,
             "strength": "difficult implementation, cross-file integration, backend and API work, test-driven repair, measured performance work, difficult debugging, and synthesis",
+        },
+        "sol61": {
+            # Keep the subscription guard conservative until tested at long context.
+            "agent": "airlock-sol61", "model": "gpt-6.1-sol", "effort": "low",
+            "capability": "frontier", "cost": "premium", "window": 272000,
+            "strength": "coding and everyday work",
         },
         "terra": {
             "agent": "airlock-terra", "model": "gpt-5.6-terra", "effort": "high",
@@ -507,8 +513,9 @@ RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
     "astra": ("sol", "opus", "grok", "fable"),
     "opus": ("astra", "sol", "grok", "fable"),
     "sol": ("astra", "opus", "grok", "fable"),
+    "sol61": ("sol", "astra", "opus", "grok", "fable"),
     "grok": ("astra", "sol", "opus", "fable"),
-    "fable": ("astra", "sol", "opus", "grok"),
+    "fable": ("astra", "sol", "sol61", "opus", "grok"),
     "sonnet": ("terra", "luna"),
     "terra": ("sonnet", "luna"),
     "luna": ("sonnet", "composer", "haiku"),
@@ -1536,7 +1543,7 @@ def default_policy() -> dict[str, Any]:
                 # price premium, so it stays off until AIRLOCK_OPENAI_MODELS
                 # lists it or a launch selects it as the root.
                 "models": {
-                    route: {"access": "unavailable" if route == "astra" else "unknown"}
+                    route: {"access": "unavailable" if route in {"astra", "sol61"} else "unknown"}
                     for route in PROVIDER_ROUTES["openai"]
                 },
             },
@@ -2372,7 +2379,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.11",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.12",
             }},
         }):
             return None
@@ -3602,6 +3609,7 @@ DISCOVERY_ROUTES = (
     "sonnet",
     "grok",
     "sol",
+    "sol61",
     "fable",
     "opus",
     "astra",
@@ -3953,22 +3961,22 @@ def proxy_picker_models(
         ).wire_model
         return {family: root for family in ("fable", "opus", "sonnet", "haiku")}
     if profile == "openai-pure":
-        fable = opus = first("astra", "sol", "terra", "luna", "luna-fast")
-        sonnet = first("terra", "sol", "astra", "luna", "luna-fast")
+        fable = opus = first("astra", "sol", "sol61", "terra", "luna", "luna-fast")
+        sonnet = first("terra", "sol", "sol61", "astra", "luna", "luna-fast")
     elif profile == "grok-pure":
         fable = opus = first("grok", "composer")
         sonnet = first("composer", "grok")
     else:
         fable = first(
-            "fable", "astra", "sol", "opus", "grok", "sonnet", "terra",
+            "fable", "astra", "sol", "sol61", "opus", "grok", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         opus = first(
-            "opus", "astra", "sol", "grok", "fable", "sonnet", "terra",
+            "opus", "astra", "sol", "sol61", "grok", "fable", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         sonnet = first(
-            "sonnet", "terra", "fable", "sol", "astra", "opus", "composer",
+            "sonnet", "terra", "fable", "sol", "sol61", "astra", "opus", "composer",
             "luna", "haiku", "grok", "luna-fast",
         )
     utility = discovery_model_from_workers(policy, workers)
@@ -5367,7 +5375,7 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
         agent for route, agent in by_route.items() if route not in SWARM_ROUTES
     )
     strong = [
-        by_route[route] for route in ("astra", "sol", "opus", "grok") if route in by_route
+        by_route[route] for route in ("astra", "sol", "sol61", "opus", "grok") if route in by_route
     ]
     if swarm:
         launch = (

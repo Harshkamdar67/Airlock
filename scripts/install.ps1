@@ -460,21 +460,21 @@ foreach ($requirement in @(
 }
 
 # Airlock carries a Windows claude-code-proxy build with the OAuth browser fix
-# and exact GPT-6 Sol/Luna support. Stock releases opened login URLs through
+# and exact GPT-6.1 Sol support alongside GPT-6 Sol/Luna. Stock releases opened login URLs through
 # cmd start without quoting, which cut an OAuth URL at the first ampersand.
 # Refresh the version, archives, and hashes together for each carried build.
-$ProxyReleaseVersion = '0.1.35-airlock.5'
+$ProxyReleaseVersion = '0.1.35-airlock.6'
 $ProxyReleaseAssets = [ordered]@{
-  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '6022f96e1adce4e45cf18fd18dce8c84dd4fcef81ad42d278022f558f0bf5569' }
-  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '091242bd0a816e2cec75ed895bcb5752507d34db55b789d4c4a58ac49e436c09' }
+  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '5e875b6074f84b45f28b3e07e1d49db1f3d932808f57580c6cea15278406feed' }
+  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = 'c90549c6cd42c17097a73c48ffed0db036d36339877f1ddd7aa71afb5c6303f1' }
 }
-$PreviousCarriedProxyVersion = '0.1.35-airlock.3'
+$PreviousCarriedProxyVersion = '0.1.35-airlock.5'
 # Only an exact Airlock-distributed binary inside Airlock's install directory
 # can be upgraded without -UpgradeProxy. Unknown and custom proxy builds stay
 # under the user's control, even when they print the same version string.
 $PreviousCarriedProxyHashes = @{
-  'AMD64' = '00d606be80c6ab9ce1bbb449b6c95645a546b49229c57e4ff1edd2dcc1f858e9'
-  'ARM64' = 'df0a80b50b08ca65ccab91d622a73dd355cabde701d411134d1f28674c5d421e'
+  'AMD64' = 'f8c334d649d402a3299cc39e1c6d5ca7197e682d2b19bc1efe1d126a4e52f21f'
+  'ARM64' = '2940356b610bc500839acb26aab4c87648574d2f0a553d234f2e915232707a91'
 }
 
 function Get-ProxyVersionLine {

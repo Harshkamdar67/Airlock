@@ -1394,7 +1394,7 @@ server.server_close()
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, composer',
-    'Hybrid root aliases: auto, sonnet, astra, sol, terra, luna, opus, fable, haiku, grok, composer'
+    'Hybrid root aliases: auto, sonnet, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
@@ -2073,6 +2073,14 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
 '@
   [IO.File]::WriteAllText($InstalledConfig, $LegacyConfig, (New-Object Text.UTF8Encoding($false)))
   $LegacyLaunch = Invoke-LauncherProcess $InstalledLauncher @('-p', 'test')
+  foreach ($Selector in @('sol61', 'gpt-6.1-sol')) {
+    $Sol61Launch = Invoke-LauncherProcess $InstalledLauncher @($Selector, '-p', 'test')
+    if ($Sol61Launch.ExitCode -ne 0 -or
+        $Sol61Launch.Output -notmatch '(?m)^MODEL=gpt-6\.1-sol$' -or
+        $Sol61Launch.Output -notmatch '(?m)^ROOT_MODEL=gpt-6\.1-sol$') {
+      throw "Windows opt-in Sol 6.1 root failed: $($Sol61Launch.Output) $($Sol61Launch.Error)"
+    }
+  }
   if ($LegacyLaunch.Output -notmatch '(?m)^MODEL=gpt-5\.6-terra$' -or
       $LegacyLaunch.Output -notmatch '(?m)^ACTIVE_PROFILE=openai-pure$') {
     throw "Legacy config did not preserve the OpenAI-only bare command: $($LegacyLaunch.Output)"
