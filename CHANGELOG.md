@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.0-beta.14 - 2026-10-01
+
+- Add opt-in Sonnet 5.5 roots and workers (`sonnet55`, `airlock-sonnet55`), preserving Sonnet 5. Requires Claude Code 2.1.284 or newer.
+- Document per-session Headroom dashboards and cache-preserving compression limitations.
+- Keep old saved GPT-6 Sol failover IDs readable but inert after canonical Sol moves to GPT-6.1 Sol, so existing files do not block startup.
+
+- Recognize native Claude compaction instructions before trailing system metadata and long appended agent notices.
+- Allow `/compact` to recover an oversized conversation while keeping ordinary overflow and shrink-off behavior unchanged.
+- Learn smaller provider-enforced context limits per session and report the mismatch without changing saved settings.
+- Add opt-in `AIRLOCK_HEADROOM=on`: an owned, stateless, loopback Headroom proxy preserves the selected Airlock upstream and stops with the session. Structural compression is enabled without loading GPU/ML models or changing shared containers.
+
 ## 0.1.0-beta.13 - 2026-09-30
 
 - Route canonical `sol` roots and `airlock-sol` workers to exact `gpt-6.1-sol`, including existing saved worker pools and defaults.

@@ -169,6 +169,8 @@ No provider credential is written to these files. Airlock measures the remaining
 
 ## Router credential boundary
 
+`AIRLOCK_HEADROOM=on` explicitly trusts an installed Headroom CLI as an additional local component. Its session-owned frontend receives Claude Code requests and opaque authorization, and forwards only to the resolved Airlock loopback route. The router still strips Claude credentials from OpenAI routes. Headroom is started stateless with structural compression, and its retrieval MCP is scoped to that same owned proxy; shared deployments and global MCP settings are not changed.
+
 On Anthropic routes, the router forwards Claude Code authorization and capability headers opaquely to `https://api.anthropic.com`.
 
 On OpenAI routes, it removes:

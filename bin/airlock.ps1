@@ -16,6 +16,9 @@ if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
   }
 }
 $ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_URL')) { $ConfigValues['AIRLOCK_PROXY_URL'] } else { 'http://127.0.0.1:18765' }
+if (-not $env:AIRLOCK_HEADROOM -and $ConfigValues.ContainsKey('AIRLOCK_HEADROOM')) {
+  $env:AIRLOCK_HEADROOM = $ConfigValues['AIRLOCK_HEADROOM']
+}
 $ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:AIRLOCK_PROXY_CONFIG_DIR) { $env:AIRLOCK_PROXY_CONFIG_DIR } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_CONFIG_DIR')) { $ConfigValues['AIRLOCK_PROXY_CONFIG_DIR'] } else { '' }
 $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }
@@ -165,6 +168,7 @@ $HybridRoots = @{
   # always points it at the session router. The [1m] suffix is the one lever
   # that survives that. Haiku 4.5 is a genuine 200000 model, so it stays bare.
   'opus'   = @('claude-opus-5-5[1m]', 'Claude Opus 5.5', 'anthropic')
+  'sonnet55' = @('claude-sonnet-5-5[1m]', 'Claude Sonnet 5.5', 'anthropic')
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5-1[1m]', 'Claude Fable 5.1', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
@@ -221,7 +225,7 @@ function Show-Models {
   Write-Host ''
   Write-Host 'OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
   Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: auto, sonnet, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
@@ -1582,7 +1586,8 @@ function Select-HybridRoot {
   Write-Host ' 11) An exact OpenRouter registry route'
   Write-Host ' 12) An exact local open-model registry route'
   Write-Host ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)'
-  $selection = Read-Host 'Selection [1-13]'
+  Write-Host ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])'
+  $selection = Read-Host 'Selection [1-14]'
   if ($selection -eq '11') {
     $route = Select-OpenRouterRootRoute
     $record = Resolve-OpenRouterRootRoute -Route $route
@@ -1597,7 +1602,7 @@ function Select-HybridRoot {
     $script:HybridSelectedOpenModelModel = [string]$record.model
     return $null
   }
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61' }
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61'; '14' = 'sonnet55' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2

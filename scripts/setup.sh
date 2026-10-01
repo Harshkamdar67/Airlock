@@ -115,7 +115,7 @@ Options:
 Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
-  Hybrid: auto, sonnet, astra, sol, sol61, terra, luna, opus, fable, haiku
+  Hybrid: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku
   OpenAI-only: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 
 The reserved hybrid value 'auto' resolves at launch time: Fable when Fable's
@@ -285,7 +285,7 @@ default_utility_wire="$CONFIG_VALUE"
 read_config_value AIRLOCK_WORKER_EFFORT inherit
 default_worker_effort="$CONFIG_VALUE"
 default_worker_pins=''
-for route in astra sol sol61 terra luna opus sonnet fable haiku grok composer; do
+for route in astra sol sol61 terra luna opus sonnet sonnet55 fable haiku grok composer; do
   key="AIRLOCK_EFFORT_$(printf '%s' "$route" | tr '[:lower:]-' '[:upper:]_')"
   read_config_value "$key" ''
   if [[ -n "$CONFIG_VALUE" ]]; then
@@ -397,6 +397,7 @@ utility_alias_from_wire() {
 set_model_info() {
   case "$1" in
     auto) MODEL_TITLE='Auto hybrid root'; MODEL_ID='auto'; MODEL_DETAIL='Resolves at launch: Fable when eligible, otherwise Opus, otherwise Sonnet.' ;;
+    sonnet55) MODEL_TITLE='Claude Sonnet 5.5'; MODEL_ID='claude-sonnet-5-5[1m]'; MODEL_DETAIL='Balanced engineering. Requires Claude Code 2.1.284 or newer.' ;;
     sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
     opus) MODEL_TITLE='Claude Opus 5.5'; MODEL_ID='claude-opus-5-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
     fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
@@ -451,7 +452,7 @@ validate_default_profile() {
 
 validate_hybrid_model() {
   case "$1" in
-    auto|sonnet|astra|sol|sol61|terra|luna|opus|fable|haiku|grok|composer) ;;
+    auto|sonnet|sonnet55|astra|sol|sol61|terra|luna|opus|fable|haiku|grok|composer) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
@@ -481,7 +482,7 @@ validate_worker_pins() {
       printf 'setup: worker pin must use route=effort: %s\n' "$item" >&2
       exit 2
     fi
-    case "$route" in astra|sol|sol61|terra|luna|opus|sonnet|fable|haiku) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
+    case "$route" in astra|sol|sol61|terra|luna|opus|sonnet|sonnet55|fable|haiku) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
     if [[ "$seen" == *",$route,"* ]]; then
       printf 'setup: duplicate worker pin route: %s\n' "$route" >&2
       exit 2
@@ -1252,7 +1253,7 @@ utility_model="$(setup_model_alias "$utility_model")"
 # a hybrid session.
 if [[ "$main_model_was_explicit" -eq 1 ]]; then
   case "$main_model" in
-    opus|sonnet|fable|haiku)
+    opus|sonnet|sonnet55|fable|haiku)
       [[ "$profile_was_explicit" -eq 1 && "$default_profile" != 'hybrid' ]] && {
         printf 'setup: a Claude main model requires --default-profile hybrid\n' >&2
         exit 2
@@ -1321,6 +1322,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       'fable|Claude Fable 5.1|claude-fable-5-1[1m]|Efficient frontier work. May require extra usage.'
       'haiku|Claude Haiku 4.5|claude-haiku-4-5-20251001|Fast bounded utility work. Economical usage.'
       'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).'
+      'sonnet55|Claude Sonnet 5.5|claude-sonnet-5-5[1m]|Requires Claude Code 2.1.284 or newer.'
     )
     if [[ "$grok_enabled" == 'yes' ]]; then
       hybrid_options+=(
@@ -1351,7 +1353,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
 
   print_section 2 'WORKER POOL' 'Choose which exact-model Agents the orchestrator may use. More is not always better.'
   print_question 'Model catalog' 'Access depends on the connected plans and is checked again when a session starts.'
-  for route in sonnet opus fable haiku luna terra sol sol61 astra; do
+  for route in sonnet sonnet55 opus fable haiku luna terra sol sol61 astra; do
     set_model_info "$route"
     if (( ${#MODEL_TITLE} + ${#MODEL_ID} + 6 <= ui_width )); then
       printf '  %s  (%s)\n' "$MODEL_TITLE" "$MODEL_ID"
@@ -1382,7 +1384,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       anthropic_models=''
       openai_models=''
       print_question 'Choose each worker' 'Answer once per model. A disabled model can still be enabled later with `airlock config`.'
-      for route in sonnet opus fable haiku; do
+      for route in sonnet sonnet55 opus fable haiku; do
         set_model_info "$route"
         current_answer='no'; csv_contains "$default_anthropic_models" "$route" && current_answer='yes'
         ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
@@ -1459,7 +1461,7 @@ if [[ "$assume_yes" -eq 0 ]]; then
       ;;
     custom)
       worker_effort='inherit'
-      for route in sonnet opus fable haiku luna terra sol sol61 astra; do
+      for route in sonnet sonnet55 opus fable haiku luna terra sol sol61 astra; do
         if csv_contains "$anthropic_models,$openai_models" "$route"; then
           set_model_info "$route"
           pin_for_route "$existing_worker_pins" "$route"
@@ -1637,7 +1639,7 @@ if [[ -z "$install_agent" ]]; then install_agent='no'; fi
 # would otherwise omit its route.
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "$hybrid_model" in
-    opus|sonnet|fable|haiku) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
+    opus|sonnet|sonnet55|fable|haiku) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
     astra|sol|sol61|terra|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
     grok|composer) csv_add "$grok_models" "$hybrid_model"; grok_models="$CSV_RESULT" ;;
   esac

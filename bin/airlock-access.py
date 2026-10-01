@@ -89,6 +89,8 @@ RETIRED_FAILOVER_MODEL_IDS = frozenset({
     "claude-opus-5[1m]",
     "gpt-5.6-sol",
     "gpt-5.6-luna",
+    "gpt-6-sol",
+    "gpt-6-sol[1m]",
 })
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
@@ -232,7 +234,7 @@ ROUTING_OBJECTIVES = {
     "economy": "Prefer an adequate lower-relative-usage eligible worker and escalate only when task risk or complexity warrants it.",
 }
 PROVIDER_ROUTES = {
-    "anthropic": ("opus", "sonnet", "fable", "haiku"),
+    "anthropic": ("opus", "sonnet", "sonnet55", "fable", "haiku"),
     "openai": ("astra", "sol", "sol61", "terra", "luna", "luna-fast"),
     "grok": ("grok", "composer"),
 }
@@ -286,8 +288,8 @@ CATALOG_EXPECTED_AGENTS = {
     "openai_wrappers": {
         "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
     },
-    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
-    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-fable", "airlock-haiku"},
+    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku"},
+    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku"},
     "grok_direct": {"airlock-grok", "airlock-composer"},
     "grok_wrappers": {"airlock-grok", "airlock-composer"},
 }
@@ -309,6 +311,11 @@ MODEL_PROFILES = {
         },
         "sonnet": {
             "agent": "airlock-sonnet", "model": "claude-sonnet-5[1m]", "effort": "high",
+            "capability": "general", "cost": "standard", "window": 1000000,
+            "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
+        },
+        "sonnet55": {
+            "agent": "airlock-sonnet55", "model": "claude-sonnet-5-5[1m]", "effort": "high",
             "capability": "general", "cost": "standard", "window": 1000000,
             "strength": "deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation",
         },
@@ -1529,6 +1536,7 @@ def default_policy() -> dict[str, Any]:
                 "models": {
                     "opus": {"access": "unknown"},
                     "sonnet": {"access": "unknown"},
+                    "sonnet55": {"access": "unavailable"},
                     "fable": {"access": "unavailable"},
                     "haiku": {"access": "unknown"},
                 },
@@ -2379,7 +2387,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.13",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.14",
             }},
         }):
             return None
@@ -3606,6 +3614,7 @@ DISCOVERY_ROUTES = (
     "haiku",
     "luna-fast",
     "terra",
+    "sonnet55",
     "sonnet",
     "grok",
     "sol",
@@ -3968,15 +3977,15 @@ def proxy_picker_models(
         sonnet = first("composer", "grok")
     else:
         fable = first(
-            "fable", "astra", "sol", "sol61", "opus", "grok", "sonnet", "terra",
+            "fable", "astra", "sol", "sol61", "opus", "grok", "sonnet55", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         opus = first(
-            "opus", "astra", "sol", "sol61", "grok", "fable", "sonnet", "terra",
+            "opus", "astra", "sol", "sol61", "grok", "fable", "sonnet55", "sonnet", "terra",
             "composer", "luna", "haiku", "luna-fast",
         )
         sonnet = first(
-            "sonnet", "terra", "fable", "sol", "sol61", "astra", "opus", "composer",
+            "sonnet55", "sonnet", "terra", "fable", "sol", "sol61", "astra", "opus", "composer",
             "luna", "haiku", "grok", "luna-fast",
         )
     utility = discovery_model_from_workers(policy, workers)
@@ -3988,7 +3997,7 @@ def proxy_picker_models(
         # seat; the larger Claude routes are a working fallback when it is not
         # enabled, and cost more per background call, which is why the setup
         # default now enables haiku.
-        haiku = optional("haiku", "sonnet", "fable", "opus") or utility
+        haiku = optional("haiku", "sonnet55", "sonnet", "fable", "opus") or utility
     return {
         "fable": fable,
         "opus": opus,

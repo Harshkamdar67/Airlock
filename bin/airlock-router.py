@@ -1151,6 +1151,12 @@ class RouterServer(ThreadingHTTPServer):
         # enter diagnostics, the ready marker, request forwarding, or errors.
         self.control_token = secrets.token_urlsafe(32)
         self.rate_limits = RateLimitCooldowns()
+        # Limits an upstream actually enforced, learned from its overflow
+        # errors. A configured window is what the model supports; the account
+        # behind the session can be granted less, such as a plan without the
+        # 1M window, and only the provider's own rejection says so.
+        self.observed_windows: dict[str, int] = {}
+        self.observed_windows_lock = threading.Lock()
         self.diagnostics: deque[dict[str, object]] = deque(
             maxlen=MAX_DIAGNOSTIC_EVENTS
         )
@@ -1172,6 +1178,38 @@ class RouterServer(ThreadingHTTPServer):
         with self.routing_lock:
             return self.pinned_model
 
+    def effective_window(self, model: str) -> int | None:
+        """The smaller of the configured window and any enforced limit seen."""
+
+        configured = self.config.context_windows.get(model)
+        with self.observed_windows_lock:
+            # "[1m]" and the bare wire ID name the same upstream model.
+            observed = self.observed_windows.get(model.removesuffix("[1m]"))
+        if configured is None:
+            return observed
+        if observed is None:
+            return configured
+        return min(configured, observed)
+
+    def observe_enforced_window(self, model: str, limit: int | None) -> None:
+        """Remember a limit smaller than configured, and say so once."""
+
+        configured = self.config.context_windows.get(model)
+        if limit is None or configured is None or limit >= configured or limit < 1000:
+            return
+        key = model.removesuffix("[1m]")
+        with self.observed_windows_lock:
+            previous = self.observed_windows.get(key)
+            if previous is not None and previous <= limit:
+                return
+            self.observed_windows[key] = limit
+        self.record_diagnostic({
+            "kind": "context_window_smaller_than_configured",
+            "model": model,
+            "configured_window": configured,
+            "enforced_window": limit,
+        })
+
     def pin_route(self, model: str) -> dict[str, object]:
         """Pin future requests after one short, current-state validation."""
         with self.routing_lock:
@@ -1182,7 +1220,7 @@ class RouterServer(ThreadingHTTPServer):
                     "model_not_enabled",
                     "Model is not enabled for this session",
                 )
-            window = self.config.context_windows.get(model)
+            window = self.effective_window(model)
             with self.diagnostics_lock:
                 context = (
                     None
@@ -1763,6 +1801,9 @@ class RouterHandler(BaseHTTPRequestHandler):
                     if exc.limit_tokens is not None:
                         overflow_event["limit_tokens"] = exc.limit_tokens
                     self.router.record_diagnostic(overflow_event)
+                    self.router.observe_enforced_window(
+                        attempt_model, exc.limit_tokens
+                    )
                     self.record_request(
                         attempt_provider,
                         attempt_model,
@@ -1786,12 +1827,16 @@ class RouterHandler(BaseHTTPRequestHandler):
                     if nxt is None and not shrunk_attempted:
                         # Nothing left to walk toward: one chance to shrink
                         # the conversation and retry the best candidate.
+                        client_compaction = looks_like_client_compaction(
+                            original_body
+                        )
                         target = self._shrink_target(
                             model,
                             visited,
                             considered,
                             estimate,
                             overflowed_model=source_model,
+                            client_compaction=client_compaction,
                         )
                         if target is not None:
                             shrunk_attempted = True
@@ -1810,6 +1855,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                                 # The failure was already delivered inside
                                 # the committed SSE stream.
                                 return
+                            if client_compaction:
+                                self.router.record_diagnostic({
+                                    "kind": "client_compaction_shrunk",
+                                    "model": model,
+                                    "target_model": target,
+                                })
                             shrunk_committed = committed
                             working_body = shrunk_body
                             visited.add(target)
@@ -2072,10 +2123,11 @@ class RouterHandler(BaseHTTPRequestHandler):
                 considered.add(peer)
             if peer in visited:
                 continue
+            peer_window = self.router.effective_window(peer)
             if (
                 min_window is not None
-                and peer in self.router.config.context_windows
-                and self.router.config.context_windows[peer] < min_window
+                and peer_window is not None
+                and peer_window < min_window
             ):
                 self.record_overflow_skip(source, peer, min_window)
                 continue
@@ -2308,6 +2360,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         considered: set[str],
         estimated_tokens: int | None,
         overflowed_model: str | None = None,
+        client_compaction: bool = False,
     ) -> str | None:
         """Pick the best remaining handoff candidate for a shrunk retry.
 
@@ -2315,6 +2368,13 @@ class RouterHandler(BaseHTTPRequestHandler):
         is no handoff to save, and Claude Code already compacts against its
         own window. Among chain candidates the largest known window wins so
         the retry has the most room; unknown-window candidates come last.
+
+        Claude Code's own compaction request is the exception. It carries
+        the entire conversation, so once the conversation has outgrown every
+        model it overflows too, and refusing it leaves the session with no
+        way to recover: the error asks for a compaction that can never fit.
+        When nothing else is left, that request is shrunk onto the model it
+        asked for, which then writes the summary from condensed history.
 
         The model that just overflowed is itself a candidate. A peer reached
         after a rate limit is already in ``visited``, and rejecting it here
@@ -2330,11 +2390,16 @@ class RouterHandler(BaseHTTPRequestHandler):
             for peer in cfg.failover.get(source, ())
             if peer != original_model
         }
+        last_resort = (
+            original_model
+            if client_compaction and original_model in cfg.routes
+            else None
+        )
         if not peers and overflowed_model in {None, original_model}:
-            return None
+            return last_resort
 
         def window_rank(model: str) -> tuple[int, int]:
-            window = cfg.context_windows.get(model)
+            window = self.router.effective_window(model)
             if window is None:
                 return 1, 0
             too_small = (
@@ -2359,7 +2424,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                 ):
                     candidates.append(peer)
         if not candidates:
-            return None
+            return last_resort
         candidates.sort(key=window_rank)
         return candidates[0]
 
@@ -2474,8 +2539,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         self, payload: dict[str, Any], target_model: str
     ) -> bytes | None:
         """Pairing-aware drop-oldest fallback sized to the target window."""
-        cfg = self.router.config
-        window = cfg.context_windows.get(target_model)
+        window = self.router.effective_window(target_model)
         if window is None:
             return None
         max_tokens = payload.get("max_tokens")
@@ -4030,6 +4094,63 @@ def _message_has_tool_result(message: dict[str, Any]) -> bool:
     return any(
         isinstance(block, dict) and block.get("type") == "tool_result"
         for block in _message_blocks(message)
+    )
+
+
+# Claude Code compacts by sending the whole conversation back to the model
+# with one final instruction to summarize it. The wording is Claude Code's
+# and may drift, so this matches the stable core of it loosely. A false
+# match costs little: it only matters after the upstream has already
+# refused the request as too large.
+CLIENT_COMPACTION_PATTERN = re.compile(
+    r"(?:create|write|produce|provide)\s+a\s+(?:detailed\s+|concise\s+|comprehensive\s+)?"
+    r"summary\s+of\s+(?:the\s+|this\s+)?(?:recent\s+portion\s+of\s+the\s+|entire\s+|whole\s+)?"
+    r"conversation",
+    re.IGNORECASE,
+)
+MAX_COMPACTION_PROBE_CHARS = 64 * 1024
+
+
+def looks_like_client_compaction(body: bytes) -> bool:
+    """Whether this request is Claude Code asking for its own compaction."""
+
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    if not isinstance(messages, list) or not messages:
+        return False
+    # Claude Code 2.1.283 appends a system message after its summary
+    # instruction. Ignore only trailing system records; an intervening
+    # assistant or tool-result user turn must still prevent a stale match.
+    index = len(messages) - 1
+    while index >= 0 and isinstance(messages[index], dict) and messages[index].get("role") == "system":
+        index -= 1
+    if index < 0:
+        return False
+    last = messages[index]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return False
+    content = last.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        )
+    else:
+        return False
+    # Native compaction instructions can precede appended agent notices.
+    # Inspect both bounded edges rather than losing the instruction at the
+    # front when the final user text grows beyond the probe budget.
+    return any(
+        CLIENT_COMPACTION_PATTERN.search(probe) is not None
+        for probe in (text[:4096], text[-MAX_COMPACTION_PROBE_CHARS:])
     )
 
 

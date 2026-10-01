@@ -1,5 +1,9 @@
 # Models, limits, and usage
 
+Optional Headroom wrapping uses its default cache mode: earlier turns stay frozen to preserve provider prefix-cache hits, while eligible fresh tool results can be compressed. No savings on an older tool result is expected in that mode. Structural compression is enabled; ML/GPU compression remains disabled. Headroom's local token estimates are not provider quota or billing measurements.
+
+Overflow recovery is visible: Airlock reports an economy-model summary, or warns when older turns were omitted from a retry. A tail-only compaction can miss earlier context; the router does not edit the original saved transcript. `overflow-shrink off` never condenses history.
+
 Airlock does not force one model for every task. You choose which routes are enabled, then the main model picks the smallest useful approach. An exact user choice wins.
 
 ## Model roles
@@ -330,6 +334,8 @@ The model that does the condensing is the destination provider's own economy wor
 
 Fourth, if there is no compaction model or the compaction call fails, Airlock trims older turns to fit and retries once. If nothing fits even then, the request ends with a clear message saying the conversation does not fit any enabled model, instead of a raw provider error.
 
+A model with no failover peer is left to Claude Code: an ordinary turn that no longer fits gets that message, and Claude Code's own compaction is the way forward. Compaction works by sending the whole conversation back with an instruction to summarize it, so it cannot fit either. Airlock recognizes that compaction request and condenses it onto the same model with the steps above, so `/compact`, and automatic compaction, can always finish. `airlock mode overflow off` still turns all of this off.
+
 Control it with one setting:
 
 ```bash
@@ -636,3 +642,13 @@ Both tools contact the public web directly from your machine. They accept only h
 DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
 
 Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.
+
+### Sonnet 5.5
+
+`airlock hybrid sonnet55` selects exact `claude-sonnet-5-5[1m]`; the optional worker is `airlock-sonnet55`, enabled by adding `sonnet55` to the Anthropic pool. Existing `sonnet` and explicit Sonnet 5 configurations remain unchanged. Sonnet 5.5 requires Claude Code 2.1.284 or newer; update the native client before selecting it. Anthropic documents native 1M context, 128K maximum output, adaptive thinking, and text/image input with text output and tools. Airlock retains its high effort default.
+
+Sources: [Anthropic model reference](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Headroom session dashboard
+
+With `AIRLOCK_HEADROOM=on`, each Airlock session owns a separate loopback Headroom proxy. View `/dashboard` on that session's Headroom port; shared container dashboards on 8787 or 8788 do not display this traffic. Cache-preserving compression leaves earlier prefixes frozen and compresses eligible fresh tool results. Proxy token estimates are not measured subscription savings.
