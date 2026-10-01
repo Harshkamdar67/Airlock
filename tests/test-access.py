@@ -3442,6 +3442,25 @@ class Sonnet55CatalogueTests(unittest.TestCase):
         self.assertEqual(set(route["picker_models"]), {"fable", "opus", "sonnet", "haiku"})
         self.assertEqual(ACCESS.MODEL_PROFILES["anthropic"]["sonnet"]["model"], "claude-sonnet-5[1m]")
 
+    def test_sonnet55_only_pool_has_research_and_ui_guidance(self):
+        policy = ACCESS.default_policy()
+        for route in policy["providers"]["anthropic"]["models"].values():
+            route["access"] = "unavailable"
+        policy["providers"]["anthropic"]["models"]["sonnet55"]["access"] = "included"
+        workers = ACCESS.enabled_profile_workers(policy, "hybrid-openai-root")
+        ui = ACCESS.ui_ux_guidance(policy, "hybrid-openai-root", workers)
+        self.assertIn("airlock-sonnet55", ui)
+        self.assertNotIn("no native Anthropic design worker", ui)
+        portfolio = ACCESS.portfolio_guidance(policy, "hybrid-openai-root")
+        self.assertIn("use airlock-sonnet55 for deep repository research", portfolio)
+        self.assertNotIn("no enabled native deep-research specialist", portfolio)
+
+    def test_disabled_sonnet55_is_not_recommended(self):
+        policy = ACCESS.default_policy()
+        guidance = ACCESS.portfolio_guidance(policy, "hybrid-openai-root")
+        self.assertIn("use airlock-sonnet for deep repository research", guidance)
+        self.assertNotIn("use airlock-sonnet55", guidance)
+
     def test_native_and_wrapper_catalogues_pin_same_sonnet55(self):
         import json
         for filename in ("claude-agents.json", "anthropic-direct-agents.json"):

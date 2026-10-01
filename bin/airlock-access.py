@@ -5328,7 +5328,7 @@ def ui_ux_guidance(policy: dict[str, Any], profile: str, workers: list[dict[str,
         )
     by_route = {worker["route"]: worker for worker in workers}
     opus = by_route.get("opus")
-    sonnet = by_route.get("sonnet")
+    sonnet = by_route.get("sonnet55") or by_route.get("sonnet")
     if not opus and not sonnet:
         return (
             "UI/UX routing: no native Anthropic design worker is enabled. Do not substitute a "
@@ -5617,9 +5617,10 @@ def portfolio_guidance(
         )
     by_route = {worker["route"]: worker["agent"] for worker in workers}
     role_rules = []
-    if by_route.get("sonnet"):
+    sonnet = by_route.get("sonnet55") or by_route.get("sonnet")
+    if sonnet:
         role_rules.append(
-            f"use {by_route['sonnet']} for deep repository research, requirements synthesis, broad review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation"
+            f"use {sonnet} for deep repository research, requirements synthesis, broad review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation"
         )
     if by_route.get("opus"):
         role_rules.append(
@@ -5666,7 +5667,7 @@ def portfolio_guidance(
             "bounded multi-step implementation where latency matters more than depth; it is a coding "
             "worker, so do not route plain summarization to it when a cheaper discovery route is enabled"
         )
-    if not by_route.get("sonnet"):
+    if not sonnet:
         role_rules.append("no enabled native deep-research specialist is available; do not imitate one with a large inherited workflow")
     ceiling = (
         "Claude Code native default" if configured_max == "off" else f"{configured_max} concurrent top-level workers"
