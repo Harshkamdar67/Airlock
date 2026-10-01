@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.14 - 2026-10-01
+
+- Add opt-in Sonnet 5.5 roots and workers (`sonnet55`, `airlock-sonnet55`), preserving Sonnet 5. Requires Claude Code 2.1.284 or newer.
+- Document per-session Headroom dashboards and cache-preserving compression limitations.
 - Keep old saved GPT-6 Sol failover IDs readable but inert after canonical Sol moves to GPT-6.1 Sol, so existing files do not block startup.
 
 - Allow `/compact` to recover an oversized conversation while keeping ordinary overflow and shrink-off behavior unchanged.

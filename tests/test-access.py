@@ -1039,7 +1039,7 @@ for line in sys.stdin:
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
                     # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
                     # The loop enables both opt-in OpenAI routes for this size check.
-                    expected = 12 if profile == "hybrid-grok-root" else 10
+                    expected = 13 if profile == "hybrid-grok-root" else 11
                     self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
@@ -3428,6 +3428,27 @@ class FailoverPersistenceTests(unittest.TestCase):
         ACCESS.run_handoff("reset", [], profile)
         self.assertFalse(self.path.exists())
 
+
+
+class Sonnet55CatalogueTests(unittest.TestCase):
+    def test_explicit_sonnet55_pool_routes_both_native_and_wire_ids(self):
+        policy = ACCESS.default_policy()
+        self.assertEqual(policy["providers"]["anthropic"]["models"]["sonnet55"]["access"], "unavailable")
+        policy["providers"]["anthropic"]["models"]["sonnet55"]["access"] = "included"
+        route = ACCESS.session_route_policy(policy, "hybrid-anthropic-root")
+        self.assertEqual(route["routes"]["claude-sonnet-5-5"], "anthropic")
+        self.assertEqual(route["routes"]["claude-sonnet-5-5[1m]"], "anthropic")
+        self.assertEqual(route["picker_models"]["sonnet"], "claude-sonnet-5-5[1m]")
+        self.assertEqual(set(route["picker_models"]), {"fable", "opus", "sonnet", "haiku"})
+        self.assertEqual(ACCESS.MODEL_PROFILES["anthropic"]["sonnet"]["model"], "claude-sonnet-5[1m]")
+
+    def test_native_and_wrapper_catalogues_pin_same_sonnet55(self):
+        import json
+        for filename in ("claude-agents.json", "anthropic-direct-agents.json"):
+            catalog = json.loads((ROOT / "config" / filename).read_text())
+            self.assertEqual(catalog["airlock-sonnet55"]["model"], "claude-sonnet-5-5[1m]")
+            self.assertEqual(catalog["airlock-sonnet55"]["effort"], "high")
+            self.assertEqual(catalog["airlock-sonnet"]["model"], "claude-sonnet-5[1m]")
 
 
 if __name__ == "__main__":

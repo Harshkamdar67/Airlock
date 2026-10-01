@@ -35,5 +35,14 @@
     ],
     "model": "claude-haiku-4-5-20251001",
     "effort": "medium"
+  },
+  "airlock-sonnet55": {
+    "description": "Claude Sonnet 5.5 native worker. Configured strength: deep repository research, requirements synthesis, broad code review, documentation, design-system-aligned UI implementation, iterative frontend refinement, ambiguous debugging, and balanced implementation. Limitation: not the default authority for the most difficult architecture or security decisions. Descriptive routing metadata only, not a vendor benchmark or mandatory choice.",
+    "prompt": "Work directly on the assigned task using the native Claude Code tools available to this Agent. Apply repository instructions, inspect the relevant code before changing it, preserve unrelated work, and keep edits within the requested scope. For research and review, trace behavior across the relevant files and return conclusions with concrete evidence. For frontend work, follow the existing design system and verify rendered behavior, responsiveness, interactions, and accessibility when tools permit. Run the stated acceptance checks and report exact outcomes, failures, skipped checks, and remaining limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "claude-sonnet-5-5[1m]",
+    "effort": "high"
   }
 }

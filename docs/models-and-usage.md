@@ -642,3 +642,13 @@ Both tools contact the public web directly from your machine. They accept only h
 DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
 
 Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.
+
+### Sonnet 5.5
+
+`airlock hybrid sonnet55` selects exact `claude-sonnet-5-5[1m]`; the optional worker is `airlock-sonnet55`, enabled by adding `sonnet55` to the Anthropic pool. Existing `sonnet` and explicit Sonnet 5 configurations remain unchanged. Sonnet 5.5 requires Claude Code 2.1.284 or newer; update the native client before selecting it. Anthropic documents native 1M context, 128K maximum output, adaptive thinking, and text/image input with text output and tools. Airlock retains its high effort default.
+
+Sources: [Anthropic model reference](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Headroom session dashboard
+
+With `AIRLOCK_HEADROOM=on`, each Airlock session owns a separate loopback Headroom proxy. View `/dashboard` on that session's Headroom port; shared container dashboards on 8787 or 8788 do not display this traffic. Cache-preserving compression leaves earlier prefixes frozen and compresses eligible fresh tool results. Proxy token estimates are not measured subscription savings.
