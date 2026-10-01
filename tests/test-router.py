@@ -2649,8 +2649,8 @@ class RouterProtocolTests(unittest.TestCase):
 class OpenModelTransportTests(unittest.TestCase):
     WIRE_A = "openmodel/local-alpha"
     WIRE_B = "openmodel/local-beta"
-    PRIVATE_A = "Local Private Model α"
-    PRIVATE_B = "Local Private Model β"
+    PRIVATE_A = "Local Private Model ÃƒÆ’Ã…Â½Ãƒâ€šÃ‚Â±"
+    PRIVATE_B = "Local Private Model ÃƒÆ’Ã…Â½Ãƒâ€šÃ‚Â²"
 
     def setUp(self) -> None:
         self.upstream = OpenModelRecordingServer()
@@ -6462,6 +6462,41 @@ class ClientCompactionRecoveryTests(ContextOverflowHandoffTests):
         kinds = [e.get("kind") for e in self.wait_for_kind("client_compaction_shrunk")]
         self.assertIn("client_compaction_shrunk", kinds)
 
+    def test_compaction_keeps_recognition_with_appended_agent_text(self) -> None:
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 40000)
+        self.openai.overflow_max_bytes["gpt-test"] = 85000
+        self.start_gateway({}, windows={"gpt-test": 40000})
+        final = COMPACTION_INSTRUCTION + "\n" + "synthetic agent notice " * 3500
+        status, payload = self.request("gpt-test", messages=self.long_conversation(final))
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.openai.requests), 2)
+        self.assertIn(b"create a detailed summary", self.openai.requests[-1]["body"])
+        self.assertIn("client_compaction_shrunk", [e.get("kind") for e in self.wait_for_kind("client_compaction_shrunk")])
+
+    def test_native_compaction_with_trailing_system_record_recovers(self) -> None:
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 40000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway({}, windows={"gpt-test": 40000})
+        messages = self.long_conversation(COMPACTION_INSTRUCTION)
+        messages.append({"role": "system", "content": "Synthetic client metadata"})
+        status, payload = self.request("gpt-test", messages=messages)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.openai.requests), 2)
+        self.assertIn(b"create a detailed summary", self.openai.requests[-1]["body"])
+        self.assertIn("client_compaction_shrunk", [e.get("kind") for e in self.wait_for_kind("client_compaction_shrunk")])
+
+    def test_oversized_protected_system_fails_bounded_without_dropping_it(self) -> None:
+        self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 40000)
+        self.openai.overflow_max_bytes["gpt-test"] = 60000
+        self.start_gateway({}, windows={"gpt-test": 40000})
+        protected = "SYNTHETIC_PROTECTED_SYSTEM " + "z" * 180000
+        status, payload = self.request("gpt-test", messages=self.long_conversation(COMPACTION_INSTRUCTION), system=protected)
+        self.assertEqual(status, 400)
+        self.assertIn(b"does not fit any enabled model", payload)
+        self.assertEqual(len(self.openai.requests), 2)
+        self.assertEqual(json.loads(self.openai.requests[-1]["body"])["system"], protected)
+        self.assertIn("overflow_chain_exhausted", [e.get("kind") for e in self.wait_for_kind("overflow_chain_exhausted")])
+
     def test_compaction_uses_the_compactor_when_one_is_enabled(self) -> None:
         self.openai.compactor_models = {"luna-test"}
         self.openai.overflow_models["gpt-test"] = ("anthropic", 300000, 272000)
@@ -6623,6 +6658,14 @@ class ClientCompactionDetectionTests(unittest.TestCase):
                 {"type": "tool_result", "tool_use_id": "t", "content": "x"},
                 {"type": "text", "text": COMPACTION_INSTRUCTION},
             ]},
+        ])))
+
+    def test_ignores_stale_compaction_before_a_new_tool_result(self) -> None:
+        self.assertFalse(router.looks_like_client_compaction(self.body([
+            {"role": "user", "content": COMPACTION_INSTRUCTION},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Read", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "synthetic"}]},
+            {"role": "system", "content": "Synthetic metadata"},
         ])))
 
     def test_ignores_ordinary_requests(self) -> None:

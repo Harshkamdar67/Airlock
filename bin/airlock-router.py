@@ -4121,7 +4121,15 @@ def looks_like_client_compaction(body: bytes) -> bool:
     messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not messages:
         return False
-    last = messages[-1]
+    # Claude Code 2.1.283 appends a system message after its summary
+    # instruction. Ignore only trailing system records; an intervening
+    # assistant or tool-result user turn must still prevent a stale match.
+    index = len(messages) - 1
+    while index >= 0 and isinstance(messages[index], dict) and messages[index].get("role") == "system":
+        index -= 1
+    if index < 0:
+        return False
+    last = messages[index]
     if not isinstance(last, dict) or last.get("role") != "user":
         return False
     content = last.get("content")
@@ -4137,7 +4145,13 @@ def looks_like_client_compaction(body: bytes) -> bool:
         )
     else:
         return False
-    return CLIENT_COMPACTION_PATTERN.search(text[-MAX_COMPACTION_PROBE_CHARS:]) is not None
+    # Native compaction instructions can precede appended agent notices.
+    # Inspect both bounded edges rather than losing the instruction at the
+    # front when the final user text grows beyond the probe budget.
+    return any(
+        CLIENT_COMPACTION_PATTERN.search(probe) is not None
+        for probe in (text[:4096], text[-MAX_COMPACTION_PROBE_CHARS:])
+    )
 
 
 def sanitize_unit_for_compaction(unit: list[dict[str, Any]]) -> list[dict[str, Any]]:
