@@ -143,6 +143,36 @@ def headroom_session(environment: dict[str, str]):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
+
+
+def headroom_command(command, environment, access, artifacts):
+    """Give only this session access to its own compressed-content retrieval."""
+    url = environment.get("AIRLOCK_HEADROOM_URL")
+    if not url:
+        return command
+    servers = {}
+    updated = list(command)
+    if "--mcp-config" in updated:
+        index = updated.index("--mcp-config")
+        existing = Path(updated[index + 1])
+        servers = json.loads(existing.read_text(encoding="utf-8"))["mcpServers"]
+        del updated[index:index + 2]
+    executable = shutil.which("headroom", path=environment.get("PATH"))
+    if not executable:
+        fail("Headroom retrieval executable is unavailable")
+    servers["headroom"] = {
+        "command": executable,
+        "args": ["mcp", "serve", "--proxy-url", url],
+    }
+    artifact = access.write_session_artifact(
+        json.dumps({"mcpServers": servers}).encode("utf-8"),
+        "headroom-mcp-", ".json",
+    )
+    artifacts.append(("Headroom retrieval MCP", *artifact))
+    updated.extend(["--mcp-config", str(artifact[0]), "--allowedTools",
+                    "mcp__headroom__headroom_retrieve"])
+    validate_windows_command_line(updated)
+    return updated
 PROXY_VARIABLES = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
@@ -1648,7 +1678,8 @@ def main(
 
         try:
             with headroom_session(child_environment) as launch_environment:
-                completed = subprocess.run(command, env=launch_environment, check=False)
+                launch_command = headroom_command(command, launch_environment, access, artifacts)
+                completed = subprocess.run(launch_command, env=launch_environment, check=False)
         except OSError as error:
             if getattr(error, "winerror", None) == 206:
                 fail(

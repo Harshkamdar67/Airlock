@@ -2423,6 +2423,30 @@ class GrokProfileTests(unittest.TestCase):
 
 
 class HeadroomSessionTests(unittest.TestCase):
+    def test_retrieval_is_session_only_and_preserves_managed_servers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            existing = Path(directory) / "mcp.json"
+            existing.write_text(json.dumps({"mcpServers": {"existing": {"command": "synthetic"}}}))
+            output = Path(directory) / "headroom.json"
+            access = MagicMock()
+            access.write_session_artifact.return_value = (output, "a" * 64, 10)
+            artifacts = []
+            with patch.object(HYBRID.shutil, "which", return_value="headroom"):
+                command = HYBRID.headroom_command(
+                    ["claude", "--mcp-config", str(existing), "-p", "synthetic"],
+                    {"AIRLOCK_HEADROOM_URL": "http://127.0.0.1:12345"}, access, artifacts,
+                )
+            servers = json.loads(access.write_session_artifact.call_args.args[0])["mcpServers"]
+            self.assertEqual(servers["existing"], {"command": "synthetic"})
+            self.assertEqual(servers["headroom"]["args"], ["mcp", "serve", "--proxy-url", "http://127.0.0.1:12345"])
+            self.assertEqual(command.count("--mcp-config"), 1)
+            self.assertIn("mcp__headroom__headroom_retrieve", command)
+            self.assertEqual(len(artifacts), 1)
+
+    def test_retrieval_disabled_changes_no_arguments(self):
+        command = ["claude", "-p", "synthetic"]
+        self.assertIs(HYBRID.headroom_command(command, {}, None, []), command)
+
     def test_disabled_preserves_environment(self):
         environment = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:18765"}
         with HYBRID.headroom_session(environment) as child:
