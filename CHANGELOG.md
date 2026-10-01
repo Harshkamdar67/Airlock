@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Allow `/compact` to recover an oversized conversation while keeping ordinary overflow and shrink-off behavior unchanged.
+- Learn smaller provider-enforced context limits per session and report the mismatch without changing saved settings.
+- Add opt-in `AIRLOCK_HEADROOM=on`: an owned, stateless, loopback Headroom proxy preserves the selected Airlock upstream and stops with the session. Structural compression is enabled without loading GPU/ML models or changing shared containers.
+
 ## 0.1.0-beta.13 - 2026-09-30
 
 - Route canonical `sol` roots and `airlock-sol` workers to exact `gpt-6.1-sol`, including existing saved worker pools and defaults.

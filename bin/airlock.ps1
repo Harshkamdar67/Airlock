@@ -16,6 +16,9 @@ if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
   }
 }
 $ProxyUrl = if ($env:AIRLOCK_PROXY_URL) { $env:AIRLOCK_PROXY_URL } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_URL')) { $ConfigValues['AIRLOCK_PROXY_URL'] } else { 'http://127.0.0.1:18765' }
+if (-not $env:AIRLOCK_HEADROOM -and $ConfigValues.ContainsKey('AIRLOCK_HEADROOM')) {
+  $env:AIRLOCK_HEADROOM = $ConfigValues['AIRLOCK_HEADROOM']
+}
 $ProxyConfigDir = if ($env:CCP_CONFIG_DIR) { $env:CCP_CONFIG_DIR } elseif ($env:AIRLOCK_PROXY_CONFIG_DIR) { $env:AIRLOCK_PROXY_CONFIG_DIR } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_CONFIG_DIR')) { $ConfigValues['AIRLOCK_PROXY_CONFIG_DIR'] } else { '' }
 $ProxyStateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } elseif ($env:AIRLOCK_PROXY_STATE_HOME) { $env:AIRLOCK_PROXY_STATE_HOME } elseif ($ConfigValues.ContainsKey('AIRLOCK_PROXY_STATE_HOME')) { $ConfigValues['AIRLOCK_PROXY_STATE_HOME'] } else { '' }
 $MainEffort = if ($env:AIRLOCK_MAIN_EFFORT) { $env:AIRLOCK_MAIN_EFFORT } elseif ($ConfigValues.ContainsKey('AIRLOCK_MAIN_EFFORT')) { $ConfigValues['AIRLOCK_MAIN_EFFORT'] } else { 'high' }

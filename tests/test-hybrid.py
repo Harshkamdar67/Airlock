@@ -2422,5 +2422,58 @@ class GrokProfileTests(unittest.TestCase):
         self.assertIn("grok-4.6", environment["AIRLOCK_ALLOWED_AGENT_MODELS"])
 
 
+class HeadroomSessionTests(unittest.TestCase):
+    def test_disabled_preserves_environment(self):
+        environment = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:18765"}
+        with HYBRID.headroom_session(environment) as child:
+            self.assertIs(child, environment)
+
+    def test_rejects_invalid_mode_and_nonlocal_upstream(self):
+        for values in (
+            {"AIRLOCK_HEADROOM": "maybe"},
+            {"AIRLOCK_HEADROOM": "on", "ANTHROPIC_BASE_URL": "http://remote.example"},
+            {"AIRLOCK_HEADROOM": "on", "ANTHROPIC_BASE_URL": "http://user:secret@127.0.0.1:1234"},
+        ):
+            with patch.object(HYBRID.shutil, "which", return_value="headroom"), self.assertRaises(SystemExit):
+                with HYBRID.headroom_session(values):
+                    self.fail("Invalid configuration must not start a session")
+
+    def test_preserves_airlock_upstream_and_owns_cleanup(self):
+        for upstream in ("http://127.0.0.1:18765", "http://127.0.0.1:23456", "https://api.anthropic.com"):
+            environment = {
+                "AIRLOCK_HEADROOM": "on", "ANTHROPIC_BASE_URL": upstream,
+                "AIRLOCK_ROOT_MODEL": "gpt-6.1-sol",
+                "ANTHROPIC_AUTH_TOKEN": "synthetic-placeholder",
+                "HEADROOM_BACKEND": "wrong", "ANTHROPIC_TARGET_API_HEADERS": "synthetic",
+            }
+            process = MagicMock()
+            process.poll.return_value = None
+            with patch.object(HYBRID.shutil, "which", return_value="headroom"), \
+                 patch.object(HYBRID.subprocess, "Popen", return_value=process) as spawn, \
+                 patch.object(HYBRID.urllib.request, "build_opener"):
+                with HYBRID.headroom_session(environment) as child:
+                    self.assertEqual(child["AIRLOCK_ROOT_MODEL"], "gpt-6.1-sol")
+                    self.assertEqual(child["ANTHROPIC_AUTH_TOKEN"], "synthetic-placeholder")
+                    self.assertEqual(child["ANTHROPIC_BASE_URL"], child["AIRLOCK_HEADROOM_URL"])
+                    self.assertNotEqual(child["ANTHROPIC_BASE_URL"], upstream)
+                command = spawn.call_args.args[0]
+                self.assertEqual(command[command.index("--anthropic-api-url") + 1], upstream)
+                self.assertIn("--stateless", command)
+                proxy_env = spawn.call_args.kwargs["env"]
+                self.assertNotIn("HEADROOM_BACKEND", proxy_env)
+                self.assertNotIn("ANTHROPIC_TARGET_API_HEADERS", proxy_env)
+                self.assertNotIn("ANTHROPIC_AUTH_TOKEN", proxy_env)
+                process.terminate.assert_called_once()
+                self.assertEqual(environment["ANTHROPIC_BASE_URL"], upstream)
+
+    def test_startup_failure_never_launches_unwrapped(self):
+        process = MagicMock()
+        process.poll.return_value = 1
+        with patch.object(HYBRID.shutil, "which", return_value="headroom"), \
+             patch.object(HYBRID.subprocess, "Popen", return_value=process), self.assertRaises(SystemExit):
+            with HYBRID.headroom_session({"AIRLOCK_HEADROOM": "on"}):
+                self.fail("No silent bypass")
+
+
 if __name__ == "__main__":
     unittest.main()

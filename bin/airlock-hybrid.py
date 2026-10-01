@@ -5,13 +5,19 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.request
+from urllib.parse import urlsplit
 from typing import NoReturn
 
 
@@ -63,6 +69,80 @@ PROTECTED_OPTIONS = {
     "--plugin-dir", "--plugin-url", "--settings",
     "--append-system-prompt-file",
 }
+
+
+@contextlib.contextmanager
+def headroom_session(environment: dict[str, str]):
+    """Place an opt-in, owned Headroom proxy before the frozen Airlock route.
+
+    The router still owns provider identity and credential separation. Never
+    repoint shared Headroom containers or inherit their upstream/header config.
+    """
+    mode = environment.get("AIRLOCK_HEADROOM", "off")
+    if mode not in {"on", "off"}:
+        fail("AIRLOCK_HEADROOM must be on or off")
+    if mode == "off":
+        yield environment
+        return
+    executable = shutil.which("headroom", path=environment.get("PATH"))
+    if not executable:
+        fail("Headroom was enabled but its executable is unavailable")
+    upstream = environment.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    parsed = urlsplit(upstream)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        fail("Headroom requires a credential-free upstream address")
+    if upstream != "https://api.anthropic.com" and not (
+        parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+        and parsed.port and parsed.path in {"", "/"}
+    ):
+        fail("Headroom requires Airlock's loopback route or native Anthropic")
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    url = f"http://127.0.0.1:{port}"
+    proxy_environment = {
+        key: value for key, value in environment.items()
+        if not key.startswith("HEADROOM_") and "TARGET_API" not in key
+        and key not in ORP_CREDENTIAL_VARIABLES
+        and key not in {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+    }
+    # Structural compression only: do not load ML/GPU models in the user's
+    # running environment. No learning, memory, cache, or persistent traffic.
+    command = [executable, "proxy", "--host", "127.0.0.1", "--port", str(port),
+               "--workers", "1", "--backend", "anthropic",
+               "--anthropic-api-url", upstream, "--stateless", "--no-telemetry",
+               "--no-cache", "--no-learn", "--disable-kompress",
+               "--disable-kompress-fallback"]
+    process = subprocess.Popen(
+        command, env=proxy_environment, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            if process.poll() is not None:
+                fail("The owned Headroom proxy exited during startup")
+            try:
+                with opener.open(url + "/health", timeout=1):
+                    break
+            except (OSError, ValueError):
+                if time.monotonic() >= deadline:
+                    fail("The owned Headroom proxy did not become healthy within 60 seconds")
+                time.sleep(0.1)
+        child = dict(environment)
+        child["ANTHROPIC_BASE_URL"] = url
+        child["AIRLOCK_HEADROOM_URL"] = url
+        yield child
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
 PROXY_VARIABLES = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
@@ -1567,7 +1647,8 @@ def main(
             )
 
         try:
-            completed = subprocess.run(command, env=child_environment, check=False)
+            with headroom_session(child_environment) as launch_environment:
+                completed = subprocess.run(command, env=launch_environment, check=False)
         except OSError as error:
             if getattr(error, "winerror", None) == 206:
                 fail(

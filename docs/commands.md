@@ -1,5 +1,7 @@
 # Capabilities and commands
 
+Set `AIRLOCK_HEADROOM=on` in the Airlock config to enable an installed Headroom CLI for new Airlock sessions. The launcher starts an owned loopback proxy before the selected pure-provider or hybrid route; the router retains provider identity and credential separation. It stops that proxy when the session ends and never reconfigures shared containers. The proxy is stateless and uses structural compression only, without ML/GPU models, semantic caching, learning, or persistent memories. Startup fails closed if Headroom is unavailable or unhealthy; `off` restores the standard route. Existing sessions keep their original route.
+
 Every command and setting Airlock exposes, in one place. Commands that start a
 session are listed first, then the settings that change how a session behaves,
 then the maintenance commands.

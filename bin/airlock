@@ -121,6 +121,7 @@ if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
     config_value="${config_value%$'\r'}"
     case "$config_key" in
+      AIRLOCK_HEADROOM) export AIRLOCK_HEADROOM="${AIRLOCK_HEADROOM:-$config_value}" ;;
       AIRLOCK_MODEL) config_model="$config_value" ;;
       AIRLOCK_DEFAULT_PROFILE) config_default_profile="$config_value" ;;
       AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
