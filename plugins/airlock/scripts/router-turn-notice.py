@@ -34,6 +34,8 @@ REPORTED_KINDS = (
     "rate_limit_chain_exhausted",
     "anthropic_rate_limit_passthrough",
     "context_window_smaller_than_configured",
+    "failover_shrink_compacted",
+    "failover_shrink_truncated",
 )
 
 
@@ -136,9 +138,18 @@ def sentence(event: dict[str, object], count: int) -> str | None:
     """
     kind = event.get("kind")
     source = safe_model(event.get("from_model"))
-    target = safe_model(event.get("to_model"))
+    target = safe_model(event.get("to_model")) or safe_model(event.get("target_model"))
     model = safe_model(event.get("model"))
     times = "once" if count == 1 else f"{count} times"
+    if kind == "failover_shrink_truncated" and target:
+        return (
+            f"Airlock omitted older turns from the retry on {target}; the answer"
+            " or compaction summary can miss earlier context."
+        )
+    if kind == "failover_shrink_compacted" and target:
+        compactor = safe_model(event.get("compactor_model"))
+        if compactor:
+            return f"Airlock used {compactor} to summarize earlier history before retrying {target}."
     if kind == "rate_limit_failover_succeeded" and source and target:
         if count == 1:
             return f"{source} was rate limited; {target} answered instead."
@@ -178,7 +189,14 @@ def sentence(event: dict[str, object], count: int) -> str | None:
         configured = event.get("configured_window")
         if type(enforced) is int and type(configured) is int:
             # Claude Code accepts a compaction trigger from 100,000 upward.
-            trigger = max(100_000, (enforced * 9 // 10) // 1000 * 1000)
+            trigger = (enforced * 9 // 10) // 1000 * 1000
+            if trigger < 100_000:
+                return (
+                    f"{model} accepted at most {enforced:,} tokens, below its"
+                    f" configured {configured:,}. Claude Code has no supported"
+                    " automatic compaction trigger below this limit; compact"
+                    " earlier manually or use an enabled larger-window model."
+                )
             return (
                 f"{model} accepted at most {enforced:,} tokens, not the"
                 f" {configured:,} its window allows, so this account appears to"
@@ -198,7 +216,7 @@ def group_key(event: dict[str, object]) -> tuple[str, str, str, str] | None:
     return (
         str(kind),
         safe_model(event.get("from_model")) or "",
-        safe_model(event.get("to_model")) or "",
+        safe_model(event.get("to_model")) or safe_model(event.get("target_model")) or "",
         safe_model(event.get("model")) or "",
     )
 

@@ -6504,10 +6504,40 @@ class ClientCompactionRecoveryTests(ContextOverflowHandoffTests):
         )
         self.assertEqual(status, 400)
         self.assertEqual(len(self.openai.requests), 1)
+        self.assertNotIn("client_compaction_shrunk", [e.get("kind") for e in self.diagnostics()])
 
 
 class EnforcedWindowTests(ContextOverflowHandoffTests):
     """An account can be granted less than a model's window; honor what it enforces."""
+
+    def test_shrink_notices_disclose_history_reduction(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "shrink_notice_test", ROOT / "plugins/airlock/scripts/router-turn-notice.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        message, total = module.notice([
+            {"kind": "failover_shrink_truncated", "target_model": "claude-opus-5-5"},
+            {"kind": "failover_shrink_compacted", "target_model": "gpt-6.1-sol", "compactor_model": "gpt-6-luna"},
+        ], 0)
+        self.assertEqual(total, 2)
+        self.assertIn("omitted older turns", message)
+        self.assertIn("can miss earlier context", message)
+        self.assertIn("gpt-6-luna", message)
+
+    def test_notice_does_not_recommend_an_unsupported_low_trigger(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "small_window_notice_test", ROOT / "plugins/airlock/scripts/router-turn-notice.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        message, total = module.notice([{
+            "kind": "context_window_smaller_than_configured", "model": "gpt-test",
+            "enforced_window": 40000, "configured_window": 272000,
+        }], 0)
+        self.assertEqual(total, 1)
+        self.assertNotIn("AIRLOCK_CONTEXT_WINDOW=100000", message)
+        self.assertIn("compact earlier manually", message)
 
     def test_compaction_shrinks_to_the_limit_the_upstream_enforced(self) -> None:
         # Configured for 1M, but the upstream refuses anything past 200k, as

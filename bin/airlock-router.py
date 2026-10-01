@@ -1838,12 +1838,6 @@ class RouterHandler(BaseHTTPRequestHandler):
                             overflowed_model=source_model,
                             client_compaction=client_compaction,
                         )
-                        if target is not None and client_compaction:
-                            self.router.record_diagnostic({
-                                "kind": "client_compaction_shrunk",
-                                "model": model,
-                                "target_model": target,
-                            })
                         if target is not None:
                             shrunk_attempted = True
                             shrunk_provider, shrunk_body, committed = (
@@ -1861,6 +1855,12 @@ class RouterHandler(BaseHTTPRequestHandler):
                                 # The failure was already delivered inside
                                 # the committed SSE stream.
                                 return
+                            if client_compaction:
+                                self.router.record_diagnostic({
+                                    "kind": "client_compaction_shrunk",
+                                    "model": model,
+                                    "target_model": target,
+                                })
                             shrunk_committed = committed
                             working_body = shrunk_body
                             visited.add(target)

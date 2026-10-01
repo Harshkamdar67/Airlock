@@ -1,5 +1,9 @@
 # Models, limits, and usage
 
+Optional Headroom wrapping uses its default cache mode: earlier turns stay frozen to preserve provider prefix-cache hits, while eligible fresh tool results can be compressed. No savings on an older tool result is expected in that mode. Structural compression is enabled; ML/GPU compression remains disabled. Headroom's local token estimates are not provider quota or billing measurements.
+
+Overflow recovery is visible: Airlock reports an economy-model summary, or warns when older turns were omitted from a retry. A tail-only compaction can miss earlier context; the router does not edit the original saved transcript. `overflow-shrink off` never condenses history.
+
 Airlock does not force one model for every task. You choose which routes are enabled, then the main model picks the smallest useful approach. An exact user choice wins.
 
 ## Model roles
