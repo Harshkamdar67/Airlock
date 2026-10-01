@@ -2433,7 +2433,7 @@ class HeadroomSessionTests(unittest.TestCase):
             artifacts = []
             with patch.object(HYBRID.shutil, "which", return_value="headroom"):
                 command = HYBRID.headroom_command(
-                    ["claude", "--mcp-config", str(existing), "-p", "synthetic"],
+                    ["claude", "--mcp-config", str(existing), "--allowedTools", "Read", "-p", "synthetic"],
                     {"AIRLOCK_HEADROOM_URL": "http://127.0.0.1:12345"}, access, artifacts,
                 )
             servers = json.loads(access.write_session_artifact.call_args.args[0])["mcpServers"]
@@ -2441,6 +2441,8 @@ class HeadroomSessionTests(unittest.TestCase):
             self.assertEqual(servers["headroom"]["args"], ["mcp", "serve", "--proxy-url", "http://127.0.0.1:12345"])
             self.assertEqual(command.count("--mcp-config"), 1)
             self.assertIn("mcp__headroom__headroom_retrieve", command)
+            self.assertEqual(command.count("--allowedTools"), 1)
+            self.assertIn("Read", command)
             self.assertEqual(len(artifacts), 1)
 
     def test_retrieval_disabled_changes_no_arguments(self):

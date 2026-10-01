@@ -169,8 +169,13 @@ def headroom_command(command, environment, access, artifacts):
         "headroom-mcp-", ".json",
     )
     artifacts.append(("Headroom retrieval MCP", *artifact))
-    updated.extend(["--mcp-config", str(artifact[0]), "--allowedTools",
-                    "mcp__headroom__headroom_retrieve"])
+    updated.extend(["--mcp-config", str(artifact[0])])
+    permission = "mcp__headroom__headroom_retrieve"
+    positions = [i for i, value in enumerate(updated) if value == "--allowedTools"]
+    if positions:
+        updated.insert(positions[-1] + 1, permission)
+    else:
+        updated.extend(["--allowedTools", permission])
     validate_windows_command_line(updated)
     return updated
 PROXY_VARIABLES = {
