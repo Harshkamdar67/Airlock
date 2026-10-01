@@ -2734,8 +2734,8 @@ class FailoverFileTests(unittest.TestCase):
 
     def test_beta11_sol_failover_models_remain_readable(self) -> None:
         chains = {
-            "gpt-6.1-sol": ["claude-opus-5-5[1m]"],
-            "claude-opus-5-5[1m]": ["gpt-6.1-sol"],
+            "gpt-6-sol": ["claude-opus-5-5[1m]"],
+            "claude-opus-5-5[1m]": ["gpt-6-sol"],
         }
         self.path.write_text(
             json.dumps({"schema_version": 1, "chains": chains}), encoding="utf-8"

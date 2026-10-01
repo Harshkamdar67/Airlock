@@ -89,6 +89,8 @@ RETIRED_FAILOVER_MODEL_IDS = frozenset({
     "claude-opus-5[1m]",
     "gpt-5.6-sol",
     "gpt-5.6-luna",
+    "gpt-6-sol",
+    "gpt-6-sol[1m]",
 })
 READABLE_SCHEMA_VERSIONS = {1, SCHEMA_VERSION}
 MAX_POLICY_BYTES = 128 * 1024
