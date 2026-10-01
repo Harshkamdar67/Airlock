@@ -1394,7 +1394,7 @@ server.server_close()
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, composer',
-    'Hybrid root aliases: auto, sonnet, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
+    'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
