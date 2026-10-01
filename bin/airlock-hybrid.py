@@ -163,6 +163,7 @@ def headroom_command(command, environment, access, artifacts):
     servers["headroom"] = {
         "command": executable,
         "args": ["mcp", "serve", "--proxy-url", url],
+        "env": {"HEADROOM_STATELESS": "true", "HEADROOM_LOG_PAYLOAD_PREVIEW": "0"},
     }
     artifact = access.write_session_artifact(
         json.dumps({"mcpServers": servers}).encode("utf-8"),
