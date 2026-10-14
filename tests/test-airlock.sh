@@ -2828,11 +2828,17 @@ fi
 AIRLOCK_TEST_LAUNCHER="$launcher" python - <<'PYMENU'
 from pathlib import Path
 import os
+import shutil
 import subprocess
-source = Path(os.environ["AIRLOCK_TEST_LAUNCHER"]).read_text()
+import sys
+source = Path(os.environ["AIRLOCK_TEST_LAUNCHER"]).read_text(encoding="utf-8")
 function = source.split("select_hybrid_root() {", 1)[1].split(chr(10) + "}" + chr(10), 1)[0]
 menu = function[function.index("  printf '%s"):].split("  read -r", 1)[0]
-result = subprocess.run(["bash", "-c", menu], check=True, capture_output=True, text=True)
+# A bare "bash" on Windows resolves to System32's WSL launcher before PATH.
+bash = shutil.which("bash") or "bash"
+result = subprocess.run([bash, "-c", menu], capture_output=True, text=True)
+if result.returncode != 0:
+    sys.exit(f"menu fragment failed with {result.returncode}: {result.stderr.strip()}")
 rows = result.stdout.splitlines()
 assert len(rows) == 17, rows
 assert rows[-2] == " 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)"
