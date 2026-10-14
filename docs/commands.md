@@ -39,16 +39,20 @@ airlock spark
 airlock fast -r                  # one session on a Fast root, not saved
 airlock grok                     # Grok-only session
 airlock grok composer
+airlock grok grok47               # optional Grok 4.7 root
 airlock hybrid                   # mixed-provider session on the saved root
 airlock hybrid choose            # interactive root picker
 airlock hybrid auto              # resolve the root at launch
 airlock hybrid opus              # exact hybrid root
 airlock hybrid sonnet
+airlock hybrid sonnet55
 airlock hybrid fable
 airlock hybrid haiku
+airlock hybrid haiku55            # optional Haiku 5.5 root
 airlock hybrid astra
 airlock hybrid sol
 airlock hybrid grok
+airlock hybrid grok47
 airlock opr                      # OpenRouter-only session, interactive picker
 airlock opr kimi-k3              # OpenRouter-only session on an exact route
 airlock om local-coder           # open-model-only session on an exact route
@@ -57,6 +61,8 @@ airlock bg                       # background convenience command
 ```
 
 `airlock hybrid ROUTE` can also take a declared OpenRouter route as the root. An open model always uses the reserved `om:` prefix in a hybrid command, so Airlock never guesses between private registries.
+
+`haiku55` and `grok47` are opt-in peers. Setup accepts them in worker lists, exact root choices, and `--worker-pins` without changing defaults. Haiku 5.5 requires Claude Code 2.1.293 or newer; Grok 4.7 requires a proxy with exact `grok-4.7` in its catalog, such as carried `0.1.35-airlock.7`. See [model details](models-and-usage.md#haiku-55).
 
 ## Handoff
 

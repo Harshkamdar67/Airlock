@@ -125,6 +125,7 @@ $Models = @{
 
 $GrokModels = @{
   'grok'     = @('grok-4.6', 'Grok 4.6')
+  'grok47'   = @('grok-4.7', 'Grok 4.7')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast')
 }
 
@@ -154,6 +155,7 @@ function Enable-ExplicitOpenAIRoot {
 # bin/airlock and bin/airlock-hybrid.py; tests/test-windows.ps1 guards parity.
 $DeclaredContextLimits = @{
   'grok-4.6'    = @('500000', '400000')
+  'grok-4.7'    = @('500000', '400000')
   'gpt-6-astra' = @('922000', '736000')
 }
 
@@ -172,8 +174,13 @@ $HybridRoots = @{
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5-1[1m]', 'Claude Fable 5.1', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
+  # Haiku 5.5 has its native 1M window on the bare ID, with no suffix.
+  'haiku55' = @('claude-haiku-5-5', 'Claude Haiku 5.5', 'anthropic')
+  'claude-haiku-5-5' = @('claude-haiku-5-5', 'Claude Haiku 5.5', 'anthropic')
   'grok'     = @('grok-4.6', 'Grok 4.6', 'grok')
   'grok-4.6' = @('grok-4.6', 'Grok 4.6', 'grok')
+  'grok47'   = @('grok-4.7', 'Grok 4.7', 'grok')
+  'grok-4.7' = @('grok-4.7', 'Grok 4.7', 'grok')
   'grok-4.5' = @('grok-4.6', 'Grok 4.6', 'grok')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
 }
@@ -224,8 +231,8 @@ function Show-Models {
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
   Write-Host 'OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
-  Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'Grok root aliases: grok, grok47, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, haiku55, grok, grok47, composer'
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
@@ -1277,6 +1284,8 @@ function Resolve-GrokAlias {
   switch ($Value) {
     'grok' { return 'grok' }
     'grok-4.6' { return 'grok' }
+    'grok47' { return 'grok47' }
+    'grok-4.7' { return 'grok47' }
     'grok-4.5' { return 'grok' }
     'composer' { return 'composer' }
     'grok-composer' { return 'composer' }
@@ -1440,6 +1449,26 @@ function Invoke-AirlockSession {
     exit 1
   }
   Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SUBAGENT_MODEL' -ErrorAction SilentlyContinue
+  # Explicit opt-in roots enable only their route and preserve the saved pool.
+  $rootPoolKey = $null
+  $rootRoute = $null
+  $rootPoolDefault = ''
+  if ($RootModel -eq 'claude-haiku-5-5') {
+    $rootPoolKey = 'AIRLOCK_ANTHROPIC_MODELS'; $rootRoute = 'haiku55'; $rootPoolDefault = 'opus,sonnet,haiku'
+  } elseif ($RootModel -eq 'grok-4.7') {
+    $rootPoolKey = 'AIRLOCK_GROK_MODELS'; $rootRoute = 'grok47'; $rootPoolDefault = 'grok,composer'
+  }
+  if ($rootPoolKey) {
+    $pool = [Environment]::GetEnvironmentVariable($rootPoolKey, 'Process')
+    if ($null -eq $pool) {
+      $pool = if ($ConfigValues.ContainsKey($rootPoolKey)) { $ConfigValues[$rootPoolKey] } else { $rootPoolDefault }
+    }
+    if ((",$pool,") -notlike "*,$rootRoute,*") {
+      $pool = if ($pool) { "$rootRoute,$pool" } else { $rootRoute }
+      [Environment]::SetEnvironmentVariable($rootPoolKey, $pool, 'Process')
+    }
+  }
+  $env:AIRLOCK_ROOT_MODEL = $RootModel
   $env:AIRLOCK_UPDATE_NOTICE_FILE = [IO.Path]::GetFullPath($UpdateNoticeFile)
   $env:AIRLOCK_ACCESS_HELPER = [IO.Path]::GetFullPath($AccessHelper)
   # Set this only for a real session launch. Exporting it before `airlock mode`
@@ -1587,7 +1616,9 @@ function Select-HybridRoot {
   Write-Host ' 12) An exact local open-model registry route'
   Write-Host ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)'
   Write-Host ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])'
-  $selection = Read-Host 'Selection [1-14]'
+  Write-Host ' 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)'
+  Write-Host ' 16) Grok 4.7 (grok-4.7; requires a compatible proxy and Grok OAuth)'
+  $selection = Read-Host 'Selection [1-16]'
   if ($selection -eq '11') {
     $route = Select-OpenRouterRootRoute
     $record = Resolve-OpenRouterRootRoute -Route $route
@@ -1602,7 +1633,7 @@ function Select-HybridRoot {
     $script:HybridSelectedOpenModelModel = [string]$record.model
     return $null
   }
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61'; '14' = 'sonnet55' }
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61'; '14' = 'sonnet55'; '15' = 'haiku55'; '16' = 'grok47' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
@@ -2019,14 +2050,14 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'grok') {
   }
   $grokAlias = Resolve-GrokAlias $requestedGrok
   if (-not $grokAlias) {
-    [Console]::Error.WriteLine("airlock: unsupported Grok model '$requestedGrok' (expected grok or composer)")
+    [Console]::Error.WriteLine("airlock: unsupported Grok model '$requestedGrok' (expected grok, grok47, or composer)")
     exit 2
   }
   $grokModel = $GrokModels[$grokAlias][0]
   $grokName = $GrokModels[$grokAlias][1]
   # Pure Grok needs enabled Grok routes even when the saved config leaves
   # them off, because the user asked for this provider by name.
-  if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+  if ($grokModel -ne 'grok-4.7' -and $null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
   Set-OpenAIEnvironment $grokModel $grokName 'Grok subscription'
   foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
@@ -2237,7 +2268,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     # A Grok root cannot start without an enabled Grok route, so an explicit
     # Grok root turns the routes on. Every other hybrid root leaves Grok off
     # unless the saved config enables it.
-    if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+    if ($rootModel -ne 'grok-4.7' -and $null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
     $env:AIRLOCK_GROK_HYBRID = '1'
     Invoke-AirlockSession 'hybrid-grok-root' $rootModel $rootName $hybridArgs
   }

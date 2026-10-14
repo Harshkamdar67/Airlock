@@ -250,6 +250,22 @@ class HybridLauncherTests(unittest.TestCase):
         self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
 
+    def test_grok47_roots_keep_the_flagship_context_limits(self) -> None:
+        environment = self.build("hybrid-grok-root", "grok-4.7")
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
+        environment = self.build(
+            "hybrid-grok-root", "grok-4.7",
+            preset_environment={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000"},
+        )
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
+
+    def test_haiku55_root_keeps_native_context_sizing(self) -> None:
+        environment = self.build("hybrid-anthropic-root", "claude-haiku-5-5")
+        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", environment)
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", environment)
+
     def test_astra_root_declares_its_documented_input_ceiling(self) -> None:
         # gpt-6-astra is documented at 1050000 tokens with 922000 of input, and
         # the input ceiling is the one a request must fit. Both launchers
@@ -2381,6 +2397,23 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
         for marker in ("AIRLOCK_HYBRID", "AIRLOCK_GPT_HYBRID", "AIRLOCK_GROK_HYBRID"):
             self.assertNotIn(marker, environment)
+
+    def test_grok47_pure_keeps_limits_with_an_explicit_compact_override(self) -> None:
+        environment = self.build(
+            "grok-pure", "grok-4.7", None,
+            ANTHROPIC_BASE_URL="http://127.0.0.1:18765",
+            ANTHROPIC_MODEL="grok-4.7",
+        )
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000")
+        environment = self.build(
+            "grok-pure", "grok-4.7", None,
+            ANTHROPIC_BASE_URL="http://127.0.0.1:18765",
+            ANTHROPIC_MODEL="grok-4.7",
+            CLAUDE_CODE_AUTO_COMPACT_WINDOW="450000",
+        )
+        self.assertEqual(environment["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "500000")
+        self.assertEqual(environment["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "450000")
 
     def test_grok_pure_rejects_a_router(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

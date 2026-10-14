@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-beta.15 - 2026-10-14
+
+- Add opt-in Haiku 5.5 roots and workers (`haiku55`, `airlock-haiku55`) on exact bare `claude-haiku-5-5`. Requires Claude Code 2.1.293 or newer; preserves Haiku 4.5 and existing picker, discovery, and background choices.
+- Add opt-in Grok 4.7 roots and workers (`grok47`, `airlock-grok47`) on exact `grok-4.7`, requiring carried proxy `0.1.35-airlock.7` or another build with that exact offline catalog entry. Preserve Grok 4.6 and Composer defaults; do not add automatic armies.
+- Carry proxy `v0.1.35-airlock.7` (upstream Grok 4.7 allowlist on the existing Windows login fix). The Windows installer pins its archives and upgrades an exact Airlock-managed `0.1.35-airlock.6` in place.
+- Add setup choices, worker enables, and effort pins for both peers without changing saved or shipped defaults. Document model limits, effort, input types, and pricing caveats.
+- Fix setup rejecting Sonnet 5.5 in an enabled or extra worker pool even though its root and custom worker menu already offered it.
+- Fix the Airlock Console tools MCP server never answering while Claude Code keeps stdin open, which made it time out on connect. It now reads one line at a time.
+
 ## 0.1.0-beta.14 - 2026-10-01
 
 - Add opt-in Sonnet 5.5 roots and workers (`sonnet55`, `airlock-sonnet55`), preserving Sonnet 5. Requires Claude Code 2.1.284 or newer.
