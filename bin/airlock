@@ -116,6 +116,8 @@ config_anthropic_rate_limit=''
 config_gpt_effort_capabilities=''
 config_grok_model=''
 config_openai_models=''
+config_anthropic_models='opus,sonnet,haiku'
+config_grok_models='grok,composer'
 
 if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
@@ -127,6 +129,8 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
       AIRLOCK_GROK_MODEL) config_grok_model="$config_value" ;;
       AIRLOCK_OPENAI_MODELS) config_openai_models="$config_value" ;;
+      AIRLOCK_ANTHROPIC_MODELS) config_anthropic_models="$config_value" ;;
+      AIRLOCK_GROK_MODELS) config_grok_models="$config_value" ;;
       AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
       AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
       AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
@@ -247,8 +251,8 @@ Profiles:
   claude           Start the native Anthropic CLI without Airlock
 
 OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
-Grok root aliases: grok, composer
-Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer
+Grok root aliases: grok, grok47, composer
+Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, haiku55, grok, grok47, composer
   auto resolves to fable when Fable is neither extra nor unavailable, otherwise
   opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
@@ -745,13 +749,14 @@ resolve_grok_model() {
     # an alias rather than a second route. A different exact ID reaches the
     # proxy only when models.json declares it.
     grok|grok-4.6|grok-4.5) selected_model='grok-4.6'; model_name='Grok 4.6' ;;
+    grok47|grok-4.7) selected_model='grok-4.7'; model_name='Grok 4.7' ;;
     composer|grok-composer|grok-composer-2.5-fast) selected_model='grok-composer-2.5-fast'; model_name='Grok Composer 2.5 Fast' ;;
     *)
       if resolve_custom_model_declaration "$1" grok; then
         selected_model="$CUSTOM_MODEL_ID"
         model_name="Custom Grok ($CUSTOM_MODEL_ID)"
       else
-        printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
+        printf "airlock: unsupported Grok model '%s' (expected grok, grok47, or composer)\n" "$1" >&2
         return 1
       fi
       ;;
@@ -899,7 +904,10 @@ resolve_hybrid_alias() {
     sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
     fable) root_model='claude-fable-5-1[1m]'; root_name='Claude Fable 5.1'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
+    # Haiku 5.5 has its native 1M window on the bare ID, with no suffix.
+    haiku55|claude-haiku-5-5) root_model='claude-haiku-5-5'; root_name='Claude Haiku 5.5'; root_provider='anthropic' ;;
     grok|grok-4.6|grok-4.5) root_model='grok-4.6'; root_name='Grok 4.6'; root_provider='grok' ;;
+    grok47|grok-4.7) root_model='grok-4.7'; root_name='Grok 4.7'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
     *)
       if resolve_custom_model_declaration "$1" codex; then
@@ -1169,7 +1177,7 @@ configure_proxy_model_picker() {
 # the one a request must fit; Airlock has not proved that window live.
 declared_context_hard_limit() {
   case "$1" in
-    grok-4.6) printf '500000' ;;
+    grok-4.6|grok-4.7) printf '500000' ;;
     gpt-6-astra) printf '922000' ;;
     *) return 1 ;;
   esac
@@ -1177,7 +1185,7 @@ declared_context_hard_limit() {
 
 declared_context_compact_threshold() {
   case "$1" in
-    grok-4.6) printf '400000' ;;
+    grok-4.6|grok-4.7) printf '400000' ;;
     gpt-6-astra) printf '736000' ;;
     *) return 1 ;;
   esac
@@ -1735,6 +1743,19 @@ launch_session() {
   local openrouter_root_route="$4"
   local openmodel_root_route="$5"
   shift 5
+  # Explicit opt-in roots enable only their route and preserve the saved pool.
+  local pool
+  case "$session_model" in
+    claude-haiku-5-5)
+      pool="${AIRLOCK_ANTHROPIC_MODELS-$config_anthropic_models}"
+      case ",$pool," in *,haiku55,*) ;; *) export AIRLOCK_ANTHROPIC_MODELS="haiku55${pool:+,$pool}" ;; esac
+      ;;
+    grok-4.7)
+      pool="${AIRLOCK_GROK_MODELS-$config_grok_models}"
+      case ",$pool," in *,grok47,*) ;; *) export AIRLOCK_GROK_MODELS="grok47${pool:+,$pool}" ;; esac
+      ;;
+  esac
+  export AIRLOCK_ROOT_MODEL="$session_model"
   local argument max_agents
   local -a openrouter_root_args=()
   local -a openmodel_root_args=()
@@ -1858,6 +1879,9 @@ launch_session() {
     printf 'airlock: native session model route policy is empty.\n' >&2
     exit 1
   fi
+  case ",$allowed_model_ids," in
+    *,grok-4.7,*) run_access check-proxy-models --models "$allowed_model_ids" || exit $? ;;
+  esac
   export AIRLOCK_ALLOWED_AGENT_NAMES
   export AIRLOCK_ALLOWED_AGENT_MODELS="$allowed_model_ids"
   export AIRLOCK_EXTRA_USAGE_AGENT_NAMES="$extra_agent_names"
@@ -2152,8 +2176,10 @@ select_hybrid_root() {
     ' 11) An exact OpenRouter registry route' \
     ' 12) An exact local open-model registry route' \
     ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)' \
-    ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])'
-  read -r -p 'Selection [1-14]: ' selection
+    ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])' \
+    ' 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)' \
+    ' 16) Grok 4.7 (grok-4.7; requires a compatible proxy and Grok OAuth)'
+  read -r -p 'Selection [1-16]: ' selection
   case "$selection" in
     1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;;
     5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
@@ -2170,7 +2196,9 @@ select_hybrid_root() {
       ;;
     13) root_alias='sol61' ;;
     14) root_alias='sonnet55' ;;
-    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 14.\n' >&2; exit 2 ;;
+    15) root_alias='haiku55' ;;
+    16) root_alias='grok47' ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 16.\n' >&2; exit 2 ;;
   esac
 }
 
@@ -2754,7 +2782,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     # Grok root turns the routes on. Every other hybrid root leaves Grok off
     # unless the saved config enables it, because advertising a worker whose
     # provider the user never logged into would fail at request time.
-    if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+    if [[ "$root_model" != 'grok-4.7' && -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
       export AIRLOCK_GROK_MODELS='grok,composer'
     fi
     export AIRLOCK_GROK_HYBRID='1'
@@ -2956,7 +2984,7 @@ if [[ "${1:-}" == 'grok' ]]; then
   selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
   validate_effort "$selected_effort"
   # Pure Grok needs enabled Grok routes even when the shared default is unavailable.
-  if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+  if [[ "$selected_model" != 'grok-4.7' && -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
     export AIRLOCK_GROK_MODELS='grok,composer'
   fi
   set_openai_environment "$selected_model" "$model_name" 'Grok subscription'

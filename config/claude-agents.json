@@ -44,5 +44,14 @@
     ],
     "model": "claude-sonnet-5-5[1m]",
     "effort": "high"
+  },
+  "airlock-haiku55": {
+    "description": "Claude Haiku 5.5: explicit bounded utility worker. Requires Claude Code 2.1.293; prompts over 100K cost more per token. No automatic discovery or swarms. Descriptive routing metadata only.",
+    "prompt": "Work directly using native Claude Code tools. Follow repository instructions, inspect code, preserve unrelated work, and stay in scope. Report checks, failures, skips, and limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "claude-haiku-5-5",
+    "effort": "medium"
   }
 }

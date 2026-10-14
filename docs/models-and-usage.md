@@ -25,7 +25,9 @@ These descriptions guide selection. They are not vendor rankings.
 | Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | Medium |
 | Fable | An explicit focused Anthropic choice when enabled and authorized | Plan dependent |
 | Haiku | An explicit bounded Anthropic utility choice when enabled | Low |
+| Haiku 5.5 | An opt-in bounded Anthropic utility peer, without changing automatic discovery or background choices | Prompt lengths above 100K tokens have a pricing premium |
 | Grok | Difficult implementation, tool-heavy coding, debugging, and synthesis on a Grok plan | High |
+| Grok 4.7 | An opt-in frontier coding and debugging peer next to Grok 4.6, never an automatic swarm | Same published API price as Grok 4.6 |
 | Composer | High-volume discovery, extraction, lookup, summarization, triage, and bounded mechanical work | Low |
 
 The active profile, enabled routes, Fast eligibility, and extra-usage policy still apply. User-hosted open models are not in this table because Airlock does not infer or rank their capability. Their route metadata is user-declared and unverified.
@@ -63,9 +65,12 @@ airlock hybrid terra
 airlock hybrid luna
 airlock hybrid opus
 airlock hybrid sonnet
+airlock hybrid sonnet55
 airlock hybrid fable
 airlock hybrid haiku
+airlock hybrid haiku55
 airlock hybrid grok
+airlock hybrid grok47
 airlock hybrid composer
 ```
 
@@ -74,6 +79,7 @@ Grok-only sessions:
 ```bash
 airlock grok
 airlock grok composer
+airlock grok grok47
 ```
 
 Grok needs its own login with `airlock proxy grok auth login`, and its routes stay off until the saved configuration enables them or you name a Grok root. `airlock usage` does not cover Grok, because there is no documented plan-window method Airlock can read safely.
@@ -426,7 +432,7 @@ New provider models do not need an Airlock release. Declare them in a user-owned
   "schema_version": 1,
   "models": [
     {
-      "id": "grok-4.7",
+      "id": "grok-example-custom",
       "provider": "grok",
       "effort_ceiling": "xhigh",
       "context_window": null,
@@ -436,6 +442,8 @@ New provider models do not need an Airlock release. Declare them in a user-owned
   ]
 }
 ```
+
+This example uses a placeholder ID. Replace it with an exact model the proxy serves, not an ID Airlock already ships. Enable shipped Grok 4.7 with `grok47` instead of declaring it again.
 
 Rules:
 
@@ -648,6 +656,42 @@ Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guida
 `airlock hybrid sonnet55` selects exact `claude-sonnet-5-5[1m]`; the optional worker is `airlock-sonnet55`, enabled by adding `sonnet55` to the Anthropic pool. Existing `sonnet` and explicit Sonnet 5 configurations remain unchanged. Sonnet 5.5 requires Claude Code 2.1.284 or newer; update the native client before selecting it. Anthropic documents native 1M context, 128K maximum output, adaptive thinking, and text/image input with text output and tools. Airlock retains its high effort default.
 
 Sources: [Anthropic model reference](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Haiku 5.5
+
+`airlock hybrid haiku55` selects exact bare `claude-haiku-5-5`, with no `[1m]` suffix. The optional named worker is `airlock-haiku55`. Add `haiku55` to `AIRLOCK_ANTHROPIC_MODELS` to enable it; selecting it explicitly as the setup hybrid root also adds it to that pool. Existing `haiku` stays on Haiku 4.5. Claude Code 2.1.293 or newer is required, so update the native client before selecting this route.
+
+Anthropic documents a 1M-token context window, 128K maximum output, text and image input, text output, and tool use. Thinking is adaptive and cannot be turned off. Supported effort levels are `low`, `medium`, `high`, `xhigh`, and `max`, with a provider default and Airlock catalog baseline of `medium`. Like other named workers, `airlock-haiku55` follows session effort unless pinned in setup. Neither the global effort default nor existing worker pins change.
+
+Prompts above 100K tokens have a pricing premium. API pricing is not a measurement of subscription allowance. Enabling this worker does not replace the `haiku` family picker, economical discovery route, or background seat. An explicit Haiku 5.5 root can use it as a family fallback when no legacy Claude seat is available. It is never multiplied automatically or used as a default replacement in another route's same-category handoff; an explicit user chain can opt in.
+
+For example, save an optional worker and a medium pin while keeping the existing root:
+
+```bash
+./scripts/setup.sh --yes --anthropic-workers opus,sonnet,haiku,haiku55 --worker-pins haiku55=medium
+```
+
+Or select it as the saved hybrid root with `./scripts/setup.sh --yes --default-profile hybrid --hybrid-model haiku55`. A saved pool containing it round-trips through setup without enabling other new routes.
+
+Sources: [Anthropic models overview](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 model page](https://platform.claude.com/docs/en/models/haiku-5-5/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Grok 4.7
+
+`airlock grok grok47` or `airlock hybrid grok47` selects exact `grok-4.7`. The optional named worker is `airlock-grok47`, enabled by adding `grok47` to `AIRLOCK_GROK_MODELS`. Grok needs its separate login with `airlock proxy grok auth login`. Existing `grok` stays on Grok 4.6; the default Grok pool remains `grok,composer` when a Grok profile is chosen, and Grok stays off in a fresh hybrid setup until explicitly enabled.
+
+The route needs carried proxy `0.1.35-airlock.7` or another compatible build whose offline catalog contains exact `grok-4.7`. Check `claude-code-proxy models` before enabling it. Older builds cannot serve this model, and Airlock refuses an enabled route missing from the proxy catalog rather than falling back to Grok 4.6. This is a requirement, not an automatic proxy upgrade.
+
+xAI documents a 500K-token context window, text and image input, and supported reasoning levels `low`, `medium`, `high`, and `xhigh`. Airlock's catalog baseline is `xhigh`; the named worker follows session effort unless pinned in setup. Its published API price is the same as Grok 4.6, not a measurement of subscription allowance. Grok 4.7 sits next to Grok 4.6 as an enabled frontier peer and never enters automatic worker armies.
+
+To opt in to both frontier peers and keep Composer:
+
+```bash
+./scripts/setup.sh --yes --grok-workers grok,composer,grok47 --worker-pins grok47=xhigh
+```
+
+For a saved Grok-only root, use `./scripts/setup.sh --yes --default-profile grok --grok-model grok47`. A hybrid root uses `--default-profile hybrid --hybrid-model grok47`. Each explicitly selected root stays in its pool even when a custom worker list omits it. In the interactive wizard, the original Grok pool choices remain first; Grok 4.7 only, all three, and an exact custom mix are separate opt-in choices.
+
+Source: [xAI Grok 4.7 developer guide](https://docs.x.ai/developers/grok-4-7).
 
 ### Headroom session dashboard
 

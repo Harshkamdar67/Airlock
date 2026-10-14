@@ -72,7 +72,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.09.30.1"
+MANAGED_BUNDLE_VERSION = "2026.10.14.3"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -234,9 +234,9 @@ ROUTING_OBJECTIVES = {
     "economy": "Prefer an adequate lower-relative-usage eligible worker and escalate only when task risk or complexity warrants it.",
 }
 PROVIDER_ROUTES = {
-    "anthropic": ("opus", "sonnet", "sonnet55", "fable", "haiku"),
+    "anthropic": ("opus", "sonnet", "sonnet55", "fable", "haiku", "haiku55"),
     "openai": ("astra", "sol", "sol61", "terra", "luna", "luna-fast"),
-    "grok": ("grok", "composer"),
+    "grok": ("grok", "grok47", "composer"),
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
 PROFILE_COMPONENTS = {
@@ -288,10 +288,10 @@ CATALOG_EXPECTED_AGENTS = {
     "openai_wrappers": {
         "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
     },
-    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku"},
-    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku"},
-    "grok_direct": {"airlock-grok", "airlock-composer"},
-    "grok_wrappers": {"airlock-grok", "airlock-composer"},
+    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku", "airlock-haiku55"},
+    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku", "airlock-haiku55"},
+    "grok_direct": {"airlock-grok", "airlock-grok47", "airlock-composer"},
+    "grok_wrappers": {"airlock-grok", "airlock-grok47", "airlock-composer"},
 }
 MAX_AGENT_CATALOG_BYTES = 24 * 1024
 MAX_RENDERED_AGENTS_BYTES = 64 * 1024
@@ -300,7 +300,8 @@ MODEL_PROFILES = {
     # window when ANTHROPIC_BASE_URL is unset or points at api.anthropic.com,
     # and Airlock always points it at the session router. The [1m] suffix is
     # the one lever that still reaches 1M from behind the router. Haiku 4.5 is
-    # a genuine 200000 model and must not carry the suffix. The "window" value
+    # a genuine 200000 model and must not carry the suffix. Haiku 5.5 runs
+    # its native 1M window with the bare ID. The "window" value
     # is the context size used for overflow-aware handoff pre-screening; a
     # model without one is attempted regardless of conversation size.
     "anthropic": {
@@ -328,6 +329,11 @@ MODEL_PROFILES = {
             "agent": "airlock-haiku", "model": "claude-haiku-4-5-20251001", "effort": "medium",
             "capability": "utility", "cost": "economical", "window": 200000,
             "strength": "fast bounded utility work when the route is enabled or explicitly selected",
+        },
+        "haiku55": {
+            "agent": "airlock-haiku55", "model": "claude-haiku-5-5", "effort": "medium",
+            "capability": "utility", "cost": "economical", "window": 1000000,
+            "strength": "fast bounded utility work when explicitly selected; prompts over 100000 tokens cost more per token",
         },
     },
     "openai": {
@@ -376,6 +382,11 @@ MODEL_PROFILES = {
             "capability": "frontier", "cost": "premium", "window": 500000,
             "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
         },
+        "grok47": {
+            "agent": "airlock-grok47", "model": "grok-4.7", "effort": "xhigh",
+            "capability": "frontier", "cost": "premium", "window": 500000,
+            "strength": "long-horizon agentic coding, tool-heavy and terminal work, multi-step debugging that must hold context across many turns, and token-efficient execution on a Grok subscription",
+        },
         "composer": {
             "agent": "airlock-composer", "model": "grok-composer-2.5-fast", "effort": "high",
             "capability": "general", "cost": "economical", "window": 256000,
@@ -397,6 +408,7 @@ SHIPPED_MODEL_EFFORT_CEILINGS = {
         for profile in MODEL_PROFILES[provider].values()
     },
     "grok-4.6": "xhigh",
+    "grok-4.7": "xhigh",
     "grok-composer-2.5-fast": "high",
 }
 MANAGED_AGENT_NAMES = frozenset(
@@ -517,18 +529,20 @@ HANDOFF_PROFILES = (
 # and the smaller tiers fall to the nearest capable neighbour. Peers that are
 # not enabled are dropped, so the shape adapts to the providers you connect.
 RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
-    "astra": ("sol", "opus", "grok", "fable"),
-    "opus": ("astra", "sol", "grok", "fable"),
-    "sol": ("astra", "opus", "grok", "fable"),
-    "sol61": ("sol", "astra", "opus", "grok", "fable"),
-    "grok": ("astra", "sol", "opus", "fable"),
-    "fable": ("astra", "sol", "sol61", "opus", "grok"),
+    "astra": ("sol", "opus", "grok", "grok47", "fable"),
+    "opus": ("astra", "sol", "grok", "grok47", "fable"),
+    "sol": ("astra", "opus", "grok", "grok47", "fable"),
+    "sol61": ("sol", "astra", "opus", "grok", "grok47", "fable"),
+    "grok": ("grok47", "astra", "sol", "opus", "fable"),
+    "grok47": ("grok", "astra", "sol", "opus", "fable"),
+    "fable": ("astra", "sol", "sol61", "opus", "grok", "grok47"),
     "sonnet": ("terra", "luna"),
     "terra": ("sonnet", "luna"),
     "luna": ("sonnet", "composer", "haiku"),
     "luna-fast": ("luna", "sonnet"),
     "composer": ("luna", "sonnet"),
     "haiku": ("luna", "composer"),
+    "haiku55": ("haiku", "luna", "composer"),
 }
 
 
@@ -1539,6 +1553,7 @@ def default_policy() -> dict[str, Any]:
                     "sonnet55": {"access": "unavailable"},
                     "fable": {"access": "unavailable"},
                     "haiku": {"access": "unknown"},
+                    "haiku55": {"access": "unavailable"},
                 },
             },
             "openai": {
@@ -2285,6 +2300,7 @@ def apply_runtime_overrides(policy: dict[str, Any]) -> dict[str, Any]:
     policy["policies"]["worker_effort"] = dict(defaults["worker_effort"])
     apply_config_overrides(policy, read_flat_config())
     apply_config_overrides(policy, dict(os.environ))
+    policy["_haiku55_root"] = os.environ.get("AIRLOCK_ROOT_MODEL") == "claude-haiku-5-5"
     # A confirmed logged-out Grok proxy wins over any enable the config asked
     # for. Advertising a worker whose provider has no login only produces a
     # failed request one Agent call later.
@@ -2387,7 +2403,7 @@ def _codex_app_server_call(
         if not send({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {
-                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.14",
+                "name": "airlock-usage", "title": "Airlock usage", "version": "0.1.0-beta.15",
             }},
         }):
             return None
@@ -3019,6 +3035,28 @@ def proxy_fast_capability() -> dict[str, object]:
     }
 
 
+def check_proxy_models(models: list[str]) -> None:
+    """Check only proxy-gated opt-ins against the local offline catalog."""
+    if "grok-4.7" not in models:
+        return
+    executable = (
+        os.environ.get("AIRLOCK_ACCESS_PROXY")
+        or shutil.which("claude-code-proxy.exe")
+        or shutil.which("claude-code-proxy")
+    )
+    completed = _run_status([executable, "models"]) if executable else None
+    advertised = (
+        set(re.split(r"[\s,]+", completed.stdout))
+        if completed is not None and completed.returncode == 0 else set()
+    )
+    if "grok-4.7" not in advertised:
+        raise AccessError(
+            "Grok 4.7 requires a claude-code-proxy catalog advertising exact grok-4.7; "
+            "install v0.1.35-airlock.7 or a compatible build and check claude-code-proxy models, "
+            "or disable grok47. The installed proxy did not advertise this model."
+        )
+
+
 def grok_auth_status() -> dict[str, object]:
     """Ask the local proxy whether it holds a usable Grok login.
 
@@ -3617,6 +3655,7 @@ DISCOVERY_ROUTES = (
     "sonnet55",
     "sonnet",
     "grok",
+    "grok47",
     "sol",
     "sol61",
     "fable",
@@ -3639,6 +3678,8 @@ def discovery_model_from_workers(
         model = by_route.get(route)
         if model:
             return model
+    if policy.get("_haiku55_root"):
+        return by_route.get("haiku55")
     return None
 
 
@@ -3722,7 +3763,9 @@ def session_failover_chains(
             source_forms = {worker["model"], wire_model_id(worker["model"])}
             peers: list[str] = []
             for other in ordered:
-                if other is worker:
+                if other is worker or other["route"] == "haiku55":
+                    # The >100K price premium makes Haiku 5.5 an explicit
+                    # peer choice, not a guaranteed same-cost replacement.
                     continue
                 peer = wire_model_id(other["model"])
                 if peer in source_forms:
@@ -3973,20 +4016,20 @@ def proxy_picker_models(
         fable = opus = first("astra", "sol", "sol61", "terra", "luna", "luna-fast")
         sonnet = first("terra", "sol", "sol61", "astra", "luna", "luna-fast")
     elif profile == "grok-pure":
-        fable = opus = first("grok", "composer")
-        sonnet = first("composer", "grok")
+        fable = opus = first("grok", "grok47", "composer")
+        sonnet = first("composer", "grok", "grok47")
     else:
         fable = first(
-            "fable", "astra", "sol", "sol61", "opus", "grok", "sonnet55", "sonnet", "terra",
-            "composer", "luna", "haiku", "luna-fast",
+            "fable", "astra", "sol", "sol61", "opus", "grok", "grok47", "sonnet55", "sonnet", "terra",
+            "composer", "luna", "haiku", "luna-fast", "haiku55",
         )
         opus = first(
-            "opus", "astra", "sol", "sol61", "grok", "fable", "sonnet55", "sonnet", "terra",
-            "composer", "luna", "haiku", "luna-fast",
+            "opus", "astra", "sol", "sol61", "grok", "grok47", "fable", "sonnet55", "sonnet", "terra",
+            "composer", "luna", "haiku", "luna-fast", "haiku55",
         )
         sonnet = first(
             "sonnet55", "sonnet", "terra", "fable", "sol", "sol61", "astra", "opus", "composer",
-            "luna", "haiku", "grok", "luna-fast",
+            "luna", "haiku", "grok", "grok47", "luna-fast", "haiku55",
         )
     utility = discovery_model_from_workers(policy, workers)
     if utility is None:
@@ -3998,6 +4041,8 @@ def proxy_picker_models(
         # enabled, and cost more per background call, which is why the setup
         # default now enables haiku.
         haiku = optional("haiku", "sonnet55", "sonnet", "fable", "opus") or utility
+        if policy.get("_haiku55_root") and not optional("haiku", "sonnet55", "sonnet", "fable", "opus"):
+            haiku = optional("haiku55") or haiku
     return {
         "fable": fable,
         "opus": opus,
@@ -5384,7 +5429,7 @@ def swarm_plan(workers: list[dict[str, str]]) -> dict[str, str]:
         agent for route, agent in by_route.items() if route not in SWARM_ROUTES
     )
     strong = [
-        by_route[route] for route in ("astra", "sol", "sol61", "opus", "grok") if route in by_route
+        by_route[route] for route in ("astra", "sol", "sol61", "opus", "grok", "grok47") if route in by_route
     ]
     if swarm:
         launch = (
@@ -5654,9 +5699,14 @@ def portfolio_guidance(
         role_rules.append(
             f"keep {by_route['haiku']} available for an explicit bounded utility choice, but do not select it for automatic swarms"
         )
-    if by_route.get("grok"):
+    if by_route.get("haiku55"):
         role_rules.append(
-            f"prefer {by_route['grok']} for long-horizon agentic work that must hold context across many "
+            f"keep {by_route['haiku55']} available for an explicit bounded utility choice, not automatic discovery or swarms; prompts over 100000 tokens cost more per token"
+        )
+    grok = by_route.get("grok47") or by_route.get("grok")
+    if grok:
+        role_rules.append(
+            f"prefer {grok} for long-horizon agentic work that must hold context across many "
             "tool calls, terminal and command-line heavy tasks, and multi-step debugging where the loop "
             "matters more than a single deep answer; it is not the default choice for novel architecture "
             "or security judgment"
@@ -6894,6 +6944,8 @@ def main() -> int:
     recommend_parser.add_argument("--effort", choices=VALID_EFFORTS)
     capacity_parser = subparsers.add_parser("capacity-tier")
     capacity_parser.add_argument("provider", choices=sorted(PROVIDER_ROUTES))
+    proxy_models = subparsers.add_parser("check-proxy-models")
+    proxy_models.add_argument("--models", required=True)
     fast_check = subparsers.add_parser("fast-check")
     fast_check.add_argument("--route", choices=("sol-fast", "luna-fast"), required=True)
     fast_check.add_argument("--ephemeral", action="store_true")
@@ -7009,6 +7061,9 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.command == "check-proxy-models":
+            check_proxy_models(args.models.split(","))
+            return 0
         if args.command == "bundle-check":
             result = validate_managed_bundle(
                 args.bundle, args.platform, args.component

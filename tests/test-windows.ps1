@@ -312,7 +312,7 @@ function Assert-NoConsoleSwapArtifacts([string]$Parent, [string]$Context) {
 Write-Stub 'git.cmd'
 Write-Stub 'bash.cmd'
 Write-Stub 'claude.cmd' "@if `"%1`"==`"--version`" echo Claude Code test`r`n@exit /b 0"
-Write-Stub 'claude-code-proxy.cmd' "@if not `"%AIRLOCK_TEST_PROXY_LOG%`"==`"`" echo %CCP_CONFIG_DIR%^|%XDG_STATE_HOME%^|%*>>`"%AIRLOCK_TEST_PROXY_LOG%`"`r`n@if `"%1`"==`"--version`" echo Proxy test`r`n@exit /b 0"
+Write-Stub 'claude-code-proxy.cmd' "@if not `"%AIRLOCK_TEST_PROXY_LOG%`"==`"`" echo %CCP_CONFIG_DIR%^|%XDG_STATE_HOME%^|%*>>`"%AIRLOCK_TEST_PROXY_LOG%`"`r`n@if `"%1`"==`"--version`" echo Proxy test`r`n@if `"%1`"==`"models`" if `"%AIRLOCK_TEST_PROXY_GROK47%`"==`"off`" (echo grok-4.6) else (echo Grok models: grok-4.6, grok-4.7, grok-composer-2.5-fast)`r`n@exit /b 0"
 Write-Stub 'python.cmd'
 
 $OldPath = $env:PATH
@@ -1393,8 +1393,8 @@ server.server_close()
     'airlock opr [route] [claude arguments]',
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
-    'Grok root aliases: grok, composer',
-    'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
+    'Grok root aliases: grok, grok47, composer',
+    'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, haiku55, grok, grok47, composer'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
@@ -2673,22 +2673,60 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
   if ($BadGrok.Error -notmatch 'unsupported Grok model') {
     throw "Unknown Grok model was not rejected clearly: $($BadGrok.Error)"
   }
-  # A declared model extends the launcher without code changes: with grok-4.7
+  $Haiku55 = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'haiku55', '-p', 'test')
+  foreach ($line in @('ROOT_MODEL=claude-haiku-5-5', 'COMPACT_WINDOW=unset', 'MAX_CONTEXT=unset', 'DEFAULT_HAIKU=claude-sonnet-5[1m]')) {
+    if ($Haiku55.Output -notmatch "(?m)^$([regex]::Escape($line))$") {
+      throw "Haiku 5.5 root changed exact identity or background sizing: $($Haiku55.Output)"
+    }
+  }
+  if ($Haiku55.Output -notmatch 'airlock-haiku55') { throw 'Haiku 5.5 worker was not enabled for its explicit root' }
+  $LegacyHaiku = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'haiku', '-p', 'test') $true @{
+    AIRLOCK_ANTHROPIC_MODELS = 'haiku'
+  }
+  if ($LegacyHaiku.Output -notmatch '(?m)^ROOT_MODEL=claude-haiku-4-5-20251001$' -or $LegacyHaiku.Output -match 'airlock-haiku55') {
+    throw "Legacy Haiku alias changed: $($LegacyHaiku.Output)"
+  }
+  foreach ($profile in @('grok', 'hybrid')) {
+    foreach ($alias in @('grok47', 'grok-4.7')) {
+      $Grok47 = Invoke-LauncherProcess $InstalledLauncher @($profile, $alias, '-p', 'test') $true @{
+        AIRLOCK_ACCESS_PROXY = (Join-Path $StubDir 'claude-code-proxy.cmd')
+      }
+      foreach ($line in @('ROOT_MODEL=grok-4.7', 'COMPACT_WINDOW=400000', 'MAX_CONTEXT=500000')) {
+        if ($Grok47.Output -notmatch "(?m)^$([regex]::Escape($line))$") { throw "Grok 4.7 identity or context changed: $($Grok47.Output)" }
+      }
+      if ($Grok47.Output -notmatch 'airlock-grok47') { throw 'Grok 4.7 worker was not enabled for its explicit root' }
+    }
+    $UnsupportedGrok47 = Invoke-LauncherProcess $InstalledLauncher @($profile, 'grok47', '-p', 'test') $false @{
+      AIRLOCK_ACCESS_PROXY = (Join-Path $StubDir 'claude-code-proxy.cmd')
+      AIRLOCK_TEST_PROXY_GROK47 = 'off'
+    }
+    if ($UnsupportedGrok47.Error -notmatch 'v0.1.35-airlock.7' -or $UnsupportedGrok47.Error -notmatch 'did not advertise') {
+      throw "Unsupported proxy catalog did not clearly refuse Grok 4.7: $($UnsupportedGrok47.Error)"
+    }
+  }
+  $UnsupportedWorker = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'sonnet', '-p', 'test') $false @{
+    AIRLOCK_ACCESS_PROXY = (Join-Path $StubDir 'claude-code-proxy.cmd')
+    AIRLOCK_GROK_MODELS = 'grok47'
+    AIRLOCK_TEST_PROXY_GROK47 = 'off'
+  }
+  if ($UnsupportedWorker.Error -notmatch 'did not advertise') { throw 'Unsupported Grok 4.7 worker was offered' }
+
+  # A declared model extends the launcher without code changes: with grok-test-custom
   # enabled in models.json, the same request resolves to that exact ID. The
   # declared ID has to be one Airlock does not ship, or the launcher's own
   # case matches first and the declaration path is never exercised.
   $DeclaredModels = Join-Path ([IO.Path]::GetTempPath()) ("airlock-models-{0}.json" -f [Guid]::NewGuid().ToString('N'))
   @'
 {"schema_version": 1, "models": [{
-  "id": "grok-4.7", "provider": "grok", "effort_ceiling": "xhigh",
+  "id": "grok-test-custom", "provider": "grok", "effort_ceiling": "xhigh",
   "context_window": null, "cost": "premium", "enabled": true
 }]}
 '@ | Set-Content -LiteralPath $DeclaredModels -Encoding Ascii
   $env:AIRLOCK_MODELS_FILE = $DeclaredModels
   try {
-    $Declared = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-4.7', '-p', 'test')
-    if ($Declared.Output -notmatch '(?m)^MODEL=grok-4\.7$') {
-      throw "Declared grok-4.7 model was not honored: $($Declared.Output)"
+    $Declared = Invoke-LauncherProcess $InstalledLauncher @('grok', '--model=grok-test-custom', '-p', 'test')
+    if ($Declared.Output -notmatch '(?m)^MODEL=grok-test-custom$') {
+      throw "Declared grok-test-custom model was not honored: $($Declared.Output)"
     }
   } finally {
     Remove-Item Env:\AIRLOCK_MODELS_FILE -ErrorAction SilentlyContinue

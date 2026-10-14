@@ -4,7 +4,7 @@
 
 [![Tests](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml/badge.svg)](https://github.com/Harshkamdar67/Airlock/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.14-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.15-orange.svg)](CHANGELOG.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](docs/windows.md)
 
 An airlock is a chamber where two environments meet without mixing. That is the whole idea here. A GPT worker and a Claude worker can run side by side in the same session, and neither one ever sees the other's login.
@@ -55,7 +55,7 @@ Claude Code
 
 The setup wizard saves what bare `airlock` starts. New setups recommend the hybrid profile with the reserved root `auto`, which resolves at launch to Fable when it is included on your plan, otherwise Opus, otherwise Sonnet, and never picks a model that needs confirmed extra usage. `airlock openai` always starts the saved OpenAI-only root, and an explicit shortcut such as `airlock terra` also stays OpenAI-only. `airlock grok` starts the saved Grok-only root. Existing configs without a saved profile keep the original OpenAI-only bare command. Open models are never saved defaults or `auto` candidates. Start one explicitly with `airlock om ROUTE` or `airlock hybrid om:ROUTE`.
 
-Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`.
+Grok is off until you turn it on. It runs through the same local proxy as Codex but signs in separately, so a hybrid session gains Grok workers only when your saved configuration enables them or when you name a Grok root directly. Run `airlock proxy grok auth login` first, then either answer the Grok question in `./scripts/setup.sh` or pass `--grok-workers grok,composer`. Haiku 5.5 and Grok 4.7 are optional peers, not replacements for `haiku` or `grok`. Start `airlock hybrid haiku55`, `airlock hybrid grok47`, or `airlock grok grok47`. Enable their named workers explicitly with `--anthropic-workers opus,sonnet,haiku,haiku55` or `--grok-workers grok,composer,grok47` in setup. Haiku 5.5 needs Claude Code 2.1.293 or newer; Grok 4.7 needs a proxy catalog with exact `grok-4.7`, available in carried build `0.1.35-airlock.7`. Existing defaults and automatic worker armies are unchanged. See [model details and setup examples](docs/models-and-usage.md#haiku-55).
 
 The hybrid profile starts one temporary router on `127.0.0.1`. The router sends exact enabled Claude model IDs to Anthropic, exact enabled bare GPT model IDs to the local OpenAI proxy, and an explicitly selected `openmodel/ROUTE` only to its declared loopback endpoint. Claude Code removes the `[1m]` context suffix before a request goes out for supported native Claude models, so the router registers that one deterministic wire form alongside each enabled Claude full ID that carries the suffix. Claude Code still owns every Agent call and tool event.
 
@@ -87,7 +87,7 @@ Clone this repository and run:
 
 The guided terminal setup shows full provider and model names, exact IDs, roles, and relative usage. Use the Up and Down arrow keys plus Enter, or keep typing a number or name. Its six short sections cover the default profile and orchestrator, worker pool, effort behavior, safety limits, installation actions, and a final review screen. Nothing on the machine changes until you accept that screen. If the normal macOS or Linux config parent is not writable, Airlock uses `~/.airlock` automatically instead of asking for `sudo`. If the upstream proxy's normal config or state parent is also blocked, setup gives the proxy a private writable fallback and uses it consistently for OAuth, the service, the launcher, and Doctor.
 
-The macOS/Linux installer requires a `claude-code-proxy` build whose offline catalog includes `gpt-6.1-sol` and `gpt-6-luna`. Airlock's carried `0.1.35-airlock.6` build includes both. Check `claude-code-proxy models` and upgrade the proxy before running setup again if either model is missing.
+The macOS/Linux installer requires a `claude-code-proxy` build whose offline catalog includes `gpt-6.1-sol` and `gpt-6-luna`. Airlock's carried `0.1.35-airlock.7` build includes both, plus `grok-4.7`. Check `claude-code-proxy models` and upgrade the proxy before running setup again if either model is missing.
 
 Provider Fast startup is part of safety and budget. Background-command, utility, Luna swarm selection, failover, capacity, generic-worker, and per-model controls stay under Advanced.
 

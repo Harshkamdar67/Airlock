@@ -34,10 +34,10 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 # One Enter for each question in the plain recommended path: the fourteen base
 # questions below, plus one per model when the saved worker mix does not match
 # a named preset and the wizard opens "Choose models individually". The fixture
-# asks about ten models, so the plain and narrow runs answer twenty-four prompts.
+# asks about eleven models, so the plain and narrow runs answer twenty-five prompts.
 # The keyboard run has its own explicit script and selects the balanced preset,
 # so it still answers only the base questions.
-ENTER_PRESSES = 24
+ENTER_PRESSES = 25
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -422,6 +422,9 @@ CHOICE_PRESENTATION = (
     "claude-fable-5-1",
     "Claude Haiku 4.5",
     "claude-haiku-4-5-20251001",
+    "Claude Haiku 5.5",
+    "claude-haiku-5-5",
+    "Requires Claude Code 2.1.293 or newer.",
     "GPT-6.1 Sol",
     "gpt-6.1-sol",
     "GPT-6 Astra",
@@ -746,6 +749,91 @@ try:
         "plain keyboard run",
         plain_keyboard_dir,
         KEYBOARD_CONFIG + ("AIRLOCK_HYBRID_MODEL=opus\n",),
+    )
+    # Append-only numbering must preserve the legacy menu whether Grok is
+    # enabled or not. Select each new root by number and prove the review and
+    # saved pool match, rather than merely checking catalog text.
+    finish_script = (
+        [KEY_ENTER]  # starting effort
+        + [KEY_ENTER]  # worker effort follows session
+        + [KEY_ENTER]  # extra usage asks
+        + [KEY_ENTER]  # Fast off
+        + [KEY_ENTER]  # balanced routing
+        + [KEY_ENTER]  # native worker ceiling
+        + [KEY_ENTER]  # Advanced off
+        + [KEY_ENTER]  # Codex OAuth if missing
+        + [KEY_ENTER]  # proxy service
+        + [KEY_ENTER]  # apply
+    )
+    haiku55_dir = temp_root / "haiku55-numbered"
+    exit_code, haiku55_output = run_wizard(
+        haiku55_dir,
+        keystrokes=[KEY_ENTER, KEY_ENTER, b"12\n", b"1\n"] + finish_script,
+    )
+    require_exit("Haiku55 numbered run", exit_code, haiku55_output)
+    require_phrases(
+        "Haiku55 numbered run", haiku55_output,
+        ("11) Claude Sonnet 5.5", "12) Claude Haiku 5.5", "claude-haiku-5-5"),
+    )
+    check_config_lines(
+        "Haiku55 numbered run", haiku55_dir,
+        ("AIRLOCK_HYBRID_MODEL=haiku55\n", "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku55\n",
+         "AIRLOCK_GROK_MODELS=\n", "AIRLOCK_WORKER_EFFORT=inherit\n"),
+    )
+
+    grok47_dir = temp_root / "grok47-numbered"
+    exit_code, grok47_output = run_wizard(
+        grok47_dir,
+        # Pick the new root, then the legacy Grok-only pool; root inclusion
+        # adds Grok47 without silently adding Composer or every Grok route.
+        keystrokes=[KEY_ENTER, b"y\n", b"14\n", b"1\n", b"2\n"] + finish_script,
+    )
+    require_exit("Grok47 numbered run", exit_code, grok47_output)
+    require_phrases(
+        "Grok47 numbered run", grok47_output,
+        ("12) Grok 4.6", "13) Grok Composer 2.5 Fast", "14) Grok 4.7",
+         "15) Claude Haiku 5.5", "1) Grok 4.6 and Grok Composer 2.5 Fast",
+         "2) Grok 4.6 only", "3) Grok Composer 2.5 Fast only",
+         "4) Grok 4.7 only", "5) All three Grok workers", "6) Choose Grok models individually"),
+    )
+    check_config_lines(
+        "Grok47 numbered run", grok47_dir,
+        ("AIRLOCK_HYBRID_MODEL=grok47\n", "AIRLOCK_GROK_MODELS=grok,grok47\n",
+         "AIRLOCK_WORKER_EFFORT=inherit\n"),
+    )
+
+    # A saved mixed opt-in pool uses the custom Grok choice and round-trips
+    # both model enables and their setup-time effort pins.
+    opt_in_dir = temp_root / "opt-in-pins"
+    opt_in_dir.mkdir()
+    (opt_in_dir / "config").write_text(
+        "AIRLOCK_DEFAULT_PROFILE=hybrid\nAIRLOCK_HYBRID_MODEL=auto\n"
+        "AIRLOCK_ANTHROPIC_MODELS=haiku55\nAIRLOCK_OPENAI_MODELS=\n"
+        "AIRLOCK_GROK_MODELS=grok,grok47\n"
+        "AIRLOCK_EFFORT_HAIKU55=medium\nAIRLOCK_EFFORT_GROK47=xhigh\n",
+        encoding="utf-8",
+    )
+    exit_code, opt_in_output = run_wizard(
+        opt_in_dir,
+        keystrokes=(
+            [KEY_ENTER] * 4  # hybrid, Grok yes, auto, custom workers
+            + [KEY_ENTER] * 11  # six Claude and five GPT models
+            + [KEY_ENTER] * 4  # custom Grok pool and its three model answers
+            + [KEY_ENTER] * 2  # starting effort, custom worker effort
+            + [KEY_ENTER] * 3  # Haiku55 medium, Grok inherits, Grok47 xhigh
+            + [KEY_ENTER] * 8  # safety, Advanced, installation, apply
+        ),
+    )
+    require_exit("Opt-in pool pin run", exit_code, opt_in_output)
+    require_phrases(
+        "Opt-in pool pin run", opt_in_output,
+        ("Claude Haiku 5.5 worker effort", "Grok 4.7 worker effort"),
+    )
+    check_config_lines(
+        "Opt-in pool pin run", opt_in_dir,
+        ("AIRLOCK_ANTHROPIC_MODELS=haiku55\n", "AIRLOCK_OPENAI_MODELS=\n",
+         "AIRLOCK_GROK_MODELS=grok,grok47\n", "AIRLOCK_EFFORT_HAIKU55=medium\n",
+         "AIRLOCK_EFFORT_GROK47=xhigh\n", "AIRLOCK_WORKER_EFFORT=inherit\n"),
     )
 finally:
     shutil.rmtree(temp_root, ignore_errors=True)

@@ -266,6 +266,80 @@ if AIRLOCK_CONFIG_DIR="$tmp_dir/astra-invalid" "$repo_root/scripts/setup.sh" \
   exit 1
 fi
 
+# New model routes are explicit choices, never additions to default pools.
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku$' "$new_default_dir/config"
+grep -q '^AIRLOCK_GROK_MODELS=$' "$new_default_dir/config"
+if grep -Eq '^AIRLOCK_EFFORT_(HAIKU55|GROK47)=' "$new_default_dir/config"; then
+  printf 'test: setup pinned an opt-in route by default\n' >&2
+  exit 1
+fi
+
+haiku55_root_dir="$tmp_dir/haiku55-root"
+AIRLOCK_CONFIG_DIR="$haiku55_root_dir" "$repo_root/scripts/setup.sh" \
+  --main-model haiku55 --anthropic-workers haiku --openai-workers '' \
+  --worker-pins haiku55=medium --config-only --no-login --no-service --yes \
+  >"$tmp_dir/haiku55-summary.out"
+grep -q '^AIRLOCK_DEFAULT_PROFILE=hybrid$' "$haiku55_root_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=haiku55$' "$haiku55_root_dir/config"
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=haiku,haiku55$' "$haiku55_root_dir/config"
+grep -q '^AIRLOCK_EFFORT_HAIKU55=medium$' "$haiku55_root_dir/config"
+grep -Fq 'Claude Haiku 5.5 (claude-haiku-5-5)' "$tmp_dir/haiku55-summary.out"
+
+for profile in hybrid grok; do
+  grok47_root_dir="$tmp_dir/grok47-$profile-root"
+  root_flag='--hybrid-model'; [[ "$profile" == 'grok' ]] && root_flag='--grok-model'
+  AIRLOCK_CONFIG_DIR="$grok47_root_dir" "$repo_root/scripts/setup.sh" \
+  \
+  --default-profile "$profile" "$root_flag" grok47 --grok-workers grok   \
+  --worker-pins grok47=xhigh --config-only --no-login --no-service --yes   \
+  >"$tmp_dir/grok47-$profile-summary.out"
+  grep -q "^AIRLOCK_DEFAULT_PROFILE=$profile$" "$grok47_root_dir/config"
+  if [[ "$profile" == 'hybrid' ]]; then
+    grep -q '^AIRLOCK_HYBRID_MODEL=grok47$' "$grok47_root_dir/config"
+  else
+    grep -q '^AIRLOCK_GROK_MODEL=grok47$' "$grok47_root_dir/config"
+  fi
+  grep -q '^AIRLOCK_GROK_MODELS=grok,grok47$' "$grok47_root_dir/config"
+  grep -q '^AIRLOCK_EFFORT_GROK47=xhigh$' "$grok47_root_dir/config"
+  grep -Fq 'Grok 4.7 (grok-4.7)' "$tmp_dir/grok47-$profile-summary.out"
+done
+
+opt_in_pool_dir="$tmp_dir/opt-in-pool"
+AIRLOCK_CONFIG_DIR="$opt_in_pool_dir" "$repo_root/scripts/setup.sh" \
+  --default-profile hybrid --hybrid-model auto \
+  --anthropic-workers haiku,haiku55 --grok-workers grok,composer,grok47 \
+  --worker-pins haiku55=medium,grok47=xhigh \
+  --config-only --no-login --no-service --yes >/dev/null
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=haiku,haiku55$' "$opt_in_pool_dir/config"
+grep -q '^AIRLOCK_GROK_MODELS=grok,composer,grok47$' "$opt_in_pool_dir/config"
+grep -q '^AIRLOCK_HYBRID_MODEL=auto$' "$opt_in_pool_dir/config"
+pool_hash="$(cksum "$opt_in_pool_dir/config")"
+AIRLOCK_CONFIG_DIR="$opt_in_pool_dir" "$repo_root/scripts/setup.sh" \
+  --config-only --no-login --no-service --yes >/dev/null
+test "$pool_hash" = "$(cksum "$opt_in_pool_dir/config")"
+
+# Regression: Sonnet 5.5 was accepted as a root but omitted from the CSV
+# whitelist. Both ordinary and extra worker pools must accept it.
+sonnet55_dir="$tmp_dir/sonnet55-pool"
+mkdir -p "$sonnet55_dir"
+printf 'AIRLOCK_ANTHROPIC_EXTRA_MODELS=sonnet55,haiku55\n' > "$sonnet55_dir/config"
+AIRLOCK_CONFIG_DIR="$sonnet55_dir" "$repo_root/scripts/setup.sh" \
+  --default-profile hybrid --hybrid-model sonnet55 --anthropic-workers sonnet \
+  --worker-pins sonnet55=high --config-only --no-login --no-service --yes >/dev/null
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=sonnet,sonnet55$' "$sonnet55_dir/config"
+grep -q '^AIRLOCK_ANTHROPIC_EXTRA_MODELS=sonnet55,haiku55$' "$sonnet55_dir/config"
+grep -q '^AIRLOCK_EFFORT_SONNET55=high$' "$sonnet55_dir/config"
+
+for invalid in '--anthropic-workers haiku56' '--grok-workers grok48' '--worker-pins grok48=xhigh'; do
+  # shellcheck disable=SC2086
+  if AIRLOCK_CONFIG_DIR="$tmp_dir/new-route-invalid" "$repo_root/scripts/setup.sh" \
+  \
+  --config-only --no-login --no-service --yes $invalid >/dev/null 2>&1; then
+    printf 'test: setup accepted an unknown opt-in route: %s\n' "$invalid" >&2
+    exit 1
+  fi
+done
+
 detected_dir="$tmp_dir/detected-config"
 mkdir -p "$detected_dir"
 printf 'AIRLOCK_ANTHROPIC_PLAN=unknown\n' > "$detected_dir/config"

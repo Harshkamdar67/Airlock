@@ -230,6 +230,7 @@ GPT_6_ASTRA_HARD_LIMIT = "922000"
 GPT_6_ASTRA_COMPACT_THRESHOLD = "736000"
 DECLARED_CONTEXT_LIMITS: dict[str, tuple[str, str]] = {
     GROK_4_6_MODEL: (GROK_4_6_HARD_LIMIT, GROK_4_6_COMPACT_THRESHOLD),
+    "grok-4.7": (GROK_4_6_HARD_LIMIT, GROK_4_6_COMPACT_THRESHOLD),
     GPT_6_ASTRA_MODEL: (GPT_6_ASTRA_HARD_LIMIT, GPT_6_ASTRA_COMPACT_THRESHOLD),
 }
 
@@ -1487,6 +1488,9 @@ def main(
     model_context_window: str | None = None
     try:
         policy = _policy if _policy is not None else access.load_or_refresh_policy()
+        if root_model == "claude-haiku-5-5":
+            policy = dict(policy)
+            policy["_haiku55_root"] = True
         if profile in ("openrouter-pure", "hybrid-openrouter-root"):
             root_entry = access.resolve_openrouter_route(
                 policy, str(openrouter_root_route)
@@ -1534,6 +1538,8 @@ def main(
             openrouter_root_route=openrouter_root_route,
             openmodel_root_route=openmodel_root_route,
         )
+        if "grok-4.7" in route_policy["model_ids"]:
+            access.check_proxy_models(route_policy["model_ids"])
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")
         web_tools_script = str(
