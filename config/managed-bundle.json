@@ -91,6 +91,7 @@
       "plugins/airlock/scripts/worktree-remove.sh",
       "plugins/airlock/scripts/worktree.py",
       "plugins/airlock/skills/airlock-fast/SKILL.md",
+      "plugins/airlock/skills/airlock-research/SKILL.md",
       "plugins/airlock/skills/usage/SKILL.md"
     ],
     "posix": [],
