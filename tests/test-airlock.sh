@@ -142,10 +142,18 @@ grep -q '^Preset: budget$' <<<"$budget_output"
 # Worker pools change without the setup wizard, and the readiness report
 # explains what an opt-in route still needs without making a model request.
 pool_config="$tmp_dir/pool.conf"
-pool_proxy="$tmp_dir/pool-proxy"
 printf '# keep me\nUNRELATED=value\nAIRLOCK_OPENAI_MODELS=sol,terra,luna\n' > "$pool_config"
-printf '#!/usr/bin/env bash\ncase "$1" in models) printf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna\\n" ;; *) exit 1 ;; esac\n' > "$pool_proxy"
-chmod +x "$pool_proxy"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    pool_proxy="$tmp_dir/pool-proxy.cmd"
+    printf '@echo off\r\nif "%%1"=="models" (echo gpt-6.1-sol gpt-5.6-terra gpt-6-luna) else (exit /b 1)\r\n' > "$pool_proxy"
+    ;;
+  *)
+    pool_proxy="$tmp_dir/pool-proxy"
+    printf '#!/usr/bin/env bash\ncase "$1" in models) printf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna\\n" ;; *) exit 1 ;; esac\n' > "$pool_proxy"
+    chmod +x "$pool_proxy"
+    ;;
+esac
 enable_output="$(AIRLOCK_CONFIG_FILE="$pool_config" AIRLOCK_ACCESS_PROXY="$pool_proxy" AIRLOCK_ACCESS_CLAUDE_VERSION=2.1.300 "$launcher" enable fable52 terra61)"
 grep -q '^fable52: enabled in AIRLOCK_ANTHROPIC_MODELS$' <<<"$enable_output"
 grep -q '^terra61: enabled in AIRLOCK_OPENAI_MODELS$' <<<"$enable_output"

@@ -3613,12 +3613,20 @@ class WorkerPoolAndReadinessTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = self.root / "config"
         self.proxy = self.root / "proxy"
-        self.proxy.write_text(
-            "#!/usr/bin/env bash\n"
-            'case "$1" in models) printf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna grok-4.6\\n" ;; *) exit 1 ;; esac\n',
-            encoding="utf-8",
-        )
-        self.proxy.chmod(0o755)
+
+        # A fake proxy catalog through the subprocess seam, so the same test
+        # runs on Windows, where a shell-script stub cannot be executed.
+        def fake_run_status(command):
+            if command[0] != str(self.proxy):
+                return None
+            if command[1:] == ["models"]:
+                return subprocess.CompletedProcess(
+                    command, 0, "gpt-6.1-sol gpt-5.6-terra gpt-6-luna grok-4.6\n", ""
+                )
+            return subprocess.CompletedProcess(command, 1, "", "")
+
+        self.run_status = patch.object(ACCESS, "_run_status", side_effect=fake_run_status)
+        self.run_status.start()
         self.environment = patch.dict(os.environ, {
             "AIRLOCK_CONFIG_FILE": str(self.config),
             "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
@@ -3633,6 +3641,7 @@ class WorkerPoolAndReadinessTests(unittest.TestCase):
             os.environ.pop(key, None)
 
     def tearDown(self) -> None:
+        self.run_status.stop()
         self.environment.stop()
         self.temp.cleanup()
 
