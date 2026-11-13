@@ -89,3 +89,12 @@ AIRLOCK_PROXY_URL=http://127.0.0.1:18765
 # config or state parent is not writable. They are directory paths, not tokens.
 AIRLOCK_PROXY_CONFIG_DIR=
 AIRLOCK_PROXY_STATE_HOME=
+
+# Web search backends for the airlock-web-tools server used by non-Anthropic
+# roots. duckduckgo and wikipedia always work; searxng needs your own
+# instance, and ddgs needs an interpreter you installed it into yourself.
+# See docs/models-and-usage.md#search-backends.
+AIRLOCK_WEB_SEARCH_BACKENDS=duckduckgo
+AIRLOCK_WEB_SEARXNG_URL=
+AIRLOCK_WEB_DDGS_PYTHON=
+AIRLOCK_WEB_DDGS_ENGINES=

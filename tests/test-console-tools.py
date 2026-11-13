@@ -1606,6 +1606,43 @@ class BoundedStdinTests(unittest.TestCase):
         self.assertEqual(replies[0]["id"], 1)
         self.assertEqual(replies[0]["result"], {})
 
+    def test_answers_each_line_while_stdin_stays_open(self) -> None:
+        # Claude Code keeps stdin open for the whole session. A reader that
+        # waits for a full buffer or for end of file never answers initialize,
+        # and the server times out on connect.
+        import subprocess
+
+        server = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "plugins/airlock/mcp-server/airlock_console_mcp.py"),
+                "--contract",
+                str(ROOT / "bin/airlock_console_tools.py"),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            replies: list[bytes] = []
+            for request_id in (1, 2):
+                request = {"jsonrpc": "2.0", "id": request_id, "method": "ping"}
+                server.stdin.write((json.dumps(request) + "\n").encode())
+                server.stdin.flush()
+                reader = Thread(
+                    target=lambda: replies.append(server.stdout.readline()),
+                    daemon=True,
+                )
+                reader.start()
+                reader.join(timeout=10)
+                self.assertFalse(
+                    reader.is_alive(), f"no reply to request {request_id} with stdin open"
+                )
+                self.assertEqual(json.loads(replies[-1])["id"], request_id)
+        finally:
+            server.kill()
+            server.wait(timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()

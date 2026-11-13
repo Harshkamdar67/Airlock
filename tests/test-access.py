@@ -1039,7 +1039,7 @@ for line in sys.stdin:
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
                     # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
                     # The loop enables both opt-in OpenAI routes for this size check.
-                    expected = 13 if profile == "hybrid-grok-root" else 11
+                    expected = 17 if profile == "hybrid-grok-root" else 14
                     self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
@@ -1142,6 +1142,31 @@ for line in sys.stdin:
                             str(script), str(contract)
                         )
                     )
+
+    def test_web_tools_entry_carries_search_backend_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            web_script = Path(temp) / "airlock_web_tools.py"
+            web_script.write_text("# helper\n", encoding="utf-8")
+
+            plain = ACCESS.web_tools_server_entry(str(web_script))
+            self.assertEqual(set(plain), {"command", "args"})
+
+            self.config.write_text(
+                "AIRLOCK_WEB_SEARCH_BACKENDS=duckduckgo,wikipedia\n"
+                "AIRLOCK_WEB_SEARXNG_URL=http://127.0.0.1:8888\n"
+                "AIRLOCK_WEB_DDGS_ENGINES=\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {
+                "AIRLOCK_WEB_SEARCH_BACKENDS": "searxng",
+                "AIRLOCK_WEB_DDGS_PYTHON": "bad\nvalue",
+            }):
+                entry = ACCESS.web_tools_server_entry(str(web_script))
+            self.assertEqual(entry["env"], {
+                # The environment wins over the config file.
+                "AIRLOCK_WEB_SEARCH_BACKENDS": "searxng",
+                "AIRLOCK_WEB_SEARXNG_URL": "http://127.0.0.1:8888",
+            })
 
     def test_managed_mcp_environment_switches_require_exact_off(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1914,18 +1939,18 @@ class GrokAuthenticationTests(unittest.TestCase):
 
     def test_confirmed_logged_out_grok_overrides_configured_routes(self) -> None:
         access = self.grok_access(False, AIRLOCK_GROK_MODELS="grok,composer")
-        self.assertEqual(access, {"grok": "unavailable", "composer": "unavailable"})
+        self.assertEqual(access, {"grok": "unavailable", "grok47": "unavailable", "composer": "unavailable"})
 
     def test_unknown_grok_auth_keeps_configured_routes(self) -> None:
         # A machine that has never run a refresh must keep whatever the config
         # asked for. Silently dropping workers on an unknown answer would make
         # the enable look like it failed.
         access = self.grok_access(None, AIRLOCK_GROK_MODELS="grok,composer")
-        self.assertEqual(access, {"grok": "unknown", "composer": "unknown"})
+        self.assertEqual(access, {"grok": "unknown", "grok47": "unavailable", "composer": "unknown"})
 
     def test_grok_routes_stay_off_without_an_explicit_enable(self) -> None:
         access = self.grok_access(True)
-        self.assertEqual(access, {"grok": "unavailable", "composer": "unavailable"})
+        self.assertEqual(access, {"grok": "unavailable", "grok47": "unavailable", "composer": "unavailable"})
 
     def test_grok_probe_is_not_a_usage_refresh(self) -> None:
         # Grok login state is account state. Counting it as a usage refresh
@@ -2404,22 +2429,23 @@ class FailoverChainTests(unittest.TestCase):
     def test_shipped_grok_routes_stay_inside_the_proxy_catalog(self) -> None:
         """A rate-limited root must never fail over to an unknown Grok ID.
 
-        The tested claude-code-proxy 0.1.35 catalog lists grok-4.5, grok-4.6,
-        and grok-composer-2.5-fast. Pinning a flagship the installed proxy
+        The v0.1.35-airlock.7 catalog must list grok-4.5, grok-4.6,
+        grok-4.7, and grok-composer-2.5-fast. The opt-in route has a startup
+        catalog check; older builds can still serve the original defaults. Pinning a flagship the installed proxy
         does not carry makes every same-category failover hop onto that ID,
         and the proxy then rejects the whole conversation with `Unknown
         model`. That is what happened when beta.7 pinned grok-4.6 against a
         0.1.22 proxy. This guard fails the suite the moment a profile or
         managed agent pins something the catalog does not list.
         """
-        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-composer-2.5-fast"}
+        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-4.7", "grok-composer-2.5-fast"}
         shipped = [
             profile["model"]
             for provider in ACCESS.MODEL_PROFILES.values()
             for profile in provider.values()
             if profile["model"].startswith("grok-")
         ]
-        self.assertEqual(set(shipped), {"grok-4.6", "grok-composer-2.5-fast"})
+        self.assertEqual(set(shipped), {"grok-4.6", "grok-4.7", "grok-composer-2.5-fast"})
         for model in shipped:
             self.assertIn(model, proxy_catalog)
         with open(
@@ -2432,7 +2458,7 @@ class FailoverChainTests(unittest.TestCase):
             for name, definition in agents.items()
             if not name.startswith("_") and str(definition.get("model", "")).startswith("grok-")
         ]
-        self.assertEqual(managed, ["grok-4.6", "grok-composer-2.5-fast"])
+        self.assertEqual(managed, ["grok-4.6", "grok-composer-2.5-fast", "grok-4.7"])
 
     def test_premium_failover_chains_use_a_supported_grok_id(self) -> None:
         """Opus hitting 429 must hop to an ID the installed proxy serves.
@@ -2469,7 +2495,7 @@ class FailoverChainTests(unittest.TestCase):
         self.assertEqual(chains["gpt-6.1-sol"], ["grok-4.6", "claude-opus-5-5"])
         # Whatever the shipped pin is, every Grok hop a chain produces has to
         # be an ID the tested proxy catalogs list.
-        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-composer-2.5-fast"}
+        proxy_catalog = {"grok-4.5", "grok-4.6", "grok-4.7", "grok-composer-2.5-fast"}
         for chain in chains.values():
             for hop in chain:
                 if hop.startswith("grok-"):
@@ -2972,7 +2998,7 @@ class CustomModelDeclarationTests(unittest.TestCase):
 
     def _entry(self, **overrides):
         entry = {
-            "id": "grok-4.7",
+            "id": "grok-test-custom",
             "provider": "grok",
             "effort_ceiling": "xhigh",
             "context_window": None,
@@ -2988,8 +3014,8 @@ class CustomModelDeclarationTests(unittest.TestCase):
     def test_a_valid_declaration_produces_a_safe_agent_name(self) -> None:
         entries = ACCESS.validate_custom_models(self._document(self._entry()))
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].model_id, "grok-4.7")
-        self.assertEqual(entries[0].agent_name, "airlock-custom-grok-grok-4-7")
+        self.assertEqual(entries[0].model_id, "grok-test-custom")
+        self.assertEqual(entries[0].agent_name, "airlock-custom-grok-grok-test-custom")
         self.assertEqual(entries[0].effort_ceiling, "xhigh")
 
     def test_disabled_entries_are_kept_but_marked(self) -> None:
@@ -3036,7 +3062,7 @@ class CustomModelDeclarationTests(unittest.TestCase):
             target = Path(directory) / "models.json"
             target.write_text(json.dumps(self._document(self._entry())), encoding="utf-8")
             entries = ACCESS.load_custom_models(target)
-        self.assertEqual([entry.model_id for entry in entries], ["grok-4.7"])
+        self.assertEqual([entry.model_id for entry in entries], ["grok-test-custom"])
 
     def test_malformed_documents_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
@@ -3053,7 +3079,7 @@ class CustomModelDeclarationTests(unittest.TestCase):
         policy = {"_custom_models": entries}
         self.assertEqual(
             [entry.model_id for entry in ACCESS.enabled_custom_models(policy)],
-            ["grok-4.7"],
+            ["grok-test-custom"],
         )
 
 
@@ -3468,6 +3494,210 @@ class Sonnet55CatalogueTests(unittest.TestCase):
             self.assertEqual(catalog["airlock-sonnet55"]["model"], "claude-sonnet-5-5[1m]")
             self.assertEqual(catalog["airlock-sonnet55"]["effort"], "high")
             self.assertEqual(catalog["airlock-sonnet"]["model"], "claude-sonnet-5[1m]")
+
+
+
+class Haiku55Grok47CatalogueTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(root / "config"),
+            "AIRLOCK_FAILOVER_FILE": str(root / "failover.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+        }, clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def enabled_policy(self):
+        policy = ACCESS.default_policy()
+        policy["providers"]["anthropic"]["models"]["haiku55"]["access"] = "included"
+        policy["providers"]["grok"]["models"]["grok47"]["access"] = "included"
+        return policy
+
+    def test_new_routes_are_off_and_old_defaults_keep_exact_ids(self):
+        policy = ACCESS.default_policy()
+        self.assertEqual(policy["providers"]["anthropic"]["models"]["haiku55"]["access"], "unavailable")
+        self.assertEqual(policy["providers"]["grok"]["models"]["grok47"]["access"], "unavailable")
+        self.assertEqual(ACCESS.MODEL_PROFILES["anthropic"]["haiku"]["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(ACCESS.MODEL_PROFILES["grok"]["grok"]["model"], "grok-4.6")
+        routes = ACCESS.session_route_policy(policy, "hybrid-anthropic-root")
+        self.assertNotIn("claude-haiku-5-5", routes["routes"])
+        self.assertNotIn("grok-4.7", routes["routes"])
+
+    def test_exact_catalog_models_efforts_and_windows(self):
+        for filename in ("claude-agents.json", "anthropic-direct-agents.json"):
+            catalog = json.loads((ROOT / "config" / filename).read_text())
+            self.assertEqual(catalog["airlock-haiku55"]["model"], "claude-haiku-5-5")
+            self.assertEqual(catalog["airlock-haiku55"]["effort"], "medium")
+            self.assertEqual(catalog["airlock-haiku"]["model"], "claude-haiku-4-5-20251001")
+        catalog = json.loads((ROOT / "config" / "grok-agents.json").read_text())
+        self.assertEqual(catalog["airlock-grok47"]["model"], "grok-4.7")
+        self.assertEqual(catalog["airlock-grok47"]["effort"], "xhigh")
+        self.assertEqual(catalog["airlock-grok"]["model"], "grok-4.6")
+        self.assertEqual(ACCESS.MODEL_PROFILES["anthropic"]["haiku55"]["window"], 1000000)
+        self.assertEqual(ACCESS.MODEL_PROFILES["grok"]["grok47"]["window"], 500000)
+        self.assertEqual(ACCESS.SHIPPED_MODEL_EFFORT_CEILINGS["grok-4.7"], "xhigh")
+
+    def test_enabled_workers_route_bare_ids_without_changing_background(self):
+        policy = self.enabled_policy()
+        before = ACCESS.session_route_policy(ACCESS.default_policy(), "hybrid-anthropic-root")
+        after = ACCESS.session_route_policy(policy, "hybrid-anthropic-root")
+        self.assertEqual(after["routes"]["claude-haiku-5-5"], "anthropic")
+        self.assertNotIn("claude-haiku-5-5[1m]", after["routes"])
+        self.assertEqual(after["routes"]["grok-4.7"], "grok")
+        self.assertIn("airlock-haiku55", after["agent_names"])
+        self.assertIn("airlock-grok47", after["agent_names"])
+        self.assertEqual(after["picker_models"]["haiku"], before["picker_models"]["haiku"])
+        self.assertEqual(after["discovery_model"], before["discovery_model"])
+        guidance = ACCESS.portfolio_guidance(policy, "hybrid-anthropic-root")
+        self.assertIn("keep airlock-haiku55 available for an explicit bounded utility choice", guidance)
+        self.assertIn("prefer airlock-grok47 for long-horizon", guidance)
+        self.assertNotIn("haiku55", ACCESS.SWARM_ROUTES)
+        self.assertNotIn("grok47", ACCESS.SWARM_ROUTES)
+
+    def test_haiku55_only_explicit_root_can_fill_background_and_discovery(self):
+        policy = self.enabled_policy()
+        for provider in policy["providers"].values():
+            for state in provider["models"].values():
+                state["access"] = "unavailable"
+        policy["providers"]["anthropic"]["models"]["haiku55"]["access"] = "included"
+        workers = ACCESS.enabled_profile_workers(policy, "hybrid-anthropic-root")
+        self.assertIsNone(ACCESS.discovery_model_from_workers(policy, workers))
+        policy["_haiku55_root"] = True
+        routes = ACCESS.session_route_policy(policy, "hybrid-anthropic-root")
+        self.assertEqual(set(routes["picker_models"].values()), {"claude-haiku-5-5"})
+        self.assertEqual(routes["discovery_model"], "claude-haiku-5-5")
+
+    def test_default_peers_never_upspend_into_haiku55(self):
+        policy = self.enabled_policy()
+        route = ACCESS.session_route_policy(policy, "hybrid-anthropic-root")
+        workers = ACCESS.enabled_profile_workers(policy, "hybrid-anthropic-root")
+        chains = ACCESS.session_failover_chains(policy, workers, route["routes"])
+        for peers in chains.values():
+            self.assertNotIn("claude-haiku-5-5", peers)
+        self.assertIn("grok-4.7", chains["claude-opus-5-5"])
+        self.assertIn("claude-opus-5-5", chains["grok-4.7"])
+        self.assertIn("haiku55", ACCESS.RECOMMENDED_HANDOFF)
+        self.assertIn("grok47", ACCESS.RECOMMENDED_HANDOFF["grok"])
+
+    def test_proxy_gate_is_exact_and_accepts_comma_separated_catalog(self):
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_PROXY": "proxy-stub"}):
+            for output in ("Grok models: grok-4.6, grok-4.7, grok-composer-2.5-fast", "grok-4.7\n"):
+                with self.subTest(output=output), patch.object(ACCESS, "_run_status", return_value=subprocess.CompletedProcess([], 0, output, "")) as run:
+                    ACCESS.check_proxy_models(["grok-4.7"])
+                    run.assert_called_once_with(["proxy-stub", "models"])
+            for output in ("grok-4.6", "grok-4-7", "grok-4.70", "grok-4.7-fast"):
+                with self.subTest(output=output), patch.object(ACCESS, "_run_status", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                    with self.assertRaisesRegex(ACCESS.AccessError, "v0.1.35-airlock.7"):
+                        ACCESS.check_proxy_models(["grok-4.7"])
+
+    def test_proxy_gate_fails_closed_without_successful_catalog(self):
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_PROXY": "proxy-stub"}):
+            for result in (None, subprocess.CompletedProcess([], 1, "grok-4.7", "")):
+                with self.subTest(result=result), patch.object(ACCESS, "_run_status", return_value=result):
+                    with self.assertRaisesRegex(ACCESS.AccessError, "did not advertise"):
+                        ACCESS.check_proxy_models(["grok-4.7"])
+
+    def test_non_opt_in_sessions_do_not_probe_catalog(self):
+        with patch.object(ACCESS, "_run_status") as run:
+            ACCESS.check_proxy_models(["grok-4.6", "claude-haiku-4-5-20251001"])
+            run.assert_not_called()
+
+
+
+class WorkerPoolAndReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = self.root / "config"
+        self.proxy = self.root / "proxy"
+
+        # A fake proxy catalog through the subprocess seam, so the same test
+        # runs on Windows, where a shell-script stub cannot be executed.
+        def fake_run_status(command):
+            if command[0] != str(self.proxy):
+                return None
+            if command[1:] == ["models"]:
+                return subprocess.CompletedProcess(
+                    command, 0, "gpt-6.1-sol gpt-5.6-terra gpt-6-luna grok-4.6\n", ""
+                )
+            return subprocess.CompletedProcess(command, 1, "", "")
+
+        self.run_status = patch.object(ACCESS, "_run_status", side_effect=fake_run_status)
+        self.run_status.start()
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.config),
+            "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
+            "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
+            "AIRLOCK_ACCESS_PROXY": str(self.proxy),
+            "AIRLOCK_ACCESS_CLAUDE_VERSION": "2.1.290",
+        }, clear=False)
+        self.environment.start()
+        for key in ("AIRLOCK_ANTHROPIC_MODELS", "AIRLOCK_OPENAI_MODELS", "AIRLOCK_GROK_MODELS"):
+            os.environ.pop(key, None)
+
+    def tearDown(self) -> None:
+        self.run_status.stop()
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def test_enable_and_disable_edit_only_the_matching_pool_lines(self) -> None:
+        self.config.write_text("# note\nUNRELATED=1\nAIRLOCK_OPENAI_MODELS=sol,luna\n", encoding="utf-8")
+        ACCESS.update_saved_pools("enable", ["terra61", "fable52", "terra61"])
+        text = self.config.read_text(encoding="utf-8")
+        self.assertIn("# note\nUNRELATED=1\n", text)
+        self.assertIn("AIRLOCK_OPENAI_MODELS=sol,terra61,luna\n", text)
+        self.assertIn("AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,fable52,haiku\n", text)
+        self.assertNotIn("AIRLOCK_GROK_MODELS", text)
+        lines = ACCESS.update_saved_pools("disable", ["fable52", "grok47"])
+        self.assertIn("fable52: disabled in AIRLOCK_ANTHROPIC_MODELS", lines)
+        self.assertIn("grok47: already disabled", lines)
+        self.assertIn("AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku\n", self.config.read_text(encoding="utf-8"))
+
+    def test_unknown_route_changes_nothing(self) -> None:
+        self.config.write_text("AIRLOCK_OPENAI_MODELS=sol\n", encoding="utf-8")
+        with self.assertRaisesRegex(ACCESS.AccessError, "unknown worker route: luna-fast"):
+            ACCESS.update_saved_pools("enable", ["terra61", "luna-fast"])
+        self.assertEqual(self.config.read_text(encoding="utf-8"), "AIRLOCK_OPENAI_MODELS=sol\n")
+
+    def test_environment_override_is_reported(self) -> None:
+        with patch.dict(os.environ, {"AIRLOCK_OPENAI_MODELS": "sol"}):
+            lines = ACCESS.update_saved_pools("disable", ["luna"])
+        self.assertTrue(any("set in the environment" in line for line in lines))
+
+    def test_readiness_names_what_each_route_still_needs(self) -> None:
+        self.config.write_text("AIRLOCK_ANTHROPIC_MODELS=opus,haiku55\nAIRLOCK_OPENAI_MODELS=sol,terra61\n", encoding="utf-8")
+        report = ACCESS.model_readiness(ACCESS.load_policy())
+        by_route = {item["route"]: item for item in report["routes"]}
+        self.assertEqual(report["claude_code"], "2.1.290")
+        self.assertEqual(report["proxy_models"], 4)
+        self.assertTrue(by_route["opus"]["enabled"])
+        self.assertTrue(by_route["opus"]["ready"])
+        self.assertEqual(by_route["haiku55"]["issues"], ["needs Claude Code 2.1.293 or newer (found 2.1.290)"])
+        self.assertTrue(by_route["sonnet55"]["ready"])
+        self.assertIn("proxy does not list gpt-6.1-terra; install v0.1.35-airlock.8", by_route["terra61"]["issues"])
+        self.assertTrue(by_route["terra61"]["enabled"])
+        self.assertIn("proxy does not list grok-4.7; install v0.1.35-airlock.7", by_route["grok47"]["issues"])
+        self.assertTrue(by_route["grok"]["ready"])
+        lines = ACCESS.model_readiness_lines({}, report=report)
+        self.assertTrue(any(line.startswith("fable52 ") and "airlock enable fable52" in line for line in lines))
+
+    def test_readiness_survives_a_missing_proxy_and_claude(self) -> None:
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_PROXY": str(self.root / "missing")}):
+            os.environ.pop("AIRLOCK_ACCESS_CLAUDE_VERSION")
+            with patch.object(ACCESS.shutil, "which", return_value=None):
+                os.environ.pop("AIRLOCK_REAL_CLAUDE", None)
+                report = ACCESS.model_readiness(ACCESS.load_policy())
+        by_route = {item["route"]: item for item in report["routes"]}
+        self.assertIsNone(report["claude_code"])
+        self.assertIsNone(report["proxy_models"])
+        self.assertIn("installed version unknown", by_route["sonnet55"]["issues"][0])
+        self.assertIn("claude-code-proxy not found", by_route["sol"]["issues"][0])
+        self.assertTrue(by_route["opus"]["ready"])
 
 
 if __name__ == "__main__":

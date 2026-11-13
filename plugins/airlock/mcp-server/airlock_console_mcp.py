@@ -351,36 +351,36 @@ def post_tool_call(
 def iter_bounded_stdin_lines(
     stream_in, *, max_bytes: int = MAX_STDIN_LINE_BYTES
 ) -> Iterator[str]:
-    """Yield newline-delimited stdin text, discarding oversized lines safely."""
+    """Yield newline-delimited stdin text, discarding oversized lines safely.
 
-    buffer = ""
+    Reads one line at a time. The client keeps stdin open for the whole
+    session, so a fixed-size read would wait for more input before answering
+    the first request.
+    """
+
+    def read_piece() -> str:
+        piece = stream_in.readline(max_bytes + 1)
+        if isinstance(piece, bytes):
+            piece = piece.decode("utf-8", errors="replace")
+        return piece or ""
+
     while True:
-        chunk = stream_in.read(4096)
-        if chunk == "" or chunk is None:
-            if buffer:
-                encoded = buffer.encode("utf-8", errors="surrogatepass")
-                if len(encoded) <= max_bytes:
-                    yield buffer
+        line = read_piece()
+        if not line:
             break
-        if not isinstance(chunk, str):
-            try:
-                chunk = chunk.decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                continue
-        buffer += chunk
-        while True:
-            newline_at = buffer.find("\n")
-            if newline_at < 0:
-                encoded = buffer.encode("utf-8", errors="surrogatepass")
-                if len(encoded) > max_bytes:
-                    buffer = ""
-                break
-            line = buffer[:newline_at]
-            buffer = buffer[newline_at + 1 :]
-            encoded = line.encode("utf-8", errors="surrogatepass")
-            if len(encoded) > max_bytes:
-                continue
-            yield line
+        complete = line.endswith("\n")
+        if not complete and len(line) > max_bytes:
+            # Oversized: drop the rest of this line, then keep serving.
+            while True:
+                rest = read_piece()
+                if not rest or rest.endswith("\n"):
+                    break
+            continue
+        if complete:
+            line = line[:-1]
+        if len(line.encode("utf-8", errors="surrogatepass")) > max_bytes:
+            continue
+        yield line
 
 
 class ConsoleToolsServer:

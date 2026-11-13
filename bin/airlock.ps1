@@ -114,6 +114,7 @@ $Models = @{
   'sol61'    = @('gpt-6.1-sol',      'GPT-6.1 Sol')
   'sol-fast' = @('gpt-5.6-sol-fast',   'GPT-5.6 Sol Fast')
   'terra'    = @('gpt-5.6-terra',      'GPT-5.6 Terra')
+  'terra61'  = @('gpt-6.1-terra',      'GPT-6.1 Terra')
   'luna'     = @('gpt-6-luna',       'GPT-6 Luna')
   '5.5'      = @('gpt-5.5',            'GPT-5.5')
   '5.4'      = @('gpt-5.4',            'GPT-5.4')
@@ -125,6 +126,7 @@ $Models = @{
 
 $GrokModels = @{
   'grok'     = @('grok-4.6', 'Grok 4.6')
+  'grok47'   = @('grok-4.7', 'Grok 4.7')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast')
 }
 
@@ -137,6 +139,7 @@ function Enable-ExplicitOpenAIRoot {
   $route = switch ($RootModel) {
     'gpt-6-astra' { 'astra' }
     'gpt-6.1-sol' { 'sol' }
+    'gpt-6.1-terra' { 'terra61' }
     default { return }
   }
   $pool = if ($null -ne $env:AIRLOCK_OPENAI_MODELS) { [string]$env:AIRLOCK_OPENAI_MODELS }
@@ -154,6 +157,7 @@ function Enable-ExplicitOpenAIRoot {
 # bin/airlock and bin/airlock-hybrid.py; tests/test-windows.ps1 guards parity.
 $DeclaredContextLimits = @{
   'grok-4.6'    = @('500000', '400000')
+  'grok-4.7'    = @('500000', '400000')
   'gpt-6-astra' = @('922000', '736000')
 }
 
@@ -162,6 +166,7 @@ $HybridRoots = @{
   'sol'    = @('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai')
   'sol61'  = @('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai')
   'terra'  = @('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai')
+  'terra61' = @('gpt-6.1-terra', 'GPT-6.1 Terra', 'openai')
   'luna'   = @('gpt-6-luna', 'GPT-6 Luna', 'openai')
   # Claude Code only grants these models their native 1M window when
   # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
@@ -171,9 +176,16 @@ $HybridRoots = @{
   'sonnet55' = @('claude-sonnet-5-5[1m]', 'Claude Sonnet 5.5', 'anthropic')
   'sonnet' = @('claude-sonnet-5[1m]', 'Claude Sonnet 5', 'anthropic')
   'fable'  = @('claude-fable-5-1[1m]', 'Claude Fable 5.1', 'anthropic')
+  'fable52' = @('claude-fable-5-2[1m]', 'Claude Fable 5.2', 'anthropic')
+  'claude-fable-5-2' = @('claude-fable-5-2[1m]', 'Claude Fable 5.2', 'anthropic')
   'haiku'  = @('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'anthropic')
+  # Haiku 5.5 has its native 1M window on the bare ID, with no suffix.
+  'haiku55' = @('claude-haiku-5-5', 'Claude Haiku 5.5', 'anthropic')
+  'claude-haiku-5-5' = @('claude-haiku-5-5', 'Claude Haiku 5.5', 'anthropic')
   'grok'     = @('grok-4.6', 'Grok 4.6', 'grok')
   'grok-4.6' = @('grok-4.6', 'Grok 4.6', 'grok')
+  'grok47'   = @('grok-4.7', 'Grok 4.7', 'grok')
+  'grok-4.7' = @('grok-4.7', 'Grok 4.7', 'grok')
   'grok-4.5' = @('grok-4.6', 'Grok 4.6', 'grok')
   'composer' = @('grok-composer-2.5-fast', 'Grok Composer 2.5 Fast', 'grok')
 }
@@ -223,18 +235,24 @@ function Show-Models {
   Write-Host '  airlock console  Start the local-only session console on 127.0.0.1'
   Write-Host '  claude           Start the native Anthropic CLI without Airlock'
   Write-Host ''
-  Write-Host 'OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
-  Write-Host 'Grok root aliases: grok, composer'
-  Write-Host 'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer'
+  Write-Host 'OpenAI root aliases: astra, sol, sol61, sol-fast, terra, terra61, luna, 5.5, 5.4, mini, 5.3, spark, 5.2'
+  Write-Host 'Grok root aliases: grok, grok47, composer'
+  Write-Host 'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, terra61, luna, opus, fable, fable52, haiku, haiku55, grok, grok47, composer'
   Write-Host '  auto resolves to fable when Fable is neither extra nor unavailable, otherwise'
   Write-Host '  opus under the same rule, otherwise sonnet.'
   Write-Host 'OpenRouter roots: exact enabled route slugs from airlock openrouter models list'
   Write-Host 'Open-model roots: exact enabled local registry routes from airlock open-model list'
   Write-Host 'Other commands: console, fast, bg, mode, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, open-model, proxy auth, version, update'
   Write-Host ''
+  Write-Host 'Worker models:'
+  Write-Host '  airlock models --check            Show which routes are enabled and what each one still needs'
+  Write-Host '  airlock enable ROUTE...           Add workers to the saved pool, for example: airlock enable fable52 terra61'
+  Write-Host '  airlock disable ROUTE...          Remove workers from the saved pool'
+  Write-Host ''
   Write-Host 'OpenRouter credential commands:'
   Write-Host '  airlock openrouter auth set-key     Store a key using a hidden prompt'
   Write-Host '  airlock openrouter auth set-key --stdin'
+  Write-Host '  airlock openrouter auth set-key --label NAME   Store an extra key used when others are limited'
   Write-Host '  airlock openrouter auth status      Show only local credential state'
   Write-Host '  airlock openrouter auth logout      Delete the local credential after confirmation'
   Write-Host ''
@@ -966,6 +984,31 @@ function Invoke-AirlockConsole {
   }
 }
 
+# Accept only the one optional flag an action allows plus an optional
+# --label NAME. A label is a short lowercase name, so an API key pasted in
+# its place is refused here and never reaches the helper's argument list.
+function Test-OpenRouterAuthArguments {
+  param([string]$Flag, [object[]]$Arguments)
+  $seenFlag = $false
+  $seenLabel = $false
+  $index = 0
+  while ($index -lt $Arguments.Count) {
+    $item = [string]$Arguments[$index]
+    if ($Flag -and $item -ceq $Flag -and -not $seenFlag) {
+      $seenFlag = $true
+      $index += 1
+    } elseif ($item -ceq '--label' -and -not $seenLabel -and ($index + 1) -lt $Arguments.Count -and
+      ([string]$Arguments[$index + 1]) -cmatch '^[a-z][a-z0-9-]{0,23}$' -and
+      -not ([string]$Arguments[$index + 1]).StartsWith('sk-')) {
+      $seenLabel = $true
+      $index += 2
+    } else {
+      return $false
+    }
+  }
+  return $true
+}
+
 function Invoke-OpenRouterAuth {
   param([string[]]$AuthArguments, [ref]$Result)
   $Result.Value = 1
@@ -1077,6 +1120,7 @@ function Test-ManagedBundle {
     '--component', "plugins/airlock/hooks/hooks.json=$(Join-Path $PluginDir 'hooks\hooks.json')",
     '--component', "plugins/airlock/skills/usage/SKILL.md=$(Join-Path $PluginDir 'skills\usage\SKILL.md')",
     '--component', "plugins/airlock/skills/airlock-fast/SKILL.md=$(Join-Path $PluginDir 'skills\airlock-fast\SKILL.md')",
+    '--component', "plugins/airlock/skills/airlock-research/SKILL.md=$(Join-Path $PluginDir 'skills\airlock-research\SKILL.md')",
     '--component', "plugins/airlock/mcp-server/airlock_web_tools.py=$(Join-Path $PluginDir 'mcp-server\airlock_web_tools.py')",
     '--component', "plugins/airlock/mcp-server/airlock_console_mcp.py=$ConsoleMcpHelper",
     '--component', "plugins/airlock/scripts/fast-session-end.sh=$(Join-Path $PluginDir 'scripts\fast-session-end.sh')",
@@ -1277,6 +1321,8 @@ function Resolve-GrokAlias {
   switch ($Value) {
     'grok' { return 'grok' }
     'grok-4.6' { return 'grok' }
+    'grok47' { return 'grok47' }
+    'grok-4.7' { return 'grok47' }
     'grok-4.5' { return 'grok' }
     'composer' { return 'composer' }
     'grok-composer' { return 'composer' }
@@ -1440,6 +1486,28 @@ function Invoke-AirlockSession {
     exit 1
   }
   Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SUBAGENT_MODEL' -ErrorAction SilentlyContinue
+  # Explicit opt-in roots enable only their route and preserve the saved pool.
+  $rootPoolKey = $null
+  $rootRoute = $null
+  $rootPoolDefault = ''
+  if ($RootModel -eq 'claude-haiku-5-5') {
+    $rootPoolKey = 'AIRLOCK_ANTHROPIC_MODELS'; $rootRoute = 'haiku55'; $rootPoolDefault = 'opus,sonnet,haiku'
+  } elseif ($RootModel -eq 'claude-fable-5-2[1m]') {
+    $rootPoolKey = 'AIRLOCK_ANTHROPIC_MODELS'; $rootRoute = 'fable52'; $rootPoolDefault = 'opus,sonnet,haiku'
+  } elseif ($RootModel -eq 'grok-4.7') {
+    $rootPoolKey = 'AIRLOCK_GROK_MODELS'; $rootRoute = 'grok47'; $rootPoolDefault = 'grok,composer'
+  }
+  if ($rootPoolKey) {
+    $pool = [Environment]::GetEnvironmentVariable($rootPoolKey, 'Process')
+    if ($null -eq $pool) {
+      $pool = if ($ConfigValues.ContainsKey($rootPoolKey)) { $ConfigValues[$rootPoolKey] } else { $rootPoolDefault }
+    }
+    if ((",$pool,") -notlike "*,$rootRoute,*") {
+      $pool = if ($pool) { "$rootRoute,$pool" } else { $rootRoute }
+      [Environment]::SetEnvironmentVariable($rootPoolKey, $pool, 'Process')
+    }
+  }
+  $env:AIRLOCK_ROOT_MODEL = $RootModel
   $env:AIRLOCK_UPDATE_NOTICE_FILE = [IO.Path]::GetFullPath($UpdateNoticeFile)
   $env:AIRLOCK_ACCESS_HELPER = [IO.Path]::GetFullPath($AccessHelper)
   # Set this only for a real session launch. Exporting it before `airlock mode`
@@ -1587,7 +1655,11 @@ function Select-HybridRoot {
   Write-Host ' 12) An exact local open-model registry route'
   Write-Host ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)'
   Write-Host ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])'
-  $selection = Read-Host 'Selection [1-14]'
+  Write-Host ' 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)'
+  Write-Host ' 16) Grok 4.7 (grok-4.7; requires a compatible proxy and Grok OAuth)'
+  Write-Host ' 17) Claude Fable 5.2 (claude-fable-5-2[1m]; may use extra usage)'
+  Write-Host ' 18) GPT-6.1 Terra (gpt-6.1-terra; requires a compatible proxy)'
+  $selection = Read-Host 'Selection [1-18]'
   if ($selection -eq '11') {
     $route = Select-OpenRouterRootRoute
     $record = Resolve-OpenRouterRootRoute -Route $route
@@ -1602,7 +1674,7 @@ function Select-HybridRoot {
     $script:HybridSelectedOpenModelModel = [string]$record.model
     return $null
   }
-  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61'; '14' = 'sonnet55' }
+  $choices = @{ '1' = 'sonnet'; '2' = 'sol'; '3' = 'terra'; '4' = 'luna'; '5' = 'opus'; '6' = 'fable'; '7' = 'haiku'; '8' = 'grok'; '9' = 'composer'; '10' = 'astra'; '13' = 'sol61'; '14' = 'sonnet55'; '15' = 'haiku55'; '16' = 'grok47'; '17' = 'fable52'; '18' = 'terra61' }
   if (-not $choices.ContainsKey($selection)) {
     [Console]::Error.WriteLine('airlock: invalid hybrid root selection.')
     exit 2
@@ -1670,11 +1742,11 @@ if ($DefaultHybridModel -eq 'auto') {
   )
   if (-not $HybridRoots.ContainsKey($DefaultHybridModel) -and
       -not $customOpenRouterDefault -and
-      $hybridOpenAIAlias -notin @('astra', 'sol', 'sol61', 'terra', 'luna')) {
+      $hybridOpenAIAlias -notin @('astra', 'sol', 'sol61', 'terra', 'terra61', 'luna')) {
     [Console]::Error.WriteLine("airlock: unsupported saved hybrid model '$DefaultHybridModel'")
     exit 2
   }
-  if ($hybridOpenAIAlias -in @('astra', 'sol', 'sol61', 'terra', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
+  if ($hybridOpenAIAlias -in @('astra', 'sol', 'sol61', 'terra', 'terra61', 'luna')) { $DefaultHybridModel = $hybridOpenAIAlias }
 }
 $DefaultBgAlias = Resolve-OpenAIAlias $DefaultBgModel
 if (-not $DefaultBgAlias) {
@@ -1683,8 +1755,8 @@ if (-not $DefaultBgAlias) {
 }
 $DefaultBgModel = $DefaultBgAlias
 $ExplicitCommands = @(
-  'console', 'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'om', 'open-model', 'proxy', 'models', '--models', 'config', '--config',
-  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'astra', 'sol', 'sol61', 'sol-fast', 'terra',
+  'console', 'mode', 'handoff', 'usage', 'session-usage', 'status', 'bundle', 'access', 'openrouter', 'opr', 'om', 'open-model', 'proxy', 'models', '--models', 'enable', 'disable', 'config', '--config',
+  'version', 'update', 'hybrid', 'openai', 'grok', 'fast', 'bg', 'background', 'astra', 'sol', 'sol61', 'sol-fast', 'terra', 'terra61',
   'luna', '5.5', '5.4', 'mini', '5.3', 'spark', '5.2'
 )
 if ($DefaultProfile -eq 'grok') {
@@ -1725,6 +1797,23 @@ if ($DefaultProfile -eq 'hybrid') {
 if ($Arguments.Count -gt 0) {
   if ($Arguments[0] -eq 'background') { $Arguments[0] = 'bg' }
   if ($Arguments[0] -eq '--config') { $Arguments[0] = 'config' }
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -in @('models', '--models') -and
+    $Arguments.Count -gt 1 -and $Arguments[1] -in @('--check', 'check')) {
+  $checkArguments = @('models-check')
+  if ($Arguments.Count -gt 2) {
+    $checkArguments += @($Arguments[2..($Arguments.Count - 1)])
+  }
+  exit (Invoke-AccessPolicy -PolicyArguments $checkArguments)
+}
+
+if ($Arguments.Count -gt 0 -and $Arguments[0] -in @('enable', 'disable')) {
+  $poolArguments = @('pool', $Arguments[0])
+  if ($Arguments.Count -gt 1) {
+    $poolArguments += @($Arguments[1..($Arguments.Count - 1)])
+  }
+  exit (Invoke-AccessPolicy -PolicyArguments $poolArguments)
 }
 
 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'mode') {
@@ -1861,20 +1950,20 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'openrouter') {
   if ($openRouterRest.Count -gt 2) { $authRest = @($openRouterRest[2..($openRouterRest.Count - 1)]) }
   switch ($authAction) {
     'set-key' {
-      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--stdin')) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth set-key [--stdin]')
+      if (-not (Test-OpenRouterAuthArguments -Flag '--stdin' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth set-key [--stdin] [--label NAME]')
         exit 2
       }
     }
     'status' {
-      if ($authRest.Count -ne 0) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth status')
+      if (-not (Test-OpenRouterAuthArguments -Flag '' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth status [--label NAME]')
         exit 2
       }
     }
     'logout' {
-      if ($authRest.Count -gt 1 -or ($authRest.Count -eq 1 -and $authRest[0] -ne '--yes')) {
-        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth logout [--yes]')
+      if (-not (Test-OpenRouterAuthArguments -Flag '--yes' -Arguments $authRest)) {
+        [Console]::Error.WriteLine('airlock: usage: airlock openrouter auth logout [--yes] [--label NAME]')
         exit 2
       }
     }
@@ -2019,14 +2108,14 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'grok') {
   }
   $grokAlias = Resolve-GrokAlias $requestedGrok
   if (-not $grokAlias) {
-    [Console]::Error.WriteLine("airlock: unsupported Grok model '$requestedGrok' (expected grok or composer)")
+    [Console]::Error.WriteLine("airlock: unsupported Grok model '$requestedGrok' (expected grok, grok47, or composer)")
     exit 2
   }
   $grokModel = $GrokModels[$grokAlias][0]
   $grokName = $GrokModels[$grokAlias][1]
   # Pure Grok needs enabled Grok routes even when the saved config leaves
   # them off, because the user asked for this provider by name.
-  if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+  if ($grokModel -ne 'grok-4.7' -and $null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
   Set-OpenAIEnvironment $grokModel $grokName 'Grok subscription'
   foreach ($marker in @('AIRLOCK_HYBRID', 'AIRLOCK_GPT_HYBRID', 'AIRLOCK_GROK_HYBRID', 'AIRLOCK_OPENROUTER_HYBRID', 'AIRLOCK_OPENMODEL_HYBRID')) {
     Remove-Item -LiteralPath "Env:$marker" -ErrorAction SilentlyContinue
@@ -2079,7 +2168,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
       $rootAlias = $hybridCandidate
     } else {
       $hybridCandidateAlias = Resolve-OpenAIAlias $hybridCandidate
-      if ($hybridCandidateAlias -in @('astra', 'sol', 'sol61', 'terra', 'luna')) { $rootAlias = $hybridCandidateAlias }
+      if ($hybridCandidateAlias -in @('astra', 'sol', 'sol61', 'terra', 'terra61', 'luna')) { $rootAlias = $hybridCandidateAlias }
     }
     if (-not $rootAlias -and -not $script:HybridSelectedRoute -and
         -not $script:HybridSelectedOpenModelRoute -and $hybridCandidate -and
@@ -2237,7 +2326,7 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'hybrid') {
     # A Grok root cannot start without an enabled Grok route, so an explicit
     # Grok root turns the routes on. Every other hybrid root leaves Grok off
     # unless the saved config enables it.
-    if ($null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
+    if ($rootModel -ne 'grok-4.7' -and $null -eq $env:AIRLOCK_GROK_MODELS) { $env:AIRLOCK_GROK_MODELS = 'grok,composer' }
     $env:AIRLOCK_GROK_HYBRID = '1'
     Invoke-AirlockSession 'hybrid-grok-root' $rootModel $rootName $hybridArgs
   }

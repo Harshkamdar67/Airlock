@@ -227,6 +227,28 @@ Verify:
 
 Do not run this check with a registry entry older than 30 days. Refresh it first with `airlock openrouter models refresh --apply`.
 
+### 15. `/airlock-research` with a Luna army
+
+Approval for this check names the root provider and exact model, the worker route (`airlock-luna`, `airlock-luna-fast`, or `airlock-composer`) and its exact model, public web state (on: the check searches the public web), extra-usage state, and the worker count for the chosen depth: `quick` up to 3 workers per wave, `standard` up to 8, plus up to 2 verification workers. It reads no repository files. Run it once in a non-Anthropic root, where workers use `airlock-web-tools`, and once in a hybrid Anthropic root, where workers get built-in WebSearch, because those two web paths differ.
+
+Start the approved profile, then:
+
+```text
+/airlock-research Which transport mechanisms does the current Model Context Protocol specification define, and which earlier transport was deprecated, in which revision? --depth quick
+```
+
+Verify:
+
+- the skill loads and the depth is read from the arguments
+- every worker is a named swarm route, runs in the background, and its task carries `Public web research authorized: yes` and no local path or repository content
+- workers return the claim-ledger format, with a quote and a URL on every claim
+- in the non-Anthropic root, workers use `web_search` (with `queries` or `timelimit` where useful) and verification uses `fetch_page` with `find`
+- in the hybrid Anthropic root, record whether built-in WebSearch works for a Luna worker at the session effort; if it fails, record the exact error, because the skill then depends on workers being given URLs to read
+- the report opens with a direct answer (stdio and Streamable HTTP; HTTP+SSE deprecated in the 2025-03-26 revision), cites every factual sentence, and every cited URL resolves
+- `--depth deep` shows the brief and lane plan and starts no worker until you approve
+
+The orchestration alone, without the launcher, Luna, or the router, is covered by `claude plugin eval plugins/airlock --tag research` (see `plugins/airlock/evals/README.md`). That suite also makes real model requests and needs the same kind of approval.
+
 ## Gateway limits to record
 
 During live testing, record these product limits honestly:

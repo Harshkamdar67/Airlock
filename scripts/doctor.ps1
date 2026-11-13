@@ -182,7 +182,7 @@ if isinstance(models, list):
       }
     } catch { $DeclaredGrok = @() }
   }
-  $EnabledGrok = @('grok-4.6', 'grok-composer-2.5-fast') + $DeclaredGrok
+  $EnabledGrok = @('grok-4.6', 'grok-4.7', 'grok-composer-2.5-fast') + $DeclaredGrok
   foreach ($catalogLine in (& $Proxy models 2>$null)) {
     $text = [string]$catalogLine
     if (-not $text.StartsWith('grok:')) { continue }

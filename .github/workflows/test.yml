@@ -20,7 +20,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
 
@@ -93,12 +93,12 @@ jobs:
           python tests/test-docs.py
           python tests/test-live-context.py
 
-      # Git Bash spawns processes slowly, so these suites take about four
-      # minutes on a Windows runner and a slower run used to trip a five
-      # minute limit. The job timeout above still bounds a hung suite.
+      # Git Bash spawns processes slowly. The launcher suite took 11m56s on a
+      # Windows runner in October and has grown since, so it gets 20 minutes.
+      # The job timeout above still bounds a hung suite.
       - name: Run Bash launcher tests
         shell: bash
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: bash tests/test-airlock.sh
 
       - name: Run setup shell tests

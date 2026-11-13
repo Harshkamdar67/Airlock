@@ -116,6 +116,8 @@ config_anthropic_rate_limit=''
 config_gpt_effort_capabilities=''
 config_grok_model=''
 config_openai_models=''
+config_anthropic_models='opus,sonnet,haiku'
+config_grok_models='grok,composer'
 
 if [[ -f "$config_file" ]]; then
   while IFS='=' read -r config_key config_value; do
@@ -127,6 +129,8 @@ if [[ -f "$config_file" ]]; then
       AIRLOCK_HYBRID_MODEL) config_hybrid_model="$config_value" ;;
       AIRLOCK_GROK_MODEL) config_grok_model="$config_value" ;;
       AIRLOCK_OPENAI_MODELS) config_openai_models="$config_value" ;;
+      AIRLOCK_ANTHROPIC_MODELS) config_anthropic_models="$config_value" ;;
+      AIRLOCK_GROK_MODELS) config_grok_models="$config_value" ;;
       AIRLOCK_MAIN_EFFORT) config_main_effort="$config_value" ;;
       AIRLOCK_BG_MODEL) config_bg_model="$config_value" ;;
       AIRLOCK_BG_EFFORT) config_bg_effort="$config_value" ;;
@@ -246,9 +250,9 @@ Profiles:
   airlock console  Start the local-only session console on 127.0.0.1
   claude           Start the native Anthropic CLI without Airlock
 
-OpenAI root aliases: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
-Grok root aliases: grok, composer
-Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, grok, composer
+OpenAI root aliases: astra, sol, sol61, sol-fast, terra, terra61, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+Grok root aliases: grok, grok47, composer
+Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, terra61, luna, opus, fable, fable52, haiku, haiku55, grok, grok47, composer
   auto resolves to fable when Fable is neither extra nor unavailable, otherwise
   opus under the same rule, otherwise sonnet.
 OpenRouter roots: exact enabled route slugs from airlock openrouter models list
@@ -256,9 +260,15 @@ Open-model roots: exact enabled route slugs from airlock open-model list, driven
   airlock om ROUTE or, inside a hybrid session, airlock hybrid om:ROUTE
 Other commands: console, fast, bg, mode, handoff, usage, session-usage, status, access, bundle, config, models, openrouter auth/models, open-model, proxy auth, version, update
 
+Worker models:
+  airlock models --check            Show which routes are enabled and what each one still needs
+  airlock enable ROUTE...           Add workers to the saved pool, for example: airlock enable fable52 terra61
+  airlock disable ROUTE...          Remove workers from the saved pool
+
 OpenRouter credential commands:
   airlock openrouter auth set-key     Store a key using a hidden prompt
   airlock openrouter auth set-key --stdin
+  airlock openrouter auth set-key --label NAME   Store an extra key used when others are limited
   airlock openrouter auth status      Show only local credential state
   airlock openrouter auth logout      Delete the local credential after confirmation
 
@@ -545,6 +555,27 @@ run_console() {
   return "$child_status"
 }
 
+# Accept only the one optional flag an action allows plus an optional
+# --label NAME. A label is a short lowercase name, so an API key pasted in
+# its place is refused here and never reaches the helper's argument list.
+valid_openrouter_auth_arguments() {
+  local flag="$1" seen_flag=0 seen_label=0
+  shift
+  while (( $# > 0 )); do
+    if [[ -n "$flag" && "$1" == "$flag" && "$seen_flag" -eq 0 ]]; then
+      seen_flag=1
+      shift
+    elif [[ "$1" == '--label' && "$seen_label" -eq 0 && $# -ge 2 ]] \
+      && [[ "$2" =~ ^[a-z][a-z0-9-]{0,23}$ && "$2" != sk-* ]]; then
+      seen_label=1
+      shift 2
+    else
+      return 1
+    fi
+  done
+  return 0
+}
+
 run_openrouter_auth() {
   if [[ ! -f "$openrouter_auth_helper" || -L "$openrouter_auth_helper" ]]; then
     printf 'airlock: managed OpenRouter credential helper is missing or unsafe: %s\n' \
@@ -616,6 +647,7 @@ validate_managed_bundle() {
     --component "plugins/airlock/hooks/hooks.json=$plugin_dir/hooks/hooks.json"
     --component "plugins/airlock/skills/usage/SKILL.md=$plugin_dir/skills/usage/SKILL.md"
     --component "plugins/airlock/skills/airlock-fast/SKILL.md=$plugin_dir/skills/airlock-fast/SKILL.md"
+    --component "plugins/airlock/skills/airlock-research/SKILL.md=$plugin_dir/skills/airlock-research/SKILL.md"
     --component "plugins/airlock/mcp-server/airlock_web_tools.py=$plugin_dir/mcp-server/airlock_web_tools.py"
     --component "plugins/airlock/mcp-server/airlock_console_mcp.py=$console_mcp_helper"
     --component "plugins/airlock/scripts/fast-session-end.sh=$plugin_dir/scripts/fast-session-end.sh"
@@ -745,13 +777,14 @@ resolve_grok_model() {
     # an alias rather than a second route. A different exact ID reaches the
     # proxy only when models.json declares it.
     grok|grok-4.6|grok-4.5) selected_model='grok-4.6'; model_name='Grok 4.6' ;;
+    grok47|grok-4.7) selected_model='grok-4.7'; model_name='Grok 4.7' ;;
     composer|grok-composer|grok-composer-2.5-fast) selected_model='grok-composer-2.5-fast'; model_name='Grok Composer 2.5 Fast' ;;
     *)
       if resolve_custom_model_declaration "$1" grok; then
         selected_model="$CUSTOM_MODEL_ID"
         model_name="Custom Grok ($CUSTOM_MODEL_ID)"
       else
-        printf "airlock: unsupported Grok model '%s' (expected grok or composer)\n" "$1" >&2
+        printf "airlock: unsupported Grok model '%s' (expected grok, grok47, or composer)\n" "$1" >&2
         return 1
       fi
       ;;
@@ -817,6 +850,7 @@ resolve_model() {
     sol61) selected_model='gpt-6.1-sol'; model_name='GPT-6.1 Sol' ;;
     sol-fast|gpt-5.6-sol-fast) selected_model='gpt-5.6-sol-fast'; model_name='GPT-5.6 Sol Fast' ;;
     terra|gpt-5.6-terra) selected_model='gpt-5.6-terra'; model_name='GPT-5.6 Terra' ;;
+    terra61|gpt-6.1-terra) selected_model='gpt-6.1-terra'; model_name='GPT-6.1 Terra' ;;
     luna|gpt-6-luna) selected_model='gpt-6-luna'; model_name='GPT-6 Luna' ;;
     5.5|gpt-5.5) selected_model='gpt-5.5'; model_name='GPT-5.5' ;;
     5.4|gpt-5.4) selected_model='gpt-5.4'; model_name='GPT-5.4' ;;
@@ -867,6 +901,7 @@ enable_explicit_openai_root() {
   case "$root_model" in
     gpt-6-astra) route='astra' ;;
     gpt-6.1-sol) route='sol' ;;
+    gpt-6.1-terra) route='terra61' ;;
     *) return 0 ;;
   esac
   local pool="${AIRLOCK_OPENAI_MODELS-$config_openai_models}"
@@ -887,6 +922,7 @@ resolve_hybrid_alias() {
     sol|gpt-6.1-sol) root_model='gpt-6.1-sol'; root_name='GPT-6.1 Sol'; root_provider='openai' ;;
     sol61) root_model='gpt-6.1-sol'; root_name='GPT-6.1 Sol'; root_provider='openai' ;;
     terra|gpt-5.6-terra) root_model='gpt-5.6-terra'; root_name='GPT-5.6 Terra'; root_provider='openai' ;;
+    terra61|gpt-6.1-terra) root_model='gpt-6.1-terra'; root_name='GPT-6.1 Terra'; root_provider='openai' ;;
     luna|gpt-6-luna) root_model='gpt-6-luna'; root_name='GPT-6 Luna'; root_provider='openai' ;;
     # Claude Code only grants these models their native 1M window when
     # ANTHROPIC_BASE_URL is unset or points at api.anthropic.com, and Airlock
@@ -898,8 +934,12 @@ resolve_hybrid_alias() {
     sonnet55) root_model='claude-sonnet-5-5[1m]'; root_name='Claude Sonnet 5.5'; root_provider='anthropic' ;;
     sonnet) root_model='claude-sonnet-5[1m]'; root_name='Claude Sonnet 5'; root_provider='anthropic' ;;
     fable) root_model='claude-fable-5-1[1m]'; root_name='Claude Fable 5.1'; root_provider='anthropic' ;;
+    fable52|claude-fable-5-2) root_model='claude-fable-5-2[1m]'; root_name='Claude Fable 5.2'; root_provider='anthropic' ;;
     haiku) root_model='claude-haiku-4-5-20251001'; root_name='Claude Haiku 4.5'; root_provider='anthropic' ;;
+    # Haiku 5.5 has its native 1M window on the bare ID, with no suffix.
+    haiku55|claude-haiku-5-5) root_model='claude-haiku-5-5'; root_name='Claude Haiku 5.5'; root_provider='anthropic' ;;
     grok|grok-4.6|grok-4.5) root_model='grok-4.6'; root_name='Grok 4.6'; root_provider='grok' ;;
+    grok47|grok-4.7) root_model='grok-4.7'; root_name='Grok 4.7'; root_provider='grok' ;;
     composer) root_model='grok-composer-2.5-fast'; root_name='Grok Composer 2.5 Fast'; root_provider='grok' ;;
     *)
       if resolve_custom_model_declaration "$1" codex; then
@@ -1169,7 +1209,7 @@ configure_proxy_model_picker() {
 # the one a request must fit; Airlock has not proved that window live.
 declared_context_hard_limit() {
   case "$1" in
-    grok-4.6) printf '500000' ;;
+    grok-4.6|grok-4.7) printf '500000' ;;
     gpt-6-astra) printf '922000' ;;
     *) return 1 ;;
   esac
@@ -1177,7 +1217,7 @@ declared_context_hard_limit() {
 
 declared_context_compact_threshold() {
   case "$1" in
-    grok-4.6) printf '400000' ;;
+    grok-4.6|grok-4.7) printf '400000' ;;
     gpt-6-astra) printf '736000' ;;
     *) return 1 ;;
   esac
@@ -1735,6 +1775,23 @@ launch_session() {
   local openrouter_root_route="$4"
   local openmodel_root_route="$5"
   shift 5
+  # Explicit opt-in roots enable only their route and preserve the saved pool.
+  local pool
+  case "$session_model" in
+    claude-haiku-5-5)
+      pool="${AIRLOCK_ANTHROPIC_MODELS-$config_anthropic_models}"
+      case ",$pool," in *,haiku55,*) ;; *) export AIRLOCK_ANTHROPIC_MODELS="haiku55${pool:+,$pool}" ;; esac
+      ;;
+    'claude-fable-5-2[1m]')
+      pool="${AIRLOCK_ANTHROPIC_MODELS-$config_anthropic_models}"
+      case ",$pool," in *,fable52,*) ;; *) export AIRLOCK_ANTHROPIC_MODELS="fable52${pool:+,$pool}" ;; esac
+      ;;
+    grok-4.7)
+      pool="${AIRLOCK_GROK_MODELS-$config_grok_models}"
+      case ",$pool," in *,grok47,*) ;; *) export AIRLOCK_GROK_MODELS="grok47${pool:+,$pool}" ;; esac
+      ;;
+  esac
+  export AIRLOCK_ROOT_MODEL="$session_model"
   local argument max_agents
   local -a openrouter_root_args=()
   local -a openmodel_root_args=()
@@ -1858,6 +1915,9 @@ launch_session() {
     printf 'airlock: native session model route policy is empty.\n' >&2
     exit 1
   fi
+  case ",$allowed_model_ids," in
+    *,grok-4.7,*|*,gpt-6.1-terra,*) run_access check-proxy-models --models "$allowed_model_ids" || exit $? ;;
+  esac
   export AIRLOCK_ALLOWED_AGENT_NAMES
   export AIRLOCK_ALLOWED_AGENT_MODELS="$allowed_model_ids"
   export AIRLOCK_EXTRA_USAGE_AGENT_NAMES="$extra_agent_names"
@@ -2152,8 +2212,12 @@ select_hybrid_root() {
     ' 11) An exact OpenRouter registry route' \
     ' 12) An exact local open-model registry route' \
     ' 13) GPT-6.1 Sol (gpt-6.1-sol; opt-in)' \
-    ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])'
-  read -r -p 'Selection [1-14]: ' selection
+    ' 14) Claude Sonnet 5.5 (claude-sonnet-5-5[1m])' \
+    ' 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)' \
+    ' 16) Grok 4.7 (grok-4.7; requires a compatible proxy and Grok OAuth)' \
+    ' 17) Claude Fable 5.2 (claude-fable-5-2[1m]; may use extra usage)' \
+    ' 18) GPT-6.1 Terra (gpt-6.1-terra; requires a compatible proxy)'
+  read -r -p 'Selection [1-18]: ' selection
   case "$selection" in
     1) root_alias='sonnet' ;; 2) root_alias='sol' ;; 3) root_alias='terra' ;; 4) root_alias='luna' ;;
     5) root_alias='opus' ;; 6) root_alias='fable' ;; 7) root_alias='haiku' ;;
@@ -2170,7 +2234,11 @@ select_hybrid_root() {
       ;;
     13) root_alias='sol61' ;;
     14) root_alias='sonnet55' ;;
-    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 14.\n' >&2; exit 2 ;;
+    15) root_alias='haiku55' ;;
+    16) root_alias='grok47' ;;
+    17) root_alias='fable52' ;;
+    18) root_alias='terra61' ;;
+    *) printf 'airlock: invalid hybrid root selection. Enter a number from 1 to 18.\n' >&2; exit 2 ;;
   esac
 }
 
@@ -2366,7 +2434,7 @@ if [[ "${1:-}" == 'orp' ]]; then
 fi
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "${1:-}" in
-    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol61|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|enable|disable|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol61|sol-fast|terra|terra61|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*|-m=*) set -- hybrid "$@" ;;
     *)
       if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_hybrid_alias "$1" >/dev/null 2>&1; then
@@ -2378,7 +2446,7 @@ if [[ "$default_profile" == 'hybrid' ]]; then
   esac
 elif [[ "$default_profile" == 'grok' ]]; then
   case "${1:-}" in
-    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol61|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
+    console|mode|usage|session-usage|status|bundle|access|openrouter|opr|om|open-model|proxy|models|--models|enable|disable|config|--config|version|update|hybrid|openai|grok|fast|bg|background|astra|sol|sol61|sol-fast|terra|terra61|luna|5.5|5.4|mini|5.3|spark|5.2) ;;
     --model|-m|--model=*|-m=*) set -- grok "$@" ;;
     *)
       if [[ -n "${1:-}" && "${1:-}" != -* ]] && resolve_grok_model "$1" >/dev/null 2>&1; then
@@ -2754,7 +2822,7 @@ if [[ "${1:-}" == 'hybrid' ]]; then
     # Grok root turns the routes on. Every other hybrid root leaves Grok off
     # unless the saved config enables it, because advertising a worker whose
     # provider the user never logged into would fail at request time.
-    if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+    if [[ "$root_model" != 'grok-4.7' && -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
       export AIRLOCK_GROK_MODELS='grok,composer'
     fi
     export AIRLOCK_GROK_HYBRID='1'
@@ -2859,22 +2927,22 @@ if [[ "${1:-}" == 'openrouter' ]]; then
       if (( $# > 0 )); then shift; fi
       case "$openrouter_auth_action" in
         set-key)
-          if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != '--stdin' ]]; }; then
-            printf 'airlock: usage: airlock openrouter auth set-key [--stdin]\n' >&2
+          valid_openrouter_auth_arguments --stdin "$@" || {
+            printf 'airlock: usage: airlock openrouter auth set-key [--stdin] [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         status)
-          if (( $# != 0 )); then
-            printf 'airlock: usage: airlock openrouter auth status\n' >&2
+          valid_openrouter_auth_arguments '' "$@" || {
+            printf 'airlock: usage: airlock openrouter auth status [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         logout)
-          if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != '--yes' ]]; }; then
-            printf 'airlock: usage: airlock openrouter auth logout [--yes]\n' >&2
+          valid_openrouter_auth_arguments --yes "$@" || {
+            printf 'airlock: usage: airlock openrouter auth logout [--yes] [--label NAME]\n' >&2
             exit 2
-          fi
+          }
           ;;
         *)
           printf 'airlock: unsupported OpenRouter auth action: %s\n' \
@@ -2956,7 +3024,7 @@ if [[ "${1:-}" == 'grok' ]]; then
   selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
   validate_effort "$selected_effort"
   # Pure Grok needs enabled Grok routes even when the shared default is unavailable.
-  if [[ -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
+  if [[ "$selected_model" != 'grok-4.7' && -z "${AIRLOCK_GROK_MODELS+x}" ]]; then
     export AIRLOCK_GROK_MODELS='grok,composer'
   fi
   set_openai_environment "$selected_model" "$model_name" 'Grok subscription'
@@ -2976,7 +3044,18 @@ requested_model="$default_openai_model"
 selected_effort="${AIRLOCK_MAIN_EFFORT:-${config_main_effort:-high}}"
 ephemeral_fast=0
 case "${1:-}" in
-  models|--models) print_models; exit 0 ;;
+  models|--models)
+    case "${2:-}" in
+      --check|check) shift 2; run_access models-check "$@"; exit $? ;;
+      '') print_models; exit 0 ;;
+      *) printf 'airlock: usage: airlock models [--check [--strict|--json]]\n' >&2; exit 2 ;;
+    esac
+    ;;
+  enable|disable)
+    action="$1"; shift
+    run_access pool "$action" "$@"
+    exit $?
+    ;;
   config|--config) print_config; exit 0 ;;
   access)
     shift
@@ -3035,7 +3114,7 @@ case "${1:-}" in
     ephemeral_fast=1
     requested_model='sol-fast'
     ;;
-  astra|sol|sol61|sol-fast|terra|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
+  astra|sol|sol61|sol-fast|terra|terra61|luna|5.5|5.4|mini|5.3|spark|5.2) requested_model="$1"; shift ;;
   *)
     if [[ $# -gt 0 && "$1" != -* ]] && resolve_model "$1" >/dev/null 2>&1; then
       requested_model="$1"

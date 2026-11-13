@@ -25,7 +25,11 @@ These descriptions guide selection. They are not vendor rankings.
 | Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | Medium |
 | Fable | An explicit focused Anthropic choice when enabled and authorized | Plan dependent |
 | Haiku | An explicit bounded Anthropic utility choice when enabled | Low |
+| Fable 5.2 | An opt-in Fable peer next to Fable 5.1, for explicit focused frontier work | Plan dependent; lower published API price than Fable 5.1 |
+| Terra 6.1 | An opt-in GPT-6.1 Terra peer next to Terra, for review and alternative reasoning | Medium |
+| Haiku 5.5 | An opt-in bounded Anthropic utility peer, without changing automatic discovery or background choices | Prompt lengths above 100K tokens have a pricing premium |
 | Grok | Difficult implementation, tool-heavy coding, debugging, and synthesis on a Grok plan | High |
+| Grok 4.7 | An opt-in frontier coding and debugging peer next to Grok 4.6, never an automatic swarm | Same published API price as Grok 4.6 |
 | Composer | High-volume discovery, extraction, lookup, summarization, triage, and bounded mechanical work | Low |
 
 The active profile, enabled routes, Fast eligibility, and extra-usage policy still apply. User-hosted open models are not in this table because Airlock does not infer or rank their capability. Their route metadata is user-declared and unverified.
@@ -60,12 +64,17 @@ airlock hybrid auto
 airlock hybrid astra
 airlock hybrid sol
 airlock hybrid terra
+airlock hybrid terra61
 airlock hybrid luna
 airlock hybrid opus
 airlock hybrid sonnet
+airlock hybrid sonnet55
 airlock hybrid fable
+airlock hybrid fable52
 airlock hybrid haiku
+airlock hybrid haiku55
 airlock hybrid grok
+airlock hybrid grok47
 airlock hybrid composer
 ```
 
@@ -74,6 +83,7 @@ Grok-only sessions:
 ```bash
 airlock grok
 airlock grok composer
+airlock grok grok47
 ```
 
 Grok needs its own login with `airlock proxy grok auth login`, and its routes stay off until the saved configuration enables them or you name a Grok root. `airlock usage` does not cover Grok, because there is no documented plan-window method Airlock can read safely.
@@ -426,7 +436,7 @@ New provider models do not need an Airlock release. Declare them in a user-owned
   "schema_version": 1,
   "models": [
     {
-      "id": "grok-4.7",
+      "id": "grok-example-custom",
       "provider": "grok",
       "effort_ceiling": "xhigh",
       "context_window": null,
@@ -436,6 +446,8 @@ New provider models do not need an Airlock release. Declare them in a user-owned
   ]
 }
 ```
+
+This example uses a placeholder ID. Replace it with an exact model the proxy serves, not an ID Airlock already ships. Enable shipped Grok 4.7 with `grok47` instead of declaring it again.
 
 Rules:
 
@@ -634,12 +646,41 @@ The launcher hands the server to Claude Code through an `--mcp-config` file that
 
 The local server needs only Python 3 and ships inside the plugin. It exposes two tools:
 
-- `web_search` takes `query` and optional `max_results` (1 to 12, default 6). It queries DuckDuckGo's HTML endpoint and returns ranked links with short descriptions. Follow up with `fetch_page` to read any result.
-- `fetch_page` takes `url` and optional `max_chars`. It downloads one public page and returns readable text without sending it through any model.
+- `web_search` takes `query`, or `queries` with up to 5 related queries that run in parallel in one call, plus optional `max_results` (1 to 12 per query, default 6), `timelimit` (`d`, `w`, `m`, or `y` for the past day, week, month, or year), `region` (such as `us-en` or `de-de`), `page` (1 to 5), `category` (`text` or `news`), and `backends`. Results from several queries or backends are merged, and a link already shown is not repeated. Follow up with `fetch_page` to read any result.
+- `fetch_page` takes `url` and optional `max_chars`, `start_char`, `format`, and `find`. It downloads one public page and returns its readable text as light markdown with headings, list items, code blocks, and absolute links, without sending it through any model. It reports the final address after redirects and the page's declared publication and modification dates when it has them. A truncated page ends with the `start_char` to continue from, and a repeat read within ten minutes comes from memory instead of the network. `find` takes up to 5 exact phrases and reports whether each appears on the page with the surrounding text, ignoring case, spacing, and curly quotes, which makes checking a quotation cheap. `format: text` drops the markup.
 
-Both tools contact the public web directly from your machine. They accept only http and https, resolve every address and refuse private, loopback, and link-local targets, follow redirects only while each hop passes the same checks, cap responses at 2 MB and 20 seconds, and truncate returned text to 20000 characters (up to 100000 when asked).
+Both tools contact the public web directly from your machine. They accept only http and https, and they refuse every address that is not a public internet address, including private, loopback, link-local, and shared (100.64.0.0/10) ranges and IPv4 addresses wrapped in IPv6. The check runs when the connection is made and the connection goes to the exact address that passed, so a host name cannot pass the check with one address and connect to another. Redirects are followed only while each hop passes the same check. Responses are capped at 2 MB and 20 seconds, and returned text at 20000 characters (up to 100000 when asked). When a system proxy is configured, requests go through it, and the proxy resolves the host.
 
-DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice.
+Tool calls run in parallel inside the server, so a group of workers sharing one session does not queue behind one slow page. Requests to one search backend are spaced out (one DuckDuckGo search per second) so a large worker group does not trip its bot protection.
+
+### Search backends
+
+| Backend | What it queries | Available |
+|---|---|---|
+| `duckduckgo` | DuckDuckGo's HTML endpoint | always; the default |
+| `wikipedia` | the official MediaWiki search API, in the language of `region` | always |
+| `searxng` | the JSON API of a SearXNG instance you run | when `AIRLOCK_WEB_SEARXNG_URL` is set |
+| `ddgs` | the third-party [`ddgs`](https://github.com/deedy5/ddgs) metasearch package | when `AIRLOCK_WEB_DDGS_PYTHON` is set |
+
+`AIRLOCK_WEB_SEARCH_BACKENDS` sets the default list, for example `duckduckgo,wikipedia`. A model can still name other available backends in a single call. `news` searches need `searxng` or `ddgs`.
+
+DuckDuckGo's HTML endpoint is not an official API. It behaves like a normal browser visit today, but DuckDuckGo can change the markup, add a bot challenge, or rate-limit heavy use without notice. The tool reports a challenge as such instead of as an empty result.
+
+**SearXNG.** SearXNG is an open-source metasearch engine you host yourself. Enable the JSON format in its `settings.yml` (`search.formats: [html, json]`), then set `AIRLOCK_WEB_SEARXNG_URL=http://127.0.0.1:8888` or wherever it runs. This address comes from your configuration, not from a model, so it may be on your own network. Do not put credentials in the URL.
+
+**ddgs.** `ddgs` queries several engines at once, including Bing, Brave, DuckDuckGo, Google, Mojeek, Yahoo, and Wikipedia, and has a news search. It depends on compiled packages and presents itself to those engines as a browser, and its authors describe it as for educational purposes. Scraping some of those engines can conflict with their terms, so Airlock never installs it for you. To opt in, install it into its own virtual environment and point Airlock at that interpreter:
+
+```bash
+python3 -m venv ~/.local/share/airlock/ddgs
+~/.local/share/airlock/ddgs/bin/pip install 'ddgs==9.16.0'
+echo "AIRLOCK_WEB_DDGS_PYTHON=$HOME/.local/share/airlock/ddgs/bin/python" >> ~/.config/airlock/config
+```
+
+The path must be absolute; `~` is not expanded inside the config file.
+
+On Windows the interpreter is `ddgs\Scripts\python.exe` inside the environment. The server runs that interpreter in isolated mode (`-I`) for each search and uses only its search functions. Pages are always read by Airlock's own guarded `fetch_page`, never by `ddgs`, because `ddgs` does not refuse private addresses. `AIRLOCK_WEB_DDGS_ENGINES` picks the engines `ddgs` uses, for example `brave,mojeek,wikipedia`; the default is `auto`.
+
+The config file and the environment both work for these settings, with the environment winning. The launcher hands them to the server when the session starts, and the server ignores any value it cannot validate.
 
 Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guidance, and the denials for that session. An Anthropic-rooted session never sees any of this, because the built-in tools already work there.
 
@@ -648,6 +689,66 @@ Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guida
 `airlock hybrid sonnet55` selects exact `claude-sonnet-5-5[1m]`; the optional worker is `airlock-sonnet55`, enabled by adding `sonnet55` to the Anthropic pool. Existing `sonnet` and explicit Sonnet 5 configurations remain unchanged. Sonnet 5.5 requires Claude Code 2.1.284 or newer; update the native client before selecting it. Anthropic documents native 1M context, 128K maximum output, adaptive thinking, and text/image input with text output and tools. Airlock retains its high effort default.
 
 Sources: [Anthropic model reference](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Fable 5.2
+
+`airlock hybrid fable52` selects exact `claude-fable-5-2[1m]`. The optional named worker is `airlock-fable52`, enabled by adding `fable52` to `AIRLOCK_ANTHROPIC_MODELS`; selecting it as an explicit root adds it to the pool for that session. Existing `fable`, the `auto` root, and saved defaults stay on Fable 5.1, so nothing moves until you opt in.
+
+Anthropic documents a 1M-token context window (the default), 128K maximum output, always-on adaptive thinking, and effort levels `low` through `max`. Its published API price is below Fable 5.1, which is not a measurement of subscription allowance. Fable 5.2 uses the same access class as Fable: it is off by default and may need confirmed extra usage. Like Fable 5.1, it carries the `[1m]` suffix so Claude Code keeps its full window behind the session router. It never enters automatic worker armies.
+
+```bash
+./scripts/setup.sh --yes --anthropic-workers opus,sonnet,fable52
+```
+
+Sources: [Anthropic models overview](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### GPT-6.1 Terra
+
+`airlock terra61` or `airlock hybrid terra61` selects exact `gpt-6.1-terra`. The optional named worker is `airlock-terra61`, enabled by adding `terra61` to `AIRLOCK_OPENAI_MODELS`; an explicit root adds it to the pool for that session. Existing `terra` stays on GPT-5.6 Terra, and the shipped `sol,terra,luna` pool is unchanged.
+
+GPT-6.1 Terra needs a `claude-code-proxy` catalog advertising exact `gpt-6.1-terra`, available in carried build `0.1.35-airlock.8`. A session that enables it refuses an older proxy with a clear message instead of silently falling back. OpenAI documents a 1.05M-token window and text and image input; Airlock keeps its conservative 272,000-token subscription guard until a long-context proof runs on this route. Subscription access depends on your plan.
+
+```bash
+./scripts/setup.sh --yes --openai-workers sol,terra,terra61,luna
+```
+
+Sources: [OpenAI GPT-6.1 Terra model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra), [Codex model catalogue](https://learn.chatgpt.com/docs/models).
+
+### Haiku 5.5
+
+`airlock hybrid haiku55` selects exact bare `claude-haiku-5-5`, with no `[1m]` suffix. The optional named worker is `airlock-haiku55`. Add `haiku55` to `AIRLOCK_ANTHROPIC_MODELS` to enable it; selecting it explicitly as the setup hybrid root also adds it to that pool. Existing `haiku` stays on Haiku 4.5. Claude Code 2.1.293 or newer is required, so update the native client before selecting this route.
+
+Anthropic documents a 1M-token context window, 128K maximum output, text and image input, text output, and tool use. Thinking is adaptive and cannot be turned off. Supported effort levels are `low`, `medium`, `high`, `xhigh`, and `max`, with a provider default and Airlock catalog baseline of `medium`. Like other named workers, `airlock-haiku55` follows session effort unless pinned in setup. Neither the global effort default nor existing worker pins change.
+
+Prompts above 100K tokens have a pricing premium. API pricing is not a measurement of subscription allowance. Enabling this worker does not replace the `haiku` family picker, economical discovery route, or background seat. An explicit Haiku 5.5 root can use it as a family fallback when no legacy Claude seat is available. It is never multiplied automatically or used as a default replacement in another route's same-category handoff; an explicit user chain can opt in.
+
+For example, save an optional worker and a medium pin while keeping the existing root:
+
+```bash
+./scripts/setup.sh --yes --anthropic-workers opus,sonnet,haiku,haiku55 --worker-pins haiku55=medium
+```
+
+Or select it as the saved hybrid root with `./scripts/setup.sh --yes --default-profile hybrid --hybrid-model haiku55`. A saved pool containing it round-trips through setup without enabling other new routes.
+
+Sources: [Anthropic models overview](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 model page](https://platform.claude.com/docs/en/models/haiku-5-5/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Grok 4.7
+
+`airlock grok grok47` or `airlock hybrid grok47` selects exact `grok-4.7`. The optional named worker is `airlock-grok47`, enabled by adding `grok47` to `AIRLOCK_GROK_MODELS`. Grok needs its separate login with `airlock proxy grok auth login`. Existing `grok` stays on Grok 4.6; the default Grok pool remains `grok,composer` when a Grok profile is chosen, and Grok stays off in a fresh hybrid setup until explicitly enabled.
+
+The route needs carried proxy `0.1.35-airlock.7` or another compatible build whose offline catalog contains exact `grok-4.7`. Check `claude-code-proxy models` before enabling it. Older builds cannot serve this model, and Airlock refuses an enabled route missing from the proxy catalog rather than falling back to Grok 4.6. This is a requirement, not an automatic proxy upgrade.
+
+xAI documents a 500K-token context window, text and image input, and supported reasoning levels `low`, `medium`, `high`, and `xhigh`. Airlock's catalog baseline is `xhigh`; the named worker follows session effort unless pinned in setup. Its published API price is the same as Grok 4.6, not a measurement of subscription allowance. Grok 4.7 sits next to Grok 4.6 as an enabled frontier peer and never enters automatic worker armies.
+
+To opt in to both frontier peers and keep Composer:
+
+```bash
+./scripts/setup.sh --yes --grok-workers grok,composer,grok47 --worker-pins grok47=xhigh
+```
+
+For a saved Grok-only root, use `./scripts/setup.sh --yes --default-profile grok --grok-model grok47`. A hybrid root uses `--default-profile hybrid --hybrid-model grok47`. Each explicitly selected root stays in its pool even when a custom worker list omits it. In the interactive wizard, the original Grok pool choices remain first; Grok 4.7 only, all three, and an exact custom mix are separate opt-in choices.
+
+Source: [xAI Grok 4.7 developer guide](https://docs.x.ai/developers/grok-4-7).
 
 ### Headroom session dashboard
 

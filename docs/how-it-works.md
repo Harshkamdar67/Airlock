@@ -109,6 +109,8 @@ airlock opr [ROUTE] [Claude arguments...]
 
 `airlock openrouter auth set-key` stores your OpenRouter API key using the operating system's own credential protection: the macOS Keychain, Windows DPAPI scoped to your current Windows user, or the Linux Secret Service through `secret-tool`. There is no plaintext file fallback. If none of those backends is available, the command fails instead of writing the key to disk unprotected. There is no OAuth step; you bring the key from your own OpenRouter account.
 
+You can add more keys with `airlock openrouter auth set-key --label NAME`. The router uses them in the order of the `AIRLOCK_OPENROUTER_KEYS` setting, which `set-key --label` and `logout --label` maintain. A session stays on one key until OpenRouter refuses it (401), reports it out of credits (402), or rate limits it (429). That key then sits out, for the rate-limit window, 30 minutes for credits, or six hours for a refused key, and the same request goes to the next key before the router considers another model. The session stays on the new key rather than bouncing back when the first one recovers. When every key is sitting out, the request follows the ordinary failover chain. A 529 means OpenRouter or its upstream is overloaded, which another key cannot fix, so it goes straight to the failover chain. A label with no stored key is skipped at startup, so one missing key does not stop a session that has others.
+
 `airlock openrouter models presets` lists curated, opt-in starting points for Kimi K3, DeepSeek V4 Flash 0731, Qwen 3.6 27B, and Ox Alpha without accessing the network or changing the registry. `add-preset NAME` expands one managed preset into its exact model, canonical provenance, default route, and pinned endpoint, then runs the same confirmed public catalog verification as a manual add. Installation and setup never add these routes automatically. Their suggested uses and tradeoffs are project-controlled summaries of community reports, not benchmarks or guarantees, and Airlock never accepts custom prompt text through the preset or registry commands.
 
 `airlock openrouter models add ROUTE MODEL ENDPOINT` declares one route in a small local registry file. ROUTE becomes the Agent name `airlock-or-ROUTE`. MODEL must be the exact routable OpenRouter model ID returned as `data.id`, such as `anthropic/claude-sonnet-4.5`. Airlock rejects any catalog entry that declares a non-null `alias_target`; OpenRouter may omit that field for exact routes. Dynamic identities such as `:free` or `:extended` variants and `auto` or `latest` selectors are rejected independently. ENDPOINT must be the exact serving endpoint tag OpenRouter reports for that model, such as `anthropic` or `deepinfra/turbo`.
@@ -257,6 +259,20 @@ Luna can also implement code when each shard has:
 A stronger Sol, Opus, Grok, or capable main model reviews, integrates, tests, and synthesizes the full result. Astra, Sol, Terra, Opus, Sonnet, Fable, Haiku, Grok 4.6, and user-declared open models are not multiplied automatically.
 
 A session is only told about the routes it actually enabled. A Grok-only session is not given Luna army instructions, and a session with no economical high-volume route is told plainly that it has no automatic swarm route.
+
+### Deep research with `/airlock-research`
+
+`/airlock-research <question> [--depth quick|standard|deep]` runs a planned research army. The main model can also start it on its own when you ask for deep or thorough research.
+
+1. **Scope.** The main model asks up to three clarifying questions when the question is ambiguous, then writes a short brief. At `deep` it shows you the brief and the lane plan and waits for approval before any worker starts.
+2. **Plan.** It splits the question into lanes that do not overlap: sub-questions, perspectives, source types (primary documents, papers, code, practitioner discussion), a recent-changes sweep, and at `standard` and `deep` a contrarian lane that looks for evidence against the emerging answer. `quick` uses 1 to 3 lanes, `standard` 4 to 8, and `deep` 8 to 12, always within the concurrency limit.
+3. **Wave 1.** One swarm worker per lane, all started before waiting. Every task carries `Public web research authorized: yes`, the shared brief, the neighboring lanes to leave alone, a tool-call budget, and source-quality rules. Each worker returns a claim ledger: one line per claim with an exact supporting quote, the URL it read, the source type, the date, and a confidence, plus conflicts, questions it could not answer, and sources it rejected.
+4. **Merge and gaps.** The main model merges the ledgers, marks each claim as corroborated, single-source, or contested, and lists what the brief still lacks.
+5. **Wave 2.** A smaller wave targets only those gaps and conflicts and is told what is already established. There are never more than two waves.
+6. **Verify.** One or two workers check that each key quotation really appears on its page. With the local web tools this is `fetch_page` with `find`, which does not read the whole page.
+7. **Report.** The main model writes the report itself in one pass: a direct answer first, citations that carry each URL over from the ledgers unchanged, stated confidence, separate "contested or uncertain" and "not found" sections, and a one-line method note.
+
+Workers never write files, so a research run asks for no file permissions. The report goes to a file only when you ask for one. The skill uses whichever of `airlock-luna`, `airlock-luna-fast`, and `airlock-composer` the session enabled. In a session with no swarm route it runs the lanes one at a time. Research costs model allowance in proportion to the number of lanes and waves, so `quick` is the cheap setting.
 
 ## Concurrency
 

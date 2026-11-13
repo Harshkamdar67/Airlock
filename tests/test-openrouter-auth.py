@@ -315,5 +315,174 @@ class OpenRouterCredentialTests(unittest.TestCase):
         self.assertIn("configured", stdout.getvalue())
 
 
+
+class OpenRouterKeyLabelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = patch.dict(os.environ, {}, clear=False)
+        self.env.start()
+        os.environ.pop("AIRLOCK_OPENROUTER_KEYS", None)
+        self.config: dict[str, str] = {}
+        self.writes: list[dict[str, object]] = []
+        access = SimpleNamespace(
+            read_flat_config=lambda: dict(self.config),
+            write_flat_config_overrides=self._write,
+        )
+        self.access_patch = patch.object(AUTH, "_access_module", return_value=access)
+        self.access_patch.start()
+
+    def tearDown(self) -> None:
+        self.access_patch.stop()
+        self.env.stop()
+
+    def _write(self, updates: dict[str, object]) -> None:
+        self.writes.append(dict(updates))
+        for key, value in updates.items():
+            if value is None:
+                self.config.pop(key, None)
+            else:
+                self.config[key] = str(value)
+
+    def test_labels_are_short_lowercase_names(self) -> None:
+        for label in ("default", "work", "team-2", "a"):
+            self.assertEqual(AUTH.validate_label(label), label)
+        for label in ("", "Work", "2team", "a b", "x" * 25, "../x", None):
+            with self.assertRaises(AUTH.CredentialError, msg=repr(label)):
+                AUTH.validate_label(label)
+
+    def test_label_list_parsing_fails_closed(self) -> None:
+        self.assertEqual(AUTH.parse_labels(" work, default "), ("work", "default"))
+        for raw in ("work,work", "Work", ",", ",".join(f"k{i}" for i in range(9))):
+            with self.assertRaises(AUTH.CredentialError, msg=raw):
+                AUTH.parse_labels(raw)
+
+    def test_configured_labels_default_config_and_environment(self) -> None:
+        self.assertEqual(AUTH.configured_labels(), ("default",))
+        self.config["AIRLOCK_OPENROUTER_KEYS"] = "default,work"
+        self.assertEqual(AUTH.configured_labels(), ("default", "work"))
+        os.environ["AIRLOCK_OPENROUTER_KEYS"] = "team"
+        self.assertEqual(AUTH.configured_labels(), ("team",))
+
+    def test_default_key_keeps_its_storage_names_and_labels_get_their_own(self) -> None:
+        self.assertEqual(AUTH._secret_service_attributes("default"), AUTH.SECRET_SERVICE_ATTRIBUTES)
+        work = AUTH._secret_service_attributes("work")
+        self.assertEqual(work[-1], "openrouter-api-key-work")
+        self.assertNotEqual(work, AUTH.SECRET_SERVICE_ATTRIBUTES)
+        self.assertEqual(AUTH._keychain_account("default"), b"default")
+        self.assertEqual(AUTH._keychain_account("work"), b"work")
+        with patch.dict(os.environ, {"LOCALAPPDATA": "/tmp/local"}):
+            self.assertEqual(AUTH._windows_credential_path().name, "openrouter.dpapi")
+            self.assertEqual(AUTH._windows_credential_path("work").name, "openrouter-work.dpapi")
+
+    def test_linux_labeled_key_round_trip_uses_only_its_attributes(self) -> None:
+        stored: dict[tuple[str, ...], bytes] = {}
+
+        def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            action = command[1]
+            attributes = tuple(part for part in command[2:] if not part.startswith("--label="))
+            if action == "store":
+                stored[attributes] = kwargs["input"]
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+            value = stored.get(attributes)
+            if action == "lookup":
+                return subprocess.CompletedProcess(command, 0 if value else 1, value or b"", b"")
+            stored.pop(attributes, None)
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with patch.object(AUTH.shutil, "which", return_value="secret-tool"), \
+                patch.object(AUTH.subprocess, "run", side_effect=run):
+            AUTH._linux_store(SENTINEL, "work")
+            self.assertIsNone(AUTH._linux_load())
+            self.assertEqual(AUTH._linux_load("work"), SENTINEL)
+            self.assertTrue(AUTH._linux_delete("work"))
+            self.assertIsNone(AUTH._linux_load("work"))
+
+    def test_set_key_with_label_adds_it_after_an_existing_default(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(AUTH, "read_key_hidden", return_value=SENTINEL), \
+                patch.object(AUTH, "store_key") as store, \
+                patch.object(AUTH, "load_key", return_value=b"sk-or-v1-EXISTING_DEFAULT_KEY_1"), \
+                patch.object(AUTH, "backend_name", return_value="test-backend"), \
+                contextlib.redirect_stdout(stdout):
+            self.assertEqual(AUTH.main(["set-key", "--label", "work"]), 0)
+        store.assert_called_once_with(SENTINEL, "work")
+        self.assertEqual(self.config["AIRLOCK_OPENROUTER_KEYS"], "default,work")
+        self.assertIn("OpenRouter credential work stored", stdout.getvalue())
+        self.assertNotIn(SENTINEL.decode("ascii"), stdout.getvalue())
+
+    def test_set_key_with_label_and_no_default_uses_only_that_label(self) -> None:
+        with patch.object(AUTH, "read_key_hidden", return_value=SENTINEL), \
+                patch.object(AUTH, "store_key"), \
+                patch.object(AUTH, "load_key", return_value=None), \
+                patch.object(AUTH, "backend_name", return_value="test-backend"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(AUTH.main(["set-key", "--label", "work"]), 0)
+        self.assertEqual(self.config["AIRLOCK_OPENROUTER_KEYS"], "work")
+
+    def test_environment_list_is_never_rewritten(self) -> None:
+        os.environ["AIRLOCK_OPENROUTER_KEYS"] = "default"
+        stdout = io.StringIO()
+        with patch.object(AUTH, "read_key_hidden", return_value=SENTINEL), \
+                patch.object(AUTH, "store_key"), \
+                patch.object(AUTH, "backend_name", return_value="test-backend"), \
+                contextlib.redirect_stdout(stdout):
+            self.assertEqual(AUTH.main(["set-key", "--label", "work"]), 0)
+        self.assertEqual(self.writes, [])
+        self.assertIn("set in the environment", stdout.getvalue())
+
+    def test_logout_with_label_removes_it_from_the_list(self) -> None:
+        self.config["AIRLOCK_OPENROUTER_KEYS"] = "default,work"
+        with patch.object(AUTH, "delete_key", return_value=True) as delete, \
+                patch.object(AUTH, "backend_name", return_value="test-backend"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(AUTH.main(["logout", "--yes", "--label", "work"]), 0)
+        delete.assert_called_once_with("work")
+        # Only the default key is left, which needs no setting at all.
+        self.assertNotIn("AIRLOCK_OPENROUTER_KEYS", self.config)
+
+    def test_status_reports_every_configured_label(self) -> None:
+        self.config["AIRLOCK_OPENROUTER_KEYS"] = "default,work"
+        stdout = io.StringIO()
+
+        def load(label: str = "default") -> bytes | None:
+            return SENTINEL if label == "default" else None
+
+        with patch.object(AUTH, "load_key", side_effect=load), \
+                patch.object(AUTH, "backend_name", return_value="test-backend"), \
+                contextlib.redirect_stdout(stdout):
+            self.assertEqual(AUTH.main(["status"]), 0)
+        self.assertEqual(stdout.getvalue(), (
+            "OpenRouter credential: configured (test-backend).\n"
+            "OpenRouter credential work: missing (test-backend).\n"
+        ))
+
+    def test_load_keys_returns_present_keys_in_order(self) -> None:
+        self.config["AIRLOCK_OPENROUTER_KEYS"] = "work,default,team"
+
+        def load(label: str = "default") -> bytes | None:
+            return {"default": b"d", "team": b"t"}.get(label)
+
+        with patch.object(AUTH, "load_key", side_effect=load):
+            self.assertEqual(AUTH.load_keys(), (("default", b"d"), ("team", b"t")))
+
+
+class OpenRouterKeyLabelConfigFileTests(unittest.TestCase):
+    """The label list round-trips through the real Airlock config writer."""
+
+    def test_real_config_file_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config"
+            config.write_text("AIRLOCK_MODEL=sol\n", encoding="utf-8")
+            with patch.dict(os.environ, {"AIRLOCK_CONFIG_FILE": str(config)}):
+                os.environ.pop("AIRLOCK_OPENROUTER_KEYS", None)
+                AUTH._write_labels(("default", "work"))
+                self.assertEqual(AUTH.configured_labels(), ("default", "work"))
+                self.assertIn("AIRLOCK_MODEL=sol", config.read_text(encoding="utf-8"))
+                AUTH._write_labels(None)
+                self.assertEqual(AUTH.configured_labels(), ("default",))
+                self.assertNotIn("AIRLOCK_OPENROUTER_KEYS", config.read_text(encoding="utf-8"))
+                config.write_text("AIRLOCK_OPENROUTER_KEYS=Bad Label\n", encoding="utf-8")
+                with self.assertRaises(AUTH.CredentialError):
+                    AUTH.configured_labels()
+
 if __name__ == "__main__":
     unittest.main()

@@ -174,7 +174,7 @@ if isinstance(models, list):
             pass
 PYDISCOVERY
 )" || declared_grok=''
-    enabled_grok=" grok-4.6 grok-composer-2.5-fast $(printf '%s ' "$declared_grok")"
+    enabled_grok=" grok-4.6 grok-4.7 grok-composer-2.5-fast $(printf '%s ' "$declared_grok")"
     while IFS= read -r catalog_line; do
       case "$catalog_line" in
         'grok:'*)

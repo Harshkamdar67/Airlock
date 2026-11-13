@@ -17,5 +17,14 @@
     ],
     "model": "grok-composer-2.5-fast",
     "effort": "high"
+  },
+  "airlock-grok47": {
+    "description": "Grok 4.7: long-horizon coding, terminal work, and multi-step debugging. Requires proxy grok-4.7 support. Not the architecture or security authority. Descriptive routing metadata only.",
+    "prompt": "Work directly using native Claude Code tools. Follow repository instructions, inspect code, preserve unrelated work, and stay in scope. Report checks, failures, skips, and limitations. Never access or expose credentials, token material, ignored files, unsafe links, or files outside the repository. Do not invoke another Agent.",
+    "disallowedTools": [
+      "Agent"
+    ],
+    "model": "grok-4.7",
+    "effort": "xhigh"
   }
 }

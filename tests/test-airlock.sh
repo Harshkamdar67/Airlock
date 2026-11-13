@@ -138,6 +138,48 @@ grep -q '^Extra usage: never' <<<"$budget_output"
 grep -q '^OpenAI Fast routes: off' <<<"$budget_output"
 grep -q '^Anthropic Fast startup: off' <<<"$budget_output"
 grep -q '^Preset: budget$' <<<"$budget_output"
+
+# Worker pools change without the setup wizard, and the readiness report
+# explains what an opt-in route still needs without making a model request.
+pool_config="$tmp_dir/pool.conf"
+printf '# keep me\nUNRELATED=value\nAIRLOCK_OPENAI_MODELS=sol,terra,luna\n' > "$pool_config"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    pool_proxy="$tmp_dir/pool-proxy.cmd"
+    printf '@echo off\r\nif "%%1"=="models" (echo gpt-6.1-sol gpt-5.6-terra gpt-6-luna) else (exit /b 1)\r\n' > "$pool_proxy"
+    ;;
+  *)
+    pool_proxy="$tmp_dir/pool-proxy"
+    printf '#!/usr/bin/env bash\ncase "$1" in models) printf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna\\n" ;; *) exit 1 ;; esac\n' > "$pool_proxy"
+    chmod +x "$pool_proxy"
+    ;;
+esac
+enable_output="$(AIRLOCK_CONFIG_FILE="$pool_config" AIRLOCK_ACCESS_PROXY="$pool_proxy" AIRLOCK_ACCESS_CLAUDE_VERSION=2.1.300 "$launcher" enable fable52 terra61)"
+grep -q '^fable52: enabled in AIRLOCK_ANTHROPIC_MODELS$' <<<"$enable_output"
+grep -q '^terra61: enabled in AIRLOCK_OPENAI_MODELS$' <<<"$enable_output"
+grep -q 'proxy does not list gpt-6.1-terra; install v0.1.35-airlock.8' <<<"$enable_output"
+grep -q '^AIRLOCK_OPENAI_MODELS=sol,terra,terra61,luna$' "$pool_config"
+grep -q '^AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,fable52,haiku$' "$pool_config"
+grep -q '^# keep me$' "$pool_config"
+grep -q '^UNRELATED=value$' "$pool_config"
+disable_output="$(AIRLOCK_CONFIG_FILE="$pool_config" "$launcher" disable terra61)"
+grep -q '^terra61: disabled in AIRLOCK_OPENAI_MODELS$' <<<"$disable_output"
+grep -q '^AIRLOCK_OPENAI_MODELS=sol,terra,luna$' "$pool_config"
+if AIRLOCK_CONFIG_FILE="$pool_config" "$launcher" enable not-a-route >/dev/null 2>&1; then
+  printf 'airlock enable accepted an unknown route\n' >&2
+  exit 1
+fi
+check_output="$(AIRLOCK_CONFIG_FILE="$pool_config" AIRLOCK_ACCESS_PROXY="$pool_proxy" AIRLOCK_ACCESS_GROK_AUTH=0 AIRLOCK_ACCESS_CLAUDE_VERSION=2.1.290 "$launcher" models --check)"
+grep -q '^Claude Code: 2.1.290; proxy catalog: 3 models; Grok login: no$' <<<"$check_output"
+grep -Eq '^haiku55 +claude-haiku-5-5 +no +needs Claude Code 2.1.293 or newer \(found 2.1.290\)$' <<<"$check_output"
+grep -Eq '^fable52 +claude-fable-5-2\[1m\] +yes +ready' <<<"$check_output"
+AIRLOCK_CONFIG_FILE="$pool_config" AIRLOCK_ACCESS_PROXY="$pool_proxy" AIRLOCK_ACCESS_CLAUDE_VERSION=2.1.290 \
+  "$launcher" enable haiku55 >/dev/null
+if AIRLOCK_CONFIG_FILE="$pool_config" AIRLOCK_ACCESS_PROXY="$pool_proxy" AIRLOCK_ACCESS_GROK_AUTH=0 \
+    AIRLOCK_ACCESS_CLAUDE_VERSION=2.1.290 "$launcher" models --check --strict >/dev/null; then
+  printf 'airlock models --check --strict passed with an enabled route that is not ready\n' >&2
+  exit 1
+fi
 defaults_output="$(AIRLOCK_CONFIG_FILE="$mode_config" AIRLOCK_ACCESS_FILE="$mode_access" "$launcher" mode defaults)"
 grep -q '^Routing: balanced' <<<"$defaults_output"
 grep -q '^Extra usage: ask' <<<"$defaults_output"
@@ -480,6 +522,40 @@ else
 fi
 [[ "$openrouter_invalid_status" -eq 2 ]]
 grep -q '^airlock: usage: airlock openrouter auth|models \.\.\.$' "$tmp_dir/openrouter-invalid.err"
+
+# openrouter auth takes one optional flag per action plus --label NAME. A
+# key pasted where a label belongs is refused before the helper runs, and
+# the refusal never echoes it.
+cat >"$tmp_dir/openrouter-auth-stub.py" <<'PY'
+import sys
+print("HELPER " + " ".join(sys.argv[1:]))
+PY
+for accepted in \
+  'set-key' 'set-key --stdin' 'set-key --label work' 'set-key --stdin --label team-2' \
+  'status' 'status --label work' 'logout --yes' 'logout --label work --yes'; do
+  # shellcheck disable=SC2086
+  accepted_output="$(AIRLOCK_OPENROUTER_AUTH_HELPER="$tmp_dir/openrouter-auth-stub.py" \
+    "$launcher" openrouter auth $accepted 2>&1)"
+  grep -qxF "HELPER $accepted" <<<"$accepted_output" || {
+    printf 'test: openrouter auth refused valid arguments: %s\n' "$accepted" >&2
+    exit 1
+  }
+done
+pasted_key='sk-or-v1-PASTED_KEY_MUST_NOT_ECHO_123'
+for refused in \
+  "set-key --label $pasted_key" 'set-key --label Work' 'set-key --label' \
+  'set-key --label a --label b' 'status --yes' 'logout --stdin' "set-key $pasted_key"; do
+  # shellcheck disable=SC2086
+  if refused_output="$(AIRLOCK_OPENROUTER_AUTH_HELPER="$tmp_dir/openrouter-auth-stub.py" \
+    "$launcher" openrouter auth $refused 2>&1)"; then
+    printf 'test: openrouter auth accepted invalid arguments: %s\n' "$refused" >&2
+    exit 1
+  fi
+  if grep -q 'HELPER\|PASTED_KEY' <<<"$refused_output"; then
+    printf 'test: openrouter auth reached the helper or echoed a key: %s\n' "$refused" >&2
+    exit 1
+  fi
+done
 
 if "$launcher" version unexpected >/dev/null 2>&1; then
   printf 'test: version command accepted an unexpected argument\n' >&2
@@ -2822,21 +2898,137 @@ if AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   exit 1
 fi
 
-# A declared model extends the launcher without code changes: with grok-4.7
+# New opt-ins do not move the old aliases or economical background seat.
+# Evaluate only the menu-print fragment: the real choose command correctly
+# refuses piped input, and native Windows has no POSIX PTY for this suite.
+AIRLOCK_TEST_LAUNCHER="$launcher" python - <<'PYMENU'
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
+source = Path(os.environ["AIRLOCK_TEST_LAUNCHER"]).read_text(encoding="utf-8")
+function = source.split("select_hybrid_root() {", 1)[1].split(chr(10) + "}" + chr(10), 1)[0]
+menu = function[function.index("  printf '%s"):].split("  read -r", 1)[0]
+# A bare "bash" on Windows resolves to System32's WSL launcher before PATH.
+bash = shutil.which("bash") or "bash"
+result = subprocess.run([bash, "-c", menu], capture_output=True, text=True)
+if result.returncode != 0:
+    sys.exit(f"menu fragment failed with {result.returncode}: {result.stderr.strip()}")
+rows = result.stdout.splitlines()
+assert len(rows) == 19, rows
+assert rows[-4] == " 15) Claude Haiku 5.5 (claude-haiku-5-5; requires Claude Code 2.1.293)"
+assert rows[-3] == " 16) Grok 4.7 (grok-4.7; requires a compatible proxy and Grok OAuth)"
+assert rows[-2] == " 17) Claude Fable 5.2 (claude-fable-5-2[1m]; may use extra usage)"
+assert rows[-1] == " 18) GPT-6.1 Terra (gpt-6.1-terra; requires a compatible proxy)"
+assert "15) root_alias='haiku55'" in function
+assert "16) root_alias='grok47'" in function
+assert "17) root_alias='fable52'" in function
+assert "18) root_alias='terra61'" in function
+PYMENU
+haiku55_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1   "$launcher" hybrid haiku55 -p test)"
+grep -q '^ROOT_MODEL=claude-haiku-5-5$' <<<"$haiku55_output"
+grep -q '^COMPACT_WINDOW=unset$' <<<"$haiku55_output"
+grep -q '^MAX_CONTEXT=unset$' <<<"$haiku55_output"
+grep -q '^DEFAULT_HAIKU=claude-sonnet-5\[1m\]$' <<<"$haiku55_output"
+grep -q 'airlock-haiku55' <<<"$haiku55_output"
+haiku_output="$(AIRLOCK_ANTHROPIC_MODELS=haiku AIRLOCK_REAL_CLAUDE="$stub"   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid haiku -p test)"
+grep -q '^ROOT_MODEL=claude-haiku-4-5-20251001$' <<<"$haiku_output"
+if grep -q 'airlock-haiku55' <<<"$haiku_output"; then
+  printf 'test: legacy Haiku root enabled Haiku 5.5 without opt-in\n' >&2
+  exit 1
+fi
+fable52_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid fable52 -p test)"
+grep -q '^ROOT_MODEL=claude-fable-5-2\[1m\]$' <<<"$fable52_output"
+grep -q 'airlock-fable52' <<<"$fable52_output"
+if grep -q 'airlock-fable,' <<<"$fable52_output"; then
+  printf 'test: Fable 5.2 root enabled Fable 5.1 without opt-in\n' >&2
+  exit 1
+fi
+terra61_proxy="$tmp_dir/terra61-proxy"
+printf '#!/usr/bin/env bash\nprintf "gpt-6.1-sol gpt-6.1-terra gpt-5.6-terra gpt-6-luna\\n"\n' > "$terra61_proxy"
+chmod +x "$terra61_proxy"
+old_terra_proxy="$tmp_dir/old-terra-proxy"
+printf '#!/usr/bin/env bash\nprintf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna\\n"\n' > "$old_terra_proxy"
+chmod +x "$old_terra_proxy"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+    for terra61_profile in terra61 'hybrid terra61'; do
+      # shellcheck disable=SC2086
+      terra61_output="$(AIRLOCK_ACCESS_PROXY="$terra61_proxy" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" $terra61_profile -p test)"
+      grep -q '^ROOT_MODEL=gpt-6.1-terra$' <<<"$terra61_output"
+      grep -q 'airlock-terra61' <<<"$terra61_output"
+      # shellcheck disable=SC2086
+      if terra61_refused="$(AIRLOCK_ACCESS_PROXY="$old_terra_proxy" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" $terra61_profile -p test 2>&1)"; then
+        printf 'test: GPT-6.1 Terra launched through a proxy that does not list it\n' >&2
+        exit 1
+      fi
+      grep -q 'v0.1.35-airlock.8' <<<"$terra61_refused"
+      grep -q 'did not advertise' <<<"$terra61_refused"
+    done
+    ;;
+esac
+# A saved empty pool is intentional, not a request to enable old defaults.
+cat > "$tmp_dir/haiku55-root-only.conf" <<'ROOTONLY'
+AIRLOCK_ANTHROPIC_MODELS=
+AIRLOCK_OPENAI_MODELS=
+AIRLOCK_GROK_MODELS=
+ROOTONLY
+haiku55_only_output="$(AIRLOCK_CONFIG_FILE="$tmp_dir/haiku55-root-only.conf" AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid haiku55 -p test)"
+grep -q '^ALLOWED_AGENTS=airlock-haiku55$' <<<"$haiku55_only_output"
+grep -q '^DEFAULT_HAIKU=claude-haiku-5-5$' <<<"$haiku55_only_output"
+# These executable stubs expose only an offline model catalog.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    grok47_proxy="$tmp_dir/grok47-proxy.cmd"
+    printf '@echo off\r\necho Grok models: grok-4.6, grok-4.7, grok-composer-2.5-fast\r\n' > "$grok47_proxy"
+    ;;
+  *)
+    grok47_proxy="$tmp_dir/grok47-proxy"
+    printf '#!/usr/bin/env bash\nprintf "Grok models: grok-4.6, grok-4.7, grok-composer-2.5-fast\\n"\n' > "$grok47_proxy"
+    chmod +x "$grok47_proxy"
+    ;;
+esac
+for alias in grok47 grok-4.7; do
+  grok47_output="$(AIRLOCK_ACCESS_PROXY="$grok47_proxy" AIRLOCK_REAL_CLAUDE="$stub"     AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" grok "$alias" -p test)"
+  grep -q '^ROOT_MODEL=grok-4.7$' <<<"$grok47_output"
+  grep -q '^COMPACT_WINDOW=400000$' <<<"$grok47_output"
+  grep -q '^MAX_CONTEXT=500000$' <<<"$grok47_output"
+  grep -q 'airlock-grok47' <<<"$grok47_output"
+done
+hybrid_grok47_output="$(AIRLOCK_ACCESS_PROXY="$grok47_proxy" AIRLOCK_REAL_CLAUDE="$stub"   AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" hybrid grok47 -p test)"
+grep -q '^ROOT_MODEL=grok-4.7$' <<<"$hybrid_grok47_output"
+grep -q '^COMPACT_WINDOW=400000$' <<<"$hybrid_grok47_output"
+grep -q '^MAX_CONTEXT=500000$' <<<"$hybrid_grok47_output"
+for profile in grok hybrid; do
+  if AIRLOCK_ACCESS_PROXY="$tmp_dir/missing-proxy" AIRLOCK_REAL_CLAUDE="$stub"     AIRLOCK_SKIP_HEALTH_CHECK=1 "$launcher" "$profile" grok47 -p test     > "$tmp_dir/grok47-failure.out" 2>&1; then
+    printf 'test: Grok 4.7 accepted an unadvertised proxy model\n' >&2
+    exit 1
+  fi
+  grep -q 'v0.1.35-airlock.7' "$tmp_dir/grok47-failure.out"
+done
+if AIRLOCK_ACCESS_PROXY="$tmp_dir/missing-proxy" AIRLOCK_GROK_MODELS=grok47   AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1   "$launcher" hybrid sonnet -p test > "$tmp_dir/grok47-worker-failure.out" 2>&1; then
+  printf 'test: unsupported Grok 4.7 worker was offered\n' >&2
+  exit 1
+fi
+grep -q 'did not advertise' "$tmp_dir/grok47-worker-failure.out"
+
+# A declared model extends the launcher without code changes: with grok-test-custom
 # present and enabled in models.json, the same request resolves to that ID.
 # The declared ID has to be one Airlock does not ship, or resolve_grok_model
 # matches its own case first and the declaration path is never exercised.
 declared_models="$(mktemp "${TMPDIR:-/tmp}/airlock-models-XXXXXX.json")"
 cat >"$declared_models" <<'JSON'
 {"schema_version": 1, "models": [{
-  "id": "grok-4.7", "provider": "grok", "effort_ceiling": "xhigh",
+  "id": "grok-test-custom", "provider": "grok", "effort_ceiling": "xhigh",
   "context_window": null, "cost": "premium", "enabled": true
 }]}
 JSON
 declared_output="$(AIRLOCK_REAL_CLAUDE="$stub" AIRLOCK_SKIP_HEALTH_CHECK=1 \
   AIRLOCK_MODELS_FILE="$declared_models" \
-  AIRLOCK_GROK_MODELS=grok,composer "$launcher" grok --model=grok-4.7 -p test)"
-grep -q '^MODEL=grok-4.7$' <<<"$declared_output"
+  AIRLOCK_GROK_MODELS=grok,composer "$launcher" grok --model=grok-test-custom -p test)"
+grep -q '^MODEL=grok-test-custom$' <<<"$declared_output"
 rm -f "$declared_models"
 
 hybrid_grok_output="$(AIRLOCK_STUB_INSPECT_ROUTER=1 AIRLOCK_REAL_CLAUDE="$stub" \

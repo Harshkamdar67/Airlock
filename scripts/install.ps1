@@ -460,21 +460,21 @@ foreach ($requirement in @(
 }
 
 # Airlock carries a Windows claude-code-proxy build with the OAuth browser fix
-# and exact GPT-6.1 Sol support alongside GPT-6.1 Sol/Luna. Stock releases opened login URLs through
+# and exact GPT-6.1 Sol, GPT-6 Luna, and Grok 4.7 support. Stock releases opened login URLs through
 # cmd start without quoting, which cut an OAuth URL at the first ampersand.
 # Refresh the version, archives, and hashes together for each carried build.
-$ProxyReleaseVersion = '0.1.35-airlock.6'
+$ProxyReleaseVersion = '0.1.35-airlock.7'
 $ProxyReleaseAssets = [ordered]@{
-  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '5e875b6074f84b45f28b3e07e1d49db1f3d932808f57580c6cea15278406feed' }
-  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = 'c90549c6cd42c17097a73c48ffed0db036d36339877f1ddd7aa71afb5c6303f1' }
+  'AMD64' = @{ Archive = 'claude-code-proxy-windows-amd64.zip'; Sha256 = '08cfc460345b78a4b377e19b8d650c140fafffe1e0afb7c49cf924f30fd7ea06' }
+  'ARM64' = @{ Archive = 'claude-code-proxy-windows-arm64.zip'; Sha256 = '718a13d7899a2b4b66d806c31c295dbe0e1ad1e6ebcadc99eaf7c956adb90241' }
 }
-$PreviousCarriedProxyVersion = '0.1.35-airlock.5'
+$PreviousCarriedProxyVersion = '0.1.35-airlock.6'
 # Only an exact Airlock-distributed binary inside Airlock's install directory
 # can be upgraded without -UpgradeProxy. Unknown and custom proxy builds stay
 # under the user's control, even when they print the same version string.
 $PreviousCarriedProxyHashes = @{
-  'AMD64' = 'f8c334d649d402a3299cc39e1c6d5ca7197e682d2b19bc1efe1d126a4e52f21f'
-  'ARM64' = '2940356b610bc500839acb26aab4c87648574d2f0a553d234f2e915232707a91'
+  'AMD64' = '153c39a46f7de6716c0f2c0fbbeb926f14f5f8a27ab9c62782bccb1d97b9924c'
+  'ARM64' = '213d0934eeede2664224d12211e348d016723da66f159e260312811c72c17470'
 }
 
 function Get-ProxyVersionLine {
@@ -649,6 +649,7 @@ $managedFiles = [ordered]@{
   'plugins\airlock\hooks\hooks.json' = (Join-Path $PluginTarget 'hooks\hooks.json')
   'plugins\airlock\skills\usage\SKILL.md' = (Join-Path $PluginTarget 'skills\usage\SKILL.md')
   'plugins\airlock\skills\airlock-fast\SKILL.md' = (Join-Path $PluginTarget 'skills\airlock-fast\SKILL.md')
+  'plugins\airlock\skills\airlock-research\SKILL.md' = (Join-Path $PluginTarget 'skills\airlock-research\SKILL.md')
   'plugins\airlock\mcp-server\airlock_web_tools.py' = (Join-Path $PluginTarget 'mcp-server\airlock_web_tools.py')
   'plugins\airlock\mcp-server\airlock_console_mcp.py' = (Join-Path $PluginTarget 'mcp-server\airlock_console_mcp.py')
   'plugins\airlock\scripts\fast-session-end.sh' = (Join-Path $PluginTarget 'scripts\fast-session-end.sh')

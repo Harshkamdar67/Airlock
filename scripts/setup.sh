@@ -81,7 +81,7 @@ Options:
   --default-profile PROFILE   Bare airlock: hybrid, openai, or grok
   --main-model MODEL          Backward-compatible root choice; Claude implies hybrid
   --hybrid-model MODEL        Saved hybrid orchestrator alias
-  --grok-model MODEL          Saved Grok-only root: grok or composer
+  --grok-model MODEL          Saved Grok-only root: grok, composer, or grok47
   --main-effort EFFORT        Starting session effort: low, medium, high, xhigh, or max
   --worker-effort EFFORT      Named model workers: inherit, low, medium, high, xhigh, or max
   --worker-pins LIST          Per-route pins such as luna=max,sonnet=high; empty clears
@@ -115,8 +115,9 @@ Options:
 Claude Code is a separate prerequisite. Setup never changes or reads its login.
 
 Root aliases:
-  Hybrid: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku
-  OpenAI-only: astra, sol, sol61, sol-fast, terra, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
+  Hybrid: auto, sonnet, sonnet55, astra, sol, sol61, terra, terra61, luna, opus, fable, fable52, haiku, haiku55, grok, composer, grok47
+  Grok-only: grok, composer, grok47
+  OpenAI-only: astra, sol, sol61, sol-fast, terra, terra61, luna, 5.5, 5.4, mini, 5.3, spark, 5.2
 
 The reserved hybrid value 'auto' resolves at launch time: Fable when Fable's
 access class is neither extra nor unavailable, otherwise Opus under the same
@@ -285,7 +286,7 @@ default_utility_wire="$CONFIG_VALUE"
 read_config_value AIRLOCK_WORKER_EFFORT inherit
 default_worker_effort="$CONFIG_VALUE"
 default_worker_pins=''
-for route in astra sol sol61 terra luna opus sonnet sonnet55 fable haiku grok composer; do
+for route in astra sol sol61 terra terra61 luna opus sonnet sonnet55 fable fable52 haiku haiku55 grok composer grok47; do
   key="AIRLOCK_EFFORT_$(printf '%s' "$route" | tr '[:lower:]-' '[:upper:]_')"
   read_config_value "$key" ''
   if [[ -n "$CONFIG_VALUE" ]]; then
@@ -401,12 +402,14 @@ set_model_info() {
     sonnet) MODEL_TITLE='Claude Sonnet 5'; MODEL_ID='claude-sonnet-5[1m]'; MODEL_DETAIL='Balanced engineering and repository work. Standard usage.' ;;
     opus) MODEL_TITLE='Claude Opus 5.5'; MODEL_ID='claude-opus-5-5[1m]'; MODEL_DETAIL='Architecture, security, and visual direction. Premium usage.' ;;
     fable) MODEL_TITLE='Claude Fable 5.1'; MODEL_ID='claude-fable-5-1[1m]'; MODEL_DETAIL='Efficient frontier work. May require extra usage.' ;;
+    fable52) MODEL_TITLE='Claude Fable 5.2'; MODEL_ID='claude-fable-5-2[1m]'; MODEL_DETAIL='Opt-in efficient frontier work at a lower price than Fable 5.1. May require extra usage.' ;;
     haiku) MODEL_TITLE='Claude Haiku 4.5'; MODEL_ID='claude-haiku-4-5-20251001'; MODEL_DETAIL='Fast bounded utility work. Economical usage.' ;;
     astra) MODEL_TITLE='GPT-6 Astra'; MODEL_ID='gpt-6-astra'; MODEL_DETAIL='Frontier reasoning with a 1,050,000 token window. Premium usage, and more above 272,000 input tokens.' ;;
     sol61) MODEL_TITLE='GPT-6.1 Sol'; MODEL_ID='gpt-6.1-sol'; MODEL_DETAIL='Compatibility alias for sol (GPT-6.1 Sol).' ;;
     sol) MODEL_TITLE='GPT-6.1 Sol'; MODEL_ID='gpt-6.1-sol'; MODEL_DETAIL='Difficult implementation and integration. Premium usage.' ;;
     sol-fast) MODEL_TITLE='GPT-5.6 Sol Fast'; MODEL_ID='gpt-5.6-sol-fast'; MODEL_DETAIL='Priority-processed Sol. Eligible plans only.' ;;
     terra) MODEL_TITLE='GPT-5.6 Terra'; MODEL_ID='gpt-5.6-terra'; MODEL_DETAIL='Review and alternative reasoning. Standard usage.' ;;
+    terra61) MODEL_TITLE='GPT-6.1 Terra'; MODEL_ID='gpt-6.1-terra'; MODEL_DETAIL='Opt-in review and alternative reasoning. Requires proxy 0.1.35-airlock.8 or newer.' ;;
     luna) MODEL_TITLE='GPT-6 Luna'; MODEL_ID='gpt-6-luna'; MODEL_DETAIL='Discovery, triage, and bounded work. Economical usage.' ;;
     5.5) MODEL_TITLE='GPT-5.5'; MODEL_ID='gpt-5.5'; MODEL_DETAIL='Supported OpenAI root.' ;;
     5.4) MODEL_TITLE='GPT-5.4'; MODEL_ID='gpt-5.4'; MODEL_DETAIL='Supported OpenAI root.' ;;
@@ -414,6 +417,8 @@ set_model_info() {
     5.3) MODEL_TITLE='GPT-5.3 Codex'; MODEL_ID='gpt-5.3-codex'; MODEL_DETAIL='Supported Codex root.' ;;
     spark) MODEL_TITLE='GPT-5.3 Codex Spark'; MODEL_ID='gpt-5.3-codex-spark'; MODEL_DETAIL='Fast supported Codex root.' ;;
     5.2) MODEL_TITLE='GPT-5.2'; MODEL_ID='gpt-5.2'; MODEL_DETAIL='Supported OpenAI root.' ;;
+    haiku55) MODEL_TITLE='Claude Haiku 5.5'; MODEL_ID='claude-haiku-5-5'; MODEL_DETAIL='Opt-in bounded utility work. Requires Claude Code 2.1.293 or newer; baseline medium effort.' ;;
+    grok47) MODEL_TITLE='Grok 4.7'; MODEL_ID='grok-4.7'; MODEL_DETAIL='Opt-in coding and debugging peer. Requires proxy 0.1.35-airlock.7 or newer; baseline xhigh effort.' ;;
     grok) MODEL_TITLE='Grok 4.6'; MODEL_ID='grok-4.6'; MODEL_DETAIL='Difficult implementation and debugging. Premium usage.' ;;
     composer) MODEL_TITLE='Grok Composer 2.5 Fast'; MODEL_ID='grok-composer-2.5-fast'; MODEL_DETAIL='Discovery, triage, and bounded mechanical work. Economical usage.' ;;
     *) MODEL_TITLE="$1"; MODEL_ID="$1"; MODEL_DETAIL='Custom model.' ;;
@@ -432,6 +437,7 @@ wire_model_from_alias() {
     sol61) WIRE_MODEL='gpt-6.1-sol' ;;
     sol-fast) WIRE_MODEL='gpt-5.6-sol-fast' ;;
     terra) WIRE_MODEL='gpt-5.6-terra' ;;
+    terra61) WIRE_MODEL='gpt-6.1-terra' ;;
     luna) WIRE_MODEL='gpt-6-luna' ;;
     5.5) WIRE_MODEL='gpt-5.5' ;;
     5.4) WIRE_MODEL='gpt-5.4' ;;
@@ -452,14 +458,14 @@ validate_default_profile() {
 
 validate_hybrid_model() {
   case "$1" in
-    auto|sonnet|sonnet55|astra|sol|sol61|terra|luna|opus|fable|haiku|grok|composer) ;;
+    auto|sonnet|sonnet55|astra|sol|sol61|terra|terra61|luna|opus|fable|fable52|haiku|haiku55|grok|composer|grok47) ;;
     *) printf 'setup: unsupported hybrid orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
 
 validate_grok_model() {
   case "$1" in
-    grok|composer) ;;
+    grok|composer|grok47) ;;
     *) printf 'setup: unsupported Grok orchestrator: %s\n' "$1" >&2; exit 2 ;;
   esac
 }
@@ -482,7 +488,7 @@ validate_worker_pins() {
       printf 'setup: worker pin must use route=effort: %s\n' "$item" >&2
       exit 2
     fi
-    case "$route" in astra|sol|sol61|terra|luna|opus|sonnet|sonnet55|fable|haiku) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
+    case "$route" in astra|sol|sol61|terra|terra61|luna|opus|sonnet|sonnet55|fable|fable52|haiku|haiku55|grok|composer|grok47) ;; *) printf 'setup: unsupported worker pin route: %s\n' "$route" >&2; exit 2 ;; esac
     if [[ "$seen" == *",$route,"* ]]; then
       printf 'setup: duplicate worker pin route: %s\n' "$route" >&2
       exit 2
@@ -1253,7 +1259,7 @@ utility_model="$(setup_model_alias "$utility_model")"
 # a hybrid session.
 if [[ "$main_model_was_explicit" -eq 1 ]]; then
   case "$main_model" in
-    opus|sonnet|sonnet55|fable|haiku)
+    opus|sonnet|sonnet55|fable|fable52|haiku|haiku55)
       [[ "$profile_was_explicit" -eq 1 && "$default_profile" != 'hybrid' ]] && {
         printf 'setup: a Claude main model requires --default-profile hybrid\n' >&2
         exit 2
@@ -1297,15 +1303,16 @@ if [[ "$assume_yes" -eq 0 ]]; then
     grok_enabled="$ANSWER"
   fi
   if [[ "$grok_enabled" == 'no' ]]; then
-    case "$hybrid_model" in grok|composer) hybrid_model='' ;; esac
-    case "$default_hybrid_model" in grok|composer) default_hybrid_model='sol' ;; esac
+    case "$hybrid_model" in grok|composer|grok47) hybrid_model='' ;; esac
+    case "$default_hybrid_model" in grok|composer|grok47) default_hybrid_model='sol' ;; esac
   fi
 
   if [[ "$default_profile" == 'grok' ]]; then
     print_question 'Default orchestrator' 'Grok-only sessions can still use exact Grok workers.'
     choose_rich_option "${grok_model:-$default_grok_model}" grok \
       'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.' \
-      'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+      'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.' \
+      'grok47|Grok 4.7|grok-4.7|Requires proxy 0.1.35-airlock.7 or newer. Opt-in frontier peer.'
     grok_model="$CHOICE"
     main_model="$default_main_model"
     hybrid_model="${hybrid_model:-$default_hybrid_model}"
@@ -1328,8 +1335,14 @@ if [[ "$assume_yes" -eq 0 ]]; then
       hybrid_options+=(
         'grok|Grok 4.6|grok-4.6|Difficult implementation and debugging. Premium usage.'
         'composer|Grok Composer 2.5 Fast|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+        'grok47|Grok 4.7|grok-4.7|Requires proxy 0.1.35-airlock.7 or newer. Opt-in frontier peer.'
       )
     fi
+    hybrid_options+=(
+      'haiku55|Claude Haiku 5.5|claude-haiku-5-5|Requires Claude Code 2.1.293 or newer. Opt-in utility route.'
+      'fable52|Claude Fable 5.2|claude-fable-5-2[1m]|Opt-in. Lower price than Fable 5.1. May require extra usage.'
+      'terra61|GPT-6.1 Terra|gpt-6.1-terra|Opt-in. Requires proxy 0.1.35-airlock.8 or newer.'
+    )
     choose_rich_option "$hybrid_model" auto "${hybrid_options[@]}"
     hybrid_model="$CHOICE"
     main_model="$default_main_model"
@@ -1347,13 +1360,14 @@ if [[ "$assume_yes" -eq 0 ]]; then
       '5.3|GPT-5.3 Codex|gpt-5.3-codex|Supported Codex root.' \
       'spark|GPT-5.3 Codex Spark|gpt-5.3-codex-spark|Fast supported Codex root.' \
       '5.2|GPT-5.2|gpt-5.2|Supported OpenAI root.' \
-      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).'
+      'sol61|GPT-6.1 Sol|gpt-6.1-sol|Compatibility alias for sol (GPT-6.1 Sol).' \
+      'terra61|GPT-6.1 Terra|gpt-6.1-terra|Opt-in. Requires proxy 0.1.35-airlock.8 or newer.'
     main_model="$CHOICE"
   fi
 
   print_section 2 'WORKER POOL' 'Choose which exact-model Agents the orchestrator may use. More is not always better.'
   print_question 'Model catalog' 'Access depends on the connected plans and is checked again when a session starts.'
-  for route in sonnet sonnet55 opus fable haiku luna terra sol sol61 astra; do
+  for route in sonnet sonnet55 opus fable fable52 haiku haiku55 luna terra terra61 sol sol61 astra; do
     set_model_info "$route"
     if (( ${#MODEL_TITLE} + ${#MODEL_ID} + 6 <= ui_width )); then
       printf '  %s  (%s)\n' "$MODEL_TITLE" "$MODEL_ID"
@@ -1384,13 +1398,13 @@ if [[ "$assume_yes" -eq 0 ]]; then
       anthropic_models=''
       openai_models=''
       print_question 'Choose each worker' 'Answer once per model. A disabled model can still be enabled later with `airlock config`.'
-      for route in sonnet sonnet55 opus fable haiku; do
+      for route in sonnet sonnet55 opus fable fable52 haiku haiku55; do
         set_model_info "$route"
         current_answer='no'; csv_contains "$default_anthropic_models" "$route" && current_answer='yes'
         ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
         if [[ "$ANSWER" == 'yes' ]]; then csv_add "$anthropic_models" "$route"; anthropic_models="$CSV_RESULT"; fi
       done
-      for route in luna terra sol sol61 astra; do
+      for route in luna terra terra61 sol sol61 astra; do
         set_model_info "$route"
         current_answer='no'; csv_contains "$default_openai_models" "$route" && current_answer='yes'
         ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
@@ -1408,16 +1422,34 @@ if [[ "$assume_yes" -eq 0 ]]; then
     case "$default_grok_models" in
       grok) current_grok_preset='grok' ;;
       composer) current_grok_preset='composer' ;;
+      grok47) current_grok_preset='grok47' ;;
+      grok,composer,grok47) current_grok_preset='all' ;;
+      ''|grok,composer) ;;
+      *) current_grok_preset='custom' ;;
     esac
     print_question 'Which Grok workers should the orchestrator be allowed to use?' 'These run on your Grok subscription through the local proxy.'
     choose_rich_option "$current_grok_preset" both \
       'both|Grok 4.6 and Grok Composer 2.5 Fast||Full Grok pool: one frontier worker and one economical worker.' \
       'grok|Grok 4.6 only|grok-4.6|Difficult implementation and debugging. Premium usage.' \
-      'composer|Grok Composer 2.5 Fast only|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.'
+      'composer|Grok Composer 2.5 Fast only|grok-composer-2.5-fast|Discovery, triage, and bounded mechanical work. Economical usage.' \
+      'grok47|Grok 4.7 only|grok-4.7|Opt-in frontier peer. Requires proxy 0.1.35-airlock.7 or newer.' \
+      'all|All three Grok workers||Explicitly enable Grok 4.6, Composer, and Grok 4.7.' \
+      'custom|Choose Grok models individually||Keep an exact mix without enabling the other Grok routes.'
     case "$CHOICE" in
       both) grok_models='grok,composer' ;;
       grok) grok_models='grok' ;;
       composer) grok_models='composer' ;;
+      grok47) grok_models='grok47' ;;
+      all) grok_models='grok,composer,grok47' ;;
+      custom)
+        grok_models=''
+        for route in grok composer grok47; do
+          set_model_info "$route"
+          current_answer='no'; csv_contains "$default_grok_models" "$route" && current_answer='yes'
+          ask_yes_no "Enable $MODEL_TITLE ($MODEL_ID)?" "$current_answer"
+          if [[ "$ANSWER" == 'yes' ]]; then csv_add "$grok_models" "$route"; grok_models="$CSV_RESULT"; fi
+        done
+        ;;
     esac
     # A Grok root that is not itself an enabled worker cannot start, so keep
     # the saved root inside the pool the user just chose.
@@ -1461,8 +1493,8 @@ if [[ "$assume_yes" -eq 0 ]]; then
       ;;
     custom)
       worker_effort='inherit'
-      for route in sonnet sonnet55 opus fable haiku luna terra sol sol61 astra; do
-        if csv_contains "$anthropic_models,$openai_models" "$route"; then
+      for route in sonnet sonnet55 opus fable fable52 haiku haiku55 luna terra terra61 sol sol61 astra grok composer grok47; do
+        if csv_contains "$anthropic_models,$openai_models,$grok_models" "$route"; then
           set_model_info "$route"
           pin_for_route "$existing_worker_pins" "$route"
           print_question "$MODEL_TITLE worker effort" "$MODEL_ID"
@@ -1639,9 +1671,9 @@ if [[ -z "$install_agent" ]]; then install_agent='no'; fi
 # would otherwise omit its route.
 if [[ "$default_profile" == 'hybrid' ]]; then
   case "$hybrid_model" in
-    opus|sonnet|sonnet55|fable|haiku) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
-    astra|sol|sol61|terra|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
-    grok|composer) csv_add "$grok_models" "$hybrid_model"; grok_models="$CSV_RESULT" ;;
+    opus|sonnet|sonnet55|fable|fable52|haiku|haiku55) csv_add "$anthropic_models" "$hybrid_model"; anthropic_models="$CSV_RESULT" ;;
+    astra|sol|sol61|terra|terra61|luna) csv_add "$openai_models" "$hybrid_model"; openai_models="$CSV_RESULT" ;;
+    grok|composer|grok47) csv_add "$grok_models" "$hybrid_model"; grok_models="$CSV_RESULT" ;;
   esac
 fi
 if [[ "$default_profile" == 'grok' ]]; then
@@ -1693,14 +1725,14 @@ validate_swarm_fast "$swarm_fast"
 validate_failover_policy "$failover_policy"
 validate_claude_plan "$claude_plan"
 validate_openai_capacity "$openai_capacity"
-validate_csv_subset 'Anthropic model' "$anthropic_models" 'opus,sonnet,fable,haiku'
-validate_csv_subset 'OpenAI model' "$openai_models" 'astra,sol,sol61,terra,luna'
-validate_csv_subset 'Grok model' "$grok_models" 'grok,composer'
+validate_csv_subset 'Anthropic model' "$anthropic_models" 'opus,sonnet,sonnet55,fable,fable52,haiku,haiku55'
+validate_csv_subset 'OpenAI model' "$openai_models" 'astra,sol,sol61,terra,terra61,luna'
+validate_csv_subset 'Grok model' "$grok_models" 'grok,composer,grok47'
 if [[ -n "$anthropic_extra_models" ]]; then
-  validate_csv_subset 'Anthropic extra model' "$anthropic_extra_models" 'opus,sonnet,fable,haiku'
+  validate_csv_subset 'Anthropic extra model' "$anthropic_extra_models" 'opus,sonnet,sonnet55,fable,fable52,haiku,haiku55'
 fi
 if [[ -n "$openai_extra_models" ]]; then
-  validate_csv_subset 'OpenAI extra model' "$openai_extra_models" 'astra,sol,sol61,terra,luna'
+  validate_csv_subset 'OpenAI extra model' "$openai_extra_models" 'astra,sol,sol61,terra,terra61,luna'
 fi
 wire_model_from_alias "$utility_model"
 utility_wire_model="$WIRE_MODEL"
