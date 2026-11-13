@@ -1394,7 +1394,9 @@ server.server_close()
     'airlock grok     Start the saved Grok-only orchestrator (subscription proxy)',
     'airlock opr      Start an OpenRouter-only session on an exact registry route',
     'Grok root aliases: grok, grok47, composer',
-    'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, luna, opus, fable, haiku, haiku55, grok, grok47, composer'
+    'Hybrid root aliases: auto, sonnet, sonnet55, astra, sol, sol61, terra, terra61, luna, opus, fable, fable52, haiku, haiku55, grok, grok47, composer',
+    'airlock models --check',
+    'airlock enable ROUTE...'
   )) {
     if (-not $ModelsCommand.Output.Contains($expected)) {
       throw "Windows models command omitted '$expected': $($ModelsCommand.Output)"
@@ -2680,6 +2682,38 @@ auth.store_key(b"sk-or-v1-WINDOWSTESTSENTINELKEY0000000000")
     }
   }
   if ($Haiku55.Output -notmatch 'airlock-haiku55') { throw 'Haiku 5.5 worker was not enabled for its explicit root' }
+  $Fable52 = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'fable52', '-p', 'test')
+  if ($Fable52.Output -notmatch '(?m)^ROOT_MODEL=claude-fable-5-2\[1m\]$') {
+    throw "Fable 5.2 root changed exact identity: $($Fable52.Output)"
+  }
+  if ($Fable52.Output -notmatch 'airlock-fable52') { throw 'Fable 5.2 worker was not enabled for its explicit root' }
+  $PoolConfig = Join-Path ([IO.Path]::GetTempPath()) ("airlock-pool-{0}.conf" -f [Guid]::NewGuid().ToString('N'))
+  try {
+    Set-Content -LiteralPath $PoolConfig -Value "UNRELATED=value`nAIRLOCK_OPENAI_MODELS=sol,terra,luna" -Encoding ASCII
+    $EnablePool = Invoke-LauncherProcess $InstalledLauncher @('enable', 'terra61', 'fable52') $true @{
+      AIRLOCK_CONFIG_FILE = $PoolConfig
+      AIRLOCK_ACCESS_PROXY = (Join-Path $StubDir 'claude-code-proxy.cmd')
+      AIRLOCK_ACCESS_CLAUDE_VERSION = '2.1.300'
+    }
+    if ($EnablePool.Output -notmatch 'terra61: enabled in AIRLOCK_OPENAI_MODELS') { throw "airlock enable did not report terra61: $($EnablePool.Output)" }
+    $PoolText = Get-Content -LiteralPath $PoolConfig -Raw
+    if ($PoolText -notmatch '(?m)^AIRLOCK_OPENAI_MODELS=sol,terra,terra61,luna\r?$' -or $PoolText -notmatch '(?m)^UNRELATED=value\r?$') {
+      throw "airlock enable changed the wrong config lines: $PoolText"
+    }
+    $DisablePool = Invoke-LauncherProcess $InstalledLauncher @('disable', 'terra61') $true @{ AIRLOCK_CONFIG_FILE = $PoolConfig }
+    if ($DisablePool.Output -notmatch 'terra61: disabled in AIRLOCK_OPENAI_MODELS') { throw "airlock disable did not report terra61: $($DisablePool.Output)" }
+    $CheckPool = Invoke-LauncherProcess $InstalledLauncher @('models', '--check') $true @{
+      AIRLOCK_CONFIG_FILE = $PoolConfig
+      AIRLOCK_ACCESS_PROXY = (Join-Path $StubDir 'claude-code-proxy.cmd')
+      AIRLOCK_ACCESS_CLAUDE_VERSION = '2.1.290'
+      AIRLOCK_ACCESS_GROK_AUTH = '0'
+    }
+    if ($CheckPool.Output -notmatch 'needs Claude Code 2\.1\.293 or newer \(found 2\.1\.290\)') {
+      throw "airlock models --check did not report the Claude Code requirement: $($CheckPool.Output)"
+    }
+  } finally {
+    Remove-Item -LiteralPath $PoolConfig -Force -ErrorAction SilentlyContinue
+  }
   $LegacyHaiku = Invoke-LauncherProcess $InstalledLauncher @('hybrid', 'haiku', '-p', 'test') $true @{
     AIRLOCK_ANTHROPIC_MODELS = 'haiku'
   }

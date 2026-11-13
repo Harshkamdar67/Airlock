@@ -34,10 +34,10 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup.sh"
 # One Enter for each question in the plain recommended path: the fourteen base
 # questions below, plus one per model when the saved worker mix does not match
 # a named preset and the wizard opens "Choose models individually". The fixture
-# asks about eleven models, so the plain and narrow runs answer twenty-five prompts.
+# asks about thirteen models, so the plain and narrow runs answer twenty-seven prompts.
 # The keyboard run has its own explicit script and selects the balanced preset,
 # so it still answers only the base questions.
-ENTER_PRESSES = 25
+ENTER_PRESSES = 27
 
 # The first row of the ASCII wordmark, used to prove that branding appears on a
 # normal terminal and is replaced by a plain text mark on a narrow one.
@@ -781,6 +781,21 @@ try:
          "AIRLOCK_GROK_MODELS=\n", "AIRLOCK_WORKER_EFFORT=inherit\n"),
     )
 
+    fable52_dir = temp_root / "fable52-numbered"
+    exit_code, fable52_output = run_wizard(
+        fable52_dir,
+        keystrokes=[KEY_ENTER, KEY_ENTER, b"13\n", b"1\n"] + finish_script,
+    )
+    require_exit("Fable52 numbered run", exit_code, fable52_output)
+    require_phrases(
+        "Fable52 numbered run", fable52_output,
+        ("12) Claude Haiku 5.5", "13) Claude Fable 5.2", "14) GPT-6.1 Terra"),
+    )
+    check_config_lines(
+        "Fable52 numbered run", fable52_dir,
+        ("AIRLOCK_HYBRID_MODEL=fable52\n", "AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,fable52\n"),
+    )
+
     grok47_dir = temp_root / "grok47-numbered"
     exit_code, grok47_output = run_wizard(
         grok47_dir,
@@ -817,7 +832,7 @@ try:
         opt_in_dir,
         keystrokes=(
             [KEY_ENTER] * 4  # hybrid, Grok yes, auto, custom workers
-            + [KEY_ENTER] * 11  # six Claude and five GPT models
+            + [KEY_ENTER] * 13  # seven Claude and six GPT models
             + [KEY_ENTER] * 4  # custom Grok pool and its three model answers
             + [KEY_ENTER] * 2  # starting effort, custom worker effort
             + [KEY_ENTER] * 3  # Haiku55 medium, Grok inherits, Grok47 xhigh

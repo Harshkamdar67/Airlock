@@ -25,6 +25,8 @@ These descriptions guide selection. They are not vendor rankings.
 | Sonnet | Deep repository research, broad review, documentation, design-system implementation, iterative refinement, ambiguous debugging, and balanced implementation | Medium |
 | Fable | An explicit focused Anthropic choice when enabled and authorized | Plan dependent |
 | Haiku | An explicit bounded Anthropic utility choice when enabled | Low |
+| Fable 5.2 | An opt-in Fable peer next to Fable 5.1, for explicit focused frontier work | Plan dependent; lower published API price than Fable 5.1 |
+| Terra 6.1 | An opt-in GPT-6.1 Terra peer next to Terra, for review and alternative reasoning | Medium |
 | Haiku 5.5 | An opt-in bounded Anthropic utility peer, without changing automatic discovery or background choices | Prompt lengths above 100K tokens have a pricing premium |
 | Grok | Difficult implementation, tool-heavy coding, debugging, and synthesis on a Grok plan | High |
 | Grok 4.7 | An opt-in frontier coding and debugging peer next to Grok 4.6, never an automatic swarm | Same published API price as Grok 4.6 |
@@ -62,11 +64,13 @@ airlock hybrid auto
 airlock hybrid astra
 airlock hybrid sol
 airlock hybrid terra
+airlock hybrid terra61
 airlock hybrid luna
 airlock hybrid opus
 airlock hybrid sonnet
 airlock hybrid sonnet55
 airlock hybrid fable
+airlock hybrid fable52
 airlock hybrid haiku
 airlock hybrid haiku55
 airlock hybrid grok
@@ -685,6 +689,30 @@ Set `AIRLOCK_WEB_TOOLS=off` before launching to omit the server entry, its guida
 `airlock hybrid sonnet55` selects exact `claude-sonnet-5-5[1m]`; the optional worker is `airlock-sonnet55`, enabled by adding `sonnet55` to the Anthropic pool. Existing `sonnet` and explicit Sonnet 5 configurations remain unchanged. Sonnet 5.5 requires Claude Code 2.1.284 or newer; update the native client before selecting it. Anthropic documents native 1M context, 128K maximum output, adaptive thinking, and text/image input with text output and tools. Airlock retains its high effort default.
 
 Sources: [Anthropic model reference](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### Fable 5.2
+
+`airlock hybrid fable52` selects exact `claude-fable-5-2[1m]`. The optional named worker is `airlock-fable52`, enabled by adding `fable52` to `AIRLOCK_ANTHROPIC_MODELS`; selecting it as an explicit root adds it to the pool for that session. Existing `fable`, the `auto` root, and saved defaults stay on Fable 5.1, so nothing moves until you opt in.
+
+Anthropic documents a 1M-token context window (the default), 128K maximum output, always-on adaptive thinking, and effort levels `low` through `max`. Its published API price is below Fable 5.1, which is not a measurement of subscription allowance. Fable 5.2 uses the same access class as Fable: it is off by default and may need confirmed extra usage. Like Fable 5.1, it carries the `[1m]` suffix so Claude Code keeps its full window behind the session router. It never enters automatic worker armies.
+
+```bash
+./scripts/setup.sh --yes --anthropic-workers opus,sonnet,fable52
+```
+
+Sources: [Anthropic models overview](https://platform.claude.com/docs/en/models/overview), [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+### GPT-6.1 Terra
+
+`airlock terra61` or `airlock hybrid terra61` selects exact `gpt-6.1-terra`. The optional named worker is `airlock-terra61`, enabled by adding `terra61` to `AIRLOCK_OPENAI_MODELS`; an explicit root adds it to the pool for that session. Existing `terra` stays on GPT-5.6 Terra, and the shipped `sol,terra,luna` pool is unchanged.
+
+GPT-6.1 Terra needs a `claude-code-proxy` catalog advertising exact `gpt-6.1-terra`, available in carried build `0.1.35-airlock.8`. A session that enables it refuses an older proxy with a clear message instead of silently falling back. OpenAI documents a 1.05M-token window and text and image input; Airlock keeps its conservative 272,000-token subscription guard until a long-context proof runs on this route. Subscription access depends on your plan.
+
+```bash
+./scripts/setup.sh --yes --openai-workers sol,terra,terra61,luna
+```
+
+Sources: [OpenAI GPT-6.1 Terra model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra), [Codex model catalogue](https://learn.chatgpt.com/docs/models).
 
 ### Haiku 5.5
 

@@ -1538,7 +1538,7 @@ def main(
             openrouter_root_route=openrouter_root_route,
             openmodel_root_route=openmodel_root_route,
         )
-        if "grok-4.7" in route_policy["model_ids"]:
+        if {"grok-4.7", "gpt-6.1-terra"} & set(route_policy["model_ids"]):
             access.check_proxy_models(route_policy["model_ids"])
         if agent_names != route_policy.get("agent_names"):
             fail("rendered native Agents do not match the session route policy")

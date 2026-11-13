@@ -72,7 +72,7 @@ OPENROUTER_PRESETS = _load_openrouter_presets()
 
 SCHEMA_VERSION = 2
 MANAGED_BUNDLE_SCHEMA_VERSION = 1
-MANAGED_BUNDLE_VERSION = "2026.10.14.3"
+MANAGED_BUNDLE_VERSION = "2026.11.14.1"
 MANAGED_PROTOCOL_VERSION = 6
 MAX_MANAGED_BUNDLE_BYTES = 128 * 1024
 MAX_MANAGED_COMPONENT_BYTES = 16 * 1024 * 1024
@@ -234,8 +234,8 @@ ROUTING_OBJECTIVES = {
     "economy": "Prefer an adequate lower-relative-usage eligible worker and escalate only when task risk or complexity warrants it.",
 }
 PROVIDER_ROUTES = {
-    "anthropic": ("opus", "sonnet", "sonnet55", "fable", "haiku", "haiku55"),
-    "openai": ("astra", "sol", "sol61", "terra", "luna", "luna-fast"),
+    "anthropic": ("opus", "sonnet", "sonnet55", "fable", "fable52", "haiku", "haiku55"),
+    "openai": ("astra", "sol", "sol61", "terra", "terra61", "luna", "luna-fast"),
     "grok": ("grok", "grok47", "composer"),
 }
 MODE_PROVIDERS = {"proxy": "anthropic", "native": "openai"}
@@ -283,13 +283,13 @@ PROFILE_ROOT_PROVIDERS = {
 }
 CATALOG_EXPECTED_AGENTS = {
     "openai_direct": {
-        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-terra61", "airlock-luna", "airlock-luna-fast",
     },
     "openai_wrappers": {
-        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-luna", "airlock-luna-fast",
+        "airlock-astra", "airlock-sol", "airlock-sol61", "airlock-terra", "airlock-terra61", "airlock-luna", "airlock-luna-fast",
     },
-    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku", "airlock-haiku55"},
-    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-haiku", "airlock-haiku55"},
+    "anthropic_direct": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-fable52", "airlock-haiku", "airlock-haiku55"},
+    "anthropic_wrappers": {"airlock-opus", "airlock-sonnet", "airlock-sonnet55", "airlock-fable", "airlock-fable52", "airlock-haiku", "airlock-haiku55"},
     "grok_direct": {"airlock-grok", "airlock-grok47", "airlock-composer"},
     "grok_wrappers": {"airlock-grok", "airlock-grok47", "airlock-composer"},
 }
@@ -324,6 +324,11 @@ MODEL_PROFILES = {
             "agent": "airlock-fable", "model": "claude-fable-5-1[1m]", "effort": "high",
             "capability": "frontier-efficient", "cost": "metered", "window": 1000000,
             "strength": "efficient frontier implementation, orchestration, and analysis when the route is enabled or explicitly selected",
+        },
+        "fable52": {
+            "agent": "airlock-fable52", "model": "claude-fable-5-2[1m]", "effort": "high",
+            "capability": "frontier-efficient", "cost": "metered", "window": 1000000,
+            "strength": "efficient frontier implementation, long-horizon orchestration, and analysis when the route is enabled or explicitly selected",
         },
         "haiku": {
             "agent": "airlock-haiku", "model": "claude-haiku-4-5-20251001", "effort": "medium",
@@ -363,6 +368,13 @@ MODEL_PROFILES = {
             "agent": "airlock-terra", "model": "gpt-5.6-terra", "effort": "high",
             "capability": "general", "cost": "standard", "window": 272000,
             "strength": "independent second opinions, adversarial review, competing designs, and debugging hypotheses",
+        },
+        "terra61": {
+            # OpenAI documents a 1.05M window; keep the subscription guard
+            # conservative until this exact model passes a long-context proof.
+            "agent": "airlock-terra61", "model": "gpt-6.1-terra", "effort": "high",
+            "capability": "general", "cost": "standard", "window": 272000,
+            "strength": "independent second opinions, adversarial review, competing designs, debugging hypotheses, and image-grounded review",
         },
         "luna": {
             # Keep the subscription ceiling conservative until tested end to end.
@@ -535,9 +547,11 @@ RECOMMENDED_HANDOFF: dict[str, tuple[str, ...]] = {
     "sol61": ("sol", "astra", "opus", "grok", "grok47", "fable"),
     "grok": ("grok47", "astra", "sol", "opus", "fable"),
     "grok47": ("grok", "astra", "sol", "opus", "fable"),
-    "fable": ("astra", "sol", "sol61", "opus", "grok", "grok47"),
-    "sonnet": ("terra", "luna"),
-    "terra": ("sonnet", "luna"),
+    "fable": ("fable52", "astra", "sol", "sol61", "opus", "grok", "grok47"),
+    "fable52": ("fable", "astra", "sol", "sol61", "opus", "grok", "grok47"),
+    "sonnet": ("terra", "terra61", "luna"),
+    "terra": ("terra61", "sonnet", "luna"),
+    "terra61": ("terra", "sonnet", "luna"),
     "luna": ("sonnet", "composer", "haiku"),
     "luna-fast": ("luna", "sonnet"),
     "composer": ("luna", "sonnet"),
@@ -1552,6 +1566,7 @@ def default_policy() -> dict[str, Any]:
                     "sonnet": {"access": "unknown"},
                     "sonnet55": {"access": "unavailable"},
                     "fable": {"access": "unavailable"},
+                    "fable52": {"access": "unavailable"},
                     "haiku": {"access": "unknown"},
                     "haiku55": {"access": "unavailable"},
                 },
@@ -1566,7 +1581,7 @@ def default_policy() -> dict[str, Any]:
                 # price premium, so it stays off until AIRLOCK_OPENAI_MODELS
                 # lists it or a launch selects it as the root.
                 "models": {
-                    route: {"access": "unavailable" if route in {"astra", "sol61"} else "unknown"}
+                    route: {"access": "unavailable" if route in {"astra", "sol61", "terra61"} else "unknown"}
                     for route in PROVIDER_ROUTES["openai"]
                 },
             },
@@ -1821,6 +1836,9 @@ def write_flat_config_overrides(
         USAGE_CONFIG_KEYS["claude_plan"]: VALID_CLAUDE_PLANS,
         USAGE_CONFIG_KEYS["openai_capacity"]: VALID_OPENAI_CAPACITIES,
         "AIRLOCK_OPENROUTER_KEYS": _valid_openrouter_key_labels,
+        "AIRLOCK_ANTHROPIC_MODELS": lambda value: _csv(value, PROVIDER_ROUTES["anthropic"]) is not None,
+        "AIRLOCK_OPENAI_MODELS": lambda value: _csv(value, PROVIDER_ROUTES["openai"]) is not None,
+        "AIRLOCK_GROK_MODELS": lambda value: _csv(value, PROVIDER_ROUTES["grok"]) is not None,
     }
     if not updates:
         raise AccessError("config update requires at least one setting")
@@ -3049,9 +3067,16 @@ def proxy_fast_capability() -> dict[str, object]:
     }
 
 
+PROXY_GATED_MODELS = {
+    "grok-4.7": ("Grok 4.7", "v0.1.35-airlock.7", "grok47"),
+    "gpt-6.1-terra": ("GPT-6.1 Terra", "v0.1.35-airlock.8", "terra61"),
+}
+
+
 def check_proxy_models(models: list[str]) -> None:
     """Check only proxy-gated opt-ins against the local offline catalog."""
-    if "grok-4.7" not in models:
+    gated = [model for model in PROXY_GATED_MODELS if model in models]
+    if not gated:
         return
     executable = (
         os.environ.get("AIRLOCK_ACCESS_PROXY")
@@ -3063,11 +3088,14 @@ def check_proxy_models(models: list[str]) -> None:
         set(re.split(r"[\s,]+", completed.stdout))
         if completed is not None and completed.returncode == 0 else set()
     )
-    if "grok-4.7" not in advertised:
+    for model in gated:
+        if model in advertised:
+            continue
+        label, build, route = PROXY_GATED_MODELS[model]
         raise AccessError(
-            "Grok 4.7 requires a claude-code-proxy catalog advertising exact grok-4.7; "
-            "install v0.1.35-airlock.7 or a compatible build and check claude-code-proxy models, "
-            "or disable grok47. The installed proxy did not advertise this model."
+            f"{label} requires a claude-code-proxy catalog advertising exact {model}; "
+            f"install {build} or a compatible build and check claude-code-proxy models, "
+            f"or disable {route}. The installed proxy did not advertise this model."
         )
 
 
@@ -3666,6 +3694,7 @@ DISCOVERY_ROUTES = (
     "haiku",
     "luna-fast",
     "terra",
+    "terra61",
     "sonnet55",
     "sonnet",
     "grok",
@@ -3673,6 +3702,7 @@ DISCOVERY_ROUTES = (
     "sol",
     "sol61",
     "fable",
+    "fable52",
     "opus",
     "astra",
 )
@@ -4027,22 +4057,22 @@ def proxy_picker_models(
         ).wire_model
         return {family: root for family in ("fable", "opus", "sonnet", "haiku")}
     if profile == "openai-pure":
-        fable = opus = first("astra", "sol", "sol61", "terra", "luna", "luna-fast")
-        sonnet = first("terra", "sol", "sol61", "astra", "luna", "luna-fast")
+        fable = opus = first("astra", "sol", "sol61", "terra", "terra61", "luna", "luna-fast")
+        sonnet = first("terra", "terra61", "sol", "sol61", "astra", "luna", "luna-fast")
     elif profile == "grok-pure":
         fable = opus = first("grok", "grok47", "composer")
         sonnet = first("composer", "grok", "grok47")
     else:
         fable = first(
-            "fable", "astra", "sol", "sol61", "opus", "grok", "grok47", "sonnet55", "sonnet", "terra",
+            "fable", "fable52", "astra", "sol", "sol61", "opus", "grok", "grok47", "sonnet55", "sonnet", "terra", "terra61",
             "composer", "luna", "haiku", "luna-fast", "haiku55",
         )
         opus = first(
-            "opus", "astra", "sol", "sol61", "grok", "grok47", "fable", "sonnet55", "sonnet", "terra",
+            "opus", "astra", "sol", "sol61", "grok", "grok47", "fable", "fable52", "sonnet55", "sonnet", "terra", "terra61",
             "composer", "luna", "haiku", "luna-fast", "haiku55",
         )
         sonnet = first(
-            "sonnet55", "sonnet", "terra", "fable", "sol", "sol61", "astra", "opus", "composer",
+            "sonnet55", "sonnet", "terra", "terra61", "fable", "fable52", "sol", "sol61", "astra", "opus", "composer",
             "luna", "haiku", "grok", "grok47", "luna-fast", "haiku55",
         )
     utility = discovery_model_from_workers(policy, workers)
@@ -5693,9 +5723,10 @@ def portfolio_guidance(
         role_rules.append(
             f"prefer {by_route['sol']} for difficult implementation, cross-file integration, backend and API work, test-driven repair, or measured performance work"
         )
-    if by_route.get("terra"):
+    terra = by_route.get("terra61") or by_route.get("terra")
+    if terra:
         role_rules.append(
-            f"use {by_route['terra']} for adversarial review, independent second opinions, competing designs, or alternative debugging hypotheses"
+            f"use {terra} for adversarial review, independent second opinions, competing designs, or alternative debugging hypotheses"
         )
     if by_route.get("luna"):
         role_rules.append(
@@ -5705,9 +5736,10 @@ def portfolio_guidance(
         role_rules.append(
             f"use {by_route['luna-fast']} only for eligible automatic native Agent Luna armies or an explicit Fast request"
         )
-    if by_route.get("fable"):
+    fable = by_route.get("fable52") or by_route.get("fable")
+    if fable:
         role_rules.append(
-            f"keep {by_route['fable']} available for an explicit focused choice, but do not select it for automatic swarms"
+            f"keep {fable} available for an explicit focused choice, but do not select it for automatic swarms"
         )
     if by_route.get("haiku"):
         role_rules.append(
@@ -6130,11 +6162,10 @@ def render_provider_agents(
             if access == "extra" and extra_policy == "ask"
             else ""
         )
+        # Every enabled worker repeats this text, and the whole rendered set
+        # has to fit a Windows command line, so keep it short.
         invocation = (
-            f" Invoke this worker through its exact session-scoped Agent name, {name}; "
-            "do not substitute a built-in Agent or pass a model override. It runs inside Claude Code's "
-            "native Agent lifecycle with native tools, background execution, cancellation, task cards, "
-            "usage reporting, and optional worktree isolation."
+            f" Invoke only as {name}; never substitute a built-in Agent or pass a model override."
         )
         if provider == "openai" and route in {"luna", "luna-fast"}:
             invocation += (
@@ -6766,6 +6797,219 @@ def render_profile_from_paths(
     )
 
 
+# ---- model readiness and saved worker pools ----------------------------------
+
+# Opt-in routes that need a newer native Claude Code than older routes do.
+ROUTE_CLAUDE_CODE_MINIMUM = {
+    "sonnet55": (2, 1, 284),
+    "haiku55": (2, 1, 293),
+}
+POOL_CONFIG_KEYS = {
+    "anthropic": "AIRLOCK_ANTHROPIC_MODELS",
+    "openai": "AIRLOCK_OPENAI_MODELS",
+    "grok": "AIRLOCK_GROK_MODELS",
+}
+# Luna Fast follows the Fast policy instead of a saved pool entry.
+POOL_ROUTES = {
+    provider: tuple(route for route in routes if route != "luna-fast")
+    for provider, routes in PROVIDER_ROUTES.items()
+}
+
+
+def _version_tuple(text: str | None) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(part) for part in match.groups()) if match else None  # type: ignore[return-value]
+
+
+def claude_code_version() -> tuple[int, int, int] | None:
+    """The installed native Claude Code version, or None when unknown."""
+    override = os.environ.get("AIRLOCK_ACCESS_CLAUDE_VERSION")
+    if override is not None:
+        return _version_tuple(override)
+    executable = os.environ.get("AIRLOCK_REAL_CLAUDE") or shutil.which("claude")
+    if not executable:
+        return None
+    completed = _run_status([executable, "--version"])
+    if completed is None or completed.returncode != 0:
+        return None
+    return _version_tuple(completed.stdout)
+
+
+def proxy_model_catalog() -> set[str] | None:
+    """Model IDs the local proxy lists offline, or None when it cannot say."""
+    executable = (
+        os.environ.get("AIRLOCK_ACCESS_PROXY")
+        or shutil.which("claude-code-proxy.exe")
+        or shutil.which("claude-code-proxy")
+    )
+    if not executable:
+        return None
+    completed = _run_status([executable, "models"])
+    if completed is None or completed.returncode != 0:
+        return None
+    return {item for item in re.split(r"[\s,]+", completed.stdout) if item}
+
+
+def route_provider(route: str) -> str:
+    for provider, routes in POOL_ROUTES.items():
+        if route in routes:
+            return provider
+    raise AccessError(
+        f"unknown worker route: {route}; expected one of "
+        + ", ".join(route for routes in POOL_ROUTES.values() for route in routes)
+    )
+
+
+def saved_pool(provider: str, config: dict[str, str] | None = None) -> list[str]:
+    """The saved pool for one provider, or the shipped default when unset."""
+    values = read_flat_config() if config is None else config
+    raw = values.get(POOL_CONFIG_KEYS[provider])
+    if raw is None:
+        defaults = default_policy()["providers"][provider]["models"]
+        return [
+            route for route in POOL_ROUTES[provider]
+            if defaults[route]["access"] != "unavailable"
+        ]
+    parsed = _csv(raw, PROVIDER_ROUTES[provider])
+    if parsed is None:
+        raise AccessError(
+            f"saved {POOL_CONFIG_KEYS[provider]} is invalid; fix it with ./scripts/setup.sh"
+        )
+    return parsed
+
+
+def update_saved_pools(action: str, routes: list[str]) -> list[str]:
+    """Enable or disable named worker routes in the saved config only."""
+    if action not in {"enable", "disable"}:
+        raise AccessError(f"unknown pool action: {action}")
+    if not routes:
+        raise AccessError(f"airlock {action} needs at least one worker route")
+    config = read_flat_config()
+    pools = {provider: saved_pool(provider, config) for provider in POOL_ROUTES}
+    changed: list[str] = []
+    messages: list[str] = []
+    for route in dict.fromkeys(route.strip().lower() for route in routes):
+        provider = route_provider(route)
+        pool = pools[provider]
+        if action == "enable" and route not in pool:
+            pool.append(route)
+            changed.append(route)
+        elif action == "disable" and route in pool:
+            pool.remove(route)
+            changed.append(route)
+        else:
+            state = "already enabled" if action == "enable" else "already disabled"
+            messages.append(f"{route}: {state}")
+    updates: dict[str, str | None] = {}
+    for provider, pool in pools.items():
+        ordered = [route for route in POOL_ROUTES[provider] if route in pool]
+        if any(route_provider(route) == provider for route in changed):
+            updates[POOL_CONFIG_KEYS[provider]] = ",".join(ordered)
+    if updates:
+        write_flat_config_overrides(updates)
+    for route in changed:
+        verb = "enabled" if action == "enable" else "disabled"
+        messages.append(f"{route}: {verb} in {POOL_CONFIG_KEYS[route_provider(route)]}")
+    for provider, key in POOL_CONFIG_KEYS.items():
+        if key in updates and key in os.environ:
+            messages.append(
+                f"Note: {key} is set in the environment and overrides the saved config until it is unset."
+            )
+    if action == "enable" and changed:
+        messages.append("")
+        messages.extend(model_readiness_lines(load_policy(), only=changed))
+    messages.append("The change applies to new sessions; running sessions keep their workers.")
+    return messages
+
+
+def model_readiness(policy: dict[str, Any]) -> dict[str, Any]:
+    """What each shipped route needs before a session can use it.
+
+    Read-only: this runs `claude --version`, `claude-code-proxy models`, and
+    the proxy's Grok status command. It reads no credentials and sends no
+    model request.
+    """
+    claude_version = claude_code_version()
+    catalog = proxy_model_catalog()
+    grok_auth = grok_auth_status()
+    routes: list[dict[str, Any]] = []
+    for provider, provider_routes in PROVIDER_ROUTES.items():
+        for route in provider_routes:
+            profile = MODEL_PROFILES[provider][route]
+            access = model_access(policy, provider, route)
+            issues: list[str] = []
+            minimum = ROUTE_CLAUDE_CODE_MINIMUM.get(route)
+            if minimum is not None:
+                wanted = ".".join(str(part) for part in minimum)
+                if claude_version is None:
+                    issues.append(f"needs Claude Code {wanted} or newer (installed version unknown)")
+                elif claude_version < minimum:
+                    found = ".".join(str(part) for part in claude_version)
+                    issues.append(f"needs Claude Code {wanted} or newer (found {found})")
+            if provider in {"openai", "grok"}:
+                model = wire_model_id(profile["model"])
+                if catalog is None:
+                    issues.append("claude-code-proxy not found or did not list its models")
+                elif model not in catalog:
+                    gated = PROXY_GATED_MODELS.get(model)
+                    build = gated[1] if gated else "a newer build"
+                    issues.append(f"proxy does not list {model}; install {build}")
+            if provider == "grok" and grok_auth.get("authenticated") is False:
+                issues.append("Grok is not logged in; run airlock proxy grok auth login")
+            notes: list[str] = []
+            if profile["cost"] in {"metered", "premium"}:
+                notes.append(f"{profile['cost']} usage")
+            if access == "extra":
+                notes.append("needs confirmed extra usage")
+            routes.append({
+                "route": route,
+                "provider": provider,
+                "model": profile["model"],
+                "enabled": access != "unavailable",
+                "ready": not issues,
+                "issues": issues,
+                "notes": notes,
+            })
+    return {
+        "claude_code": ".".join(str(part) for part in claude_version) if claude_version else None,
+        "proxy_models": len(catalog) if catalog is not None else None,
+        "grok_logged_in": grok_auth.get("authenticated"),
+        "routes": routes,
+    }
+
+
+def model_readiness_lines(
+    policy: dict[str, Any], only: list[str] | None = None,
+    report: dict[str, Any] | None = None,
+) -> list[str]:
+    report = report or model_readiness(policy)
+    grok = {True: "yes", False: "no"}.get(report["grok_logged_in"], "unknown")
+    lines = [
+        "Airlock model readiness (no model request is made)",
+        f"Claude Code: {report['claude_code'] or 'not found'}; "
+        f"proxy catalog: {report['proxy_models'] if report['proxy_models'] is not None else 'unavailable'} models; "
+        f"Grok login: {grok}",
+        f"{'ROUTE':<10} {'MODEL':<26} {'ENABLED':<8} STATUS",
+    ]
+    for item in report["routes"]:
+        if only is not None and item["route"] not in only:
+            continue
+        if item["issues"]:
+            status = "; ".join(item["issues"])
+        elif item["enabled"]:
+            status = "ready"
+        elif item["route"] == "luna-fast":
+            status = "ready when OpenAI Fast is on (airlock mode)"
+        else:
+            status = f"ready to enable (airlock enable {item['route']})"
+        if item["notes"]:
+            status += f" [{', '.join(item['notes'])}]"
+        lines.append(
+            f"{item['route']:<10} {item['model']:<26} {'yes' if item['enabled'] else 'no':<8} {status}"
+        )
+    return lines
+
+
 def status_lines(policy: dict[str, Any]) -> list[str]:
     lines = [
         f"Routing policy: {policy['policies']['routing']}",
@@ -6964,6 +7208,12 @@ def main() -> int:
     mode_parser.add_argument("--max-descendants")
     mode_parser.add_argument("--max-total-descendants")
     mode_parser.add_argument("--repair-rounds")
+    models_check = subparsers.add_parser("models-check")
+    models_check.add_argument("--json", action="store_true")
+    models_check.add_argument("--strict", action="store_true")
+    pool_parser = subparsers.add_parser("pool")
+    pool_parser.add_argument("pool_action", choices=("enable", "disable"))
+    pool_parser.add_argument("routes", nargs="*")
     handoff_parser = subparsers.add_parser("handoff")
     handoff_parser.add_argument("handoff_action", nargs="?")
     handoff_parser.add_argument("handoff_names", nargs="*")
@@ -7163,6 +7413,19 @@ def main() -> int:
             if updates is not None:
                 write_flat_config_overrides(updates)
             print("\n".join(mode_status_lines(updated=updates is not None)))
+            return 0
+        if args.command == "models-check":
+            report = model_readiness(load_policy())
+            if args.json:
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print("\n".join(model_readiness_lines({}, report=report)))
+            not_ready = [item["route"] for item in report["routes"] if item["enabled"] and not item["ready"]]
+            if not_ready and not args.json:
+                print(f"Enabled but not ready: {', '.join(not_ready)}")
+            return 1 if args.strict and not_ready else 0
+        if args.command == "pool":
+            print("\n".join(update_saved_pools(args.pool_action, list(args.routes))))
             return 0
         if args.command == "handoff":
             print(chr(10).join(run_handoff(

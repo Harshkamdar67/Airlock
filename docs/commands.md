@@ -47,10 +47,12 @@ airlock hybrid opus              # exact hybrid root
 airlock hybrid sonnet
 airlock hybrid sonnet55
 airlock hybrid fable
+airlock hybrid fable52           # optional Fable 5.2 root
 airlock hybrid haiku
 airlock hybrid haiku55            # optional Haiku 5.5 root
 airlock hybrid astra
 airlock hybrid sol
+airlock hybrid terra61           # optional GPT-6.1 Terra root
 airlock hybrid grok
 airlock hybrid grok47
 airlock opr                      # OpenRouter-only session, interactive picker
@@ -63,6 +65,8 @@ airlock bg                       # background convenience command
 `airlock hybrid ROUTE` can also take a declared OpenRouter route as the root. An open model always uses the reserved `om:` prefix in a hybrid command, so Airlock never guesses between private registries.
 
 `haiku55` and `grok47` are opt-in peers. Setup accepts them in worker lists, exact root choices, and `--worker-pins` without changing defaults. Haiku 5.5 requires Claude Code 2.1.293 or newer; Grok 4.7 requires a proxy with exact `grok-4.7` in its catalog, such as carried `0.1.35-airlock.7`. See [model details](models-and-usage.md#haiku-55).
+
+`fable52` and `terra61` are opt-in peers too. `airlock hybrid fable52` selects exact `claude-fable-5-2[1m]`, and `airlock terra61` or `airlock hybrid terra61` selects exact `gpt-6.1-terra`, which needs a proxy with exact `gpt-6.1-terra` in its catalog, such as carried `0.1.35-airlock.8`. Existing `fable` and `terra` routes are unchanged. See [Fable 5.2](models-and-usage.md#fable-52) and [GPT-6.1 Terra](models-and-usage.md#gpt-61-terra).
 
 ## Handoff
 
@@ -139,6 +143,20 @@ to work on a profile other than the mixed-provider one.
 These commands write `failover.json` for you; the file format is described
 in [Declaring your own chains](models-and-usage.md#declaring-your-own-chains)
 if you would rather edit it directly.
+
+## Worker models
+
+```bash
+airlock models --check           # what each route needs before a session can use it
+airlock models --check --strict  # exit 1 when an enabled route is not ready
+airlock models --check --json    # the same report for scripts
+airlock enable fable52 terra61   # add workers to the saved pool
+airlock disable grok47           # remove a worker from the saved pool
+```
+
+`airlock models --check` lists every shipped route with its exact model, whether it is enabled, and what it still needs: a newer Claude Code (Sonnet 5.5 needs 2.1.284, Haiku 5.5 needs 2.1.293), a proxy catalog that lists the model (GPT-6.1 Terra needs carried build `0.1.35-airlock.8`, Grok 4.7 needs `0.1.35-airlock.7`), or a Grok login. It runs `claude --version`, `claude-code-proxy models`, and the proxy's Grok status command. It reads no credentials and sends no model request.
+
+`airlock enable` and `airlock disable` change only `AIRLOCK_ANTHROPIC_MODELS`, `AIRLOCK_OPENAI_MODELS`, or `AIRLOCK_GROK_MODELS` in the saved config, keep every other line, and leave the rest of setup alone. An unknown route changes nothing. When a pool is unset, the shipped default pool is the starting point. An environment variable with the same name still overrides the saved file, and the command says so. New sessions pick up the change; running sessions keep their workers. Luna Fast follows `airlock mode set --openai-fast on` instead of a pool entry.
 
 ## Routing and limits
 

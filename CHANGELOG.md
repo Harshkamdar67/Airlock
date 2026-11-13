@@ -1,15 +1,45 @@
 # Changelog
 
+All user-facing changes are recorded here.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
+
 ## Unreleased
 
-## 0.1.0-beta.15 - 2026-10-14
+## 0.1.0-beta.15 - 2026-11-14
 
+### Added
+
+- `/airlock-research` is a managed skill for deep public-web research. The main model scopes the question, splits it into lanes that do not overlap (sub-questions, perspectives, source types, a recency sweep, and a contrarian lane), runs a Luna or Composer army that returns quote-backed claim ledgers, sends a smaller second wave at the gaps and conflicts, has workers check that key quotations really appear on their pages, and writes one cited report itself. `quick`, `standard`, and `deep` set the number of lanes, and `deep` shows the plan for approval first.
+- `web_search` in the local web tools server takes up to 5 queries per call and runs them in parallel, filters by time (`timelimit`), region, and page, and merges results from several backends without repeating a link. Besides DuckDuckGo it can query Wikipedia's official search API, your own SearXNG instance (`AIRLOCK_WEB_SEARXNG_URL`), and, when you opt in by installing it yourself, the `ddgs` metasearch package (`AIRLOCK_WEB_DDGS_PYTHON`). `AIRLOCK_WEB_SEARCH_BACKENDS` picks the default. News search works through SearXNG or `ddgs`.
+- `fetch_page` returns light markdown with headings, lists, code blocks, and absolute links, reports the final address and the page's publication date, continues long pages from `start_char`, and checks exact phrases with `find` so a worker can verify a quotation without reading the whole page.
+- More than one OpenRouter key. `airlock openrouter auth set-key --label NAME` stores another key in the same operating-system credential store, and the ordered `AIRLOCK_OPENROUTER_KEYS` setting, maintained by `set-key --label` and `logout --label`, lists the keys a session may use. When OpenRouter refuses a key, reports it out of credits, or rate limits it, the router sets that key aside and retries the same request with the next key before trying another model, then stays on the key that worked. The existing key keeps its storage entry and needs no change, and without the setting a session behaves exactly as before. The keys never enter the config, the session snapshot, diagnostics, or the router's command line.
+- `airlock models --check` shows every shipped worker route with its exact model, whether it is enabled, and what it still needs before a session can use it: a newer Claude Code, a proxy catalog that lists the model, or a Grok login. `--strict` exits 1 when an enabled route is not ready, and `--json` prints the same report for scripts. It reads no credentials and sends no model request.
+- `airlock enable ROUTE...` and `airlock disable ROUTE...` change the saved worker pools without rerunning setup. They edit only `AIRLOCK_ANTHROPIC_MODELS`, `AIRLOCK_OPENAI_MODELS`, or `AIRLOCK_GROK_MODELS`, keep every other line, refuse unknown routes without writing anything, and say when an environment variable overrides the saved file.
+- Add opt-in Claude Fable 5.2 roots and workers (`fable52`, `airlock-fable52`) on exact `claude-fable-5-2[1m]`. Existing `fable`, the `auto` root, and saved defaults stay on Fable 5.1. Fable 5.2 keeps Fable's access class, so it is off by default and may need confirmed extra usage.
+- Add opt-in GPT-6.1 Terra roots and workers (`terra61`, `airlock-terra61`) on exact `gpt-6.1-terra`, requiring a proxy catalog that lists that model, such as carried `0.1.35-airlock.8`. Sessions that enable it refuse an older proxy with a clear message instead of falling back. Existing `terra` stays on GPT-5.6 Terra, and the shipped `sol,terra,luna` pool is unchanged.
 - Add opt-in Haiku 5.5 roots and workers (`haiku55`, `airlock-haiku55`) on exact bare `claude-haiku-5-5`. Requires Claude Code 2.1.293 or newer; preserves Haiku 4.5 and existing picker, discovery, and background choices.
 - Add opt-in Grok 4.7 roots and workers (`grok47`, `airlock-grok47`) on exact `grok-4.7`, requiring carried proxy `0.1.35-airlock.7` or another build with that exact offline catalog entry. Preserve Grok 4.6 and Composer defaults; do not add automatic armies.
+- Add setup choices, worker enables, and effort pins for all four new peers without changing saved or shipped defaults. Document model limits, effort, input types, and pricing caveats.
 - Carry proxy `v0.1.35-airlock.7` (upstream Grok 4.7 allowlist on the existing Windows login fix). The Windows installer pins its archives and upgrades an exact Airlock-managed `0.1.35-airlock.6` in place.
-- Add setup choices, worker enables, and effort pins for both peers without changing saved or shipped defaults. Document model limits, effort, input types, and pricing caveats.
+
+### Changed
+
+- The web tools server answers tool calls in parallel, so workers sharing a session no longer wait behind each other's page loads, and it spaces out requests to each search backend. Identical searches and page reads within ten minutes are answered from memory.
+- A DuckDuckGo bot challenge is reported as one instead of as an empty result.
+- Every named worker's description now carries a shorter invocation note, so the full set of enabled workers still fits within the Windows command-line limit with the new routes on.
+- The release workflow attests archives with `actions/attest-build-provenance` v4.2.2, and CI uses `actions/setup-python` v7.1.0.
+
+### Fixed
+
 - Fix setup rejecting Sonnet 5.5 in an enabled or extra worker pool even though its root and custom worker menu already offered it.
 - Fix the Airlock Console tools MCP server never answering while Claude Code keeps stdin open, which made it time out on connect. It now reads one line at a time.
+- The Grok provider-label router test no longer reads another request's diagnostic event, which made it fail intermittently.
+
+### Security
+
+- `fetch_page` now connects to the exact address it checked. Before, it checked a host name's addresses and then let the HTTP library resolve the name again, so a hostile DNS server could pass the check with a public address and then point the connection at a private one.
+- The private-address check refuses every address that is not a public internet address, which adds the shared 100.64.0.0/10 range used by carrier-grade NAT and some VPNs, and IPv4 addresses wrapped in IPv6.
 
 ## 0.1.0-beta.14 - 2026-10-01
 
@@ -34,30 +64,6 @@
 
 - Add opt-in GPT-6.1 Sol with exact `gpt-6.1-sol`, the `sol61` root shortcut, setup choice, and `airlock-sol61` worker. Preserve existing Sol routes and saved defaults.
 - Carry `claude-code-proxy` `0.1.35-airlock.6` for Windows with GPT-6.1 Sol routing through the subscription Responses lane.
-
-All user-facing changes are recorded here.
-
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning while the public interface is in beta.
-
-## Unreleased
-
-### Added
-
-- `web_search` in the local web tools server takes up to 5 queries per call and runs them in parallel, filters by time (`timelimit`), region, and page, and merges results from several backends without repeating a link. Besides DuckDuckGo it can query Wikipedia's official search API, your own SearXNG instance (`AIRLOCK_WEB_SEARXNG_URL`), and, when you opt in by installing it yourself, the `ddgs` metasearch package (`AIRLOCK_WEB_DDGS_PYTHON`). `AIRLOCK_WEB_SEARCH_BACKENDS` picks the default. News search works through SearXNG or `ddgs`.
-- `/airlock-research` is a managed skill for deep public-web research. The main model scopes the question, splits it into lanes that do not overlap (sub-questions, perspectives, source types, a recency sweep, and a contrarian lane), runs a Luna or Composer army that returns quote-backed claim ledgers, sends a smaller second wave at the gaps and conflicts, has workers check that key quotations really appear on their pages, and writes one cited report itself. `quick`, `standard`, and `deep` set the number of lanes, and `deep` shows the plan for approval first.
-- `fetch_page` returns light markdown with headings, lists, code blocks, and absolute links, reports the final address and the page's publication date, continues long pages from `start_char`, and checks exact phrases with `find` so a worker can verify a quotation without reading the whole page.
-
-- More than one OpenRouter key. `airlock openrouter auth set-key --label NAME` stores another key in the same operating-system credential store, and the ordered `AIRLOCK_OPENROUTER_KEYS` setting, maintained by `set-key --label` and `logout --label`, lists the keys a session may use. When OpenRouter refuses a key, reports it out of credits, or rate limits it, the router sets that key aside and retries the same request with the next key before trying another model, then stays on the key that worked. The existing key keeps its storage entry and needs no change, and without the setting a session behaves exactly as before. The keys never enter the config, the session snapshot, diagnostics, or the router's command line.
-
-### Changed
-
-- The web tools server answers tool calls in parallel, so workers sharing a session no longer wait behind each other's page loads, and it spaces out requests to each search backend. Identical searches and page reads within ten minutes are answered from memory.
-- A DuckDuckGo bot challenge is reported as one instead of as an empty result.
-
-### Security
-
-- `fetch_page` now connects to the exact address it checked. Before, it checked a host name's addresses and then let the HTTP library resolve the name again, so a hostile DNS server could pass the check with a public address and then point the connection at a private one.
-- The private-address check refuses every address that is not a public internet address, which adds the shared 100.64.0.0/10 range used by carrier-grade NAT and some VPNs, and IPv4 addresses wrapped in IPv6.
 
 ## 0.1.0-beta.11 - 2026-09-23
 

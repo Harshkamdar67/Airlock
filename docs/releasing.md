@@ -122,6 +122,7 @@ Before merge:
 - confirm generated archives are not committed
 - publish and checksum a compatible carried `claude-code-proxy` build for Windows AMD64 and ARM64, then update the installer pin before tagging an Airlock release that defaults to GPT-6.1 Sol or Luna; the older `0.1.35-airlock.3` build does not accept those IDs
 - before shipping Grok 4.7 support, publish and verify carried proxy `0.1.35-airlock.7` with exact `grok-4.7` in its offline catalog; older builds cannot serve that optional route
+- for GPT-6.1 Terra (`terra61`), publish carried `claude-code-proxy` `0.1.35-airlock.8`, which lists `gpt-6.1-terra`; until the Windows installer pins that build, Windows sessions that enable `terra61` refuse to start with a clear message and every other route is unaffected
 - confirm CI passes on Linux, macOS, and Windows
 - confirm no live quota test ran without permission
 

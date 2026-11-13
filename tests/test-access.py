@@ -1039,7 +1039,7 @@ for line in sys.stdin:
                     serialized = json.dumps(rendered, separators=(",", ":"), ensure_ascii=True)
                     # Grok defaults unavailable unless enabled; hybrid-grok-root enables above.
                     # The loop enables both opt-in OpenAI routes for this size check.
-                    expected = 15 if profile == "hybrid-grok-root" else 12
+                    expected = 17 if profile == "hybrid-grok-root" else 14
                     self.assertEqual(len(rendered), expected)
                     luna_description = rendered["airlock-luna"]["description"]
                     self.assertIn("transport: native", luna_description)
@@ -3604,6 +3604,91 @@ class Haiku55Grok47CatalogueTests(unittest.TestCase):
         with patch.object(ACCESS, "_run_status") as run:
             ACCESS.check_proxy_models(["grok-4.6", "claude-haiku-4-5-20251001"])
             run.assert_not_called()
+
+
+
+class WorkerPoolAndReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = self.root / "config"
+        self.proxy = self.root / "proxy"
+        self.proxy.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$1" in models) printf "gpt-6.1-sol gpt-5.6-terra gpt-6-luna grok-4.6\\n" ;; *) exit 1 ;; esac\n',
+            encoding="utf-8",
+        )
+        self.proxy.chmod(0o755)
+        self.environment = patch.dict(os.environ, {
+            "AIRLOCK_CONFIG_FILE": str(self.config),
+            "AIRLOCK_ACCESS_FILE": str(self.root / "access.json"),
+            "AIRLOCK_CLAUDE_STATE_FILE": str(self.root / "claude.json"),
+            "AIRLOCK_PROXY_FAST_CAPABLE": "0",
+            "AIRLOCK_ACCESS_GROK_AUTH": "1",
+            "AIRLOCK_ACCESS_PROXY": str(self.proxy),
+            "AIRLOCK_ACCESS_CLAUDE_VERSION": "2.1.290",
+        }, clear=False)
+        self.environment.start()
+        for key in ("AIRLOCK_ANTHROPIC_MODELS", "AIRLOCK_OPENAI_MODELS", "AIRLOCK_GROK_MODELS"):
+            os.environ.pop(key, None)
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def test_enable_and_disable_edit_only_the_matching_pool_lines(self) -> None:
+        self.config.write_text("# note\nUNRELATED=1\nAIRLOCK_OPENAI_MODELS=sol,luna\n", encoding="utf-8")
+        ACCESS.update_saved_pools("enable", ["terra61", "fable52", "terra61"])
+        text = self.config.read_text(encoding="utf-8")
+        self.assertIn("# note\nUNRELATED=1\n", text)
+        self.assertIn("AIRLOCK_OPENAI_MODELS=sol,terra61,luna\n", text)
+        self.assertIn("AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,fable52,haiku\n", text)
+        self.assertNotIn("AIRLOCK_GROK_MODELS", text)
+        lines = ACCESS.update_saved_pools("disable", ["fable52", "grok47"])
+        self.assertIn("fable52: disabled in AIRLOCK_ANTHROPIC_MODELS", lines)
+        self.assertIn("grok47: already disabled", lines)
+        self.assertIn("AIRLOCK_ANTHROPIC_MODELS=opus,sonnet,haiku\n", self.config.read_text(encoding="utf-8"))
+
+    def test_unknown_route_changes_nothing(self) -> None:
+        self.config.write_text("AIRLOCK_OPENAI_MODELS=sol\n", encoding="utf-8")
+        with self.assertRaisesRegex(ACCESS.AccessError, "unknown worker route: luna-fast"):
+            ACCESS.update_saved_pools("enable", ["terra61", "luna-fast"])
+        self.assertEqual(self.config.read_text(encoding="utf-8"), "AIRLOCK_OPENAI_MODELS=sol\n")
+
+    def test_environment_override_is_reported(self) -> None:
+        with patch.dict(os.environ, {"AIRLOCK_OPENAI_MODELS": "sol"}):
+            lines = ACCESS.update_saved_pools("disable", ["luna"])
+        self.assertTrue(any("set in the environment" in line for line in lines))
+
+    def test_readiness_names_what_each_route_still_needs(self) -> None:
+        self.config.write_text("AIRLOCK_ANTHROPIC_MODELS=opus,haiku55\nAIRLOCK_OPENAI_MODELS=sol,terra61\n", encoding="utf-8")
+        report = ACCESS.model_readiness(ACCESS.load_policy())
+        by_route = {item["route"]: item for item in report["routes"]}
+        self.assertEqual(report["claude_code"], "2.1.290")
+        self.assertEqual(report["proxy_models"], 4)
+        self.assertTrue(by_route["opus"]["enabled"])
+        self.assertTrue(by_route["opus"]["ready"])
+        self.assertEqual(by_route["haiku55"]["issues"], ["needs Claude Code 2.1.293 or newer (found 2.1.290)"])
+        self.assertTrue(by_route["sonnet55"]["ready"])
+        self.assertIn("proxy does not list gpt-6.1-terra; install v0.1.35-airlock.8", by_route["terra61"]["issues"])
+        self.assertTrue(by_route["terra61"]["enabled"])
+        self.assertIn("proxy does not list grok-4.7; install v0.1.35-airlock.7", by_route["grok47"]["issues"])
+        self.assertTrue(by_route["grok"]["ready"])
+        lines = ACCESS.model_readiness_lines({}, report=report)
+        self.assertTrue(any(line.startswith("fable52 ") and "airlock enable fable52" in line for line in lines))
+
+    def test_readiness_survives_a_missing_proxy_and_claude(self) -> None:
+        with patch.dict(os.environ, {"AIRLOCK_ACCESS_PROXY": str(self.root / "missing")}):
+            os.environ.pop("AIRLOCK_ACCESS_CLAUDE_VERSION")
+            with patch.object(ACCESS.shutil, "which", return_value=None):
+                os.environ.pop("AIRLOCK_REAL_CLAUDE", None)
+                report = ACCESS.model_readiness(ACCESS.load_policy())
+        by_route = {item["route"]: item for item in report["routes"]}
+        self.assertIsNone(report["claude_code"])
+        self.assertIsNone(report["proxy_models"])
+        self.assertIn("installed version unknown", by_route["sonnet55"]["issues"][0])
+        self.assertIn("claude-code-proxy not found", by_route["sol"]["issues"][0])
+        self.assertTrue(by_route["opus"]["ready"])
 
 
 if __name__ == "__main__":
